@@ -1,0 +1,40 @@
+[package]
+name = "staged_diskann"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+visualization = ["dep:plotters", "dep:ndarray-linalg", "diskann/visualization", "accelerate-src"]
+indicatif = ["dep:indicatif"]
+
+[dependencies]
+vector = { path = "../vector" }
+diskann = { path = "../diskann", features = ["staged_diskann"]}
+rand = { workspace = true }
+rayon = { workspace = true }
+crossbeam = { workspace = true }
+ndarray = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true}
+memmap2 = { workspace = true }
+thiserror = { workspace = true }
+byteorder = { workspace = true }
+indicatif = { workspace = true, optional = true }
+hashbrown = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+anyhow = "1"
+tokio = { workspace = true }
+futures = { workspace = true }
+plotters = { workspace = true, optional = true }
+ndarray-linalg = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+accelerate-src = { version = "0.3", optional = true }
+
+[[bin]]
+name = "visualize"
+path = "src/bin/visualize.rs"
+required-features = ["visualization"]
+

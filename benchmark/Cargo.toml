@@ -1,0 +1,27 @@
+[package]
+name = "benchmark"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+diskann = { path = "../diskann" }
+platform = { path = "../platform" }
+hnsw = { path = "../hnsw" }
+nsg = { path = "../nsg" }
+staged_diskann = { path = "../staged_diskann" }
+ssd_diskann = { path = "../ssd_diskann" }
+vector = { path = "../vector" }
+anyhow = "1"
+rayon = { workspace = true }
+ndarray = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+byteorder = { workspace = true }
+indicatif = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }
+libc = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+comfy-table = { workspace = true }
