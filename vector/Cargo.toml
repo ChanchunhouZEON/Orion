@@ -1,0 +1,13 @@
+[package]
+name = "vector"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+half = { workspace = true }
+thiserror = { workspace = true }
+bytemuck = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+rand = { workspace = true }

@@ -1,0 +1,10 @@
+[package]
+name = "logger"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = { workspace = true }
+env_logger = { workspace = true }
+once_cell = { workspace = true }
+thiserror = { workspace = true }
