@@ -128,10 +128,64 @@ impl NeighborPriorityQueue {
         }
     }
 
+    /// Insert a neighbor without deduplication.
+    ///
+    /// Caller must guarantee that `nbr.id` has not previously been inserted
+    /// (i.e., it is not already present in the queue). When the queue is used
+    /// together with an external `seen` set that is checked before calling this
+    /// method, no duplicates will be submitted and the internal `ids` HashSet
+    /// is not needed — avoiding its per-insertion overhead.
+    pub fn insert_unchecked(&mut self, nbr: Neighbor) {
+        if self.size == self.capacity && self.data[self.size - 1] < nbr {
+            return;
+        }
+
+        let mut lo = 0;
+        let mut hi = self.size;
+        while lo < hi {
+            let mid = (lo + hi) >> 1;
+            if nbr < self.data[mid] {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+
+        if lo < self.capacity {
+            self.data.copy_within(lo..self.size, lo + 1);
+        }
+        self.data[lo] = Neighbor::new(nbr.id, nbr.distance);
+        if self.size < self.capacity {
+            self.size += 1;
+        }
+        if lo < self.cur {
+            self.cur = lo;
+        }
+    }
+
     pub fn clear(&mut self) {
         self.size = 0;
         self.cur = 0;
         self.ids.clear();
+    }
+
+    /// Reset for reuse with potentially a different capacity.
+    /// Clears state without deallocating; grows the backing Vec if needed.
+    /// Intended for thread-local scratch reuse.
+    ///
+    /// Pass `clear_ids = false` when the queue will be used exclusively via
+    /// `insert_unchecked` (external dedup via a `seen` set), saving the O(n)
+    /// HashSet clear.
+    pub fn reset_with_capacity(&mut self, capacity: usize, clear_ids: bool) {
+        self.size = 0;
+        self.cur = 0;
+        if clear_ids {
+            self.ids.clear();
+        }
+        if capacity + 1 > self.data.len() {
+            self.data.resize(capacity + 1, Neighbor::default());
+        }
+        self.capacity = capacity;
     }
 
     pub fn neighbors(&self) -> &[Neighbor] {

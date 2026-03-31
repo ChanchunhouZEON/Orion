@@ -218,13 +218,14 @@ fn main() {
                     &mut results,
                 );
             }
-            "compressed-diskann" => {
+            "staged-diskann" => {
                 let clustering_method = match args.clustering.as_str() {
                     "cohesive" => staged_diskann::ClusteringMethod::Cohesive,
                     "lpa" => staged_diskann::ClusteringMethod::LabelPropagation,
                     other => panic!("Unknown clustering method: {other}. Use 'cohesive' or 'lpa'."),
                 };
                 let mut runner = StagedDiskANNRunner::new(
+                    "StagedDiskANN",
                     1.2,  // alpha
                     32,   // graph_degree
                     64,   // search_list_size
@@ -232,11 +233,37 @@ fn main() {
                     4,    // max_connection_clusters
                     3,    // max_connection_per_cluster
                     0.7,  // critical_minimum_rate
-                    8,    // n_subquantizers
-                    8,    // n_bits
                     5,    // window_size
                     0.01, // epsilon
                     clustering_method,
+                );
+                run_benchmark(
+                    &mut runner,
+                    &dataset,
+                    args.k,
+                    args.mmap_search,
+                    args.drop_inmem,
+                    &args.graph_dir,
+                    args.warm_cache_hops,
+                    args.memory_limit_mb,
+                    &mut results,
+                );
+            }
+            "in_mem_staged_diskann" => {
+                // staged_diskann in_mem_search with epsilon=0 → pure greedy on full graph,
+                // equivalent to DiskANN Vamana. Uses same build params as "diskann".
+                let mut runner = StagedDiskANNRunner::new(
+                    "InMemStagedDiskANN",
+                    1.2,  // alpha
+                    32,   // graph_degree
+                    48,   // search_list_size — matches DiskANN runner
+                    10,   // max_cluster_point_size (unused in search)
+                    4,    // max_connection_clusters (unused in search)
+                    3,    // max_connection_per_cluster (unused in search)
+                    0.7,  // critical_minimum_rate (unused in search)
+                    5,    // window_size
+                    0.0,  // epsilon=0 → never converge → always full graph
+                    staged_diskann::ClusteringMethod::Cohesive,
                 );
                 run_benchmark(
                     &mut runner,
@@ -266,6 +293,15 @@ fn main() {
             }
             "profile-compressed" => {
                 run_compressed_profile(&dataset, args.k);
+            }
+            "epsilon-sweep" => {
+                run_epsilon_sweep(&dataset, args.k);
+            }
+            "frontier-sweep" => {
+                run_frontier_sweep(&dataset, args.k);
+            }
+            "full-frontier-sweep" => {
+                run_full_frontier_sweep(&dataset, args.k);
             }
             other => {
                 log::warn!("Unknown algorithm: {other}");
@@ -634,4 +670,363 @@ fn run_compressed_profile(dataset: &Dataset, k: usize) {
     if graph_dir.exists() {
         std::fs::remove_dir_all(&graph_dir).ok();
     }
+}
+
+/// Sweep epsilon values for StagedDiskANN to show the QPS / recall trade-off.
+///
+/// Builds the DiskANN graph and StagedDiskANN index once, then reruns search
+/// with each epsilon — no per-epsilon rebuild needed.
+///
+/// epsilon = 0.0 → convergence never triggers → pure greedy (DiskANN-equivalent).
+/// epsilon > 0.0 → switches to compressed graph neighbors once the sliding window
+///                 of best distances converges, reducing distance computations.
+fn run_epsilon_sweep(dataset: &Dataset, k: usize) {
+    use ndarray::Array2;
+    use staged_diskann::{build_diskann_index, ClusteringMethod, StagedDiskANN, DIM_128};
+    use std::time::Instant;
+
+    let num_points = dataset.num_base();
+    let dimension = dataset.dimension;
+    assert_eq!(
+        dimension, DIM_128,
+        "epsilon-sweep currently requires dim=128 (SIFT); got {}",
+        dimension
+    );
+
+    let flat_base = dataset.base_flat();
+    let data_2d = Array2::from_shape_vec((num_points, dimension), flat_base)
+        .expect("Failed to reshape base data")
+        .to_shared();
+
+    // ── Build: one graph, one staged index ──────────────────────────────────
+    println!(
+        "Building DiskANN + StagedDiskANN ({} pts, dim={})...",
+        num_points, dimension
+    );
+    let result = build_diskann_index(&data_2d, 1.2, 32, 48, false, None, None, true);
+    println!(
+        "  Graph build: {:.2}s",
+        result.graph_build_time.as_secs_f32()
+    );
+
+    // Remove cached compressed graph so we always build fresh.
+    let cache_dir = std::path::PathBuf::from("compressed_dskann_graphs");
+    if cache_dir.exists() {
+        std::fs::remove_dir_all(&cache_dir).ok();
+    }
+
+    let staged = StagedDiskANN::<128>::new(
+        data_2d,
+        result.graph,
+        result.candidate_sets,
+        result.entry_point,
+        None, // no PQ
+        None,
+        10,  // max_cluster_point_size
+        4,   // max_connection_clusters
+        3,   // max_connection_per_cluster
+        0.7, // critical_minimum_rate
+        None,
+        ClusteringMethod::Cohesive,
+        false, // don't save to disk
+    );
+
+    // ── Prepare queries ──────────────────────────────────────────────────────
+    let num_queries = dataset.queries.len();
+    let queries_arr: Vec<[f32; 128]> = dataset
+        .queries
+        .iter()
+        .map(|q| {
+            let mut arr = [0.0f32; 128];
+            arr.copy_from_slice(&q[..128]);
+            arr
+        })
+        .collect();
+
+    // ── Sweep: outer = window_size, inner = epsilon ──────────────────────────
+    const SEARCH_LIST_SIZE: usize = 48;
+
+    let window_sizes: &[usize] = &[5, 10, 20, 50];
+    let epsilons: &[f32] = &[0.0, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0];
+
+    println!(
+        "\n─── Window × Epsilon Sweep  (search_list_size={}, k={}) ───",
+        SEARCH_LIST_SIZE, k
+    );
+    println!(
+        "  Note: epsilon=0.0 → convergence never fires → pure greedy (≡ DiskANN Vamana)\n"
+    );
+
+    for &ws in window_sizes {
+        println!(
+            "  window_size = {}\n  {:<10}  {:<12}  {:<8}  {:<8}  {:<12}  {:<12}",
+            ws, "Epsilon", "QPS", "R@1", "R@10", "Mean(ms)", "P99(ms)"
+        );
+        println!("  {}", "─".repeat(70));
+
+        for &eps in epsilons {
+            let mut all_results: Vec<Vec<u32>> = Vec::with_capacity(num_queries);
+
+            let (qps, _, durations) = measure_qps(num_queries, |i| {
+                let t = Instant::now();
+                let res = staged
+                    .search(&queries_arr[i], k, SEARCH_LIST_SIZE, ws, eps)
+                    .expect("search failed");
+                let dur = t.elapsed();
+                all_results.push(res);
+                dur
+            });
+
+            let recall_1 = metrics::recall::mean_recall(&all_results, &dataset.ground_truth, 1);
+            let recall_10 = metrics::recall::mean_recall(&all_results, &dataset.ground_truth, 10);
+            let latency = LatencyStats::from_durations(durations);
+
+            println!(
+                "  {:<10.4}  {:<12.1}  {:<8.4}  {:<8.4}  {:<12.3}  {:<12.3}",
+                eps,
+                qps,
+                recall_1,
+                recall_10,
+                latency.mean.as_secs_f64() * 1000.0,
+                latency.p99.as_secs_f64() * 1000.0,
+            );
+        }
+        println!();
+    }
+
+    // Clean up
+    if cache_dir.exists() {
+        std::fs::remove_dir_all(&cache_dir).ok();
+    }
+}
+
+/// Sweep search_list_size × epsilon to build full Pareto frontiers for
+/// DiskANN baseline and StagedDiskANN, writing results to
+/// `visualizations/frontier_data.json` for plotting.
+fn run_frontier_sweep(dataset: &Dataset, k: usize) {
+    use ndarray::Array2;
+    use serde_json::json;
+    use staged_diskann::{build_diskann_index, ClusteringMethod, StagedDiskANN, DIM_128};
+    use std::time::Instant;
+
+    let num_points = dataset.num_base();
+    let dimension = dataset.dimension;
+    assert_eq!(
+        dimension, DIM_128,
+        "frontier-sweep requires dim=128; got {}",
+        dimension
+    );
+
+    let flat_base = dataset.base_flat();
+    let data_2d = Array2::from_shape_vec((num_points, dimension), flat_base)
+        .expect("reshape")
+        .to_shared();
+
+    println!(
+        "Building DiskANN + StagedDiskANN ({} pts, dim={})...",
+        num_points, dimension
+    );
+    let result = build_diskann_index(&data_2d, 1.2, 32, 64, false, None, None, true);
+    println!("  Graph build: {:.2}s\n", result.graph_build_time.as_secs_f32());
+
+    let cache_dir = std::path::PathBuf::from("compressed_dskann_graphs");
+    if cache_dir.exists() {
+        std::fs::remove_dir_all(&cache_dir).ok();
+    }
+
+    let staged = StagedDiskANN::<128>::new(
+        data_2d,
+        result.graph,
+        result.candidate_sets,
+        result.entry_point,
+        None,
+        None,
+        10,   // max_cluster_point_size
+        4,    // max_connection_clusters
+        3,    // max_connection_per_cluster
+        0.7,  // critical_minimum_rate
+        None,
+        ClusteringMethod::Cohesive,
+        false,
+    );
+
+    let queries_arr: Vec<[f32; 128]> = dataset
+        .queries
+        .iter()
+        .map(|q| {
+            let mut arr = [0.0f32; 128];
+            arr.copy_from_slice(&q[..128]);
+            arr
+        })
+        .collect();
+    let num_queries = queries_arr.len();
+
+    // search_list_size values spanning low → high recall for DiskANN
+    let search_list_sizes: &[usize] = &[10, 14, 18, 24, 30, 40, 48, 64, 80, 100];
+    // Best window_size from previous sweep
+    let window_size: usize = 10;
+    let epsilons: &[f32] = &[0.0, 0.005, 0.01, 0.05, 0.1, 0.3, 0.5, 1.0];
+
+    let mut diskann_pts: Vec<serde_json::Value> = Vec::new();
+    let mut staged_pts: Vec<serde_json::Value> = Vec::new();
+
+    println!(
+        "{:<6}  {:<8}  {:<10}  {:<10}  {:<8}",
+        "SLS", "Epsilon", "QPS", "R@10", "Source"
+    );
+    println!("{}", "─".repeat(50));
+
+    for &sls in search_list_sizes {
+        for &eps in epsilons {
+            let mut all_results: Vec<Vec<u32>> = Vec::with_capacity(num_queries);
+            let (qps, _, durations) = measure_qps(num_queries, |i| {
+                let t = Instant::now();
+                let res = staged
+                    .search(&queries_arr[i], k, sls, window_size, eps)
+                    .expect("search failed");
+                let dur = t.elapsed();
+                all_results.push(res);
+                dur
+            });
+
+            let recall_10 =
+                metrics::recall::mean_recall(&all_results, &dataset.ground_truth, 10);
+            let latency = LatencyStats::from_durations(durations);
+
+            let point = json!({
+                "search_list_size": sls,
+                "window_size": window_size,
+                "epsilon": eps,
+                "qps": (qps * 10.0).round() / 10.0,
+                "recall_10": (recall_10 * 100000.0).round() / 100000.0,
+                "mean_ms": (latency.mean.as_secs_f64() * 1e6).round() / 1e3,
+                "p99_ms": (latency.p99.as_secs_f64() * 1e6).round() / 1e3,
+            });
+
+            let label = if eps == 0.0 { "DiskANN" } else { "Staged" };
+            println!(
+                "{:<6}  {:<8.4}  {:<10.1}  {:<10.4}  {}",
+                sls, eps, qps, recall_10, label
+            );
+
+            if eps == 0.0 {
+                diskann_pts.push(point.clone());
+            }
+            staged_pts.push(point);
+        }
+    }
+
+    let output = json!({
+        "meta": {
+            "dataset": dataset.name,
+            "num_points": num_points,
+            "k": k,
+            "window_size": window_size,
+        },
+        "diskann": diskann_pts,
+        "staged_diskann": staged_pts,
+    });
+
+    let out_path = "visualizations/frontier_data.json";
+    std::fs::write(out_path, serde_json::to_string_pretty(&output).unwrap())
+        .expect("Failed to write frontier_data.json");
+    println!("\nSaved → {out_path}");
+
+    if cache_dir.exists() {
+        std::fs::remove_dir_all(&cache_dir).ok();
+    }
+}
+
+/// Full three-dimensional sweep: search_list_size × window_size × epsilon.
+///
+/// For each (sls, ws, eps) triple, measures QPS and R@10.
+/// eps=0 rows serve as the DiskANN baseline for that SLS.
+/// Results written to `visualizations/full_frontier_data.json`.
+fn run_full_frontier_sweep(dataset: &Dataset, k: usize) {
+    use ndarray::Array2;
+    use serde_json::json;
+    use staged_diskann::{build_diskann_index, ClusteringMethod, StagedDiskANN, DIM_128};
+    use std::time::Instant;
+
+    let num_points = dataset.num_base();
+    let dimension  = dataset.dimension;
+    assert_eq!(dimension, DIM_128, "full-frontier-sweep requires dim=128; got {}", dimension);
+
+    let flat_base = dataset.base_flat();
+    let data_2d   = Array2::from_shape_vec((num_points, dimension), flat_base)
+        .expect("reshape").to_shared();
+
+    println!("Building DiskANN + StagedDiskANN ({} pts, dim={})...", num_points, dimension);
+    let result = build_diskann_index(&data_2d, 1.2, 32, 64, false, None, None, true);
+    println!("  Graph build: {:.2}s\n", result.graph_build_time.as_secs_f32());
+
+    let cache_dir2 = std::path::PathBuf::from("compressed_dskann_graphs_full");
+    if cache_dir2.exists() { std::fs::remove_dir_all(&cache_dir2).ok(); }
+
+    let staged = StagedDiskANN::<128>::new(
+        data_2d, result.graph, result.candidate_sets, result.entry_point,
+        None, None, 10, 4, 3, 0.7, None, ClusteringMethod::Cohesive, false,
+    );
+
+    let queries_arr: Vec<[f32; 128]> = dataset.queries.iter().map(|q| {
+        let mut arr = [0.0f32; 128]; arr.copy_from_slice(&q[..128]); arr
+    }).collect();
+    let num_queries = queries_arr.len();
+
+    let search_list_sizes: &[usize] = &[10, 14, 18, 24, 30, 40, 48, 64, 80, 100];
+    let window_sizes: &[usize]      = &[5, 10, 20];
+    let epsilons: &[f32]            = &[0.0, 0.01, 0.05, 0.1, 0.3, 0.5];
+
+    let total = search_list_sizes.len() * window_sizes.len() * epsilons.len();
+    println!("Running {} combinations ({} SLS × {} WS × {} eps)...\n",
+             total, search_list_sizes.len(), window_sizes.len(), epsilons.len());
+
+    let mut all_pts: Vec<serde_json::Value> = Vec::with_capacity(total);
+    let mut done = 0usize;
+
+    for &sls in search_list_sizes {
+        for &ws in window_sizes {
+            for &eps in epsilons {
+                let mut all_results: Vec<Vec<u32>> = Vec::with_capacity(num_queries);
+                let (qps, _, _) = measure_qps(num_queries, |i| {
+                    let t = Instant::now();
+                    let res = staged.search(&queries_arr[i], k, sls, ws, eps)
+                        .expect("search failed");
+                    let dur = t.elapsed();
+                    all_results.push(res);
+                    dur
+                });
+                let recall_10 = metrics::recall::mean_recall(
+                    &all_results, &dataset.ground_truth, 10);
+
+                all_pts.push(json!({
+                    "search_list_size": sls,
+                    "window_size": ws,
+                    "epsilon": eps,
+                    "qps": (qps * 10.0).round() / 10.0,
+                    "recall_10": (recall_10 * 100000.0).round() / 100000.0,
+                }));
+
+                done += 1;
+                println!("  [{:>3}/{}] SLS={:>3} WS={:>2} eps={:.3}  QPS={:>8.0}  R@10={:.4}",
+                         done, total, sls, ws, eps, qps, recall_10);
+            }
+        }
+    }
+
+    let output = json!({
+        "meta": {
+            "dataset": dataset.name,
+            "num_points": num_points,
+            "k": k,
+        },
+        "points": all_pts,
+    });
+
+    let out_path = "visualizations/full_frontier_data.json";
+    std::fs::write(out_path, serde_json::to_string_pretty(&output).unwrap())
+        .expect("write failed");
+    println!("\nSaved → {out_path}");
+
+    if cache_dir2.exists() { std::fs::remove_dir_all(&cache_dir2).ok(); }
 }
