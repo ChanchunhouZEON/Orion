@@ -9,6 +9,7 @@ use crate::algorithm::lpa::LabelPropagationClustering;
 use crate::model::CompressedGraph;
 use crate::model::FixedChunkPQTable;
 use crate::model::compressed_graph::CompressedGraphOnDisk;
+use crate::model::scratch::InMemScratchPool;
 use crate::utils::{DELIMITER_LENGTH, l2_distance, l2_distance_slice};
 use diskann::common::{ANNError, ANNResult};
 use diskann::model::InMemoryGraph;
@@ -17,7 +18,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use vector::FullPrecisionDistance;
 
@@ -59,6 +60,25 @@ where
     pub pq: Option<Arc<FixedChunkPQTable>>,
     pub pq_codes: Option<Vec<u8>>,
     pub num_pq_chunks: Option<usize>,
+
+    /// Pool of pre-allocated scratch spaces for in-memory search.
+    /// Lazily initialized on first call to `search()`.
+    pub(crate) inmem_scratch_pool: OnceLock<InMemScratchPool>,
+
+    /// Flat CSR adjacency list for lock-free in-memory search.
+    ///
+    /// Mirrors `CompressedVertexAndNeighbors` but without RwLock or pointer
+    /// chasing:
+    ///
+    /// - `search_csr_offsets[i]`       → start index of node `i` in `search_csr_neighbors`
+    /// - `search_csr_offsets[i+1]`     → exclusive end (all neighbors)
+    /// - `search_csr_compressed_end[i]`→ exclusive end of compressed portion
+    ///
+    /// Full neighbors:       `neighbors[offsets[i]..offsets[i+1]]`
+    /// Compressed neighbors: `neighbors[offsets[i]..compressed_end[i]]`
+    pub(crate) search_csr_offsets: Vec<u32>,
+    pub(crate) search_csr_compressed_end: Vec<u32>,
+    pub(crate) search_csr_neighbors: Vec<u32>,
 }
 
 impl<const N: usize> StagedDiskANN<N>
@@ -110,8 +130,8 @@ where
             let dir = PathBuf::from("compressed_dskann_graphs");
             fs::create_dir_all(&dir).unwrap();
             dir.join(format!(
-                "compressed_dskann_graph_m{}_p{}_c{}.bin",
-                max_cluster_point_size, max_pruned_degree, critical_minimum_rate
+                "compressed_dskann_graph_n{}_m{}_p{}_c{}.bin",
+                num_nodes, max_cluster_point_size, max_pruned_degree, critical_minimum_rate
             ))
         });
 
@@ -140,10 +160,18 @@ where
             max_cluster_point_size,
             critical_minimum_rate,
             is_save,
+            inmem_scratch_pool: OnceLock::new(),
+            search_csr_offsets: Vec::new(),
+            search_csr_compressed_end: Vec::new(),
+            search_csr_neighbors: Vec::new(),
         };
 
         // Try to load from disk first; if not found, run clustering
         let _ = result.load_or_build_compressed_graph(inmem_graph, clustering_method);
+
+        // Build flat CSR adjacency list AFTER graph is finalized.
+        // Clustering reorders neighbors (compressed-first), so this must come last.
+        result.build_search_csr();
 
         result
     }
@@ -184,6 +212,35 @@ where
             clustering_method,
             is_save,
         )
+    }
+
+    /// Build flat CSR adjacency list from the finalized compressed graph.
+    ///
+    /// Acquires each RwLock exactly once at construction time; search then
+    /// uses direct slice indexing with no locking or pointer chasing.
+    fn build_search_csr(&mut self) {
+        let n = self.graph.size();
+        let mut offsets = Vec::with_capacity(n + 1);
+        let mut compressed_end = Vec::with_capacity(n);
+        let mut neighbors: Vec<u32> = Vec::new();
+
+        offsets.push(0u32);
+        for i in 0..n as u32 {
+            if let Ok(v) = self.graph.read_vertex(i) {
+                let start = neighbors.len() as u32;
+                neighbors.extend_from_slice(v.get_neighbors());
+                let cd = v.compressed_degree().min(v.degree() as u32);
+                compressed_end.push(start + cd);
+            } else {
+                // Degenerate: node unreadable — record zero-length entry.
+                compressed_end.push(*offsets.last().unwrap());
+            }
+            offsets.push(neighbors.len() as u32);
+        }
+
+        self.search_csr_offsets = offsets;
+        self.search_csr_compressed_end = compressed_end;
+        self.search_csr_neighbors = neighbors;
     }
 
     fn build_data_arrays(data: &ArcArray2<f32>) -> Vec<[f32; N]> {
@@ -282,7 +339,7 @@ where
         Ok(())
     }
 
-    // --- Algorithm 7: Cluster-aware Graph Compression ---
+    // --- Cluster-aware Graph Compression ---
 
     /// Get centroid vectors for each cluster.
     fn compute_cluster_centroids(&self) -> HashMap<u32, Vec<f32>> {
@@ -334,7 +391,7 @@ where
         // 1. Compute cluster centroids
         let cluster_centroids = self.compute_cluster_centroids();
         log::info!(
-            "Algorithm 7: {} clusters, m={}, n={}",
+            "After clustering: {} clusters, m={}, n={}",
             cluster_centroids.len(),
             max_external_clusters,
             max_edges_per_ext_cluster

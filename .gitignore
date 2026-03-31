@@ -2,3 +2,6 @@
 
 *.fvecs
 *.ivecs
+
+/visualizations/staged_diskann/
+/*_graphs/

@@ -10,4 +10,4 @@ pub use compressed_graph::CompressedGraph;
 pub use config::CompressedConfig;
 pub use diskann::model::{FixedChunkPQTable, NUM_PQ_CENTROIDS};
 pub use neighbor::{Neighbor, NeighborPriorityQueue};
-pub use scratch::{CompressedSearchScratch, ScratchPool};
+pub use scratch::{CompressedSearchScratch, InMemScratchGuard, InMemScratchPool, InMemSearchScratch, ScratchPool};

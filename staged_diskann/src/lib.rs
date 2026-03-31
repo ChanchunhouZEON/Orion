@@ -16,6 +16,7 @@ pub use algorithm::CohesiveClusterManager;
 pub use algorithm::DistanceConvergenceChecker;
 pub use algorithm::LabelPropagationClustering;
 pub use algorithm::SearchProfile;
+pub use algorithm::search::in_mem_search::{DEFAULT_EPSILON, DEFAULT_SEARCH_LIST_SIZE, DEFAULT_WINDOW_SIZE};
 pub use algorithm::{ClusteringMethod, ClusteringResult, ClusteringStrategy};
 pub use index::DiskANN;
 pub use index::StagedDiskANN;

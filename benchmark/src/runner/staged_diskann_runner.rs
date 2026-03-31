@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 /// Benchmark runner for Staged DiskANN with compile-time dimension dispatch.
 pub struct StagedDiskANNRunner {
+    // Runner identity
+    name: &'static str,
     // DiskANN build params
     alpha: f32,
     graph_degree: usize,
@@ -19,9 +21,6 @@ pub struct StagedDiskANNRunner {
     max_connection_clusters: usize,
     max_connection_per_cluster: usize,
     critical_minimum_rate: f32,
-    // PQ params
-    n_subquantizers: usize,
-    n_bits: u32,
     // Search params
     window_size: usize,
     epsilon: f32,
@@ -40,6 +39,7 @@ enum StagedInner {
 impl StagedDiskANNRunner {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        name: &'static str,
         alpha: f32,
         graph_degree: usize,
         search_list_size: usize,
@@ -47,13 +47,12 @@ impl StagedDiskANNRunner {
         max_connection_clusters: usize,
         max_connection_per_cluster: usize,
         critical_minimum_rate: f32,
-        n_subquantizers: usize,
-        n_bits: u32,
         window_size: usize,
         epsilon: f32,
         clustering_method: ClusteringMethod,
     ) -> Self {
         Self {
+            name,
             alpha,
             graph_degree,
             search_list_size,
@@ -61,8 +60,6 @@ impl StagedDiskANNRunner {
             max_connection_clusters,
             max_connection_per_cluster,
             critical_minimum_rate,
-            n_subquantizers,
-            n_bits,
             window_size,
             epsilon,
             clustering_method,
@@ -74,7 +71,7 @@ impl StagedDiskANNRunner {
 
 impl AlgorithmRunner for StagedDiskANNRunner {
     fn name(&self) -> &str {
-        "StagedDiskANN"
+        self.name
     }
 
     fn build(&mut self, data: &[f32], num_points: usize, dimension: usize) -> Duration {
@@ -117,7 +114,7 @@ impl AlgorithmRunner for StagedDiskANNRunner {
                     self.critical_minimum_rate,
                     None,
                     self.clustering_method,
-                    true,
+                    false,
                 );
                 let compressed_time = t1.elapsed();
                 log::info!(
@@ -142,7 +139,7 @@ impl AlgorithmRunner for StagedDiskANNRunner {
                     self.critical_minimum_rate,
                     None,
                     self.clustering_method,
-                    true,
+                    false,
                 );
                 let compressed_time = t1.elapsed();
                 log::info!(
