@@ -4,6 +4,7 @@
  */
 
 use crate::runner::common::{AlgorithmRunner, SearchResult};
+use diskann::index::InmemIndex;
 use ndarray::Array2;
 use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_128, DIM_960};
 use std::time::{Duration, Instant};
@@ -24,6 +25,8 @@ pub struct StagedDiskANNRunner {
     // Search params
     window_size: usize,
     epsilon: f32,
+    /// When true, search through CompressedGraph (RwLock) instead of flat CSR.
+    use_rwlock: bool,
     // State
     dimension: usize,
     inner: Option<StagedInner>,
@@ -59,9 +62,16 @@ impl StagedDiskANNRunner {
             critical_minimum_rate,
             window_size,
             epsilon,
+            use_rwlock: false,
             dimension: 0,
             inner: None,
         }
+    }
+
+    /// Use CompressedGraph (RwLock) for search instead of flat CSR.
+    pub fn with_rwlock(mut self) -> Self {
+        self.use_rwlock = true;
+        self
     }
 }
 
@@ -78,7 +88,7 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             .expect("Failed to reshape data")
             .to_shared();
 
-        let result = build_diskann_index(
+        let mut result = build_diskann_index(
             &data_2d,
             self.alpha,
             self.graph_degree as u32,
@@ -95,11 +105,24 @@ impl AlgorithmRunner for StagedDiskANNRunner {
 
         match dimension {
             DIM_128 => {
+                // Downcast to take the InmemDataset from the InmemIndex.
+                let dataset = {
+                    let idx = result.index.as_any_mut()
+                        .downcast_mut::<InmemIndex<f32, 128>>()
+                        .expect("downcast to InmemIndex<f32, 128>");
+                    std::mem::replace(
+                        &mut idx.dataset,
+                        diskann::model::InmemDataset::new(0, 1.0).unwrap(),
+                    )
+                };
+                drop(result.index);
+
                 let t1 = Instant::now();
                 let compressed = StagedDiskANN::<128>::new(
-                    data_2d,
+                    dataset,
                     result.graph,
                     result.candidate_sets,
+                    result.bidir_neighbors,
                     result.entry_point,
                     None,
                     None,
@@ -119,11 +142,23 @@ impl AlgorithmRunner for StagedDiskANNRunner {
                 self.inner = Some(StagedInner::Dim128 { compressed });
             }
             DIM_960 => {
+                let dataset = {
+                    let idx = result.index.as_any_mut()
+                        .downcast_mut::<InmemIndex<f32, 960>>()
+                        .expect("downcast to InmemIndex<f32, 960>");
+                    std::mem::replace(
+                        &mut idx.dataset,
+                        diskann::model::InmemDataset::new(0, 1.0).unwrap(),
+                    )
+                };
+                drop(result.index);
+
                 let t1 = Instant::now();
                 let compressed = StagedDiskANN::<960>::new(
-                    data_2d,
+                    dataset,
                     result.graph,
                     result.candidate_sets,
+                    result.bidir_neighbors,
                     result.entry_point,
                     None,
                     None,
@@ -154,12 +189,20 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             StagedInner::Dim128 { compressed, .. } => {
                 let mut q = [0.0f32; 128];
                 q.copy_from_slice(&query[..128]);
-                compressed.search(&q, k, self.search_list_size, self.window_size, self.epsilon)
+                if self.use_rwlock {
+                    compressed.search_rwlock(&q, k, self.search_list_size, self.window_size, self.epsilon)
+                } else {
+                    compressed.search(&q, k, self.search_list_size, self.window_size, self.epsilon)
+                }
             }
             StagedInner::Dim960 { compressed, .. } => {
                 let mut q = [0.0f32; 960];
                 q.copy_from_slice(&query[..960]);
-                compressed.search(&q, k, self.search_list_size, self.window_size, self.epsilon)
+                if self.use_rwlock {
+                    compressed.search_rwlock(&q, k, self.search_list_size, self.window_size, self.epsilon)
+                } else {
+                    compressed.search(&q, k, self.search_list_size, self.window_size, self.epsilon)
+                }
             }
         }
         .expect("Searching process failed");
@@ -168,6 +211,50 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             neighbors,
             duration,
         }
+    }
+
+    fn search_batch(&self, queries: &[Vec<f32>], k: usize) -> Vec<SearchResult> {
+        use std::time::Instant;
+
+        let start = Instant::now();
+        let batch_results = match self.inner.as_ref().expect("Index not built") {
+            StagedInner::Dim128 { compressed, .. } => {
+                let qs: Vec<[f32; 128]> = queries
+                    .iter()
+                    .map(|q| {
+                        let mut arr = [0.0f32; 128];
+                        arr.copy_from_slice(&q[..128]);
+                        arr
+                    })
+                    .collect();
+                compressed
+                    .search_batch(&qs, k, self.search_list_size, self.window_size, self.epsilon)
+                    .expect("batch search failed")
+            }
+            StagedInner::Dim960 { compressed, .. } => {
+                let qs: Vec<[f32; 960]> = queries
+                    .iter()
+                    .map(|q| {
+                        let mut arr = [0.0f32; 960];
+                        arr.copy_from_slice(&q[..960]);
+                        arr
+                    })
+                    .collect();
+                compressed
+                    .search_batch(&qs, k, self.search_list_size, self.window_size, self.epsilon)
+                    .expect("batch search failed")
+            }
+        };
+        let total = start.elapsed();
+        let per_query = total / queries.len().max(1) as u32;
+
+        batch_results
+            .into_iter()
+            .map(|neighbors| SearchResult {
+                neighbors,
+                duration: per_query,
+            })
+            .collect()
     }
 
     fn memory_bytes(&self) -> usize {

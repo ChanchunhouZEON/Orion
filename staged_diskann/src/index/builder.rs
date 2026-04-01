@@ -5,18 +5,33 @@
 
 use diskann::index::{ANNInmemIndex, create_inmem_index};
 use diskann::model::configuration::index_write_parameters::IndexWriteParametersBuilder;
-use diskann::model::{FixedChunkPQTable, InMemoryGraph, IndexConfiguration};
+use diskann::model::{CsrGraph, FixedChunkPQTable, IndexConfiguration};
 use ndarray::ArcArray2;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vector::Metric;
 
+/// Re-export so downstream crates can use it without depending on diskann directly.
+pub use diskann::model::CsrGraph as CsrGraphType;
+
 /// Result of building a DiskANN index via diskann's parallel Vamana implementation.
+///
+/// `graph` is a lock-free CSR adjacency list extracted from the Vamana index.
+/// `index` retains the original `InmemIndex` (behind trait object) so callers
+/// can downcast to take the `InmemDataset` for zero-copy data sharing.
 pub struct DiskANNBuildResult {
-    pub graph: InMemoryGraph,
+    pub graph: CsrGraph,
     pub candidate_sets: Arc<Vec<HashSet<u32>>>,
+    /// Pre-computed bidirectional neighbors. `bidir_neighbors[i]` = neighbors of
+    /// node `i` that also have an edge back to `i`. Computed once in
+    /// `extract_graph_and_candidates` and reused by clustering (skips Phase 1).
+    /// Wrapped in `Arc` for O(1) clone across multiple StagedDiskANN builds.
+    pub bidir_neighbors: Arc<Vec<Vec<u32>>>,
     pub entry_point: u32,
+    /// The original index. Callers may downcast via `as_any_mut()` to take
+    /// fields like `InmemDataset` before dropping.
+    pub index: Box<dyn ANNInmemIndex<f32>>,
     pub pq: Option<Arc<FixedChunkPQTable>>,
     pub pq_codes: Option<Vec<u8>>,
     pub graph_build_time: Duration,
@@ -64,8 +79,6 @@ pub fn build_diskann_index(
         create_inmem_index::<f32>(config).expect("Failed to create diskann index");
 
     // Borrow a flat view of the ndarray data without copying.
-    // For the common C-contiguous layout (from_shape_vec / to_vec) as_slice() returns Some,
-    // so no heap allocation occurs.  Only non-contiguous layouts fall back to a copy.
     let flat_data_buf: Vec<f32>;
     let flat_data: &[f32] = if let Some(slice) = data.as_slice() {
         slice
@@ -82,22 +95,22 @@ pub fn build_diskann_index(
 
     let entry_point = index.start_node();
 
-    // 2. Extract candidate sets
-    let candidate_sets = if compute_candidate_sets {
-        Arc::new(
-            index
-                .extract_candidate_sets()
-                .unwrap_or_else(|| vec![HashSet::new(); num_points]),
-        )
+    // 2. Extract graph (lock-free CSR) + candidate sets in one pass.
+    //    Reads each RwLock once to build flat CSR; no ownership transfer needed.
+    let t_extract = Instant::now();
+    let (graph, candidate_sets, bidir_neighbors) = if compute_candidate_sets {
+        let (adj, cs, bidir) = index.extract_graph_and_candidates(num_points, graph_degree);
+        (adj, Arc::new(cs), Arc::new(bidir))
     } else {
-        Arc::new(vec![HashSet::new(); num_points])
+        let (adj, _, bidir) = index.extract_graph_and_candidates(num_points, graph_degree);
+        (adj, Arc::new(vec![HashSet::new(); num_points]), Arc::new(bidir))
     };
+    log::info!(
+        "  extract_graph_and_candidates: {:.3}s",
+        t_extract.elapsed().as_secs_f32()
+    );
 
-    // 3. Extract graph
-    let graph_map = index.extract_graph();
-    let graph = InMemoryGraph::from_hashmap(&graph_map, num_points, graph_degree);
-
-    // 4. Build PQ if requested — using FixedChunkPQTable
+    // 3. Build PQ if requested — using FixedChunkPQTable
     let pq_start = Instant::now();
     let (pq, pq_codes) = if build_pq {
         let n_chunks = n_subquantizers.unwrap_or(8);
@@ -112,7 +125,9 @@ pub fn build_diskann_index(
     DiskANNBuildResult {
         graph,
         candidate_sets,
+        bidir_neighbors,
         entry_point,
+        index,
         pq,
         pq_codes,
         graph_build_time,

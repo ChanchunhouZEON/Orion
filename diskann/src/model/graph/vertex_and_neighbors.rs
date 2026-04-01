@@ -44,6 +44,12 @@ impl VertexAndNeighbors {
         &self.neighbors
     }
 
+    /// Consume self and return the neighbor list as a plain `Vec<u32>`.
+    #[inline(always)]
+    pub fn into_neighbors(self) -> Vec<u32> {
+        self.neighbors.into_vec()
+    }
+
     pub fn add_to_neighbors(&mut self, node_id: u32, range: u32) -> Option<Vec<u32>> {
         if self.neighbors.contains(&node_id) {
             return None;

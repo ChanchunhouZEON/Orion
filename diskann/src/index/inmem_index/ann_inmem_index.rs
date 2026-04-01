@@ -21,8 +21,11 @@ use crate::model::{
 /// ANN inmem-index abstraction for custom <T, N>
 pub trait ANNInmemIndex<T>: Sync + Send
 where
-    T: Default + Copy + Sync + Send + Into<f32>,
+    T: Default + Copy + Sync + Send + Into<f32> + 'static,
 {
+    /// Downcast to concrete type for field extraction (e.g. taking InmemDataset).
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+
     /// Build index
     fn build(&mut self, filename: &str, num_points_to_load: usize) -> ANNResult<()>;
 
@@ -65,9 +68,50 @@ where
     #[cfg(feature = "staged_diskann")]
     fn extract_candidate_sets(&self) -> Option<Vec<HashSet<u32>>>;
 
+    /// Build a lock-free `CsrGraph` from the final graph, extract candidate sets,
+    /// and pre-compute bidirectional neighbors — all in one pass.
+    ///
+    /// Returns `(csr_graph, candidate_sets, bidir_neighbors)`.
+    /// `bidir_neighbors[i]` contains the IDs of node `i`'s neighbors that also
+    /// have an edge back to `i`. This is reused by clustering (Phase 1 skip).
+    #[cfg(feature = "staged_diskann")]
+    fn extract_graph_and_candidates(
+        &self,
+        _num_points: usize,
+        _max_degree: u32,
+    ) -> (crate::model::CsrGraph, Vec<HashSet<u32>>, Vec<Vec<u32>>) {
+        let cs = self.extract_candidate_sets().unwrap_or_default();
+        let graph = self.extract_graph();
+        let n = graph.keys().map(|&k| k as usize + 1).max().unwrap_or(0);
+        let mut adj = vec![Vec::new(); n];
+        for (k, v) in graph {
+            adj[k as usize] = v;
+        }
+        let csr = crate::model::CsrGraph::from_adjacency_list(adj);
+        let bidir: Vec<Vec<u32>> = (0..n)
+            .map(|i| {
+                csr.neighbors(i).iter()
+                    .filter(|&&nbr| csr.contains_edge(nbr, i as u32))
+                    .copied().collect()
+            })
+            .collect();
+        (csr, cs, bidir)
+    }
+
     /// Extract the final graph as a HashMap for external consumers.
     fn extract_graph(&self) -> HashMap<u32, Vec<u32>> {
         HashMap::new()
+    }
+
+    /// Move the final graph out of the index directly, avoiding the HashMap round-trip.
+    ///
+    /// Default falls back to the HashMap path for implementations that don't expose
+    /// `final_graph` directly.  `InmemIndex` overrides this with a zero-alloc
+    /// `std::mem::replace`.
+    fn extract_final_graph(&mut self, num_points: usize, max_degree: u32) -> crate::model::InMemoryGraph {
+        use crate::model::InMemoryGraph;
+        let map = self.extract_graph();
+        InMemoryGraph::from_hashmap(&map, num_points, max_degree)
     }
 
     /// Get number of active points.
@@ -84,11 +128,11 @@ where
 }
 
 /// Create Index<T, N> based on configuration
-pub fn create_inmem_index<'a, T>(
+pub fn create_inmem_index<T>(
     config: IndexConfiguration,
-) -> ANNResult<Box<dyn ANNInmemIndex<T> + 'a>>
+) -> ANNResult<Box<dyn ANNInmemIndex<T>>>
 where
-    T: Default + Copy + Sync + Send + Into<f32> + 'a,
+    T: Default + Copy + Sync + Send + Into<f32> + 'static,
     [T; DIM_32]: FullPrecisionDistance<T, DIM_32>,
     [T; DIM_104]: FullPrecisionDistance<T, DIM_104>,
     [T; DIM_128]: FullPrecisionDistance<T, DIM_128>,

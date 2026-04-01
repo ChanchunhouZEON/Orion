@@ -159,6 +159,18 @@ impl CompressedGraph {
         }
     }
 
+    /// Build from a `CsrGraph` — each node's neighbor slice is copied into a RwLock.
+    pub fn from_csr(csr: &diskann::model::CsrGraph, max_degree: u32) -> Self {
+        let num_nodes = csr.num_nodes();
+        let cg = Self::new(num_nodes, max_degree);
+        for i in 0..num_nodes {
+            let nbrs = csr.neighbors(i);
+            let mut v = cg.final_graph[i].write().unwrap();
+            v.set_neighbors(nbrs.to_vec(), 0);
+        }
+        cg
+    }
+
     /// Build from a diskann InMemoryGraph (imports full neighbors, compressed_degree = 0).
     pub fn from_inmem_graph(graph: &diskann::model::InMemoryGraph) -> Self {
         let num_nodes = graph.size();

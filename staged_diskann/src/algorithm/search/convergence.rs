@@ -3,33 +3,67 @@
  * Licensed under the MIT License.
  */
 
-use std::collections::VecDeque;
-
 const MINIMUM_DENOMINATOR: f32 = 1e-12;
+
+/// Maximum supported window size for the stack-allocated ring buffer.
+const MAX_WINDOW_SIZE: usize = 64;
 
 /// Sliding-window convergence detector for the two-phase search.
 /// When the relative range of recent best distances drops below epsilon,
 /// the search switches from full graph to compressed graph.
+///
+/// Uses a stack-allocated fixed ring buffer (`[f32; 64]`) instead of
+/// `VecDeque` to avoid heap allocations on the hot search path.
 pub struct DistanceConvergenceChecker {
     window_size: usize,
     epsilon: f32,
-    history: VecDeque<f32>,
+    /// Fixed ring buffer stored entirely on the stack.
+    buf: [f32; MAX_WINDOW_SIZE],
+    /// Write head: index of the next slot to write into (wraps around).
+    head: usize,
+    /// Number of elements currently stored (saturates at `window_size`).
+    count: usize,
     has_converged: bool,
 }
 
 impl DistanceConvergenceChecker {
     pub fn new(window_size: usize, epsilon: f32) -> Self {
+        debug_assert!(
+            window_size <= MAX_WINDOW_SIZE,
+            "window_size ({}) exceeds MAX_WINDOW_SIZE ({})",
+            window_size,
+            MAX_WINDOW_SIZE,
+        );
         Self {
             window_size,
             epsilon,
-            history: VecDeque::with_capacity(window_size + 1),
+            buf: [0.0_f32; MAX_WINDOW_SIZE],
+            head: 0,
+            count: 0,
             has_converged: false,
         }
     }
 
     /// Reset the checker for reuse (scratch pattern).
     pub fn reset(&mut self) {
-        self.history.clear();
+        self.head = 0;
+        self.count = 0;
+        self.has_converged = false;
+    }
+
+    /// Reconfigure window size and epsilon, then reset state.
+    /// Use this when the scratch-pooled checker needs different parameters per query.
+    pub fn reconfigure(&mut self, window_size: usize, epsilon: f32) {
+        debug_assert!(
+            window_size <= MAX_WINDOW_SIZE,
+            "window_size ({}) exceeds MAX_WINDOW_SIZE ({})",
+            window_size,
+            MAX_WINDOW_SIZE,
+        );
+        self.window_size = window_size;
+        self.epsilon = epsilon;
+        self.head = 0;
+        self.count = 0;
         self.has_converged = false;
     }
 
@@ -45,22 +79,34 @@ impl DistanceConvergenceChecker {
             return true;
         }
 
-        self.history.push_back(dist);
+        // Write into the ring buffer at the current head position.
+        self.buf[self.head] = dist;
+        self.head = (self.head + 1) % self.window_size;
 
-        if self.history.len() > self.window_size {
-            self.history.pop_front();
+        if self.count < self.window_size {
+            self.count += 1;
         }
 
-        if self.history.len() < self.window_size {
+        if self.count < self.window_size {
             return false;
         }
 
-        let (min_val, max_val) = self
-            .history
-            .iter()
-            .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &val| {
-                (min.min(val), max.max(val))
-            });
+        // Scan the ring buffer to find min and max.
+        // The window is always exactly `window_size` elements at this point,
+        // occupying indices 0..window_size in `buf` (since head wraps within
+        // window_size). Iterating the full window_size slice is correct and
+        // fast for <=64 stack-local floats.
+        let mut min_val = f32::INFINITY;
+        let mut max_val = f32::NEG_INFINITY;
+        for i in 0..self.window_size {
+            let val = self.buf[i];
+            if val < min_val {
+                min_val = val;
+            }
+            if val > max_val {
+                max_val = val;
+            }
+        }
 
         let range = max_val - min_val;
         let denominator = min_val.max(MINIMUM_DENOMINATOR);

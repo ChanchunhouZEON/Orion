@@ -8,10 +8,12 @@ use crate::model::CompressedGraph;
 use crate::model::FixedChunkPQTable;
 use crate::model::compressed_graph::CompressedGraphOnDisk;
 use crate::model::scratch::InMemScratchPool;
-use crate::utils::{DELIMITER_LENGTH, l2_distance};
+use crate::utils::DELIMITER_LENGTH;
 use diskann::common::{ANNError, ANNResult};
-use diskann::model::InMemoryGraph;
-use ndarray::{ArcArray1, ArcArray2, Array1};
+use diskann::model::{CsrGraph, InMemoryGraph, InmemDataset};
+use ndarray::{ArcArray1, Array1};
+#[cfg(feature = "visualization")]
+use ndarray::ArcArray2;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write};
@@ -31,13 +33,15 @@ pub struct StagedDiskANN<const N: usize>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
-    pub data: ArcArray2<f32>,
-    /// Fixed-size arrays for SIMD-accelerated reranking
-    pub data_arrays: Vec<[f32; N]>,
+    /// Vector data storage taken from the DiskANN `InmemIndex`.
+    /// All distance computations go through `dataset.get_vertex()` +
+    /// `Vertex::compare()` — the exact same code path as DiskANN's search.
+    pub dataset: InmemDataset<f32, N>,
     /// Single merged graph with per-node compressed_degree, following diskann's final_graph pattern
     pub graph: CompressedGraph,
     pub candidate_sets: Arc<Vec<HashSet<u32>>>,
     pub entry: u32,
+    pub num_nodes: usize,
     pub compressed_graph_save_path: PathBuf,
     pub storage_layout: HashMap<u32, HashSet<u32>>,
     pub point_affiliation: ArcArray1<i32>,
@@ -65,8 +69,9 @@ where
 
     /// Flat CSR adjacency list for lock-free in-memory search.
     ///
-    /// Mirrors `CompressedVertexAndNeighbors` but without RwLock or pointer
-    /// chasing:
+    /// `search_csr_offsets` and `search_csr_neighbors` are `Arc<Vec<u32>>`
+    /// shared with the input `CsrGraph` — no data copy on construction.
+    /// After label+reorder, they are replaced with newly built arcs.
     ///
     /// - `search_csr_offsets[i]`       → start index of node `i` in `search_csr_neighbors`
     /// - `search_csr_offsets[i+1]`     → exclusive end (all neighbors)
@@ -74,24 +79,26 @@ where
     ///
     /// Full neighbors:       `neighbors[offsets[i]..offsets[i+1]]`
     /// Compressed neighbors: `neighbors[offsets[i]..compressed_end[i]]`
-    pub(crate) search_csr_offsets: Vec<u32>,
+    pub(crate) search_csr_offsets: Arc<Vec<u32>>,
     pub(crate) search_csr_compressed_end: Vec<u32>,
-    pub(crate) search_csr_neighbors: Vec<u32>,
+    pub(crate) search_csr_neighbors: Arc<Vec<u32>>,
 }
 
 impl<const N: usize> StagedDiskANN<N>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
-    /// Build a CompressedDiskANN: constructs the compressed graph from the InMemoryGraph,
-    /// runs clustering (or loads from disk), and returns a fully initialized index.
+    /// Build a StagedDiskANN from a lock-free `CsrGraph` and an `InmemDataset`.
     ///
-    /// Takes ownership of `inmem_graph`; it is consumed during construction and not stored.
+    /// `dataset` is taken from the DiskANN `InmemIndex` (via downcast + `mem::take`).
+    /// All distance computations use `dataset.get_vertex()` + `Vertex::compare()`,
+    /// the exact same code path as DiskANN's greedy search.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        data: ArcArray2<f32>,
-        inmem_graph: InMemoryGraph,
+        dataset: InmemDataset<f32, N>,
+        csr: CsrGraph,
         candidate_sets: Arc<Vec<HashSet<u32>>>,
+        bidir_neighbors: Arc<Vec<Vec<u32>>>,
         entry: u32,
         pq: Option<Arc<FixedChunkPQTable>>,
         pq_codes: Option<Vec<u8>>,
@@ -102,25 +109,14 @@ where
         compressed_graph_save_path: Option<PathBuf>,
         is_save: bool,
     ) -> Self {
-        assert_eq!(
-            data.ncols(),
-            N,
-            "Data dimension {} does not match const generic N={}",
-            data.ncols(),
-            N
-        );
-
-        let num_nodes = data.nrows();
+        let num_nodes = csr.num_nodes();
 
         let mut num_pq_chunks: Option<usize> = None;
         if let Some(ref pq) = pq {
             num_pq_chunks = Some(pq.get_num_chunks());
         }
 
-        // Algorithm 7 parameters: m (inter-cluster limit), n (edges per external cluster)
-        let max_connection_clusters = max_connection_clusters;
         let max_edges_per_cluster = max_connection_per_cluster;
-        // Max degree = m * n external edges
         let max_pruned_degree = max_connection_clusters * max_edges_per_cluster;
 
         let compressed_graph_save_path = compressed_graph_save_path.unwrap_or_else(|| {
@@ -132,18 +128,19 @@ where
             ))
         });
 
-        // Convert ndarray rows to fixed-size arrays for SIMD reranking
-        let data_arrays = Self::build_data_arrays(&data);
+        // Build CompressedGraph from CSR (needed for repair / save).
+        let t_cg = Instant::now();
+        let compressed_graph = CompressedGraph::from_csr(&csr, csr.max_degree);
+        log::info!("  from_csr:           {:.3}s", t_cg.elapsed().as_secs_f32());
 
-        // Build CompressedGraph from the InMemoryGraph (imports all neighbors, compressed_degree = 0)
-        let compressed_graph = CompressedGraph::from_inmem_graph(&inmem_graph);
+        let init_compressed_end = vec![0u32; num_nodes];
 
         let mut result = StagedDiskANN {
-            data: data.clone(),
-            data_arrays,
+            dataset,
             graph: compressed_graph,
             candidate_sets,
             entry,
+            num_nodes,
             pq,
             pq_codes,
             num_pq_chunks,
@@ -158,26 +155,18 @@ where
             critical_minimum_rate,
             is_save,
             inmem_scratch_pool: OnceLock::new(),
-            search_csr_offsets: Vec::new(),
-            search_csr_compressed_end: Vec::new(),
-            search_csr_neighbors: Vec::new(),
+            search_csr_offsets: csr.offsets,
+            search_csr_compressed_end: init_compressed_end,
+            search_csr_neighbors: csr.neighbors,
         };
 
-        // Try to load from disk first; if not found, run clustering
-        let _ = result.load_or_build_compressed_graph(inmem_graph);
+        // Run clustering + label + reorder (writes final CSR in one pass).
+        let _ = result.load_or_build_compressed_graph(bidir_neighbors);
 
-        // Build flat CSR adjacency list AFTER graph is finalized.
-        // Clustering reorders neighbors (compressed-first), so this must come last.
-        result.build_search_csr();
-
-        // candidate_sets is only referenced during clustering; free it now.
         result.candidate_sets = Arc::new(vec![]);
 
-        // For non-visualization builds, also release the raw ndarray data and the
-        // cluster-metadata fields that are only needed to draw graphs/PCA projections.
         #[cfg(not(feature = "visualization"))]
         {
-            result.data = ndarray::Array2::<f32>::zeros((0, 0)).into_shared();
             result.point_affiliation = ndarray::Array1::<i32>::zeros(0).into_shared();
             result.cluster_centroids.clear();
             result.cluster_centroids.shrink_to_fit();
@@ -188,11 +177,10 @@ where
         result
     }
 
-    /// Convenience: build from a reference by reconstructing the graph.
-    /// Used by call sites that only have `&InMemoryGraph`.
+    /// Convenience: build from a `&InMemoryGraph` reference.
     #[allow(clippy::too_many_arguments)]
     pub fn from_graph_ref(
-        data: ArcArray2<f32>,
+        dataset: InmemDataset<f32, N>,
         inmem_graph: &InMemoryGraph,
         candidate_sets: Arc<Vec<HashSet<u32>>>,
         entry: u32,
@@ -205,13 +193,18 @@ where
         compressed_graph_save_path: Option<PathBuf>,
         is_save: bool,
     ) -> Self {
-        let graph_map = inmem_graph.to_hashmap();
-        let graph_copy =
-            InMemoryGraph::from_hashmap(&graph_map, data.nrows(), inmem_graph.max_degree());
+        let t_copy = Instant::now();
+        let n = inmem_graph.size();
+        let adj: Vec<Vec<u32>> = (0..n as u32)
+            .map(|i| inmem_graph.to_neighbor_vec(i).unwrap_or_default())
+            .collect();
+        let csr = CsrGraph::from_adjacency_list(adj);
+        log::info!("  graph_to_csr:   {:.3}s", t_copy.elapsed().as_secs_f32());
         Self::new(
-            data,
-            graph_copy,
+            dataset,
+            csr,
             candidate_sets,
+            Arc::new(Vec::new()), // bidir not pre-computed; clustering will compute it
             entry,
             pq,
             pq_codes,
@@ -222,6 +215,30 @@ where
             compressed_graph_save_path,
             is_save,
         )
+    }
+
+    /// Convert the dataset to `ArcArray2<f32>` for visualization.
+    #[cfg(feature = "visualization")]
+    pub fn data_as_arc_array2(&self) -> ArcArray2<f32> {
+        let n = self.num_nodes;
+        let flat: Vec<f32> = self.dataset.get_data()[..n * N].to_vec();
+        ndarray::Array2::from_shape_vec((n, N), flat)
+            .expect("shape mismatch")
+            .into_shared()
+    }
+
+    /// Return per-node (full_degree, compressed_degree) from the CSR.
+    /// Used for diagnostics.
+    pub fn csr_degree_stats(&self) -> Vec<(usize, usize)> {
+        let n = self.search_csr_offsets.len().saturating_sub(1);
+        (0..n)
+            .map(|i| {
+                let start = self.search_csr_offsets[i] as usize;
+                let end = self.search_csr_offsets[i + 1] as usize;
+                let cd_end = self.search_csr_compressed_end[i] as usize;
+                (end - start, cd_end - start)
+            })
+            .collect()
     }
 
     /// Build flat CSR adjacency list from the finalized compressed graph.
@@ -248,26 +265,17 @@ where
             offsets.push(neighbors.len() as u32);
         }
 
-        self.search_csr_offsets = offsets;
+        self.search_csr_offsets = Arc::new(offsets);
         self.search_csr_compressed_end = compressed_end;
-        self.search_csr_neighbors = neighbors;
+        self.search_csr_neighbors = Arc::new(neighbors);
     }
 
-    fn build_data_arrays(data: &ArcArray2<f32>) -> Vec<[f32; N]> {
-        let n = data.nrows();
-        let mut arrays = Vec::with_capacity(n);
-        for i in 0..n {
-            let row = data.row(i);
-            let mut arr = [0.0f32; N];
-            arr.copy_from_slice(row.as_slice().unwrap());
-            arrays.push(arr);
-        }
-        arrays
-    }
 
     /// Load from disk or run clustering to build the compressed graph.
-    /// The `inmem_graph` reference is only used when clustering is needed (not when loading).
-    fn load_or_build_compressed_graph(&mut self, inmem_graph: InMemoryGraph) -> ANNResult<()> {
+    ///
+    /// When building fresh, constructs an `Arc<CsrGraph>` from the CSR stored in
+    /// `self.search_csr_*` for the clustering phase — no `InMemoryGraph` needed.
+    fn load_or_build_compressed_graph(&mut self, bidir_neighbors: Arc<Vec<Vec<u32>>>) -> ANNResult<()> {
         if self
             .load(<PathBuf as AsRef<Path>>::as_ref(
                 &self.compressed_graph_save_path.clone(),
@@ -275,6 +283,8 @@ where
             .is_ok()
         {
             log::info!("⌛️: existing compressed graph structure loaded");
+            // Rebuild search CSR from the loaded CompressedGraph.
+            self.build_search_csr();
             log::info!("{}", "-".repeat(DELIMITER_LENGTH));
             return Ok(());
         }
@@ -282,13 +292,17 @@ where
         log::info!("🏗️: clustering and compressing graph structure");
         let total_start = Instant::now();
 
-        // 1. Run CohesiveClusterManager directly (no trait dispatch)
-        let num_nodes = self.data.nrows();
-        let graph_arc = Arc::new(inmem_graph);
+        // 1. Share the initial search CSR for clustering (Arc::clone = O(1)).
+        let num_nodes = self.num_nodes;
+        let csr_for_cluster = Arc::new(CsrGraph {
+            offsets: self.search_csr_offsets.clone(),   // Arc::clone, O(1)
+            neighbors: self.search_csr_neighbors.clone(), // Arc::clone, O(1)
+            max_degree: self.graph.max_degree(),
+        });
         let mut manager = CohesiveClusterManager::new(
             num_nodes as u32,
-            self.data.clone(),
-            graph_arc.clone(),
+            &self.dataset,
+            csr_for_cluster,
             self.candidate_sets.clone(),
             self.max_cluster_point_size,
             self.critical_minimum_rate,
@@ -296,9 +310,15 @@ where
 
         log::info!("🌎: clustering with CohesiveClustering");
         let cluster_start = Instant::now();
-        manager
-            .construct_cohesive_clusters()
-            .map_err(|_| ANNError::log_cluster_error("Cluster failed!".to_string()))?;
+        if bidir_neighbors.is_empty() {
+            manager
+                .construct_cohesive_clusters()
+                .map_err(|_| ANNError::log_cluster_error("Cluster failed!".to_string()))?;
+        } else {
+            manager
+                .construct_cohesive_clusters_with_bidir(bidir_neighbors)
+                .map_err(|_| ANNError::log_cluster_error("Cluster failed!".to_string()))?;
+        }
         self.point_affiliation = manager.point_affiliation.clone();
         let clusters = manager.cohesive_clusters.into_inner();
         let cluster_time = cluster_start.elapsed();
@@ -339,171 +359,175 @@ where
             .map(|(&k, v)| (k, v.cluster_point().keys().copied().collect()))
             .collect();
         drop(clusters);
-        drop(graph_arc);
         Ok(())
     }
 
-    /// Build the compressed graph by reordering neighbors in the main graph.
+    /// Build the compressed graph: fused label + reorder in a single parallel pass.
     ///
-    /// For each node, Algorithm 7 selects inter-cluster edges. These become
-    /// the "compressed" neighbors placed at the front of the neighbor list.
-    /// The remaining original neighbors follow. The per-node `compressed_degree`
-    /// is stored inside the `CompressedGraph`'s `CompressedVertexAndNeighbors`.
+    /// For each node, neighbors are grouped by cluster affiliation (all clusters
+    /// are treated uniformly — no internal/external distinction). The top
+    /// `max_connection_clusters` clusters are selected, each contributing up to
+    /// `max_edges_per_cluster` neighbors. These form the "compressed" portion,
+    /// placed at the front of the reordered neighbor list. The remaining
+    /// neighbors follow.
+    ///
+    /// The result is written directly as a new search CSR with per-node
+    /// `compressed_end`, then synced back to `CompressedGraph` for save/repair.
     fn build_compressed_graph(&mut self) {
         use rayon::prelude::*;
 
-        let num_nodes = self.data.nrows();
-        let max_connection_clusters = self.max_connection_clusters;
-        let max_edges_per_cluster = self.max_edges_per_cluster;
+        let num_nodes = self.num_nodes;
 
         log::info!(
-            "After clustering: {} clusters, m={}, n={}",
-            self.storage_layout.len(),
-            max_connection_clusters,
-            max_edges_per_cluster
+            "  m={}, n={}, max_pruned_degree={}",
+            self.max_connection_clusters,
+            self.max_edges_per_cluster,
+            self.max_pruned_degree,
         );
 
-        // ── CSR build (used for lock-free neighbor reads in both phases) ──────
-        let t_csr = Instant::now();
-        self.build_search_csr();
-        log::info!("  csr_build:      {:.3}s", t_csr.elapsed().as_secs_f32());
-
-        // ── Phase A: label cross-cluster edges (parallel, no distance calc) ──
+        // ── Fused label + reorder (parallel) ─────────────────────────────────
         //
-        // For each node we scan its CSR neighbors once (O(degree)).
-        // Neighbors are grouped by cluster affiliation; we cap at
-        // max_connection_clusters distinct external clusters and
-        // max_edges_per_cluster members per cluster.
-        // Ranking uses the CSR order (i.e. Vamana search-list rank) as a
-        // cheap proxy for distance — the first mention of a cluster in the
-        // search list is taken as its representative index.
-        let t_label = Instant::now();
-        let per_node_compressed: Vec<(u32, Vec<u32>)> = {
-            let point_affiliation = self.point_affiliation.as_slice().unwrap();
-            let csr_offsets = &self.search_csr_offsets;
-            let csr_neighbors = &self.search_csr_neighbors;
-            let max_ext_clusters = self.max_connection_clusters;
-            let max_edges = self.max_edges_per_cluster;
-            let max_pruned = self.max_pruned_degree;
+        // Each node scans its CSR neighbors once. Neighbors are grouped by
+        // cluster; the top-m clusters (by first-appearance rank in the Vamana
+        // search list) contribute up to n edges each. The neighbor list is
+        // then partitioned into [compressed | rest] in one pass.
+        let t_fused = Instant::now();
 
-            (0..num_nodes as u32)
-                .into_par_iter()
-                .map(|origin| {
-                    let my_cluster = point_affiliation[origin as usize];
-                    if my_cluster == INVALID_CLUSTER_AFFILIATION {
-                        return (origin, Vec::new());
+        let point_affiliation = self.point_affiliation.as_slice().unwrap();
+        let csr_offsets = &self.search_csr_offsets;
+        let csr_neighbors = &self.search_csr_neighbors;
+        let max_clusters = self.max_connection_clusters;
+        let max_edges = self.max_edges_per_cluster;
+
+        // Parallel: each node → (compressed_degree, reordered_neighbors)
+        let per_node: Vec<(u32, Vec<u32>)> = (0..num_nodes)
+            .into_par_iter()
+            .map(|origin| {
+                let start = csr_offsets[origin] as usize;
+                let end = csr_offsets[origin + 1] as usize;
+                let nbrs = &csr_neighbors[start..end];
+
+                if point_affiliation[origin] == INVALID_CLUSTER_AFFILIATION || nbrs.is_empty() {
+                    return (0u32, nbrs.to_vec());
+                }
+
+                // Group neighbors by cluster affiliation.
+                // (cluster_id, first_csr_idx, member_indices_bitset)
+                // We track member indices within `nbrs` as bits in a u64,
+                // avoiding Vec allocations and enabling O(1) membership test.
+                // degree ≤ 64 so a single u64 suffices.
+                let mut groups: Vec<(i32, usize, u64, u32)> = Vec::new(); // (aff, first_idx, member_bits, count)
+
+                for (idx, &nn) in nbrs.iter().enumerate() {
+                    let aff = point_affiliation[nn as usize];
+                    if aff == INVALID_CLUSTER_AFFILIATION {
+                        continue;
                     }
-
-                    let start = csr_offsets[origin as usize] as usize;
-                    let end = csr_offsets[origin as usize + 1] as usize;
-                    let nbrs = &csr_neighbors[start..end];
-                    if nbrs.is_empty() {
-                        return (origin, Vec::new());
-                    }
-
-                    // Accumulate neighbors grouped by external cluster.
-                    // Key: cluster affiliation (i32); value: (first_csr_idx, [node, ...]).
-                    // Using a small Vec instead of HashMap: degree ≤ 64 → linear scan wins.
-                    let mut groups: Vec<(i32, usize, Vec<u32>)> = Vec::new();
-
-                    for (idx, &nn) in nbrs.iter().enumerate() {
-                        let aff = point_affiliation[nn as usize];
-                        if aff == INVALID_CLUSTER_AFFILIATION || aff == my_cluster {
-                            continue;
-                        }
-                        match groups.iter_mut().find(|g| g.0 == aff) {
-                            Some(g) => {
-                                if g.2.len() < max_edges {
-                                    g.2.push(nn);
-                                }
+                    match groups.iter_mut().find(|g| g.0 == aff) {
+                        Some(g) => {
+                            if (g.3 as usize) < max_edges {
+                                g.2 |= 1u64 << idx;
+                                g.3 += 1;
                             }
-                            None => {
-                                if groups.len() < max_ext_clusters {
-                                    groups.push((aff, idx, vec![nn]));
-                                }
+                        }
+                        None => {
+                            if groups.len() < max_clusters {
+                                groups.push((aff, idx, 1u64 << idx, 1));
                             }
                         }
                     }
+                }
 
-                    if groups.is_empty() {
-                        return (origin, Vec::new());
+                if groups.is_empty() {
+                    return (0u32, nbrs.to_vec());
+                }
+
+                // Rank clusters by first-appearance index in the search list.
+                groups.sort_unstable_by_key(|g| g.1);
+
+                // Merge all member bits into a single compressed bitset.
+                let mut compressed_bits: u64 = 0;
+                for &(_, _, bits, _) in &groups {
+                    compressed_bits |= bits;
+                }
+                let cd = compressed_bits.count_ones();
+
+                // Partition: compressed first (in group order), rest after.
+                let mut reordered = Vec::with_capacity(nbrs.len());
+                for &(_, _, bits, _) in &groups {
+                    let mut b = bits;
+                    while b != 0 {
+                        let idx = b.trailing_zeros() as usize;
+                        reordered.push(nbrs[idx]);
+                        b &= b - 1; // clear lowest set bit
                     }
-
-                    // Sort groups by the CSR index of their first (nearest) member.
-                    groups.sort_unstable_by_key(|g| g.1);
-
-                    let mut compressed = Vec::with_capacity(max_pruned);
-                    for (_, _, members) in &groups {
-                        compressed.extend_from_slice(members);
+                }
+                for (idx, &n) in nbrs.iter().enumerate() {
+                    if compressed_bits & (1u64 << idx) == 0 {
+                        reordered.push(n);
                     }
+                }
 
-                    (origin, compressed)
-                })
-                .collect()
-        };
-        log::info!("  label_edges:    {:.3}s", t_label.elapsed().as_secs_f32());
+                (cd, reordered)
+            })
+            .collect();
 
-        // ── Phase A reorder: move compressed-labeled edges to front (parallel) ─
-        //
-        // All compressed_nbrs are already present in the CSR (they came from it),
-        // so no new edges are added — we only reorder.
-        //
-        // Reads use the already-built CSR (lock-free).
-        // Writes use per-node RwLock inside CompressedGraph (&self interior mut).
-        // Different threads write to different node slots → no contention.
-        let t_reorder = Instant::now();
+        // ── Pack into flat CSR ───────────────────────────────────────────────
+        let mut new_offsets = Vec::with_capacity(num_nodes + 1);
+        let mut new_neighbors: Vec<u32> = Vec::new();
+        let mut new_compressed_end = Vec::with_capacity(num_nodes);
+
+        new_offsets.push(0u32);
+        for (cd, nbrs) in &per_node {
+            let off = new_neighbors.len() as u32;
+            new_neighbors.extend_from_slice(nbrs);
+            new_compressed_end.push(off + cd);
+            new_offsets.push(new_neighbors.len() as u32);
+        }
+
+        self.search_csr_offsets = Arc::new(new_offsets);
+        self.search_csr_neighbors = Arc::new(new_neighbors);
+        self.search_csr_compressed_end = new_compressed_end;
+
+        log::info!("  label+reorder:  {:.3}s", t_fused.elapsed().as_secs_f32());
+
+        // ── Sync CompressedGraph from new CSR (needed for save / repair) ─────
+        let t_sync = Instant::now();
         {
             let graph = &self.graph;
-            let csr_offsets = &self.search_csr_offsets;
-            let csr_neighbors = &self.search_csr_neighbors;
-
-            per_node_compressed
+            per_node
                 .par_iter()
-                .for_each(|(origin, compressed_nbrs)| {
-                    if compressed_nbrs.is_empty() {
-                        return;
-                    }
-
-                    // Lock-free read from CSR.
-                    let start = csr_offsets[*origin as usize] as usize;
-                    let end = csr_offsets[*origin as usize + 1] as usize;
-                    let all_nbrs = &csr_neighbors[start..end];
-
-                    // Partition: compressed first, rest after.
-                    // compressed_nbrs is small (≤ m×n ≈ 12) → linear-scan.
-                    let mut compressed = Vec::with_capacity(compressed_nbrs.len());
-                    let mut rest = Vec::with_capacity(all_nbrs.len());
-                    for &n in all_nbrs {
-                        if compressed_nbrs.contains(&n) {
-                            compressed.push(n);
-                        } else {
-                            rest.push(n);
-                        }
-                    }
-
-                    // Per-node write lock — different nodes in different threads.
+                .enumerate()
+                .for_each(|(i, (cd, nbrs))| {
                     graph
-                        .set_neighbors_split(*origin, &compressed, &rest)
+                        .set_neighbors_split(
+                            i as u32,
+                            &nbrs[..*cd as usize],
+                            &nbrs[*cd as usize..],
+                        )
                         .unwrap();
                 });
         }
-        log::info!("  reorder:        {:.3}s", t_reorder.elapsed().as_secs_f32());
-
-        let t_maxcd = Instant::now();
         self.graph.update_max_compressed_degree();
-        log::info!("  update_max_cd:  {:.3}s", t_maxcd.elapsed().as_secs_f32());
+        log::info!("  sync_graph:     {:.3}s", t_sync.elapsed().as_secs_f32());
 
-        // ── Phase B: connectivity repair ──────────────────────────────────────
-        // Vamana graphs are always strongly connected; this is a zero-cost
-        // safety check in practice.
-        let t_repair = Instant::now();
-        self.repair_connectivity();
-        log::info!("  repair:         {:.3}s", t_repair.elapsed().as_secs_f32());
+        // ── Connectivity repair ──────────────────────────────────────────────
+        // Vamana graphs are strongly connected and label+reorder only reorders
+        // neighbors (no edges added or removed), so repair is a no-op in
+        // practice. Run only in debug builds to catch regressions.
+        #[cfg(debug_assertions)]
+        {
+            let t_repair = Instant::now();
+            self.repair_connectivity();
+            log::info!("  repair:         {:.3}s", t_repair.elapsed().as_secs_f32());
+        }
+        #[cfg(not(debug_assertions))]
+        log::info!("  repair:         skipped (release)");
     }
 
     /// BFS from entry point to find unreachable nodes using ALL neighbors, then connect them.
     fn repair_connectivity(&mut self) {
-        let num_nodes = self.data.nrows();
+        let num_nodes = self.num_nodes;
         let mut reachable = HashSet::new();
         let mut queue = VecDeque::new();
 
@@ -544,7 +568,7 @@ where
 
             for &n in &neighbors {
                 if reachable.contains(&n) {
-                    let dist = l2_distance(self.data.row(u as usize), self.data.row(n as usize));
+                    let dist = self.dataset.get_distance(u, n, vector::Metric::L2).unwrap_or(f32::MAX);
                     if dist < best_dist {
                         best_dist = dist;
                         best_reachable = Some(n);
@@ -588,20 +612,20 @@ where
         std::fs::create_dir_all(output_dir)?;
         log::info!("Generating visualizations in {}", output_dir);
 
-        log::info!("Computing PCA reduction to 2D...");
-        log::info!("PCA reduction complete: {} points -> 2D", self.data.nrows());
+        let data = self.data_as_arc_array2();
+        log::info!("PCA reduction complete: {} points -> 2D", data.nrows());
 
         let graph_map = self.graph.to_hashmap();
         let compressed_map = self.graph.to_compressed_hashmap();
 
         let path = format!("{}/original_graph.png", output_dir);
         log::info!("Drawing original graph -> {}", path);
-        visualization::draw_graph(&self.data, &graph_map, &path)?;
+        visualization::draw_graph(&data, &graph_map, &path)?;
 
         let path = format!("{}/clustered_graph.png", output_dir);
         log::info!("Drawing clustered graph -> {}", path);
         visualization::draw_clustered_graph(
-            &self.data,
+            &data,
             self.point_affiliation.as_slice().unwrap(),
             &self.storage_layout,
             &graph_map,
@@ -611,7 +635,7 @@ where
         let path = format!("{}/compressed_graph.png", output_dir);
         log::info!("Drawing compressed graph -> {}", path);
         visualization::draw_compressed_graph(
-            &self.data,
+            &data,
             &self.storage_layout,
             &compressed_map,
             &path,
@@ -628,7 +652,7 @@ where
                 let centroid: Option<u32> = self.cluster_centroids.get(&cluster_id).copied();
                 let path = format!("{}/cluster_{}.png", clusters_dir, cluster_id);
                 visualization::draw_single_cluster(
-                    &self.data, cluster_id, members, centroid, &graph_map, &path,
+                    &data, cluster_id, members, centroid, &graph_map, &path,
                 )?;
             }
         }
@@ -638,7 +662,7 @@ where
         );
 
         let metrics = visualization::compute_clustering_metrics(
-            &self.data,
+            &data,
             self.point_affiliation.as_slice().unwrap(),
             &self.storage_layout,
             &graph_map,

@@ -88,6 +88,16 @@ impl NeighborPriorityQueue {
         self.cur < self.size
     }
 
+    /// Peek at the closest not-yet-visited node without marking it visited.
+    /// Returns `None` when all nodes have been visited.
+    pub fn peek_notvisited(&self) -> Option<&Neighbor> {
+        if self.cur < self.size {
+            Some(&self.data[self.cur])
+        } else {
+            None
+        }
+    }
+
     pub fn size(&self) -> usize {
         self.size
     }

@@ -87,7 +87,7 @@ impl AlgorithmRunner for DiskANNRunner {
         let write_params =
             IndexWriteParametersBuilder::new(self.search_list_size, self.graph_degree)
                 .with_alpha(self.alpha)
-                .with_num_threads(1)
+                .with_num_threads(0) // use all cores (matches StagedDiskANN builder)
                 .build();
 
         let config = IndexConfiguration::new(
