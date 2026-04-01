@@ -3,14 +3,12 @@
  * Licensed under the MIT License.
  */
 
-use crate::algorithm::clustering::CohesiveClusterManager;
-use crate::algorithm::clustering_trait::{ClusteringMethod, ClusteringStrategy};
-use crate::algorithm::lpa::LabelPropagationClustering;
+use crate::algorithm::clustering::{CohesiveClusterManager, INVALID_CLUSTER_AFFILIATION};
 use crate::model::CompressedGraph;
 use crate::model::FixedChunkPQTable;
 use crate::model::compressed_graph::CompressedGraphOnDisk;
 use crate::model::scratch::InMemScratchPool;
-use crate::utils::{DELIMITER_LENGTH, l2_distance, l2_distance_slice};
+use crate::utils::{DELIMITER_LENGTH, l2_distance};
 use diskann::common::{ANNError, ANNResult};
 use diskann::model::InMemoryGraph;
 use ndarray::{ArcArray1, ArcArray2, Array1};
@@ -47,8 +45,8 @@ where
     cluster_centroids: HashMap<u32, u32>,
 
     // Pruning parameters
-    pub max_external_clusters: usize,
-    pub max_edges_per_ext_cluster: usize,
+    pub max_connection_clusters: usize,
+    pub max_edges_per_cluster: usize,
     pub max_pruned_degree: usize,
     pub max_cluster_point_size: usize,
     pub critical_minimum_rate: f32,
@@ -102,7 +100,6 @@ where
         max_connection_per_cluster: usize,
         critical_minimum_rate: f32,
         compressed_graph_save_path: Option<PathBuf>,
-        clustering_method: ClusteringMethod,
         is_save: bool,
     ) -> Self {
         assert_eq!(
@@ -121,10 +118,10 @@ where
         }
 
         // Algorithm 7 parameters: m (inter-cluster limit), n (edges per external cluster)
-        let max_external_clusters = max_connection_clusters;
-        let max_edges_per_ext_cluster = max_connection_per_cluster;
+        let max_connection_clusters = max_connection_clusters;
+        let max_edges_per_cluster = max_connection_per_cluster;
         // Max degree = m * n external edges
-        let max_pruned_degree = max_external_clusters * max_edges_per_ext_cluster;
+        let max_pruned_degree = max_connection_clusters * max_edges_per_cluster;
 
         let compressed_graph_save_path = compressed_graph_save_path.unwrap_or_else(|| {
             let dir = PathBuf::from("compressed_dskann_graphs");
@@ -154,8 +151,8 @@ where
             storage_layout: HashMap::new(),
             point_affiliation: Array1::from_elem(num_nodes, -1).to_shared(),
             cluster_centroids: HashMap::new(),
-            max_external_clusters,
-            max_edges_per_ext_cluster,
+            max_connection_clusters,
+            max_edges_per_cluster,
             max_pruned_degree,
             max_cluster_point_size,
             critical_minimum_rate,
@@ -167,11 +164,26 @@ where
         };
 
         // Try to load from disk first; if not found, run clustering
-        let _ = result.load_or_build_compressed_graph(inmem_graph, clustering_method);
+        let _ = result.load_or_build_compressed_graph(inmem_graph);
 
         // Build flat CSR adjacency list AFTER graph is finalized.
         // Clustering reorders neighbors (compressed-first), so this must come last.
         result.build_search_csr();
+
+        // candidate_sets is only referenced during clustering; free it now.
+        result.candidate_sets = Arc::new(vec![]);
+
+        // For non-visualization builds, also release the raw ndarray data and the
+        // cluster-metadata fields that are only needed to draw graphs/PCA projections.
+        #[cfg(not(feature = "visualization"))]
+        {
+            result.data = ndarray::Array2::<f32>::zeros((0, 0)).into_shared();
+            result.point_affiliation = ndarray::Array1::<i32>::zeros(0).into_shared();
+            result.cluster_centroids.clear();
+            result.cluster_centroids.shrink_to_fit();
+            result.storage_layout.clear();
+            result.storage_layout.shrink_to_fit();
+        }
 
         result
     }
@@ -191,7 +203,6 @@ where
         max_connection_per_cluster: usize,
         critical_minimum_rate: f32,
         compressed_graph_save_path: Option<PathBuf>,
-        clustering_method: ClusteringMethod,
         is_save: bool,
     ) -> Self {
         let graph_map = inmem_graph.to_hashmap();
@@ -209,7 +220,6 @@ where
             max_connection_per_cluster,
             critical_minimum_rate,
             compressed_graph_save_path,
-            clustering_method,
             is_save,
         )
     }
@@ -257,11 +267,7 @@ where
 
     /// Load from disk or run clustering to build the compressed graph.
     /// The `inmem_graph` reference is only used when clustering is needed (not when loading).
-    fn load_or_build_compressed_graph(
-        &mut self,
-        inmem_graph: InMemoryGraph,
-        clustering_method: ClusteringMethod,
-    ) -> ANNResult<()> {
+    fn load_or_build_compressed_graph(&mut self, inmem_graph: InMemoryGraph) -> ANNResult<()> {
         if self
             .load(<PathBuf as AsRef<Path>>::as_ref(
                 &self.compressed_graph_save_path.clone(),
@@ -276,41 +282,28 @@ where
         log::info!("🏗️: clustering and compressing graph structure");
         let total_start = Instant::now();
 
-        // 1. Create and run clustering strategy
+        // 1. Run CohesiveClusterManager directly (no trait dispatch)
         let num_nodes = self.data.nrows();
         let graph_arc = Arc::new(inmem_graph);
-        let mut clustering: Box<dyn ClusteringStrategy + Send> = match clustering_method {
-            ClusteringMethod::Cohesive => Box::new(CohesiveClusterManager::new(
-                num_nodes as u32,
-                self.data.clone(),
-                graph_arc.clone(),
-                self.candidate_sets.clone(),
-                self.max_cluster_point_size,
-                self.critical_minimum_rate,
-            )),
-            ClusteringMethod::LabelPropagation => Box::new(LabelPropagationClustering::new(
-                graph_arc.clone(),
-                num_nodes,
-                10, // max_iterations
-                self.max_cluster_point_size,
-            )),
-        };
+        let mut manager = CohesiveClusterManager::new(
+            num_nodes as u32,
+            self.data.clone(),
+            graph_arc.clone(),
+            self.candidate_sets.clone(),
+            self.max_cluster_point_size,
+            self.critical_minimum_rate,
+        );
 
-        let strategy_name = clustering.name().to_string();
-        log::info!("🌎: clustering with strategy: {}", strategy_name);
+        log::info!("🌎: clustering with CohesiveClustering");
         let cluster_start = Instant::now();
-        let cluster_result = clustering
-            .cluster()
+        manager
+            .construct_cohesive_clusters()
             .map_err(|_| ANNError::log_cluster_error("Cluster failed!".to_string()))?;
-        drop(clustering); // Release Arc refs
-        drop(graph_arc); // Free InMemoryGraph
-        self.point_affiliation = cluster_result.point_affiliation;
-        self.storage_layout = cluster_result.storage_layout;
-        self.cluster_centroids = cluster_result.centroids;
+        self.point_affiliation = manager.point_affiliation.clone();
+        let clusters = manager.cohesive_clusters.into_inner();
         let cluster_time = cluster_start.elapsed();
         log::info!(
-            "🌎: clustering time ({}): {:.2}s",
-            strategy_name,
+            "🌎: clustering time (CohesiveClustering): {:.2}s",
             cluster_time.as_secs_f32()
         );
 
@@ -336,43 +329,18 @@ where
         }
 
         log::info!("{}", "-".repeat(DELIMITER_LENGTH));
+
+        self.cluster_centroids = clusters
+            .iter()
+            .filter_map(|(&k, v)| v.centroid().map(|c| (k, c)))
+            .collect();
+        self.storage_layout = clusters
+            .iter()
+            .map(|(&k, v)| (k, v.cluster_point().keys().copied().collect()))
+            .collect();
+        drop(clusters);
+        drop(graph_arc);
         Ok(())
-    }
-
-    // --- Cluster-aware Graph Compression ---
-
-    /// Get centroid vectors for each cluster.
-    fn compute_cluster_centroids(&self) -> HashMap<u32, Vec<f32>> {
-        let dimension = self.data.ncols();
-        let mut centroids = HashMap::new();
-
-        for (&cluster_id, members) in &self.storage_layout {
-            if members.is_empty() {
-                continue;
-            }
-
-            // Use stored centroid point if available
-            if let Some(&centroid_pid) = self.cluster_centroids.get(&cluster_id) {
-                centroids.insert(cluster_id, self.data.row(centroid_pid as usize).to_vec());
-                continue;
-            }
-
-            // Fallback: compute mean vector
-            let mut centroid = vec![0.0f32; dimension];
-            for &pid in members {
-                let row = self.data.row(pid as usize);
-                for (c, &v) in centroid.iter_mut().zip(row.iter()) {
-                    *c += v;
-                }
-            }
-            let n = members.len() as f32;
-            for c in &mut centroid {
-                *c /= n;
-            }
-            centroids.insert(cluster_id, centroid);
-        }
-
-        centroids
     }
 
     /// Build the compressed graph by reordering neighbors in the main graph.
@@ -385,139 +353,152 @@ where
         use rayon::prelude::*;
 
         let num_nodes = self.data.nrows();
-        let max_external_clusters = self.max_external_clusters;
-        let max_edges_per_ext_cluster = self.max_edges_per_ext_cluster;
+        let max_connection_clusters = self.max_connection_clusters;
+        let max_edges_per_cluster = self.max_edges_per_cluster;
 
-        // 1. Compute cluster centroids
-        let cluster_centroids = self.compute_cluster_centroids();
         log::info!(
             "After clustering: {} clusters, m={}, n={}",
-            cluster_centroids.len(),
-            max_external_clusters,
-            max_edges_per_ext_cluster
+            self.storage_layout.len(),
+            max_connection_clusters,
+            max_edges_per_cluster
         );
 
-        // 2. Phase A (parallel): Per-node compressed edge selection per Algorithm 7
-        log::info!("Phase A: Computing compressed edges (Algorithm 7, parallel)...");
+        // ── CSR build (used for lock-free neighbor reads in both phases) ──────
+        let t_csr = Instant::now();
+        self.build_search_csr();
+        log::info!("  csr_build:      {:.3}s", t_csr.elapsed().as_secs_f32());
+
+        // ── Phase A: label cross-cluster edges (parallel, no distance calc) ──
+        //
+        // For each node we scan its CSR neighbors once (O(degree)).
+        // Neighbors are grouped by cluster affiliation; we cap at
+        // max_connection_clusters distinct external clusters and
+        // max_edges_per_cluster members per cluster.
+        // Ranking uses the CSR order (i.e. Vamana search-list rank) as a
+        // cheap proxy for distance — the first mention of a cluster in the
+        // search list is taken as its representative index.
+        let t_label = Instant::now();
         let per_node_compressed: Vec<(u32, Vec<u32>)> = {
-            let data = &self.data;
             let point_affiliation = self.point_affiliation.as_slice().unwrap();
-            let storage_layout = &self.storage_layout;
+            let csr_offsets = &self.search_csr_offsets;
+            let csr_neighbors = &self.search_csr_neighbors;
+            let max_ext_clusters = self.max_connection_clusters;
+            let max_edges = self.max_edges_per_cluster;
+            let max_pruned = self.max_pruned_degree;
 
             (0..num_nodes as u32)
                 .into_par_iter()
                 .map(|origin| {
                     let my_cluster = point_affiliation[origin as usize];
-                    if my_cluster < 0 {
+                    if my_cluster == INVALID_CLUSTER_AFFILIATION {
                         return (origin, Vec::new());
                     }
-                    let my_cluster_id = my_cluster as u32;
 
-                    let mut compressed_neighbors = Vec::new();
+                    let start = csr_offsets[origin as usize] as usize;
+                    let end = csr_offsets[origin as usize + 1] as usize;
+                    let nbrs = &csr_neighbors[start..end];
+                    if nbrs.is_empty() {
+                        return (origin, Vec::new());
+                    }
 
-                    // Step 1: Compute distances to all cluster centroids (excluding own)
-                    let origin_row = data.row(origin as usize);
-                    let origin_slice = origin_row.as_slice().unwrap();
-                    let mut cluster_dists: Vec<(f32, u32)> = cluster_centroids
-                        .iter()
-                        .filter(|(cid, _)| **cid != my_cluster_id)
-                        .map(|(&cid, centroid)| {
-                            let dist = l2_distance_slice(origin_slice, centroid);
-                            (dist, cid)
-                        })
-                        .collect();
-                    cluster_dists.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                    // Accumulate neighbors grouped by external cluster.
+                    // Key: cluster affiliation (i32); value: (first_csr_idx, [node, ...]).
+                    // Using a small Vec instead of HashMap: degree ≤ 64 → linear scan wins.
+                    let mut groups: Vec<(i32, usize, Vec<u32>)> = Vec::new();
 
-                    // Step 2: Select m nearest external clusters, add up to n nearest nodes each
-                    for &(_, ext_cluster_id) in cluster_dists.iter().take(max_external_clusters) {
-                        if let Some(cluster_members) = storage_layout.get(&ext_cluster_id) {
-                            let mut member_dists: Vec<(f32, u32)> = cluster_members
-                                .iter()
-                                .map(|&m| {
-                                    let dist = l2_distance(origin_row, data.row(m as usize));
-                                    (dist, m)
-                                })
-                                .collect();
-                            member_dists.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-
-                            for &(_, member) in member_dists.iter().take(max_edges_per_ext_cluster)
-                            {
-                                compressed_neighbors.push(member);
+                    for (idx, &nn) in nbrs.iter().enumerate() {
+                        let aff = point_affiliation[nn as usize];
+                        if aff == INVALID_CLUSTER_AFFILIATION || aff == my_cluster {
+                            continue;
+                        }
+                        match groups.iter_mut().find(|g| g.0 == aff) {
+                            Some(g) => {
+                                if g.2.len() < max_edges {
+                                    g.2.push(nn);
+                                }
+                            }
+                            None => {
+                                if groups.len() < max_ext_clusters {
+                                    groups.push((aff, idx, vec![nn]));
+                                }
                             }
                         }
                     }
 
-                    (origin, compressed_neighbors)
+                    if groups.is_empty() {
+                        return (origin, Vec::new());
+                    }
+
+                    // Sort groups by the CSR index of their first (nearest) member.
+                    groups.sort_unstable_by_key(|g| g.1);
+
+                    let mut compressed = Vec::with_capacity(max_pruned);
+                    for (_, _, members) in &groups {
+                        compressed.extend_from_slice(members);
+                    }
+
+                    (origin, compressed)
                 })
                 .collect()
         };
+        log::info!("  label_edges:    {:.3}s", t_label.elapsed().as_secs_f32());
 
-        // 3. Reorder graph neighbors: compressed first, then rest
-        log::info!("Phase A: Reordering graph neighbors (compressed first)...");
-        for (origin, compressed_nbrs) in &per_node_compressed {
-            let all_nbrs = self.graph.to_neighbor_vec(*origin).unwrap_or_default();
-            let compressed_set: HashSet<u32> = compressed_nbrs.iter().copied().collect();
+        // ── Phase A reorder: move compressed-labeled edges to front (parallel) ─
+        //
+        // All compressed_nbrs are already present in the CSR (they came from it),
+        // so no new edges are added — we only reorder.
+        //
+        // Reads use the already-built CSR (lock-free).
+        // Writes use per-node RwLock inside CompressedGraph (&self interior mut).
+        // Different threads write to different node slots → no contention.
+        let t_reorder = Instant::now();
+        {
+            let graph = &self.graph;
+            let csr_offsets = &self.search_csr_offsets;
+            let csr_neighbors = &self.search_csr_neighbors;
 
-            // Build compressed portion: graph neighbors that are in the compressed set first
-            let mut compressed = Vec::new();
-            for &n in &all_nbrs {
-                if compressed_set.contains(&n) {
-                    compressed.push(n);
-                }
-            }
-            // Also add compressed neighbors not already in the graph
-            let compressed_already: HashSet<u32> = compressed.iter().copied().collect();
-            for &n in compressed_nbrs {
-                if !compressed_already.contains(&n) {
-                    compressed.push(n);
-                }
-            }
+            per_node_compressed
+                .par_iter()
+                .for_each(|(origin, compressed_nbrs)| {
+                    if compressed_nbrs.is_empty() {
+                        return;
+                    }
 
-            // Build rest portion: original neighbors NOT in compressed set
-            let mut rest = Vec::new();
-            for &n in &all_nbrs {
-                if !compressed_set.contains(&n) {
-                    rest.push(n);
-                }
-            }
+                    // Lock-free read from CSR.
+                    let start = csr_offsets[*origin as usize] as usize;
+                    let end = csr_offsets[*origin as usize + 1] as usize;
+                    let all_nbrs = &csr_neighbors[start..end];
 
-            // Set via CompressedGraph's split interface
-            self.graph
-                .set_neighbors_split(*origin, &compressed, &rest)
-                .unwrap();
+                    // Partition: compressed first, rest after.
+                    // compressed_nbrs is small (≤ m×n ≈ 12) → linear-scan.
+                    let mut compressed = Vec::with_capacity(compressed_nbrs.len());
+                    let mut rest = Vec::with_capacity(all_nbrs.len());
+                    for &n in all_nbrs {
+                        if compressed_nbrs.contains(&n) {
+                            compressed.push(n);
+                        } else {
+                            rest.push(n);
+                        }
+                    }
+
+                    // Per-node write lock — different nodes in different threads.
+                    graph
+                        .set_neighbors_split(*origin, &compressed, &rest)
+                        .unwrap();
+                });
         }
+        log::info!("  reorder:        {:.3}s", t_reorder.elapsed().as_secs_f32());
 
+        let t_maxcd = Instant::now();
         self.graph.update_max_compressed_degree();
+        log::info!("  update_max_cd:  {:.3}s", t_maxcd.elapsed().as_secs_f32());
 
-        // Phase B (sequential): Connectivity repair via BFS
-        log::info!("Phase B: Connectivity repair...");
-        let connectivity_start = Instant::now();
+        // ── Phase B: connectivity repair ──────────────────────────────────────
+        // Vamana graphs are always strongly connected; this is a zero-cost
+        // safety check in practice.
+        let t_repair = Instant::now();
         self.repair_connectivity();
-        log::info!(
-            "Connectivity repair: {:.2}s",
-            connectivity_start.elapsed().as_secs_f32()
-        );
-
-        // Log compression stats
-        let mut total_edges = 0usize;
-        let mut compressed_edges = 0usize;
-        for i in 0..num_nodes as u32 {
-            if let Ok(v) = self.graph.read_vertex(i) {
-                total_edges += v.degree();
-                compressed_edges += v.compressed_degree() as usize;
-            }
-        }
-        if total_edges > 0 {
-            log::info!(
-                "Merged graph: {} total edges, {} compressed ({:.1}%), avg degree {:.1}, avg compressed degree {:.1}, max compressed degree {}",
-                total_edges,
-                compressed_edges,
-                compressed_edges as f64 / total_edges as f64 * 100.0,
-                total_edges as f64 / num_nodes as f64,
-                compressed_edges as f64 / num_nodes as f64,
-                self.graph.max_compressed_degree(),
-            );
-        }
+        log::info!("  repair:         {:.3}s", t_repair.elapsed().as_secs_f32());
     }
 
     /// BFS from entry point to find unreachable nodes using ALL neighbors, then connect them.
@@ -686,7 +667,7 @@ where
             storage_layout: self.storage_layout.clone(),
             point_affiliation: self.point_affiliation.to_vec(),
             max_pruned_degree: self.max_pruned_degree,
-            max_external_clusters: self.max_external_clusters,
+            max_connection_clusters: self.max_connection_clusters,
         };
 
         let mut writer = BufWriter::new(File::create(path)?);
@@ -712,7 +693,7 @@ where
 
         self.entry = meta.entry;
         self.max_pruned_degree = meta.max_pruned_degree;
-        self.max_external_clusters = meta.max_external_clusters;
+        self.max_connection_clusters = meta.max_connection_clusters;
 
         // Reconstruct the CompressedGraph from on-disk format
         self.graph = CompressedGraph::from_on_disk(graph_on_disk);
@@ -731,5 +712,5 @@ struct CompressedDiskANNMeta {
     storage_layout: HashMap<u32, HashSet<u32>>,
     point_affiliation: Vec<i32>,
     max_pruned_degree: usize,
-    max_external_clusters: usize,
+    max_connection_clusters: usize,
 }

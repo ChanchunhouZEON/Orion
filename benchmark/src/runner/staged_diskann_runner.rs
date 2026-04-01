@@ -5,7 +5,7 @@
 
 use crate::runner::common::{AlgorithmRunner, SearchResult};
 use ndarray::Array2;
-use staged_diskann::{build_diskann_index, ClusteringMethod, StagedDiskANN, DIM_128, DIM_960};
+use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_128, DIM_960};
 use std::time::{Duration, Instant};
 
 /// Benchmark runner for Staged DiskANN with compile-time dimension dispatch.
@@ -24,8 +24,6 @@ pub struct StagedDiskANNRunner {
     // Search params
     window_size: usize,
     epsilon: f32,
-    // Clustering method
-    clustering_method: ClusteringMethod,
     // State
     dimension: usize,
     inner: Option<StagedInner>,
@@ -49,7 +47,6 @@ impl StagedDiskANNRunner {
         critical_minimum_rate: f32,
         window_size: usize,
         epsilon: f32,
-        clustering_method: ClusteringMethod,
     ) -> Self {
         Self {
             name,
@@ -62,7 +59,6 @@ impl StagedDiskANNRunner {
             critical_minimum_rate,
             window_size,
             epsilon,
-            clustering_method,
             dimension: 0,
             inner: None,
         }
@@ -96,7 +92,6 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             "DiskANN graph build (parallel Vamana + candidate sets): {:.2}s",
             result.graph_build_time.as_secs_f32()
         );
-        // log::info!("PQ build: {:.2}s", result.pq_build_time.as_secs_f32());
 
         match dimension {
             DIM_128 => {
@@ -113,7 +108,6 @@ impl AlgorithmRunner for StagedDiskANNRunner {
                     self.max_connection_per_cluster,
                     self.critical_minimum_rate,
                     None,
-                    self.clustering_method,
                     false,
                 );
                 let compressed_time = t1.elapsed();
@@ -138,7 +132,6 @@ impl AlgorithmRunner for StagedDiskANNRunner {
                     self.max_connection_per_cluster,
                     self.critical_minimum_rate,
                     None,
-                    self.clustering_method,
                     false,
                 );
                 let compressed_time = t1.elapsed();

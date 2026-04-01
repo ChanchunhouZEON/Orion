@@ -19,9 +19,7 @@ use diskann::model::vertex::{DIM_32, DIM_256};
 use ndarray::Array2;
 use rand::{RngExt, SeedableRng};
 use staged_diskann::visualization::VISUALIZATION_DIMENSION;
-use staged_diskann::{
-    ClusteringMethod, DIM_128, DIM_960, DiskANN, StagedDiskANN, build_diskann_index,
-};
+use staged_diskann::{DIM_128, DIM_960, DiskANN, StagedDiskANN, build_diskann_index};
 use std::io::{self, Read as _};
 use std::path::Path;
 use std::sync::Arc;
@@ -90,8 +88,6 @@ struct Config {
     // Compressed params
     max_cluster_point_size: usize,
     critical_minimum_rate: f32,
-    // Clustering
-    clustering_method: ClusteringMethod,
 }
 
 impl Default for Config {
@@ -106,7 +102,6 @@ impl Default for Config {
             search_list_size: 64,
             max_cluster_point_size: 16,
             critical_minimum_rate: 0.7,
-            clustering_method: ClusteringMethod::Cohesive,
         }
     }
 }
@@ -155,14 +150,6 @@ fn parse_args() -> Config {
                 config.critical_minimum_rate =
                     args[i].parse().expect("invalid --critical-min-rate");
             }
-            "--clustering" => {
-                i += 1;
-                config.clustering_method = match args[i].as_str() {
-                    "cohesive" => ClusteringMethod::Cohesive,
-                    "lpa" => ClusteringMethod::LabelPropagation,
-                    other => panic!("Unknown clustering method: {other}. Use 'cohesive' or 'lpa'."),
-                };
-            }
             "--help" | "-h" => {
                 println!(
                     "CompressedDiskANN Visualization Tool\n\
@@ -178,8 +165,7 @@ fn parse_args() -> Config {
                      --graph-degree <n>             Graph max degree [default: 32]\n\
                      --search-list-size <n>         Search list size L [default: 64]\n\
                      --max-cluster-size <n>         Max points per cluster [default: 10]\n\
-                     --critical-min-rate <f>        Cluster merge threshold [default: 0.3]\n\
-                     --clustering <method>          Clustering method: cohesive or lpa [default: cohesive]"
+                     --critical-min-rate <f>        Cluster merge threshold [default: 0.3]"
                 );
                 std::process::exit(0);
             }
@@ -218,8 +204,8 @@ fn build_and_visualize_2(config: &Config, data_flat: Vec<f32>, num_points: usize
     let candidate_sets = result.candidate_set_manager.candidate_sets;
 
     println!(
-        "Building StagedDiskANN (cluster_size={}, crit_rate={}, method={:?})...",
-        config.max_cluster_point_size, config.critical_minimum_rate, config.clustering_method
+        "Building StagedDiskANN (cluster_size={}, crit_rate={})...",
+        config.max_cluster_point_size, config.critical_minimum_rate
     );
     let start = Instant::now();
     let staged = StagedDiskANN::<2>::new(
@@ -234,7 +220,6 @@ fn build_and_visualize_2(config: &Config, data_flat: Vec<f32>, num_points: usize
         2,
         config.critical_minimum_rate,
         None,
-        config.clustering_method,
         false,
     );
     println!(
@@ -275,8 +260,8 @@ fn build_and_visualize_32(config: &Config, data_flat: Vec<f32>, num_points: usiz
     );
 
     println!(
-        "Building CompressedDiskANN (cluster_size={}, crit_rate={}, method={:?})...",
-        config.max_cluster_point_size, config.critical_minimum_rate, config.clustering_method
+        "Building CompressedDiskANN (cluster_size={}, crit_rate={})...",
+        config.max_cluster_point_size, config.critical_minimum_rate
     );
     let start = Instant::now();
     let staged = StagedDiskANN::<DIM_32>::new(
@@ -291,7 +276,6 @@ fn build_and_visualize_32(config: &Config, data_flat: Vec<f32>, num_points: usiz
         2,
         config.critical_minimum_rate,
         None,
-        config.clustering_method,
         false,
     );
     println!(
@@ -332,8 +316,8 @@ fn build_and_visualize_128(config: &Config, data_flat: Vec<f32>, num_points: usi
     );
 
     println!(
-        "Building CompressedDiskANN (cluster_size={}, crit_rate={}, method={:?})...",
-        config.max_cluster_point_size, config.critical_minimum_rate, config.clustering_method
+        "Building CompressedDiskANN (cluster_size={}, crit_rate={})...",
+        config.max_cluster_point_size, config.critical_minimum_rate
     );
     let start = Instant::now();
     let staged = StagedDiskANN::<DIM_128>::new(
@@ -348,7 +332,6 @@ fn build_and_visualize_128(config: &Config, data_flat: Vec<f32>, num_points: usi
         2,
         config.critical_minimum_rate,
         None,
-        config.clustering_method,
         false,
     );
     println!(
@@ -389,8 +372,8 @@ fn build_and_visualize_960(config: &Config, data_flat: Vec<f32>, num_points: usi
     );
 
     println!(
-        "Building CompressedDiskANN (cluster_size={}, crit_rate={}, method={:?})...",
-        config.max_cluster_point_size, config.critical_minimum_rate, config.clustering_method
+        "Building CompressedDiskANN (cluster_size={}, crit_rate={})...",
+        config.max_cluster_point_size, config.critical_minimum_rate
     );
     let start = Instant::now();
     let staged = StagedDiskANN::<DIM_960>::new(
@@ -405,7 +388,6 @@ fn build_and_visualize_960(config: &Config, data_flat: Vec<f32>, num_points: usi
         2,
         config.critical_minimum_rate,
         None,
-        config.clustering_method,
         false,
     );
     println!(

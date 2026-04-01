@@ -3,7 +3,6 @@
  * Licensed under the MIT License.
  */
 
-use crate::algorithm::clustering_trait::{ClusteringResult, ClusteringStrategy};
 use crate::model::cluster::ClusterPointManager;
 use crate::utils::l2_distance;
 use diskann::common::ANNResult;
@@ -674,32 +673,4 @@ fn build_large_component(
             build_and_refine_component(graph, candidate_sets, &members, max_size, critical_rate)
         })
         .collect()
-}
-
-// ─── ClusteringStrategy impl ─────────────────────────────────────────────────
-
-impl ClusteringStrategy for CohesiveClusterManager {
-    fn cluster(&mut self) -> ANNResult<ClusteringResult> {
-        self.construct_cohesive_clusters()?;
-        let clusters = self.cohesive_clusters.borrow();
-        let storage_layout: HashMap<u32, HashSet<u32>> = clusters
-            .iter()
-            .map(|(&k, v)| (k, v.cluster_point().keys().copied().collect()))
-            .collect();
-
-        let centroids: HashMap<u32, u32> = clusters
-            .iter()
-            .filter_map(|(&k, v)| v.centroid().map(|c| (k, c)))
-            .collect();
-
-        Ok(ClusteringResult {
-            point_affiliation: self.point_affiliation.clone(),
-            storage_layout,
-            centroids,
-        })
-    }
-
-    fn name(&self) -> &str {
-        "CohesiveClustering"
-    }
 }

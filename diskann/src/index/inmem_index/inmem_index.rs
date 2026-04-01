@@ -10,7 +10,7 @@
 
 use std::cmp;
 use std::collections::{HashMap, HashSet as StdHashSet};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 
 use hashbrown::HashSet;
@@ -59,11 +59,13 @@ where
 
     pub delete_set: RwLock<HashSet<u32>>,
 
-    /// Per-node candidate anchor sets extracted during pruning.
-    /// candidate_anchor_sets[origin][anchor] = set of pruned candidates.
+    /// Per-anchor flat list of (location, pruned_id) pairs recorded during pruning.
+    /// `candidate_anchor_sets[anchor]` = all `(location, pruned_id)` pairs where
+    /// `anchor` caused `pruned_id` to be occluded while `location` was being pruned.
     /// Populated during build when compute_candidate_sets is true.
+    /// Sorted by `location` before `extract_candidate_sets()` is called.
     #[cfg(feature = "staged_diskann")]
-    pub candidate_anchor_sets: Option<Vec<Arc<Mutex<HashMap<u32, StdHashSet<u32>>>>>>,
+    pub candidate_anchor_sets: Option<Vec<Mutex<Vec<(u32, u32)>>>>,
 }
 
 impl<T, const N: usize> InmemIndex<T, N>
@@ -92,7 +94,7 @@ where
         let candidate_anchor_sets = if config.index_write_parameter.compute_candidate_sets {
             Some(
                 (0..total_internal_points)
-                    .map(|_| Arc::new(Mutex::new(HashMap::new())))
+                    .map(|_| Mutex::new(Vec::new()))
                     .collect(),
             )
         } else {
@@ -549,9 +551,10 @@ where
     ///
     /// For each node `origin`:
     /// 1. Add `origin` itself
-    /// 2. For each bidirectional neighbor: add the neighbor + all candidates pruned through it
+    /// 2. For each bidirectional neighbor `n` (where `n` was the pruning anchor):
+    ///    add `n` + all pruned_ids from `candidate_anchor_sets[n]` where location == `origin`
     ///
-    /// This matches the algorithm from mini_compressed_diskann's `augment_candidate_set`.
+    /// Uses flat sorted `Vec<(location, pruned_id)>` per anchor for cache-friendly lookup.
     #[cfg(feature = "staged_diskann")]
     pub fn extract_candidate_sets(&self) -> ANNResult<Vec<StdHashSet<u32>>> {
         let anchor_sets = self.candidate_anchor_sets.as_ref().ok_or_else(|| {
@@ -560,6 +563,50 @@ where
             )
         })?;
 
+        // Phase 1: drain + sort each anchor slot in parallel.
+        // Previously sequential; now distributed across rayon threads.
+        let anchor_data: Vec<Vec<(u32, u32)>> = anchor_sets
+            .par_iter()
+            .map(|slot| {
+                let mut pairs = std::mem::take(&mut *slot.lock().unwrap());
+                pairs.sort_unstable();
+                pairs
+            })
+            .collect();
+
+        let mut offsets = Vec::with_capacity(self.num_active_pts + 1);
+        let mut neighbors: Vec<u32> = Vec::with_capacity(self.max_observed_degree as usize * self.num_active_pts);
+
+        offsets.push(0u32);
+        for i in 0..self.num_active_pts as u32 {
+            if let Ok(v) = self.final_graph.read_vertex_and_neighbors(i) {
+                neighbors.extend(v.get_neighbors());
+            }
+
+            offsets.push(neighbors.len() as u32);
+        }
+
+        // Phase 2: pre-materialise bidirectional neighbors for every node.
+        // Doing this once in a dedicated parallel pass eliminates N × degree RwLock
+        // acquisitions from inside the augmentation loop below.
+        let bidir_nbrs: Vec<Vec<u32>> = (0..self.num_active_pts as u32)
+            .into_par_iter()
+            .map(|node| -> ANNResult<Vec<u32>> {
+                let start = offsets[node as usize] as usize;
+                let end = offsets[(node + 1)as usize] as usize;
+                let nbrs = &neighbors[start..end];
+                let mut bidir = Vec::with_capacity(nbrs.len());
+                for &nbr in nbrs.iter() {
+                    if self.final_graph.contains_edge(nbr, node)? {
+                        bidir.push(nbr);
+                    }
+                }
+                Ok(bidir)
+            })
+            .collect::<ANNResult<Vec<Vec<u32>>>>()?;
+
+        // Phase 3: augment candidate sets — fully lock-free.
+        // bidir_nbrs and anchor_data are plain Vec<Vec<_>>; no synchronisation needed.
         let mut result: Vec<StdHashSet<u32>> = (0..self.num_active_pts)
             .map(|_| StdHashSet::new())
             .collect();
@@ -568,29 +615,22 @@ where
             .par_iter_mut()
             .enumerate()
             .try_for_each(|(origin, candidates)| {
-                let origin = origin as u32;
-                let mut target_set = StdHashSet::<u32>::new();
-                target_set.insert(origin);
+                let origin_u32 = origin as u32;
+                candidates.insert(origin_u32);
 
-                let origin_neighbors_guard = self.final_graph.read_vertex_and_neighbors(origin)?;
-                let origin_neighbors = origin_neighbors_guard.get_neighbors();
-                let anchor_map = anchor_sets[origin as usize].lock().unwrap();
-
-                for neighbor in origin_neighbors.iter() {
-                    // Only include bidirectional neighbors
-                    let is_bidirectional = self.final_graph.contains_edge(*neighbor, origin)?;
-
-                    if is_bidirectional {
-                        // Add candidates pruned through this neighbor (anchor)
-                        if let Some(candidates) = anchor_map.get(&neighbor) {
-                            target_set.extend(candidates.iter().copied());
-                        }
-                        // Add the neighbor itself
-                        target_set.insert(*neighbor);
+                for &neighbor in bidir_nbrs[origin].iter() {
+                    candidates.insert(neighbor);
+                    // anchor_data[neighbor] is sorted by (location, pruned_id).
+                    // Binary-search for all pairs where location == origin_u32.
+                    let pairs = &anchor_data[neighbor as usize];
+                    let start = pairs.partition_point(|&(loc, _)| loc < origin_u32);
+                    let mut i = start;
+                    while i < pairs.len() && pairs[i].0 == origin_u32 {
+                        candidates.insert(pairs[i].1);
+                        i += 1;
                     }
                 }
 
-                *candidates = target_set;
                 Ok::<(), ANNError>(())
             })?;
 

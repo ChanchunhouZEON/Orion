@@ -152,7 +152,8 @@ impl InMemScratchPool {
     pub fn new(num_threads: usize, search_list_size: usize) -> Self {
         let pool = Arc::new(ArrayQueue::new(num_threads));
         for _ in 0..num_threads {
-            pool.push(Box::new(InMemSearchScratch::new(search_list_size))).ok();
+            pool.push(Box::new(InMemSearchScratch::new(search_list_size)))
+                .ok();
         }
         Self { pool }
     }

@@ -6,7 +6,7 @@
  * Licensed under the MIT License.
  */
 #[allow(unused_imports)]
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashSet;
 use vector::{FullPrecisionDistance, Metric};
 
 use crate::common::{ANNError, ANNResult};
@@ -53,9 +53,10 @@ where
 
         #[cfg(feature = "staged_diskann")]
         let track_candidates = self.candidate_anchor_sets.is_some();
-        // Collect (anchor_id, pruned_id) pairs locally, flush once after the loop
+        // Reuse scratch buffer to avoid per-call allocation.
+        // Collects (anchor_id, pruned_id) pairs; flushed to candidate_anchor_sets after the loop.
         #[cfg(feature = "staged_diskann")]
-        let mut pruned_pairs: HashMap<u32, Vec<u32>> = HashMap::new();
+        scratch.candidate_buffer.clear();
 
         let mut cur_alpha = 1.0;
         while cur_alpha <= alpha && result.len() < degree as usize {
@@ -95,10 +96,7 @@ where
                     // Record pruned candidate: neighbor2 was occluded by neighbor (anchor)
                     #[cfg(feature = "staged_diskann")]
                     if track_candidates && old_factor <= alpha && occlude_factor[j] > alpha {
-                        pruned_pairs
-                            .entry(neighbor.id)
-                            .or_default()
-                            .push(neighbor2.id);
+                        scratch.candidate_buffer.push((neighbor.id, neighbor2.id));
                     }
                 }
             }
@@ -106,16 +104,31 @@ where
             cur_alpha *= 1.2;
         }
 
-        // Flush all pruned pairs to candidate_anchor_sets in a single lock
+        // Flush (anchor, pruned_id) pairs to candidate_anchor_sets.
+        // Sort by anchor first so we acquire each anchor's lock only once.
         #[cfg(feature = "staged_diskann")]
-        if !pruned_pairs.is_empty() {
+        if !scratch.candidate_buffer.is_empty() {
             if let Some(ref cas) = self.candidate_anchor_sets {
-                for (anchor, pruned) in pruned_pairs.iter() {
-                    if let Some(slot) = cas.get(*anchor as usize) {
-                        let mut map = slot.lock().unwrap();
-                        map.entry(location)
-                            .or_default()
-                            .extend(pruned.iter().copied());
+                if scratch.candidate_buffer.len() > 1 {
+                    scratch.candidate_buffer.sort_unstable_by_key(|&(anchor, _)| anchor);
+                }
+                let mut i = 0;
+                while i < scratch.candidate_buffer.len() {
+                    let anchor = scratch.candidate_buffer[i].0;
+                    if let Some(slot) = cas.get(anchor as usize) {
+                        let mut vec = slot.lock().unwrap();
+                        while i < scratch.candidate_buffer.len()
+                            && scratch.candidate_buffer[i].0 == anchor
+                        {
+                            vec.push((location, scratch.candidate_buffer[i].1));
+                            i += 1;
+                        }
+                    } else {
+                        while i < scratch.candidate_buffer.len()
+                            && scratch.candidate_buffer[i].0 == anchor
+                        {
+                            i += 1;
+                        }
                     }
                 }
             }

@@ -18,6 +18,8 @@ pub struct BenchmarkResult {
     pub qps: f64,
     pub latency: LatencyStats,
     pub peak_memory: usize,
+    /// Heap in use immediately after build (steady-state index footprint).
+    pub index_memory: usize,
 }
 
 /// Print a formatted table of benchmark results.
@@ -33,7 +35,8 @@ pub fn print_results_table(results: &[BenchmarkResult]) {
         Cell::new("QPS"),
         Cell::new("Mean Lat (ms)"),
         Cell::new("P99 Lat (ms)"),
-        Cell::new("Peak Memory"),
+        Cell::new("Peak Mem"),
+        Cell::new("Index Mem"),
     ]);
 
     for r in results {
@@ -48,6 +51,7 @@ pub fn print_results_table(results: &[BenchmarkResult]) {
             Cell::new(format!("{:.2}", r.latency.mean.as_secs_f64() * 1000.0)),
             Cell::new(format!("{:.2}", r.latency.p99.as_secs_f64() * 1000.0)),
             Cell::new(format_bytes(r.peak_memory)),
+            Cell::new(format_bytes(r.index_memory)),
         ]);
     }
 
