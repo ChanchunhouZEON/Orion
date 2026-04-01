@@ -119,6 +119,8 @@ pub struct InMemSearchScratch {
     pub seen: BHashSet<u32>,
     /// Staging buffer: unseen neighbor IDs collected before distance computation.
     pub id_scratch: Vec<u32>,
+    /// Reusable convergence checker — avoids per-query allocation.
+    pub dcc: DistanceConvergenceChecker,
 }
 
 impl InMemSearchScratch {
@@ -128,6 +130,7 @@ impl InMemSearchScratch {
             // Pre-allocate 20× the list size matching DiskANN's InMemQueryScratch pattern.
             seen: BHashSet::with_capacity(20 * search_list_size),
             id_scratch: Vec::with_capacity(64),
+            dcc: DistanceConvergenceChecker::new(5, 0.0),
         }
     }
 
@@ -137,6 +140,7 @@ impl InMemSearchScratch {
         self.pq.reserve(search_list_size);
         self.seen.clear();
         self.id_scratch.clear();
+        self.dcc.reset();
     }
 }
 

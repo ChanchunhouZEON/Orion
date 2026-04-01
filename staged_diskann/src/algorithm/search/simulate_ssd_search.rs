@@ -6,6 +6,7 @@ use crate::algorithm::SearchProfile;
 use crate::model::{Neighbor, NeighborPriorityQueue};
 use crate::{DistanceConvergenceChecker, StagedDiskANN};
 use diskann::common::ANNResult;
+use diskann::model::Vertex;
 use std::collections::HashSet;
 use std::time::Instant;
 use vector::{FullPrecisionDistance, Metric};
@@ -63,7 +64,11 @@ where
             .iter()
             .map(|&id| {
                 let dist =
-                    <[f32; N]>::distance_compare(query, &self.data_arrays[id as usize], Metric::L2);
+                    {
+                        let qv = Vertex::new(query, 0);
+                        let v = self.dataset.get_vertex(id).unwrap();
+                        qv.compare(&v, Metric::L2)
+                    };
                 (id, dist)
             })
             .collect();
@@ -131,7 +136,11 @@ where
             .iter()
             .map(|&id| {
                 let dist =
-                    <[f32; N]>::distance_compare(query, &self.data_arrays[id as usize], Metric::L2);
+                    {
+                        let qv = Vertex::new(query, 0);
+                        let v = self.dataset.get_vertex(id).unwrap();
+                        qv.compare(&v, Metric::L2)
+                    };
                 (id, dist)
             })
             .collect();
@@ -208,7 +217,11 @@ where
             .iter()
             .map(|&id| {
                 let dist =
-                    <[f32; N]>::distance_compare(query, &self.data_arrays[id as usize], Metric::L2);
+                    {
+                        let qv = Vertex::new(query, 0);
+                        let v = self.dataset.get_vertex(id).unwrap();
+                        qv.compare(&v, Metric::L2)
+                    };
                 (id, dist)
             })
             .collect();

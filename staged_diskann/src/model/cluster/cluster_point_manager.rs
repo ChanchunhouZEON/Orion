@@ -4,7 +4,7 @@
  */
 
 use crate::model::cluster::ClusterPoint;
-use diskann::model::InMemoryGraph;
+use diskann::model::CsrGraph;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ pub const INVALID_CENTROID: i32 = -1;
 #[derive(Debug, Clone)]
 pub struct ClusterPointManager {
     id: i32,
-    graph: Arc<InMemoryGraph>,
+    graph: Arc<CsrGraph>,
     candidate_sets: Arc<Vec<HashSet<u32>>>,
     max_cluster_points_size: usize,
     cluster_points: HashMap<u32, ClusterPoint>,
@@ -26,7 +26,7 @@ pub struct ClusterPointManager {
 impl ClusterPointManager {
     pub fn new(
         id: i32,
-        graph: Arc<InMemoryGraph>,
+        graph: Arc<CsrGraph>,
         candidate_sets: Arc<Vec<HashSet<u32>>>,
         max_cluster_points_size: usize,
         critical_minimum_rate: f32,
@@ -46,7 +46,7 @@ impl ClusterPointManager {
     /// Computes all pairwise relationships in one pass instead of incremental `append`.
     pub fn from_members(
         id: i32,
-        graph: Arc<InMemoryGraph>,
+        graph: Arc<CsrGraph>,
         candidate_sets: Arc<Vec<HashSet<u32>>>,
         max_cluster_points_size: usize,
         critical_minimum_rate: f32,
@@ -68,9 +68,9 @@ impl ClusterPointManager {
             .iter()
             .map(|&m| {
                 let nbrs: HashSet<u32> = graph
-                    .to_neighbor_vec(m)
-                    .unwrap_or_default()
-                    .into_iter()
+                    .neighbors(m as usize)
+                    .iter()
+                    .copied()
                     .collect();
                 (m, nbrs)
             })
@@ -345,11 +345,10 @@ impl ClusterPointManager {
                     rp.in_candidate_set.remove(&id);
                 }
             }
-            if let Ok(neighbors) = self.graph.to_neighbor_vec(id) {
-                for nid in &neighbors {
-                    if let Some(np) = self.cluster_points.get_mut(nid) {
-                        np.connected_set.remove(&id);
-                    }
+            let neighbors = self.graph.neighbors(id as usize);
+            for &nid in neighbors {
+                if let Some(np) = self.cluster_points.get_mut(&nid) {
+                    np.connected_set.remove(&id);
                 }
             }
         }
@@ -365,7 +364,7 @@ impl ClusterPointManager {
     }
 
     fn construct_cluster_point(
-        graph: Arc<InMemoryGraph>,
+        graph: Arc<CsrGraph>,
         candidate_sets: Arc<Vec<HashSet<u32>>>,
         cluster: &mut HashMap<u32, ClusterPoint>,
         point: u32,
@@ -376,7 +375,7 @@ impl ClusterPointManager {
         let mut connected_set = HashSet::new();
 
         let new_point_cand = &candidate_sets[point as usize];
-        let point_neighbors = graph.to_neighbor_vec(point).unwrap_or_default();
+        let point_neighbors = graph.neighbors(point as usize);
 
         for (&cp_id, cp) in cluster.iter_mut() {
             let cand = &candidate_sets[cp_id as usize];
@@ -385,8 +384,7 @@ impl ClusterPointManager {
                 in_candidate_set.insert(cp_id);
             }
 
-            let cp_neighbors = graph.to_neighbor_vec(cp_id).unwrap_or_default();
-            if cp_neighbors.contains(&point) {
+            if graph.contains_edge(cp_id, point) {
                 connected_set.insert(cp_id);
             }
 
@@ -412,14 +410,12 @@ impl ClusterPointManager {
         visited.insert(origin);
 
         while let Some(cur) = search_list.pop_front() {
-            if let Ok(neighbors) = self.graph.to_neighbor_vec(cur) {
-                for &nxt in &neighbors {
-                    if self.cluster_points.contains_key(&nxt) && !visited.contains(&nxt) {
-                        let is_bi = self.graph.contains_edge(nxt, cur).unwrap_or(false);
-                        if is_bi {
-                            visited.insert(nxt);
-                            search_list.push_back(nxt);
-                        }
+            for &nxt in self.graph.neighbors(cur as usize) {
+                if self.cluster_points.contains_key(&nxt) && !visited.contains(&nxt) {
+                    let is_bi = self.graph.contains_edge(nxt, cur);
+                    if is_bi {
+                        visited.insert(nxt);
+                        search_list.push_back(nxt);
                     }
                 }
             }
@@ -501,28 +497,23 @@ mod tests {
 
     /// Build a small graph and candidate sets for testing.
     /// Graph: 0↔1, 1↔2, 2↔3, 3↔4, 0→2, 2→4 (bidirectional core + some unidirectional)
-    fn build_test_fixtures(num_nodes: usize) -> (Arc<InMemoryGraph>, Arc<Vec<HashSet<u32>>>) {
-        let mut graph_map: HashMap<u32, Vec<u32>> = HashMap::new();
-        // Bidirectional edges: 0↔1, 1↔2, 2↔3, 3↔4
-        graph_map.insert(0, vec![1, 2]);
-        graph_map.insert(1, vec![0, 2]);
-        graph_map.insert(2, vec![1, 3, 4, 0]);
-        graph_map.insert(3, vec![2, 4]);
-        graph_map.insert(4, vec![3, 2]);
+    fn build_test_fixtures(num_nodes: usize) -> (Arc<CsrGraph>, Arc<Vec<HashSet<u32>>>) {
+        let adj: Vec<Vec<u32>> = vec![
+            vec![1, 2],       // 0
+            vec![0, 2],       // 1
+            vec![1, 3, 4, 0], // 2
+            vec![2, 4],       // 3
+            vec![3, 2],       // 4
+        ];
 
-        let graph = Arc::new(InMemoryGraph::from_hashmap(&graph_map, num_nodes, 10));
+        let graph = Arc::new(CsrGraph::from_adjacency_list(adj.clone()));
 
         // Candidate sets: each node's candidate set contains its neighbors + self
         let mut candidate_sets = vec![HashSet::new(); num_nodes];
-        for i in 0..num_nodes as u32 {
-            let set: HashSet<u32> = graph_map
-                .get(&i)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .chain(std::iter::once(i))
-                .collect();
-            candidate_sets[i as usize] = set;
+        for i in 0..num_nodes {
+            let mut set: HashSet<u32> = adj[i].iter().copied().collect();
+            set.insert(i as u32);
+            candidate_sets[i] = set;
         }
 
         (graph, Arc::new(candidate_sets))
@@ -683,24 +674,21 @@ mod tests {
     #[test]
     fn test_split_with_disconnected_components() {
         // Build a graph with two disconnected components within a cluster
-        let mut graph_map: HashMap<u32, Vec<u32>> = HashMap::new();
-        // Component 1: 0↔1
-        graph_map.insert(0, vec![1]);
-        graph_map.insert(1, vec![0]);
-        // Component 2: 2↔3
-        graph_map.insert(2, vec![3]);
-        graph_map.insert(3, vec![2]);
-        // Node 4 isolated
-        graph_map.insert(4, vec![]);
+        let adj: Vec<Vec<u32>> = vec![
+            vec![1],    // 0 — Component 1: 0↔1
+            vec![0],    // 1
+            vec![3],    // 2 — Component 2: 2↔3
+            vec![2],    // 3
+            vec![],     // 4 — isolated
+        ];
 
-        let graph = Arc::new(InMemoryGraph::from_hashmap(&graph_map, 5, 10));
+        let graph = Arc::new(CsrGraph::from_adjacency_list(adj.clone()));
 
         let mut candidate_sets = vec![HashSet::new(); 5];
-        for i in 0..5u32 {
-            let set: HashSet<u32> = std::iter::once(i)
-                .chain(graph_map.get(&i).cloned().unwrap_or_default().into_iter())
-                .collect();
-            candidate_sets[i as usize] = set;
+        for i in 0..5usize {
+            let mut set: HashSet<u32> = adj[i].iter().copied().collect();
+            set.insert(i as u32);
+            candidate_sets[i] = set;
         }
         let cand = Arc::new(candidate_sets);
 

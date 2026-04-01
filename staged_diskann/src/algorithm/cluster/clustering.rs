@@ -4,14 +4,14 @@
  */
 
 use crate::model::cluster::ClusterPointManager;
-use crate::utils::l2_distance;
 use diskann::common::ANNResult;
-use diskann::model::InMemoryGraph;
-use ndarray::{ArcArray1, ArcArray2, Array1};
+use diskann::model::{CsrGraph, InmemDataset};
+use ndarray::{ArcArray1, Array1};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use vector::{FullPrecisionDistance, Metric};
 
 #[cfg(feature = "indicatif")]
 use indicatif::ProgressFinish::AndLeave;
@@ -72,10 +72,15 @@ impl UnionFind {
 /// Phase 2: Union-Find clustering with candidate set filter
 /// Phase 3: Parallel cluster construction & refinement per-component (rayon)
 /// Phase 4: Parallel-compute + sequential-apply consolidation
-#[derive(Debug)]
-pub struct CohesiveClusterManager {
-    data: ArcArray2<f32>,
-    graph: Arc<InMemoryGraph>,
+///
+/// Generic over `N` (vector dimension) to directly reference `InmemDataset<f32, N>`
+/// for distance computation — same code path as DiskANN.
+pub struct CohesiveClusterManager<'a, const N: usize>
+where
+    [f32; N]: FullPrecisionDistance<f32, N>,
+{
+    dataset: &'a InmemDataset<f32, N>,
+    graph: Arc<CsrGraph>,
     candidate_sets: Arc<Vec<HashSet<u32>>>,
     cluster_index: u32,
     pub cohesive_clusters: RefCell<HashMap<u32, ClusterPointManager>>,
@@ -84,17 +89,20 @@ pub struct CohesiveClusterManager {
     critical_minimum_rate: f32,
 }
 
-impl CohesiveClusterManager {
+impl<'a, const N: usize> CohesiveClusterManager<'a, N>
+where
+    [f32; N]: FullPrecisionDistance<f32, N>,
+{
     pub fn new(
         size: u32,
-        data: ArcArray2<f32>,
-        graph: Arc<InMemoryGraph>,
+        dataset: &'a InmemDataset<f32, N>,
+        graph: Arc<CsrGraph>,
         candidate_sets: Arc<Vec<HashSet<u32>>>,
         max_cluster_points_size: usize,
         critical_minimum_rate: f32,
     ) -> Self {
         Self {
-            data,
+            dataset,
             graph,
             candidate_sets,
             cluster_index: 0,
@@ -117,29 +125,47 @@ impl CohesiveClusterManager {
         }
     }
 
+    /// Parallel clustering with pre-computed bidirectional neighbors (skips Phase 1).
+    #[cfg(not(feature = "indicatif"))]
+    pub fn construct_cohesive_clusters_with_bidir(
+        &mut self,
+        bidir_neighbors: Arc<Vec<Vec<u32>>>,
+    ) -> ANNResult<()> {
+        log::info!("  Phase 1 (bidir edges): skipped (pre-computed)");
+        self.construct_cohesive_clusters_inner(&bidir_neighbors)
+    }
+
     /// Parallel clustering: 4 phases.
     #[cfg(not(feature = "indicatif"))]
     pub fn construct_cohesive_clusters(&mut self) -> ANNResult<()> {
-        let num_nodes = self.graph.size();
+        let num_nodes = self.graph.num_nodes();
 
         // ── Phase 1: Parallel bidirectional edge detection ──
         let t0 = std::time::Instant::now();
         let graph_ref = &self.graph;
-        let bidir_neighbors: Vec<Vec<u32>> = (0..num_nodes as u32)
+        let bidir_neighbors: Vec<Vec<u32>> = (0..num_nodes)
             .into_par_iter()
-            .map(|node| -> ANNResult<_> {
-                let neighbors = graph_ref.to_neighbor_vec(node)?;
-
-                Ok(neighbors
-                    .into_iter()
-                    .filter(|&nbr| graph_ref.contains_edge(nbr, node).unwrap_or(false))
-                    .collect())
+            .map(|node| {
+                graph_ref.neighbors(node)
+                    .iter()
+                    .filter(|&&nbr| graph_ref.contains_edge(nbr, node as u32))
+                    .copied()
+                    .collect()
             })
-            .collect::<ANNResult<_>>()?;
+            .collect();
         log::info!(
             "  Phase 1 (bidir edges): {:.3}s",
             t0.elapsed().as_secs_f32()
         );
+        self.construct_cohesive_clusters_inner(&bidir_neighbors)
+    }
+
+    #[cfg(not(feature = "indicatif"))]
+    fn construct_cohesive_clusters_inner(
+        &mut self,
+        bidir_neighbors: &[Vec<u32>],
+    ) -> ANNResult<()> {
+        let num_nodes = self.graph.num_nodes();
 
         // ── Phase 2: Union-Find with candidate set filter ──
         let t1 = std::time::Instant::now();
@@ -276,7 +302,7 @@ impl CohesiveClusterManager {
         };
 
         let graph_ref = &self.graph;
-        let data_ref = &self.data;
+        let dataset_ref = self.dataset;
         let pa_ref = &self.point_affiliation;
         let max_size = self.max_cluster_points_size;
 
@@ -292,8 +318,8 @@ impl CohesiveClusterManager {
                 let mut min_dist = MAX_DIST;
                 let mut best_cluster: Option<u32> = None;
 
-                let neighbors = graph_ref.to_neighbor_vec(idx as u32).unwrap_or_default();
-                for &neighbor in &neighbors {
+                let neighbors = graph_ref.neighbors(idx);
+                for &neighbor in neighbors {
                     let aff = pa_ref[neighbor as usize];
                     if aff == INVALID_CLUSTER_AFFILIATION {
                         continue;
@@ -304,7 +330,7 @@ impl CohesiveClusterManager {
                         if size >= max_size {
                             continue;
                         }
-                        let dist = l2_distance(data_ref.row(centroid as usize), data_ref.row(idx));
+                        let dist = dataset_ref.get_distance(centroid, idx as u32, Metric::L2).unwrap_or(MAX_DIST);
                         if dist < min_dist {
                             min_dist = dist;
                             best_cluster = Some(neighbor_aff);
@@ -361,20 +387,17 @@ impl CohesiveClusterManager {
     /// Main clustering algorithm: iterate bidirectional edges and build clusters.
     #[cfg(feature = "indicatif")]
     pub fn construct_cohesive_clusters(&mut self) -> ANNResult<()> {
-        let num_nodes = self.graph.size();
+        let num_nodes = self.graph.num_nodes();
         let style = crate::utils::NODES_PROGRESS_STYLE.clone();
 
         for origin in (0..num_nodes as u32)
             .progress_with_style(style)
             .with_finish(AndLeave)
         {
-            let neighbors = match self.graph.to_neighbor_vec(origin) {
-                Ok(n) => n,
-                Err(_) => continue,
-            };
+            let neighbors = self.graph.neighbors(origin as usize);
 
-            for &neighbor in &neighbors {
-                let is_bidirectional = self.graph.contains_edge(neighbor, origin).unwrap_or(false);
+            for &neighbor in neighbors {
+                let is_bidirectional = self.graph.contains_edge(neighbor, origin);
 
                 if !is_bidirectional {
                     continue;
@@ -517,12 +540,9 @@ impl CohesiveClusterManager {
             let mut min_dist = MAX_DIST;
             let mut best_cluster: Option<u32> = None;
 
-            let neighbors = self
-                .graph
-                .to_neighbor_vec(idx as u32)
-                .unwrap_or_else(|_| panic!("Node {idx} not registered in graph."));
+            let neighbors = self.graph.neighbors(idx);
 
-            for &neighbor in &neighbors {
+            for &neighbor in neighbors {
                 if let Some(neighbor_affiliation) = self.point_affiliation(neighbor) {
                     let cluster = self
                         .cohesive_clusters
@@ -538,7 +558,7 @@ impl CohesiveClusterManager {
                         panic!("Cluster {neighbor_affiliation}'s centroid is none.")
                     });
 
-                    let dist = l2_distance(self.data.row(centroid as usize), self.data.row(idx));
+                    let dist = self.dataset.get_distance(centroid, idx as u32, Metric::L2).unwrap_or(MAX_DIST);
 
                     if dist < min_dist {
                         min_dist = dist;
@@ -580,7 +600,7 @@ impl CohesiveClusterManager {
 /// Build and refine a small component using batch ClusterPointManager construction.
 #[cfg(not(feature = "indicatif"))]
 fn build_and_refine_component(
-    graph: &Arc<InMemoryGraph>,
+    graph: &Arc<CsrGraph>,
     candidate_sets: &Arc<Vec<HashSet<u32>>>,
     members: &[u32],
     max_size: usize,
@@ -616,7 +636,7 @@ fn build_and_refine_component(
 /// This avoids O(n^2) pairwise cost for huge components.
 #[cfg(not(feature = "indicatif"))]
 fn build_large_component(
-    graph: &Arc<InMemoryGraph>,
+    graph: &Arc<CsrGraph>,
     candidate_sets: &Arc<Vec<HashSet<u32>>>,
     bidir_neighbors: &[Vec<u32>],
     members: &[u32],

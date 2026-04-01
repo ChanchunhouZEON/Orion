@@ -27,6 +27,12 @@ impl AdjacencyList {
         debug_assert!(self.edges.len() < self.edges.capacity());
         self.edges.push(node_id);
     }
+
+    /// Consume the adjacency list and return the underlying `Vec<u32>`.
+    #[inline(always)]
+    pub fn into_vec(self) -> Vec<u32> {
+        self.edges
+    }
 }
 
 impl From<Vec<u32>> for AdjacencyList {
