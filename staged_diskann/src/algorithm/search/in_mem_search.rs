@@ -26,7 +26,13 @@ where
     /// Equivalent to `search(query, k, DEFAULT_SEARCH_LIST_SIZE,
     /// DEFAULT_WINDOW_SIZE, DEFAULT_EPSILON)`.
     pub fn search_default(&self, query: &[f32; N], k: usize) -> ANNResult<Vec<u32>> {
-        self.search(query, k, DEFAULT_SEARCH_LIST_SIZE, DEFAULT_WINDOW_SIZE, DEFAULT_EPSILON)
+        self.search(
+            query,
+            k,
+            DEFAULT_SEARCH_LIST_SIZE,
+            DEFAULT_WINDOW_SIZE,
+            DEFAULT_EPSILON,
+        )
     }
 
     /// Greedy beam search using the flat CSR adjacency list.
@@ -114,6 +120,8 @@ where
         }
 
         // Neighbors are sorted by ascending distance; take the first k.
-        Ok((0..scratch.pq.size().min(k)).map(|i| scratch.pq[i].id).collect())
+        Ok((0..scratch.pq.size().min(k))
+            .map(|i| scratch.pq[i].id)
+            .collect())
     }
 }

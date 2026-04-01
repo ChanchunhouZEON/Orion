@@ -63,16 +63,20 @@ pub fn build_diskann_index(
     let mut index: Box<dyn ANNInmemIndex<f32>> =
         create_inmem_index::<f32>(config).expect("Failed to create diskann index");
 
-    // Flatten the ndarray data into a contiguous slice
-    let flat_data: Vec<f32> = if let Some(slice) = data.as_slice() {
-        slice.to_vec()
+    // Borrow a flat view of the ndarray data without copying.
+    // For the common C-contiguous layout (from_shape_vec / to_vec) as_slice() returns Some,
+    // so no heap allocation occurs.  Only non-contiguous layouts fall back to a copy.
+    let flat_data_buf: Vec<f32>;
+    let flat_data: &[f32] = if let Some(slice) = data.as_slice() {
+        slice
     } else {
-        data.iter().copied().collect()
+        flat_data_buf = data.iter().copied().collect();
+        &flat_data_buf
     };
 
     let graph_start = Instant::now();
     index
-        .build_from_data(&flat_data, num_points)
+        .build_from_data(flat_data, num_points)
         .expect("Failed to build diskann index");
     let graph_build_time = graph_start.elapsed();
 
@@ -97,8 +101,8 @@ pub fn build_diskann_index(
     let pq_start = Instant::now();
     let (pq, pq_codes) = if build_pq {
         let n_chunks = n_subquantizers.unwrap_or(8);
-        let pq_table = FixedChunkPQTable::train(&flat_data, num_points, dimension, n_chunks);
-        let codes = pq_table.encode(&flat_data, num_points);
+        let pq_table = FixedChunkPQTable::train(flat_data, num_points, dimension, n_chunks);
+        let codes = pq_table.encode(flat_data, num_points);
         (Some(Arc::new(pq_table)), Some(codes))
     } else {
         (None, None)
