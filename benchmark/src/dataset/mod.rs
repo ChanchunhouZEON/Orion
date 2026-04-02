@@ -1,7 +1,7 @@
 pub mod fvecs;
 pub mod random;
 
-pub use fvecs::{read_fvecs, read_ivecs};
+pub use fvecs::{read_fvecs, read_fvecs_n, read_ivecs};
 pub use random::generate_random_dataset;
 
 use rayon::prelude::*;

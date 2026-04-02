@@ -9,6 +9,4 @@ pub use inmem_graph::InMemoryGraph;
 
 mod csr_graph;
 pub use csr_graph::CsrGraph;
-
-mod sorted_adj;
-pub use sorted_adj::SortedAdjacencyList;
+pub use csr_graph::BidirIter;

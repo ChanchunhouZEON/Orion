@@ -9,12 +9,16 @@ use std::io::{self, BufReader, Read};
 use std::path::Path;
 
 /// Read a .fvecs file (binary format: [dim: u32, f32 * dim] per vector).
-pub fn read_fvecs<P: AsRef<Path>>(path: P) -> io::Result<Vec<Vec<f32>>> {
+/// Reads at most `max_count` vectors (0 = read all).
+pub fn read_fvecs_n<P: AsRef<Path>>(path: P, max_count: usize) -> io::Result<Vec<Vec<f32>>> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     let mut vectors = Vec::new();
 
     loop {
+        if max_count > 0 && vectors.len() >= max_count {
+            break;
+        }
         let dim = match reader.read_u32::<LittleEndian>() {
             Ok(d) => d as usize,
             Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
@@ -27,6 +31,11 @@ pub fn read_fvecs<P: AsRef<Path>>(path: P) -> io::Result<Vec<Vec<f32>>> {
     }
 
     Ok(vectors)
+}
+
+/// Read all vectors from a .fvecs file.
+pub fn read_fvecs<P: AsRef<Path>>(path: P) -> io::Result<Vec<Vec<f32>>> {
+    read_fvecs_n(path, 0)
 }
 
 /// Read a .ivecs file (binary format: [dim: u32, i32 * dim] per vector).

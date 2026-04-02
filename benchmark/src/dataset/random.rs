@@ -67,24 +67,38 @@ pub fn generate_random_dataset(
     }
 }
 
-/// Brute-force k-NN using L2 distance.
+/// Brute-force k-NN using L2 distance with bounded max-heap.
+///
+/// Uses a `BinaryHeap` of size k to track the k nearest neighbors in a
+/// streaming fashion — O(n log k) time and O(k) memory instead of O(n).
 pub fn brute_force_knn(query: &[f32], base: &[Vec<f32>], k: usize) -> Vec<u32> {
-    let mut dists: Vec<(u32, f32)> = base
-        .iter()
-        .enumerate()
-        .map(|(i, point)| {
-            let dist = l2_distance(query, point);
-            (i as u32, dist)
-        })
-        .collect();
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
 
-    // Partial sort: only need top-k
-    let k = k.min(dists.len());
-    dists.select_nth_unstable_by(k - 1, |a, b| a.1.partial_cmp(&b.1).unwrap());
-    dists.truncate(k);
-    dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    // Max-heap by distance: the root is the farthest of the current top-k.
+    // We store Reverse((OrderedFloat, id)) so BinaryHeap acts as a max-heap on distance.
+    // Since f32 doesn't implement Ord, use u32 bits for total ordering.
+    let k = k.min(base.len());
+    let mut heap: BinaryHeap<(u32, u32)> = BinaryHeap::with_capacity(k + 1); // (dist_bits, id)
 
-    dists.into_iter().map(|(id, _)| id).collect()
+    for (i, point) in base.iter().enumerate() {
+        let dist = l2_distance(query, point);
+        let dist_bits = dist.to_bits(); // IEEE 754: bit ordering matches f32 ordering for non-negative
+
+        if heap.len() < k {
+            heap.push((dist_bits, i as u32));
+        } else if let Some(&(max_bits, _)) = heap.peek() {
+            if dist_bits < max_bits {
+                heap.pop();
+                heap.push((dist_bits, i as u32));
+            }
+        }
+    }
+
+    // Extract and sort by distance ascending.
+    let mut result: Vec<(u32, u32)> = heap.into_vec();
+    result.sort_unstable_by_key(|&(bits, _)| bits);
+    result.into_iter().map(|(_, id)| id).collect()
 }
 
 #[inline]

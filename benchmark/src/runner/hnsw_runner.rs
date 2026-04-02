@@ -3,6 +3,7 @@
  * Licensed under the MIT License.
  */
 
+use crate::report::table::BuildTiming;
 use crate::runner::common::{AlgorithmRunner, SearchResult};
 use hnsw::index::{HNSWIndex, HNSWMmapIndex};
 use hnsw::model::{HNSWConfig, Neighbor};
@@ -49,7 +50,7 @@ impl AlgorithmRunner for HNSWRunner {
         "HNSW"
     }
 
-    fn build(&mut self, data: &[f32], num_points: usize, dimension: usize) -> Duration {
+    fn build(&mut self, data: &[f32], num_points: usize, dimension: usize) -> BuildTiming {
         self.dimension = dimension;
         let start = Instant::now();
 
@@ -71,7 +72,7 @@ impl AlgorithmRunner for HNSWRunner {
             _ => panic!("Unsupported dimension: {dimension}"),
         }
 
-        start.elapsed()
+        BuildTiming { graph_build: start.elapsed(), overhead: Duration::ZERO }
     }
 
     fn search(&self, query: &[f32], k: usize) -> SearchResult {

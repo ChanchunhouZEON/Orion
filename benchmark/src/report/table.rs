@@ -7,18 +7,31 @@ use crate::metrics::{memory::format_bytes, LatencyStats};
 use comfy_table::{Cell, Table};
 use std::time::Duration;
 
+/// Timing breakdown returned by `AlgorithmRunner::build`.
+pub struct BuildTiming {
+    /// Pure Vamana graph construction time.
+    pub graph_build: Duration,
+    /// Extra overhead (extract, clustering, compression, etc.). Zero for DiskANN.
+    pub overhead: Duration,
+}
+
+impl BuildTiming {
+    pub fn total(&self) -> Duration {
+        self.graph_build + self.overhead
+    }
+}
+
 /// A single row of benchmark results.
 pub struct BenchmarkResult {
     pub algorithm: String,
     pub params: String,
-    pub build_time: Duration,
+    pub build_timing: BuildTiming,
     pub recall_at_1: f64,
     pub recall_at_10: f64,
     pub recall_at_100: f64,
     pub qps: f64,
     pub latency: LatencyStats,
     pub peak_memory: usize,
-    /// Heap in use immediately after build (steady-state index footprint).
     pub index_memory: usize,
 }
 
@@ -28,7 +41,9 @@ pub fn print_results_table(results: &[BenchmarkResult]) {
     table.set_header(vec![
         Cell::new("Algorithm"),
         Cell::new("Params"),
-        Cell::new("Build (s)"),
+        Cell::new("Graph (s)"),
+        Cell::new("Extra (s)"),
+        Cell::new("Total (s)"),
         Cell::new("R@1"),
         Cell::new("R@10"),
         Cell::new("R@100"),
@@ -43,7 +58,9 @@ pub fn print_results_table(results: &[BenchmarkResult]) {
         table.add_row(vec![
             Cell::new(&r.algorithm),
             Cell::new(&r.params),
-            Cell::new(format!("{:.2}", r.build_time.as_secs_f64())),
+            Cell::new(format!("{:.2}", r.build_timing.graph_build.as_secs_f64())),
+            Cell::new(format!("{:.2}", r.build_timing.overhead.as_secs_f64())),
+            Cell::new(format!("{:.2}", r.build_timing.total().as_secs_f64())),
             Cell::new(format!("{:.4}", r.recall_at_1)),
             Cell::new(format!("{:.4}", r.recall_at_10)),
             Cell::new(format!("{:.4}", r.recall_at_100)),

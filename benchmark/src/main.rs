@@ -97,15 +97,21 @@ fn load_dataset(args: &Args) -> Dataset {
         .as_ref()
         .expect("--groundtruth is required when not using --random-dataset");
 
-    log::info!("Loading base vectors from {:?}", base_path);
-    let base = dataset::read_fvecs(base_path).expect("Failed to read base vectors");
+    // Read only the needed number of base vectors (avoids loading full SIFT1M).
+    let max_base = if args.max_points > 0 { args.max_points } else { 0 };
+    log::info!("Loading base vectors from {:?} (max={})", base_path, if max_base == 0 { "all".to_string() } else { max_base.to_string() });
+    log::info!("  mem before base load: {}", metrics::memory::format_bytes(ALLOCATOR.current_bytes()));
+    let base = dataset::read_fvecs_n(base_path, max_base).expect("Failed to read base vectors");
     let dimension = base.first().map(|v| v.len()).unwrap_or(0);
+    log::info!("  mem after base load:  {} ({} vecs)", metrics::memory::format_bytes(ALLOCATOR.current_bytes()), base.len());
 
     log::info!("Loading query vectors from {:?}", query_path);
     let queries = dataset::read_fvecs(query_path).expect("Failed to read query vectors");
+    log::info!("  mem after query load: {}", metrics::memory::format_bytes(ALLOCATOR.current_bytes()));
 
     log::info!("Loading ground truth from {:?}", gt_path);
     let ground_truth = dataset::read_ivecs(gt_path).expect("Failed to read ground truth");
+    log::info!("  mem after gt load:    {}", metrics::memory::format_bytes(ALLOCATOR.current_bytes()));
 
     log::info!(
         "Dataset: {} base vectors, {} queries, dim={}",
@@ -114,13 +120,7 @@ fn load_dataset(args: &Args) -> Dataset {
         dimension
     );
 
-    let truncated = args.max_points > 0 && args.max_points < base.len();
-    let base = if truncated {
-        log::info!("Truncating base vectors to {} points", args.max_points);
-        base.into_iter().take(args.max_points).collect()
-    } else {
-        base
-    };
+    let truncated = max_base > 0 && max_base < 1_000_000; // heuristic: if we limited, gt may be stale
 
     let mut ds = Dataset {
         name: base_path
@@ -135,14 +135,15 @@ fn load_dataset(args: &Args) -> Dataset {
     };
 
     // When the base is truncated, the original ground truth references points
-    // that no longer exist. Recompute it against the truncated base.
+    // that may no longer exist. Recompute with bounded-heap kNN (O(k) memory per query).
     if truncated {
         let gt_k = ds.ground_truth.first().map(|v| v.len()).unwrap_or(100);
         println!(
-            "Base truncated to {} points — recomputing ground truth (k={})...",
-            args.max_points, gt_k
+            "Base loaded with {} points — recomputing ground truth (k={})...",
+            ds.num_base(), gt_k
         );
         ds.recompute_ground_truth(gt_k);
+        log::info!("  mem after gt recomp:  {}", metrics::memory::format_bytes(ALLOCATOR.current_bytes()));
     }
 
     ds
@@ -227,31 +228,6 @@ fn main() {
                     5,    // window_size
                     0.01, // epsilon
                 );
-                run_benchmark(
-                    &mut runner,
-                    &dataset,
-                    args.k,
-                    args.mmap_search,
-                    args.drop_inmem,
-                    &args.graph_dir,
-                    args.warm_cache_hops,
-                    args.memory_limit_mb,
-                    &mut results,
-                );
-            }
-            "staged-diskann-rwlock" => {
-                let mut runner = StagedDiskANNRunner::new(
-                    "StagedDiskANN(RwLock)",
-                    1.2,  // alpha
-                    32,   // graph_degree
-                    48,   // search_list_size (matches DiskANN)
-                    10,   // max_cluster_point_size
-                    8,    // max_connection_clusters (m)
-                    3,    // max_connection_per_cluster (n)
-                    0.7,  // critical_minimum_rate
-                    5,    // window_size
-                    0.01, // epsilon
-                ).with_rwlock();
                 run_benchmark(
                     &mut runner,
                     &dataset,
@@ -352,14 +328,23 @@ fn run_benchmark(
     let num_points = dataset.num_base();
 
     log::info!("[{}] Building index...", runner.name());
+    let mem_before_build = ALLOCATOR.current_bytes();
     ALLOCATOR.reset_peak();
-    let build_time = runner.build(&flat_base, num_points, dimension);
+    let build_timing = runner.build(&flat_base, num_points, dimension);
     let peak_memory = ALLOCATOR.peak_bytes();
     let index_memory = ALLOCATOR.current_bytes();
     log::info!(
+        "[{}] Memory: before_build={} peak={} after_build={} index_net={}",
+        runner.name(),
+        metrics::memory::format_bytes(mem_before_build),
+        metrics::memory::format_bytes(peak_memory),
+        metrics::memory::format_bytes(index_memory),
+        metrics::memory::format_bytes(index_memory.saturating_sub(mem_before_build)),
+    );
+    log::info!(
         "[{}] Build complete: {:.2}s",
         runner.name(),
-        build_time.as_secs_f64()
+        build_timing.total().as_secs_f64()
     );
 
     // Enable mmap search if requested and supported
@@ -417,21 +402,21 @@ fn run_benchmark(
         ALLOCATOR.set_limit(limit_bytes);
     }
 
-    // Search
+    // Search — parallel batch for both DiskANN and StagedDiskANN
     log::info!(
-        "[{}] Running {} queries...",
+        "[{}] Running {} queries (parallel batch)...",
         runner.name(),
         dataset.num_queries()
     );
     let queries = &dataset.queries;
-    let mut all_results: Vec<Vec<u32>> = Vec::with_capacity(queries.len());
 
-    let (qps, _total, durations) = measure_qps(queries.len(), |i| {
-        let result = runner.search(&queries[i], k);
-        all_results.push(result.neighbors);
-        result.duration
-    });
+    let batch_start = std::time::Instant::now();
+    let batch_results = runner.search_batch(queries, k);
+    let batch_wall = batch_start.elapsed();
 
+    let qps = queries.len() as f64 / batch_wall.as_secs_f64();
+    let durations: Vec<_> = batch_results.iter().map(|r| r.duration).collect();
+    let all_results: Vec<Vec<u32>> = batch_results.into_iter().map(|r| r.neighbors).collect();
     let latency = LatencyStats::from_durations(durations);
 
     // Calculate recall
@@ -457,7 +442,7 @@ fn run_benchmark(
     results.push(BenchmarkResult {
         algorithm: runner.name().to_string(),
         params: String::new(),
-        build_time,
+        build_timing,
         recall_at_1,
         recall_at_10,
         recall_at_100,
@@ -477,12 +462,13 @@ fn run_compressed_profile(dataset: &Dataset, k: usize) {
     assert_eq!(dimension, DIM_128, "Profiling only supports dim=128");
 
     let flat_base = dataset.base_flat();
-    let data_2d = Array2::from_shape_vec((num_points, dimension), flat_base)
+    let data_2d = Array2::from_shape_vec((num_points, dimension), dataset.base_flat())
         .expect("reshape")
         .to_shared();
 
     println!("Building DiskANN index ({num_points} points, dim={dimension})...");
-    let mut result = build_diskann_index(&data_2d, 1.2, 32, 64, true, Some(8), Some(8), true);
+    let mut result = build_diskann_index(&flat_base, num_points, dimension, 1.2, 32, 64, true, Some(8), Some(8), true)
+        .expect("build failed");
     println!(
         "DiskANN graph build: {:.2}s, PQ build: {:.2}s\n",
         result.graph_build_time.as_secs_f32(),
@@ -531,7 +517,6 @@ fn run_compressed_profile(dataset: &Dataset, k: usize) {
             dataset_128,
             result.graph.clone(),
             result.candidate_sets.clone(),
-            result.bidir_neighbors.clone(),
             result.entry_point,
             Some(pq.clone()),
             Some(pq_codes.clone()),
@@ -597,7 +582,6 @@ fn run_compressed_profile(dataset: &Dataset, k: usize) {
             dataset_128,
             result.graph.clone(),
             result.candidate_sets.clone(),
-            result.bidir_neighbors.clone(),
             result.entry_point,
             Some(pq.clone()),
             Some(pq_codes.clone()),
@@ -654,7 +638,6 @@ fn run_compressed_profile(dataset: &Dataset, k: usize) {
             dataset_128,
             result.graph.clone(),
             result.candidate_sets.clone(),
-            result.bidir_neighbors.clone(),
             result.entry_point,
             Some(pq.clone()),
             Some(pq_codes.clone()),
@@ -724,7 +707,6 @@ fn run_compressed_profile(dataset: &Dataset, k: usize) {
 /// epsilon > 0.0 → switches to compressed graph neighbors once the sliding window
 ///                 of best distances converges, reducing distance computations.
 fn run_epsilon_sweep(dataset: &Dataset, k: usize) {
-    use ndarray::Array2;
     use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_128};
     use std::time::Instant;
 
@@ -737,16 +719,14 @@ fn run_epsilon_sweep(dataset: &Dataset, k: usize) {
     );
 
     let flat_base = dataset.base_flat();
-    let data_2d = Array2::from_shape_vec((num_points, dimension), flat_base)
-        .expect("Failed to reshape base data")
-        .to_shared();
 
     // ── Build: one graph, one staged index ──────────────────────────────────
     println!(
         "Building DiskANN + StagedDiskANN ({} pts, dim={})...",
         num_points, dimension
     );
-    let mut result = build_diskann_index(&data_2d, 1.2, 32, 48, false, None, None, true);
+    let mut result = build_diskann_index(&flat_base, num_points, dimension, 1.2, 32, 48, false, None, None, true)
+        .expect("build failed");
     println!(
         "  Graph build: {:.2}s",
         result.graph_build_time.as_secs_f32()
@@ -770,7 +750,6 @@ fn run_epsilon_sweep(dataset: &Dataset, k: usize) {
         dataset_128,
         result.graph,
         result.candidate_sets,
-        result.bidir_neighbors,
         result.entry_point,
         None, // no PQ
         None,
@@ -853,7 +832,6 @@ fn run_epsilon_sweep(dataset: &Dataset, k: usize) {
 /// DiskANN baseline and StagedDiskANN, writing results to
 /// `visualizations/frontier_data.json` for plotting.
 fn run_frontier_sweep(dataset: &Dataset, k: usize) {
-    use ndarray::Array2;
     use serde_json::json;
     use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_128};
     use std::time::Instant;
@@ -867,15 +845,13 @@ fn run_frontier_sweep(dataset: &Dataset, k: usize) {
     );
 
     let flat_base = dataset.base_flat();
-    let data_2d = Array2::from_shape_vec((num_points, dimension), flat_base)
-        .expect("reshape")
-        .to_shared();
 
     println!(
         "Building DiskANN + StagedDiskANN ({} pts, dim={})...",
         num_points, dimension
     );
-    let mut result = build_diskann_index(&data_2d, 1.2, 32, 64, false, None, None, true);
+    let mut result = build_diskann_index(&flat_base, num_points, dimension, 1.2, 32, 64, false, None, None, true)
+        .expect("build failed");
     println!(
         "  Graph build: {:.2}s\n",
         result.graph_build_time.as_secs_f32()
@@ -898,7 +874,6 @@ fn run_frontier_sweep(dataset: &Dataset, k: usize) {
         dataset_128,
         result.graph,
         result.candidate_sets,
-        result.bidir_neighbors,
         result.entry_point,
         None,
         None,
@@ -1002,7 +977,6 @@ fn run_frontier_sweep(dataset: &Dataset, k: usize) {
 /// eps=0 rows serve as the DiskANN baseline for that SLS.
 /// Results written to `visualizations/full_frontier_data.json`.
 fn run_full_frontier_sweep(dataset: &Dataset, k: usize) {
-    use ndarray::Array2;
     use serde_json::json;
     use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_128};
     use std::time::Instant;
@@ -1016,15 +990,13 @@ fn run_full_frontier_sweep(dataset: &Dataset, k: usize) {
     );
 
     let flat_base = dataset.base_flat();
-    let data_2d = Array2::from_shape_vec((num_points, dimension), flat_base)
-        .expect("reshape")
-        .to_shared();
 
     println!(
         "Building DiskANN + StagedDiskANN ({} pts, dim={})...",
         num_points, dimension
     );
-    let mut result = build_diskann_index(&data_2d, 1.2, 32, 64, false, None, None, true);
+    let mut result = build_diskann_index(&flat_base, num_points, dimension, 1.2, 32, 64, false, None, None, true)
+        .expect("build failed");
     println!(
         "  Graph build: {:.2}s\n",
         result.graph_build_time.as_secs_f32()
@@ -1047,7 +1019,6 @@ fn run_full_frontier_sweep(dataset: &Dataset, k: usize) {
         dataset_128,
         result.graph,
         result.candidate_sets,
-        result.bidir_neighbors,
         result.entry_point,
         None,
         None,
@@ -1157,7 +1128,7 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
     assert_eq!(dimension, DIM_128);
 
     let flat_base = dataset.base_flat();
-    let data_2d = Array2::from_shape_vec((num_points, dimension), flat_base)
+    let data_2d = Array2::from_shape_vec((num_points, dimension), dataset.base_flat())
         .expect("reshape")
         .to_shared();
 
@@ -1168,7 +1139,8 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
     }
 
     println!("Building DiskANN graph ({num_points} pts, dim={dimension})...");
-    let mut result = build_diskann_index(&data_2d, 1.2, 32, 48, false, None, None, true);
+    let mut result = build_diskann_index(&flat_base, num_points, dimension, 1.2, 32, 48, false, None, None, true)
+        .expect("build failed");
     println!("  Graph build: {:.2}s\n", result.graph_build_time.as_secs_f32());
 
     // Free the index to reduce peak memory; we build InmemDataset from data_2d below.
@@ -1216,7 +1188,6 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
             dataset_128,
             result.graph.clone(),
             result.candidate_sets.clone(),
-            result.bidir_neighbors.clone(),
             result.entry_point,
             None, None,
             10,              // max_cluster_point_size
@@ -1307,7 +1278,6 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
 }
 
 fn run_build_profile(dataset: &Dataset, _k: usize) {
-    use ndarray::Array2;
     use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_128};
     use std::time::Instant;
 
@@ -1320,9 +1290,6 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
     );
 
     let flat_base = dataset.base_flat();
-    let data_2d = Array2::from_shape_vec((num_points, dimension), flat_base)
-        .expect("reshape")
-        .to_shared();
 
     const TRIALS: usize = 10;
     let mut vamana_times = Vec::with_capacity(TRIALS);
@@ -1332,23 +1299,51 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
     for trial in 0..TRIALS {
         println!("=== Trial {}/{TRIALS} ===", trial + 1);
 
-        // Remove any cached compressed graph
         let cache_dir = std::path::PathBuf::from("compressed_dskann_graphs");
         if cache_dir.exists() {
             std::fs::remove_dir_all(&cache_dir).ok();
         }
 
-        // Single build: Vamana + extract + StagedDiskANN.
-        // graph_build_time is the pure Vamana link time (measured inside build_diskann_index).
-        // Everything else (extract, clustering, compression) is overhead.
+        // ── DiskANN baseline: build_from_data (no candidate sets, no file IO) ──
+        let diskann_link_t = {
+            let num_threads = rayon::current_num_threads() as u32;
+            let wp = diskann::model::IndexWriteParametersBuilder::new(48, 32)
+                .with_alpha(1.2)
+                .with_num_threads(num_threads)
+                .build();
+            let config = diskann::model::IndexConfiguration::new(
+                vector::Metric::L2, dimension, dimension, num_points,
+                false, 0, false, 0, 1.0, wp,
+            );
+            let mut idx = diskann::index::create_inmem_index::<f32>(config)
+                .expect("create index");
+            idx.build_from_data(&flat_base, num_points).expect("build_from_data");
+            // graph_build_time not available through trait, so measure total build_from_data
+            // which includes data memcpy + link. Re-measure link only:
+            // Actually build_from_data does memcpy + build_with_data_populated (which has link).
+            // We just take the result — it's the same code path as StagedDiskANN.
+            drop(idx); // free memory for next build
+            0.0f32 // placeholder — we'll use a different approach
+        };
+
+        // Both use build_diskann_index for apples-to-apples comparison.
+        // DiskANN baseline: compute_candidate_sets=false
+        let diskann_result = build_diskann_index(&flat_base, num_points, dimension, 1.2, 32, 48, false, None, None, false)
+            .expect("diskann build");
+        let diskann_link_t = diskann_result.graph_build_time.as_secs_f32();
+        drop(diskann_result);
+
+        // StagedDiskANN: compute_candidate_sets=true
         let t_total = Instant::now();
-        let mut result = build_diskann_index(&data_2d, 1.2, 32, 64, false, None, None, true);
-        let vamana_t = result.graph_build_time.as_secs_f32();
+        let mut result = build_diskann_index(&flat_base, num_points, dimension, 1.2, 32, 48, false, None, None, true)
+            .expect("staged build");
+        let staged_link_t = result.graph_build_time.as_secs_f32();
+        let extract_t = t_total.elapsed().as_secs_f32() - staged_link_t;
 
         let dataset_128 = {
             let idx = result.index.as_any_mut()
                 .downcast_mut::<diskann::index::InmemIndex<f32, 128>>()
-                .expect("downcast to InmemIndex<f32, 128>");
+                .expect("downcast");
             std::mem::replace(&mut idx.dataset, diskann::model::InmemDataset::new(0, 1.0).unwrap())
         };
         drop(result.index);
@@ -1358,35 +1353,27 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
             dataset_128,
             result.graph,
             result.candidate_sets,
-            result.bidir_neighbors,
             result.entry_point,
-            None,
-            None,
-            8,   // max_cluster_point_size
-            8,   // max_connection_clusters
-            3,   // max_connection_per_cluster
-            0.7, // critical_minimum_rate
-            None,
-            false,
+            None, None,
+            8, 8, 3, 0.7,
+            None, false,
         );
         let staged_t = t_staged.elapsed().as_secs_f32();
         let total_t = t_total.elapsed().as_secs_f32();
-        let overhead_t = total_t - vamana_t;
+        let cs_overhead = staged_link_t - diskann_link_t;
+        let extra_t = extract_t + staged_t;
 
-        vamana_times.push(vamana_t);
-        overhead_times.push(overhead_t);
+        vamana_times.push(diskann_link_t);
+        overhead_times.push(extra_t + cs_overhead);
         total_times.push(total_t);
 
-        println!(
-            "  Vamana graph build:       {vamana_t:.3}s"
-        );
-        println!(
-            "  StagedDiskANN overhead:   {overhead_t:.3}s  (extract={:.3}s + staged={staged_t:.3}s)",
-            overhead_t - staged_t,
-        );
-        println!(
-            "  Total:                    {total_t:.3}s  (overhead = {:.1}% of Vamana)",
-            overhead_t / vamana_t * 100.0,
+        println!("  DiskANN link (no CS):     {diskann_link_t:.3}s");
+        println!("  Staged link (with CS):    {staged_link_t:.3}s  (CS overhead: {cs_overhead:+.3}s)");
+        println!("  Extract:                  {extract_t:.3}s");
+        println!("  Clustering+reorder:       {staged_t:.3}s");
+        println!("  Total extra overhead:     {:.3}s  ({:.1}% of DiskANN link)",
+            extra_t + cs_overhead,
+            (extra_t + cs_overhead) / diskann_link_t * 100.0,
         );
     }
 

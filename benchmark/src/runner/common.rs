@@ -3,6 +3,7 @@
  * Licensed under the MIT License.
  */
 
+use crate::report::table::BuildTiming;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -13,19 +14,20 @@ pub struct SearchResult {
 }
 
 /// Trait for all ANNS algorithm runners in the benchmark.
-pub trait AlgorithmRunner {
+pub trait AlgorithmRunner: Sync {
     /// Algorithm name for display.
     fn name(&self) -> &str;
 
-    /// Build the index from base data. Returns build duration.
-    fn build(&mut self, data: &[f32], num_points: usize, dimension: usize) -> Duration;
+    /// Build the index from base data. Returns timing breakdown.
+    fn build(&mut self, data: &[f32], num_points: usize, dimension: usize) -> BuildTiming;
 
     /// Search for k nearest neighbors of a single query vector.
     fn search(&self, query: &[f32], k: usize) -> SearchResult;
 
-    /// Batch search for multiple queries. Default implementation is sequential.
+    /// Batch search for multiple queries. Default uses rayon parallel.
     fn search_batch(&self, queries: &[Vec<f32>], k: usize) -> Vec<SearchResult> {
-        queries.iter().map(|q| self.search(q, k)).collect()
+        use rayon::prelude::*;
+        queries.par_iter().map(|q| self.search(q, k)).collect()
     }
 
     /// Approximate memory usage in bytes.

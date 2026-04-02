@@ -3,9 +3,9 @@
  * Licensed under the MIT License.
  */
 
+use crate::report::table::BuildTiming;
 use crate::runner::common::{AlgorithmRunner, SearchResult};
 use diskann::index::InmemIndex;
-use ndarray::Array2;
 use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_128, DIM_960};
 use std::time::{Duration, Instant};
 
@@ -25,8 +25,6 @@ pub struct StagedDiskANNRunner {
     // Search params
     window_size: usize,
     epsilon: f32,
-    /// When true, search through CompressedGraph (RwLock) instead of flat CSR.
-    use_rwlock: bool,
     // State
     dimension: usize,
     inner: Option<StagedInner>,
@@ -62,17 +60,11 @@ impl StagedDiskANNRunner {
             critical_minimum_rate,
             window_size,
             epsilon,
-            use_rwlock: false,
             dimension: 0,
             inner: None,
         }
     }
 
-    /// Use CompressedGraph (RwLock) for search instead of flat CSR.
-    pub fn with_rwlock(mut self) -> Self {
-        self.use_rwlock = true;
-        self
-    }
 }
 
 impl AlgorithmRunner for StagedDiskANNRunner {
@@ -80,16 +72,14 @@ impl AlgorithmRunner for StagedDiskANNRunner {
         self.name
     }
 
-    fn build(&mut self, data: &[f32], num_points: usize, dimension: usize) -> Duration {
+    fn build(&mut self, data: &[f32], num_points: usize, dimension: usize) -> BuildTiming {
         self.dimension = dimension;
         let start = Instant::now();
 
-        let data_2d = Array2::from_shape_vec((num_points, dimension), data.to_vec())
-            .expect("Failed to reshape data")
-            .to_shared();
-
         let mut result = build_diskann_index(
-            &data_2d,
+            data,
+            num_points,
+            dimension,
             self.alpha,
             self.graph_degree as u32,
             self.search_list_size as u32,
@@ -97,11 +87,13 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             None,
             None,
             true, // compute candidate sets
-        );
+        )
+        .expect("build failed");
         log::info!(
             "DiskANN graph build (parallel Vamana + candidate sets): {:.2}s",
             result.graph_build_time.as_secs_f32()
         );
+        log::info!("  mem after build_diskann_index: {}", crate::metrics::memory::format_bytes(crate::ALLOCATOR.current_bytes()));
 
         match dimension {
             DIM_128 => {
@@ -115,14 +107,15 @@ impl AlgorithmRunner for StagedDiskANNRunner {
                         diskann::model::InmemDataset::new(0, 1.0).unwrap(),
                     )
                 };
+                log::info!("  mem after take(dataset):  {}", crate::metrics::memory::format_bytes(crate::ALLOCATOR.current_bytes()));
                 drop(result.index);
+                log::info!("  mem after drop(index):    {}", crate::metrics::memory::format_bytes(crate::ALLOCATOR.current_bytes()));
 
                 let t1 = Instant::now();
                 let compressed = StagedDiskANN::<128>::new(
                     dataset,
                     result.graph,
                     result.candidate_sets,
-                    result.bidir_neighbors,
                     result.entry_point,
                     None,
                     None,
@@ -158,7 +151,6 @@ impl AlgorithmRunner for StagedDiskANNRunner {
                     dataset,
                     result.graph,
                     result.candidate_sets,
-                    result.bidir_neighbors,
                     result.entry_point,
                     None,
                     None,
@@ -180,7 +172,11 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             _ => panic!("Unsupported dimension: {dimension}"),
         }
 
-        start.elapsed()
+        let total = start.elapsed();
+        BuildTiming {
+            graph_build: result.graph_build_time,
+            overhead: total - result.graph_build_time,
+        }
     }
 
     fn search(&self, query: &[f32], k: usize) -> SearchResult {
@@ -189,20 +185,12 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             StagedInner::Dim128 { compressed, .. } => {
                 let mut q = [0.0f32; 128];
                 q.copy_from_slice(&query[..128]);
-                if self.use_rwlock {
-                    compressed.search_rwlock(&q, k, self.search_list_size, self.window_size, self.epsilon)
-                } else {
-                    compressed.search(&q, k, self.search_list_size, self.window_size, self.epsilon)
-                }
+                compressed.search(&q, k, self.search_list_size, self.window_size, self.epsilon)
             }
             StagedInner::Dim960 { compressed, .. } => {
                 let mut q = [0.0f32; 960];
                 q.copy_from_slice(&query[..960]);
-                if self.use_rwlock {
-                    compressed.search_rwlock(&q, k, self.search_list_size, self.window_size, self.epsilon)
-                } else {
-                    compressed.search(&q, k, self.search_list_size, self.window_size, self.epsilon)
-                }
+                compressed.search(&q, k, self.search_list_size, self.window_size, self.epsilon)
             }
         }
         .expect("Searching process failed");

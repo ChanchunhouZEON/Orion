@@ -16,7 +16,7 @@ pub const INVALID_CENTROID: i32 = -1;
 pub struct ClusterPointManager {
     id: i32,
     graph: Arc<CsrGraph>,
-    candidate_sets: Arc<Vec<HashSet<u32>>>,
+    candidate_sets: Arc<Vec<Vec<u32>>>,
     max_cluster_points_size: usize,
     cluster_points: HashMap<u32, ClusterPoint>,
     critical_minimum_rate: f32,
@@ -27,7 +27,7 @@ impl ClusterPointManager {
     pub fn new(
         id: i32,
         graph: Arc<CsrGraph>,
-        candidate_sets: Arc<Vec<HashSet<u32>>>,
+        candidate_sets: Arc<Vec<Vec<u32>>>,
         max_cluster_points_size: usize,
         critical_minimum_rate: f32,
     ) -> Self {
@@ -47,7 +47,7 @@ impl ClusterPointManager {
     pub fn from_members(
         id: i32,
         graph: Arc<CsrGraph>,
-        candidate_sets: Arc<Vec<HashSet<u32>>>,
+        candidate_sets: Arc<Vec<Vec<u32>>>,
         max_cluster_points_size: usize,
         critical_minimum_rate: f32,
         members: &[u32],
@@ -90,7 +90,7 @@ impl ClusterPointManager {
                 // a's candidate set contains b
                 // → a.cluster_point_in_cur_candidates includes b
                 // → b.in_candidate_set includes a
-                if a_cand.contains(&b) {
+                if a_cand.binary_search(&b).is_ok() {
                     cluster_points
                         .get_mut(&a)
                         .unwrap()
@@ -104,7 +104,7 @@ impl ClusterPointManager {
                 }
 
                 // b's candidate set contains a
-                if b_cand.contains(&a) {
+                if b_cand.binary_search(&a).is_ok() {
                     cluster_points
                         .get_mut(&b)
                         .unwrap()
@@ -162,7 +162,7 @@ impl ClusterPointManager {
             return false;
         }
         self.centroid == INVALID_CENTROID
-            || self.candidate_sets[self.centroid as usize].contains(&point)
+            || self.candidate_sets[self.centroid as usize].binary_search(&point).is_ok()
     }
 
     /// Append a point to this cluster. Returns overflow info if cluster exceeds max size.
@@ -365,7 +365,7 @@ impl ClusterPointManager {
 
     fn construct_cluster_point(
         graph: Arc<CsrGraph>,
-        candidate_sets: Arc<Vec<HashSet<u32>>>,
+        candidate_sets: Arc<Vec<Vec<u32>>>,
         cluster: &mut HashMap<u32, ClusterPoint>,
         point: u32,
     ) -> ClusterPoint {
@@ -379,7 +379,7 @@ impl ClusterPointManager {
 
         for (&cp_id, cp) in cluster.iter_mut() {
             let cand = &candidate_sets[cp_id as usize];
-            if cand.contains(&point) {
+            if cand.binary_search(&point).is_ok() {
                 cp.cluster_point_in_cur_candidates.insert(point);
                 in_candidate_set.insert(cp_id);
             }
@@ -388,7 +388,7 @@ impl ClusterPointManager {
                 connected_set.insert(cp_id);
             }
 
-            if new_point_cand.contains(&cp_id) {
+            if new_point_cand.binary_search(&cp_id).is_ok() {
                 cur_candidates.insert(cp_id);
                 cp.in_candidate_set.insert(point);
             }
@@ -497,7 +497,7 @@ mod tests {
 
     /// Build a small graph and candidate sets for testing.
     /// Graph: 0↔1, 1↔2, 2↔3, 3↔4, 0→2, 2→4 (bidirectional core + some unidirectional)
-    fn build_test_fixtures(num_nodes: usize) -> (Arc<CsrGraph>, Arc<Vec<HashSet<u32>>>) {
+    fn build_test_fixtures(num_nodes: usize) -> (Arc<CsrGraph>, Arc<Vec<Vec<u32>>>) {
         let adj: Vec<Vec<u32>> = vec![
             vec![1, 2],       // 0
             vec![0, 2],       // 1
@@ -506,14 +506,14 @@ mod tests {
             vec![3, 2],       // 4
         ];
 
-        let graph = Arc::new(CsrGraph::from_adjacency_list(adj.clone()));
+        let graph = Arc::new(CsrGraph::from_adjacency_list(adj.clone(), 10));
 
-        // Candidate sets: each node's candidate set contains its neighbors + self
-        let mut candidate_sets = vec![HashSet::new(); num_nodes];
+        let mut candidate_sets: Vec<Vec<u32>> = Vec::with_capacity(num_nodes);
         for i in 0..num_nodes {
-            let mut set: HashSet<u32> = adj[i].iter().copied().collect();
-            set.insert(i as u32);
-            candidate_sets[i] = set;
+            let mut cs: Vec<u32> = adj[i].iter().copied().chain(std::iter::once(i as u32)).collect();
+            cs.sort_unstable();
+            cs.dedup();
+            candidate_sets.push(cs);
         }
 
         (graph, Arc::new(candidate_sets))
@@ -682,13 +682,14 @@ mod tests {
             vec![],     // 4 — isolated
         ];
 
-        let graph = Arc::new(CsrGraph::from_adjacency_list(adj.clone()));
+        let graph = Arc::new(CsrGraph::from_adjacency_list(adj.clone(), 10));
 
-        let mut candidate_sets = vec![HashSet::new(); 5];
+        let mut candidate_sets: Vec<Vec<u32>> = Vec::with_capacity(5);
         for i in 0..5usize {
-            let mut set: HashSet<u32> = adj[i].iter().copied().collect();
-            set.insert(i as u32);
-            candidate_sets[i] = set;
+            let mut cs: Vec<u32> = adj[i].iter().copied().chain(std::iter::once(i as u32)).collect();
+            cs.sort_unstable();
+            cs.dedup();
+            candidate_sets.push(cs);
         }
         let cand = Arc::new(candidate_sets);
 
