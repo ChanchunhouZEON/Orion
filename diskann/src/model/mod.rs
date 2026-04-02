@@ -6,9 +6,9 @@ pub mod data_store;
 pub use data_store::InmemDataset;
 
 pub mod graph;
+pub use graph::BidirIter;
 pub use graph::CsrGraph;
 pub use graph::InMemoryGraph;
-pub use graph::SortedAdjacencyList;
 pub use graph::VertexAndNeighbors;
 
 pub mod configuration;

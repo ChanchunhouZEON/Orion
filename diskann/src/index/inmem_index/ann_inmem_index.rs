@@ -68,34 +68,31 @@ where
     #[cfg(feature = "staged_diskann")]
     fn extract_candidate_sets(&self) -> Option<Vec<HashSet<u32>>>;
 
-    /// Build a lock-free `CsrGraph` from the final graph, extract candidate sets,
-    /// and pre-compute bidirectional neighbors — all in one pass.
+    /// Build an aligned `CsrGraph` from the final graph (with bidir bits) and
+    /// extract candidate sets in one pass.
     ///
-    /// Returns `(csr_graph, candidate_sets, bidir_neighbors)`.
-    /// `bidir_neighbors[i]` contains the IDs of node `i`'s neighbors that also
-    /// have an edge back to `i`. This is reused by clustering (Phase 1 skip).
+    /// Returns `(csr_graph, candidate_sets)`. Bidir info is embedded in the
+    /// CsrGraph's per-node bitset — no separate `bidir_neighbors` needed.
     #[cfg(feature = "staged_diskann")]
     fn extract_graph_and_candidates(
-        &self,
+        &mut self,
         _num_points: usize,
         _max_degree: u32,
-    ) -> (crate::model::CsrGraph, Vec<HashSet<u32>>, Vec<Vec<u32>>) {
-        let cs = self.extract_candidate_sets().unwrap_or_default();
+    ) -> ANNResult<(crate::model::CsrGraph, Vec<Vec<u32>>)> {
+        let cs: Vec<Vec<u32>> = self.extract_candidate_sets()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|hs| { let mut v: Vec<u32> = hs.into_iter().collect(); v.sort_unstable(); v })
+            .collect();
         let graph = self.extract_graph();
         let n = graph.keys().map(|&k| k as usize + 1).max().unwrap_or(0);
         let mut adj = vec![Vec::new(); n];
         for (k, v) in graph {
             adj[k as usize] = v;
         }
-        let csr = crate::model::CsrGraph::from_adjacency_list(adj);
-        let bidir: Vec<Vec<u32>> = (0..n)
-            .map(|i| {
-                csr.neighbors(i).iter()
-                    .filter(|&&nbr| csr.contains_edge(nbr, i as u32))
-                    .copied().collect()
-            })
-            .collect();
-        (csr, cs, bidir)
+        let mut csr = crate::model::CsrGraph::from_adjacency_list(adj, _max_degree);
+        csr.compute_bidir();
+        Ok((csr, cs))
     }
 
     /// Extract the final graph as a HashMap for external consumers.

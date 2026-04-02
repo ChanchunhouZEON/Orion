@@ -3,6 +3,7 @@
  * Licensed under the MIT License.
  */
 
+use crate::report::table::BuildTiming;
 use crate::runner::common::{AlgorithmRunner, SearchResult};
 use diskann::index::{create_inmem_index, ANNInmemIndex};
 use diskann::model::{IndexConfiguration, IndexWriteParametersBuilder};
@@ -75,7 +76,7 @@ impl AlgorithmRunner for DiskANNRunner {
         "DiskANN (Vamana)"
     }
 
-    fn build(&mut self, data: &[f32], num_points: usize, dimension: usize) -> Duration {
+    fn build(&mut self, data: &[f32], num_points: usize, dimension: usize) -> BuildTiming {
         self.dimension = dimension;
         let start = Instant::now();
 
@@ -84,10 +85,13 @@ impl AlgorithmRunner for DiskANNRunner {
             .expect("Failed to write temp data file");
         self.temp_data_file = Some(temp_path.clone());
 
+        // Use rayon thread count so enough query scratch objects are pre-allocated
+        // for parallel search_batch (initialize_query_scratch creates 5 + num_threads).
+        let num_threads = rayon::current_num_threads() as u32;
         let write_params =
             IndexWriteParametersBuilder::new(self.search_list_size, self.graph_degree)
                 .with_alpha(self.alpha)
-                .with_num_threads(0) // use all cores (matches StagedDiskANN builder)
+                .with_num_threads(num_threads)
                 .build();
 
         let config = IndexConfiguration::new(
@@ -112,7 +116,7 @@ impl AlgorithmRunner for DiskANNRunner {
 
         let elapsed = start.elapsed();
         self.index = Some(index);
-        elapsed
+        BuildTiming { graph_build: elapsed, overhead: Duration::ZERO }
     }
 
     fn search(&self, query: &[f32], k: usize) -> SearchResult {

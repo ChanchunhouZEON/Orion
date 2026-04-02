@@ -3,6 +3,7 @@
  * Licensed under the MIT License.
  */
 
+use crate::report::table::BuildTiming;
 use crate::runner::common::{AlgorithmRunner, SearchResult};
 use diskann::model::InMemoryGraph;
 use ndarray::Array2;
@@ -71,7 +72,7 @@ impl AlgorithmRunner for SSDDiskANNRunner {
         "SSD-DiskANN"
     }
 
-    fn build(&mut self, data: &[f32], num_points: usize, dimension: usize) -> Duration {
+    fn build(&mut self, data: &[f32], num_points: usize, dimension: usize) -> BuildTiming {
         self.dimension = dimension;
         let start = Instant::now();
 
@@ -81,7 +82,9 @@ impl AlgorithmRunner for SSDDiskANNRunner {
 
         // Build DiskANN graph + PQ
         let result = build_diskann_index(
-            &data_2d,
+            data,
+            num_points,
+            dimension,
             self.alpha,
             self.graph_degree,
             self.search_list_size as u32,
@@ -89,7 +92,8 @@ impl AlgorithmRunner for SSDDiskANNRunner {
             Some(self.n_pq_chunks),
             Some(self.n_bits),
             false, // no need for candidate sets
-        );
+        )
+        .expect("build failed");
         log::info!(
             "DiskANN graph build: {:.2}s, PQ build: {:.2}s",
             result.graph_build_time.as_secs_f32(),
@@ -140,7 +144,11 @@ impl AlgorithmRunner for SSDDiskANNRunner {
         }
 
         // After build, data_2d, result.graph are dropped — only PQ codes remain in memory
-        start.elapsed()
+        let total = start.elapsed();
+        BuildTiming {
+            graph_build: result.graph_build_time,
+            overhead: total - result.graph_build_time,
+        }
     }
 
     fn search(&self, query: &[f32], k: usize) -> SearchResult {

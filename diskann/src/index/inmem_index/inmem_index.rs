@@ -651,8 +651,8 @@ where
     /// `InmemDataset` and scratch queues.
     #[cfg(feature = "staged_diskann")]
     pub fn extract_graph_and_candidates(
-        &self,
-    ) -> ANNResult<(crate::model::CsrGraph, Vec<StdHashSet<u32>>, Vec<Vec<u32>>)> {
+        &mut self,
+    ) -> ANNResult<(crate::model::CsrGraph, Vec<Vec<u32>>)> {
         let anchor_sets = self.candidate_anchor_sets.as_ref().ok_or_else(|| {
             ANNError::log_candidate_anchor_sets_error(
                 "Candidate anchor sets have not been built".to_string(),
@@ -677,91 +677,58 @@ where
         // Pass 1 (parallel): each node reads its RwLock once and copies the
         // neighbor slice into a thread-local Vec<u32>. This is the expensive
         // part and benefits from parallelism.
-        // Pass 2 (sequential): flatten the per-node vecs into the CSR arrays.
-        // This is a single memcpy-chain over pre-allocated buffers — very fast.
+        // Phase 2: consume final_graph → aligned CsrGraph in one pass.
+        // Each node's Vec<u32> is moved out of the RwLock, copied into the
+        // aligned buffer, and immediately dropped — minimal peak memory.
         let t2 = std::time::Instant::now();
         let num_pts = self.num_active_pts;
-        let per_node_nbrs: Vec<Vec<u32>> = (0..num_pts as u32)
-            .into_par_iter()
-            .map(|i| {
-                self.final_graph
-                    .read_vertex_and_neighbors(i)
-                    .map(|v| v.get_neighbors().to_vec())
-                    .unwrap_or_default()
-            })
-            .collect();
-
-        // Sort each node's neighbors for O(log d) binary search in bidir check.
-        let mut per_node_nbrs = per_node_nbrs;
-        per_node_nbrs.par_iter_mut().for_each(|nbrs| nbrs.sort_unstable());
-
-        let total_edges: usize = per_node_nbrs.iter().map(|v| v.len()).sum();
-        let mut offsets = Vec::with_capacity(num_pts + 1);
-        let mut flat_neighbors = Vec::with_capacity(total_edges);
-        let mut max_deg: u32 = 0;
-        offsets.push(0u32);
-        for nbrs in &per_node_nbrs {
-            let deg = nbrs.len() as u32;
-            if deg > max_deg { max_deg = deg; }
-            flat_neighbors.extend_from_slice(nbrs);
-            offsets.push(flat_neighbors.len() as u32);
-        }
-        drop(per_node_nbrs);
-        let csr = crate::model::CsrGraph::from_raw(offsets, flat_neighbors, max_deg);
-
+        let max_degree = self.configuration.index_write_parameter.max_degree;
+        let locked_graph = std::mem::replace(
+            &mut self.final_graph,
+            InMemoryGraph::new(0, max_degree),
+        );
+        let mut csr = crate::model::CsrGraph::from_inmem_graph(locked_graph, max_degree)?;
         log::info!("    extract P2 (CSR build):    {:.3}s", t2.elapsed().as_secs_f32());
 
-        // Phase 3: pre-materialise bidirectional neighbors.
-        // CSR neighbors are already sorted (P2), so binary search directly —
-        // no SortedAdjacencyList clone needed.
+        // Phase 3: compute bidir bits in-place (parallel).
         let t3 = std::time::Instant::now();
-        let bidir_nbrs: Vec<Vec<u32>> = (0..num_pts)
-            .into_par_iter()
-            .map(|node| {
-                csr.neighbors(node)
-                    .iter()
-                    .filter(|&&nbr| csr.neighbors(nbr as usize).binary_search(&(node as u32)).is_ok())
-                    .copied()
-                    .collect()
-            })
-            .collect();
+        csr.compute_bidir();
         log::info!("    extract P3 (bidir):        {:.3}s", t3.elapsed().as_secs_f32());
 
-        // Phase 4: augment candidate sets — fully lock-free.
-        // Pre-allocate with estimated capacity to avoid rehashing.
-        let avg_bidir = if num_pts > 0 {
-            bidir_nbrs.iter().map(|v| v.len()).sum::<usize>() / num_pts
-        } else { 0 };
-        let estimated_capacity = 1 + avg_bidir * 3;
+        // Phase 4: build candidate sets using bidir bitset from the CsrGraph.
         let t4 = std::time::Instant::now();
 
-        let mut result: Vec<StdHashSet<u32>> =
-            (0..num_pts).map(|_| StdHashSet::with_capacity(estimated_capacity)).collect();
+        // Build candidate sets as sorted Vec<u32> — faster than HashSet
+        // (no SipHash, no rehash, better cache locality).
+        let mut result: Vec<Vec<u32>> =
+            (0..num_pts).map(|_| Vec::with_capacity(32)).collect();
 
         result
             .par_iter_mut()
             .enumerate()
             .try_for_each(|(origin, candidates)| {
                 let origin_u32 = origin as u32;
-                candidates.insert(origin_u32);
+                candidates.push(origin_u32);
 
-                for &neighbor in bidir_nbrs[origin].iter() {
-                    candidates.insert(neighbor);
+                for neighbor in csr.bidir_neighbors(origin) {
+                    candidates.push(neighbor);
                     let pairs = &anchor_data[neighbor as usize];
                     let start = pairs.partition_point(|&(loc, _)| loc < origin_u32);
                     let mut i = start;
                     while i < pairs.len() && pairs[i].0 == origin_u32 {
-                        candidates.insert(pairs[i].1);
+                        candidates.push(pairs[i].1);
                         i += 1;
                     }
                 }
 
+                candidates.sort_unstable();
+                candidates.dedup();
                 Ok::<(), ANNError>(())
             })?;
 
         log::info!("    extract P4 (candidates):   {:.3}s", t4.elapsed().as_secs_f32());
 
-        Ok((csr, result, bidir_nbrs))
+        Ok((csr, result))
     }
 
     /// Get number of active points.
@@ -775,9 +742,7 @@ where
     T: Default + Copy + Sync + Send + Into<f32> + 'static,
     [T; N]: FullPrecisionDistance<T, N>,
 {
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
     fn build(&mut self, filename: &str, num_points_to_load: usize) -> ANNResult<()> {
         if !file_exists(filename) {
@@ -1010,12 +975,11 @@ where
 
     #[cfg(feature = "staged_diskann")]
     fn extract_graph_and_candidates(
-        &self,
+        &mut self,
         _num_points: usize,
         _max_degree: u32,
-    ) -> (crate::model::CsrGraph, Vec<StdHashSet<u32>>, Vec<Vec<u32>>) {
+    ) -> ANNResult<(crate::model::CsrGraph, Vec<Vec<u32>>)> {
         InmemIndex::extract_graph_and_candidates(self)
-            .unwrap_or_else(|_| (crate::model::CsrGraph::from_raw(vec![0], Vec::new(), 0), Vec::new(), Vec::new()))
     }
 
     fn num_active_points(&self) -> usize {

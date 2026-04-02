@@ -81,7 +81,7 @@ where
 {
     dataset: &'a InmemDataset<f32, N>,
     graph: Arc<CsrGraph>,
-    candidate_sets: Arc<Vec<HashSet<u32>>>,
+    candidate_sets: Arc<Vec<Vec<u32>>>,
     cluster_index: u32,
     pub cohesive_clusters: RefCell<HashMap<u32, ClusterPointManager>>,
     max_cluster_points_size: usize,
@@ -97,7 +97,7 @@ where
         size: u32,
         dataset: &'a InmemDataset<f32, N>,
         graph: Arc<CsrGraph>,
-        candidate_sets: Arc<Vec<HashSet<u32>>>,
+        candidate_sets: Arc<Vec<Vec<u32>>>,
         max_cluster_points_size: usize,
         critical_minimum_rate: f32,
     ) -> Self {
@@ -125,57 +125,23 @@ where
         }
     }
 
-    /// Parallel clustering with pre-computed bidirectional neighbors (skips Phase 1).
-    #[cfg(not(feature = "indicatif"))]
-    pub fn construct_cohesive_clusters_with_bidir(
-        &mut self,
-        bidir_neighbors: Arc<Vec<Vec<u32>>>,
-    ) -> ANNResult<()> {
-        log::info!("  Phase 1 (bidir edges): skipped (pre-computed)");
-        self.construct_cohesive_clusters_inner(&bidir_neighbors)
-    }
-
-    /// Parallel clustering: 4 phases.
+    /// Parallel clustering using bidir bits embedded in the CsrGraph.
+    ///
+    /// Bidir info comes from `CsrGraph::bidir_neighbors()` — no separate
+    /// `Vec<Vec<u32>>` needed.
     #[cfg(not(feature = "indicatif"))]
     pub fn construct_cohesive_clusters(&mut self) -> ANNResult<()> {
         let num_nodes = self.graph.num_nodes();
 
-        // ── Phase 1: Parallel bidirectional edge detection ──
-        let t0 = std::time::Instant::now();
-        let graph_ref = &self.graph;
-        let bidir_neighbors: Vec<Vec<u32>> = (0..num_nodes)
-            .into_par_iter()
-            .map(|node| {
-                graph_ref.neighbors(node)
-                    .iter()
-                    .filter(|&&nbr| graph_ref.contains_edge(nbr, node as u32))
-                    .copied()
-                    .collect()
-            })
-            .collect();
-        log::info!(
-            "  Phase 1 (bidir edges): {:.3}s",
-            t0.elapsed().as_secs_f32()
-        );
-        self.construct_cohesive_clusters_inner(&bidir_neighbors)
-    }
-
-    #[cfg(not(feature = "indicatif"))]
-    fn construct_cohesive_clusters_inner(
-        &mut self,
-        bidir_neighbors: &[Vec<u32>],
-    ) -> ANNResult<()> {
-        let num_nodes = self.graph.num_nodes();
-
-        // ── Phase 2: Union-Find with candidate set filter ──
+        // ── Phase 1+2: Union-Find with bidir + candidate set filter ──
+        // Bidir bits are embedded in the CsrGraph.
         let t1 = std::time::Instant::now();
         let mut uf = UnionFind::new(num_nodes);
-        for (node, nbrs) in bidir_neighbors.iter().enumerate() {
+        for node in 0..num_nodes {
             let node_u32 = node as u32;
-            for &nbr in nbrs {
-                // Only union if there's a candidate set relationship
-                let has_cs_relationship = self.candidate_sets[node].contains(&nbr)
-                    || self.candidate_sets[nbr as usize].contains(&node_u32);
+            for nbr in self.graph.bidir_neighbors(node) {
+                let has_cs_relationship = self.candidate_sets[node].binary_search(&nbr).is_ok()
+                    || self.candidate_sets[nbr as usize].binary_search(&node_u32).is_ok();
                 if has_cs_relationship {
                     uf.union(node, nbr as usize);
                 }
@@ -189,7 +155,6 @@ where
             components.entry(root).or_default().push(i as u32);
         }
 
-        // Separate small vs large components
         let mut small_components: Vec<Vec<u32>> = Vec::new();
         let mut large_components: Vec<Vec<u32>> = Vec::new();
         let mut singleton_count = 0usize;
@@ -197,7 +162,6 @@ where
         for (_, members) in components {
             if members.len() <= 1 {
                 singleton_count += 1;
-                // Single-node components → handled in consolidation
             } else if members.len() <= LARGE_COMPONENT_THRESHOLD {
                 small_components.push(members);
             } else {
@@ -220,32 +184,17 @@ where
         let max_size = self.max_cluster_points_size;
         let critical_rate = self.critical_minimum_rate;
 
-        // Phase 3a: Small components → parallel batch construction
         let small_results: Vec<Vec<ClusterPointManager>> = small_components
             .into_par_iter()
             .map(|members| {
-                build_and_refine_component(
-                    &graph,
-                    &candidate_sets,
-                    &members,
-                    max_size,
-                    critical_rate,
-                )
+                build_and_refine_component(&graph, &candidate_sets, &members, max_size, critical_rate)
             })
             .collect();
 
-        // Phase 3b: Large components → parallel sub-partition + build
         let large_results: Vec<Vec<ClusterPointManager>> = large_components
             .into_par_iter()
             .map(|members| {
-                build_large_component(
-                    &graph,
-                    &candidate_sets,
-                    &bidir_neighbors,
-                    &members,
-                    max_size,
-                    critical_rate,
-                )
+                build_large_component(&graph, &candidate_sets, &members, max_size, critical_rate)
             })
             .collect();
 
@@ -601,7 +550,7 @@ where
 #[cfg(not(feature = "indicatif"))]
 fn build_and_refine_component(
     graph: &Arc<CsrGraph>,
-    candidate_sets: &Arc<Vec<HashSet<u32>>>,
+    candidate_sets: &Arc<Vec<Vec<u32>>>,
     members: &[u32],
     max_size: usize,
     critical_rate: f32,
@@ -637,8 +586,7 @@ fn build_and_refine_component(
 #[cfg(not(feature = "indicatif"))]
 fn build_large_component(
     graph: &Arc<CsrGraph>,
-    candidate_sets: &Arc<Vec<HashSet<u32>>>,
-    bidir_neighbors: &[Vec<u32>],
+    candidate_sets: &Arc<Vec<Vec<u32>>>,
     members: &[u32],
     max_size: usize,
     critical_rate: f32,
@@ -661,7 +609,7 @@ fn build_large_component(
         while cluster.len() < max_size && !frontier.is_empty() {
             let mut next_frontier = Vec::new();
             for &node in &frontier {
-                for &nbr in &bidir_neighbors[node as usize] {
+                for nbr in graph.bidir_neighbors(node as usize) {
                     if cluster.len() >= max_size {
                         break;
                     }

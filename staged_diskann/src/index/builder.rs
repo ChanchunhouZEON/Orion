@@ -6,7 +6,6 @@
 use diskann::index::{ANNInmemIndex, create_inmem_index};
 use diskann::model::configuration::index_write_parameters::IndexWriteParametersBuilder;
 use diskann::model::{CsrGraph, FixedChunkPQTable, IndexConfiguration};
-use ndarray::ArcArray2;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,13 +20,9 @@ pub use diskann::model::CsrGraph as CsrGraphType;
 /// `index` retains the original `InmemIndex` (behind trait object) so callers
 /// can downcast to take the `InmemDataset` for zero-copy data sharing.
 pub struct DiskANNBuildResult {
+    /// Aligned CsrGraph with embedded bidir bitset per node.
     pub graph: CsrGraph,
-    pub candidate_sets: Arc<Vec<HashSet<u32>>>,
-    /// Pre-computed bidirectional neighbors. `bidir_neighbors[i]` = neighbors of
-    /// node `i` that also have an edge back to `i`. Computed once in
-    /// `extract_graph_and_candidates` and reused by clustering (skips Phase 1).
-    /// Wrapped in `Arc` for O(1) clone across multiple StagedDiskANN builds.
-    pub bidir_neighbors: Arc<Vec<Vec<u32>>>,
+    pub candidate_sets: Arc<Vec<Vec<u32>>>,
     pub entry_point: u32,
     /// The original index. Callers may downcast via `as_any_mut()` to take
     /// fields like `InmemDataset` before dropping.
@@ -43,7 +38,9 @@ pub struct DiskANNBuildResult {
 /// This replaces the old single-threaded `DiskANN::new()` from `diskann_base.rs`.
 #[allow(clippy::too_many_arguments)]
 pub fn build_diskann_index(
-    data: &ArcArray2<f32>,
+    flat_data: &[f32],
+    num_points: usize,
+    dimension: usize,
     alpha: f32,
     graph_degree: u32,
     search_list_size: u32,
@@ -51,14 +48,13 @@ pub fn build_diskann_index(
     n_subquantizers: Option<usize>,
     _n_bits: Option<u32>,
     compute_candidate_sets: bool,
-) -> DiskANNBuildResult {
-    let num_points = data.nrows();
-    let dimension = data.ncols();
+) -> diskann::common::ANNResult<DiskANNBuildResult> {
 
     // 1. Build Vamana graph via diskann (parallel, optimized)
+    let num_threads = rayon::current_num_threads() as u32;
     let write_params = IndexWriteParametersBuilder::new(search_list_size, graph_degree)
         .with_alpha(alpha)
-        .with_num_threads(0) // use all cores
+        .with_num_threads(num_threads)
         .with_compute_candidate_sets(compute_candidate_sets)
         .build();
 
@@ -78,15 +74,6 @@ pub fn build_diskann_index(
     let mut index: Box<dyn ANNInmemIndex<f32>> =
         create_inmem_index::<f32>(config).expect("Failed to create diskann index");
 
-    // Borrow a flat view of the ndarray data without copying.
-    let flat_data_buf: Vec<f32>;
-    let flat_data: &[f32] = if let Some(slice) = data.as_slice() {
-        slice
-    } else {
-        flat_data_buf = data.iter().copied().collect();
-        &flat_data_buf
-    };
-
     let graph_start = Instant::now();
     index
         .build_from_data(flat_data, num_points)
@@ -95,22 +82,20 @@ pub fn build_diskann_index(
 
     let entry_point = index.start_node();
 
-    // 2. Extract graph (lock-free CSR) + candidate sets in one pass.
-    //    Reads each RwLock once to build flat CSR; no ownership transfer needed.
     let t_extract = Instant::now();
-    let (graph, candidate_sets, bidir_neighbors) = if compute_candidate_sets {
-        let (adj, cs, bidir) = index.extract_graph_and_candidates(num_points, graph_degree);
-        (adj, Arc::new(cs), Arc::new(bidir))
+    let (graph, candidate_sets) = if compute_candidate_sets {
+        let (g, cs) = index.extract_graph_and_candidates(num_points, graph_degree)?;
+        (g, Arc::new(cs))
     } else {
-        let (adj, _, bidir) = index.extract_graph_and_candidates(num_points, graph_degree);
-        (adj, Arc::new(vec![HashSet::new(); num_points]), Arc::new(bidir))
+        let (g, _) = index.extract_graph_and_candidates(num_points, graph_degree)?;
+        (g, Arc::new(vec![Vec::new(); num_points]))
     };
     log::info!(
         "  extract_graph_and_candidates: {:.3}s",
         t_extract.elapsed().as_secs_f32()
     );
 
-    // 3. Build PQ if requested — using FixedChunkPQTable
+    // 3. Build PQ if requested
     let pq_start = Instant::now();
     let (pq, pq_codes) = if build_pq {
         let n_chunks = n_subquantizers.unwrap_or(8);
@@ -122,15 +107,14 @@ pub fn build_diskann_index(
     };
     let pq_build_time = pq_start.elapsed();
 
-    DiskANNBuildResult {
+    Ok(DiskANNBuildResult {
         graph,
         candidate_sets,
-        bidir_neighbors,
         entry_point,
         index,
         pq,
         pq_codes,
         graph_build_time,
         pq_build_time,
-    }
+    })
 }
