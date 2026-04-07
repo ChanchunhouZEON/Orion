@@ -110,7 +110,9 @@ where
         if !scratch.candidate_buffer.is_empty() {
             if let Some(ref cas) = self.candidate_anchor_sets {
                 if scratch.candidate_buffer.len() > 1 {
-                    scratch.candidate_buffer.sort_unstable_by_key(|&(anchor, _)| anchor);
+                    scratch
+                        .candidate_buffer
+                        .sort_unstable_by_key(|&(anchor, _)| anchor);
                 }
                 let mut i = 0;
                 while i < scratch.candidate_buffer.len() {

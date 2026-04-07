@@ -8,7 +8,7 @@ use crate::runner::common::{AlgorithmRunner, SearchResult};
 use diskann::model::InMemoryGraph;
 use ndarray::Array2;
 use ssd_diskann::SSDIndex;
-use staged_diskann::{CsrGraph, build_diskann_index, DIM_128, DIM_960};
+use staged_diskann::{build_diskann_index, CsrGraph, DIM_128, DIM_960};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -18,7 +18,8 @@ fn csr_to_inmem_graph(csr: &CsrGraph) -> InMemoryGraph {
     let max_deg = (0..n).map(|i| csr.degree(i)).max().unwrap_or(0) as u32;
     let g = InMemoryGraph::new(n, max_deg);
     for i in 0..n {
-        g.set_neighbors_from_vec(i as u32, csr.neighbors(i).to_vec()).ok();
+        g.set_neighbors_from_vec(i as u32, csr.neighbors(i).to_vec())
+            .ok();
     }
     g
 }

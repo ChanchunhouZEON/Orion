@@ -64,7 +64,6 @@ impl StagedDiskANNRunner {
             inner: None,
         }
     }
-
 }
 
 impl AlgorithmRunner for StagedDiskANNRunner {
@@ -93,13 +92,18 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             "DiskANN graph build (parallel Vamana + candidate sets): {:.2}s",
             result.graph_build_time.as_secs_f32()
         );
-        log::info!("  mem after build_diskann_index: {}", crate::metrics::memory::format_bytes(crate::ALLOCATOR.current_bytes()));
+        log::info!(
+            "  mem after build_diskann_index: {}",
+            crate::metrics::memory::format_bytes(crate::ALLOCATOR.current_bytes())
+        );
 
         match dimension {
             DIM_128 => {
                 // Downcast to take the InmemDataset from the InmemIndex.
                 let dataset = {
-                    let idx = result.index.as_any_mut()
+                    let idx = result
+                        .index
+                        .as_any_mut()
                         .downcast_mut::<InmemIndex<f32, 128>>()
                         .expect("downcast to InmemIndex<f32, 128>");
                     std::mem::replace(
@@ -107,9 +111,15 @@ impl AlgorithmRunner for StagedDiskANNRunner {
                         diskann::model::InmemDataset::new(0, 1.0).unwrap(),
                     )
                 };
-                log::info!("  mem after take(dataset):  {}", crate::metrics::memory::format_bytes(crate::ALLOCATOR.current_bytes()));
+                log::info!(
+                    "  mem after take(dataset):  {}",
+                    crate::metrics::memory::format_bytes(crate::ALLOCATOR.current_bytes())
+                );
                 drop(result.index);
-                log::info!("  mem after drop(index):    {}", crate::metrics::memory::format_bytes(crate::ALLOCATOR.current_bytes()));
+                log::info!(
+                    "  mem after drop(index):    {}",
+                    crate::metrics::memory::format_bytes(crate::ALLOCATOR.current_bytes())
+                );
 
                 let t1 = Instant::now();
                 let compressed = StagedDiskANN::<128>::new(
@@ -136,7 +146,9 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             }
             DIM_960 => {
                 let dataset = {
-                    let idx = result.index.as_any_mut()
+                    let idx = result
+                        .index
+                        .as_any_mut()
                         .downcast_mut::<InmemIndex<f32, 960>>()
                         .expect("downcast to InmemIndex<f32, 960>");
                     std::mem::replace(
@@ -201,49 +213,10 @@ impl AlgorithmRunner for StagedDiskANNRunner {
         }
     }
 
-    fn search_batch(&self, queries: &[Vec<f32>], k: usize) -> Vec<SearchResult> {
-        use std::time::Instant;
-
-        let start = Instant::now();
-        let batch_results = match self.inner.as_ref().expect("Index not built") {
-            StagedInner::Dim128 { compressed, .. } => {
-                let qs: Vec<[f32; 128]> = queries
-                    .iter()
-                    .map(|q| {
-                        let mut arr = [0.0f32; 128];
-                        arr.copy_from_slice(&q[..128]);
-                        arr
-                    })
-                    .collect();
-                compressed
-                    .search_batch(&qs, k, self.search_list_size, self.window_size, self.epsilon)
-                    .expect("batch search failed")
-            }
-            StagedInner::Dim960 { compressed, .. } => {
-                let qs: Vec<[f32; 960]> = queries
-                    .iter()
-                    .map(|q| {
-                        let mut arr = [0.0f32; 960];
-                        arr.copy_from_slice(&q[..960]);
-                        arr
-                    })
-                    .collect();
-                compressed
-                    .search_batch(&qs, k, self.search_list_size, self.window_size, self.epsilon)
-                    .expect("batch search failed")
-            }
-        };
-        let total = start.elapsed();
-        let per_query = total / queries.len().max(1) as u32;
-
-        batch_results
-            .into_iter()
-            .map(|neighbors| SearchResult {
-                neighbors,
-                duration: per_query,
-            })
-            .collect()
-    }
+    // Use the trait default search_batch (par_iter over self.search)
+    // so that pool.install() from search_batch_with_threads correctly
+    // controls the thread count. The previous override called
+    // compressed.search_batch() which used the global rayon pool.
 
     fn memory_bytes(&self) -> usize {
         0

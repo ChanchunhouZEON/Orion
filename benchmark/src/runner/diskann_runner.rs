@@ -116,7 +116,10 @@ impl AlgorithmRunner for DiskANNRunner {
 
         let elapsed = start.elapsed();
         self.index = Some(index);
-        BuildTiming { graph_build: elapsed, overhead: Duration::ZERO }
+        BuildTiming {
+            graph_build: elapsed,
+            overhead: Duration::ZERO,
+        }
     }
 
     fn search(&self, query: &[f32], k: usize) -> SearchResult {

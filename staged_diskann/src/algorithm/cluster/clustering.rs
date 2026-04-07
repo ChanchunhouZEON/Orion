@@ -9,8 +9,7 @@ use diskann::model::{CsrGraph, InmemDataset};
 use ndarray::{ArcArray1, Array1};
 use rayon::prelude::*;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::collections::HashMap;
 use vector::{FullPrecisionDistance, Metric};
 
 #[cfg(feature = "indicatif")]
@@ -19,6 +18,9 @@ use indicatif::ProgressFinish::AndLeave;
 use indicatif::ProgressIterator;
 
 pub const INVALID_CLUSTER_AFFILIATION: i32 = -1;
+/// Sentinel value in `point_affiliation`: node is temporarily affiliated
+/// during `build_large_component`, but not yet assigned a cluster ID.
+const AFFILIATED_SENTINEL: i32 = -2;
 const MAX_DIST: f32 = f32::MAX;
 /// Components larger than this threshold are sub-partitioned
 /// to avoid O(n^2) batch construction cost.
@@ -80,10 +82,10 @@ where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
     dataset: &'a InmemDataset<f32, N>,
-    graph: Arc<CsrGraph>,
-    candidate_sets: Arc<Vec<Vec<u32>>>,
+    graph: &'a CsrGraph,
+    candidate_sets: &'a [Vec<u32>],
     cluster_index: u32,
-    pub cohesive_clusters: RefCell<HashMap<u32, ClusterPointManager>>,
+    pub cohesive_clusters: RefCell<HashMap<u32, ClusterPointManager<'a>>>,
     max_cluster_points_size: usize,
     pub point_affiliation: ArcArray1<i32>,
     critical_minimum_rate: f32,
@@ -96,8 +98,8 @@ where
     pub fn new(
         size: u32,
         dataset: &'a InmemDataset<f32, N>,
-        graph: Arc<CsrGraph>,
-        candidate_sets: Arc<Vec<Vec<u32>>>,
+        graph: &'a CsrGraph,
+        candidate_sets: &'a [Vec<u32>],
         max_cluster_points_size: usize,
         critical_minimum_rate: f32,
     ) -> Self {
@@ -141,7 +143,9 @@ where
             let node_u32 = node as u32;
             for nbr in self.graph.bidir_neighbors(node) {
                 let has_cs_relationship = self.candidate_sets[node].binary_search(&nbr).is_ok()
-                    || self.candidate_sets[nbr as usize].binary_search(&node_u32).is_ok();
+                    || self.candidate_sets[nbr as usize]
+                        .binary_search(&node_u32)
+                        .is_ok();
                 if has_cs_relationship {
                     uf.union(node, nbr as usize);
                 }
@@ -179,22 +183,31 @@ where
 
         // ── Phase 3: Parallel cluster construction & refinement ──
         let t2 = std::time::Instant::now();
-        let graph = self.graph.clone();
-        let candidate_sets = self.candidate_sets.clone();
+        let graph = self.graph;
+        let candidate_sets = self.candidate_sets;
         let max_size = self.max_cluster_points_size;
         let critical_rate = self.critical_minimum_rate;
 
         let small_results: Vec<Vec<ClusterPointManager>> = small_components
             .into_par_iter()
             .map(|members| {
-                build_and_refine_component(&graph, &candidate_sets, &members, max_size, critical_rate)
+                build_and_refine_component(
+                    &graph,
+                    &candidate_sets,
+                    &members,
+                    max_size,
+                    critical_rate,
+                )
             })
             .collect();
 
+        // Large components (typically ≤1): process sequentially so we can pass
+        // &mut point_affiliation for the -2 sentinel optimization.
+        let pa_slice = self.point_affiliation.as_slice_mut().unwrap();
         let large_results: Vec<Vec<ClusterPointManager>> = large_components
-            .into_par_iter()
+            .iter()
             .map(|members| {
-                build_large_component(&graph, &candidate_sets, &members, max_size, critical_rate)
+                build_large_component(graph, candidate_sets, members, max_size, critical_rate, pa_slice)
             })
             .collect();
 
@@ -279,7 +292,9 @@ where
                         if size >= max_size {
                             continue;
                         }
-                        let dist = dataset_ref.get_distance(centroid, idx as u32, Metric::L2).unwrap_or(MAX_DIST);
+                        let dist = dataset_ref
+                            .get_distance(centroid, idx as u32, Metric::L2)
+                            .unwrap_or(MAX_DIST);
                         if dist < min_dist {
                             min_dist = dist;
                             best_cluster = Some(neighbor_aff);
@@ -322,8 +337,8 @@ where
         let cluster_id = self.cluster_index;
         let mut cpm = ClusterPointManager::new(
             cluster_id as i32,
-            self.graph.clone(),
-            self.candidate_sets.clone(),
+            self.graph,
+            self.candidate_sets,
             self.max_cluster_points_size,
             self.critical_minimum_rate,
         );
@@ -401,8 +416,8 @@ where
                     (None, None) => {
                         let mut cpm = ClusterPointManager::new(
                             self.cluster_index as i32,
-                            self.graph.clone(),
-                            self.candidate_sets.clone(),
+                            self.graph,
+                            self.candidate_sets,
                             self.max_cluster_points_size,
                             self.critical_minimum_rate,
                         );
@@ -507,7 +522,10 @@ where
                         panic!("Cluster {neighbor_affiliation}'s centroid is none.")
                     });
 
-                    let dist = self.dataset.get_distance(centroid, idx as u32, Metric::L2).unwrap_or(MAX_DIST);
+                    let dist = self
+                        .dataset
+                        .get_distance(centroid, idx as u32, Metric::L2)
+                        .unwrap_or(MAX_DIST);
 
                     if dist < min_dist {
                         min_dist = dist;
@@ -529,8 +547,8 @@ where
                     let cluster_id = self.cluster_index;
                     let mut cpm = ClusterPointManager::new(
                         cluster_id as i32,
-                        self.graph.clone(),
-                        self.candidate_sets.clone(),
+                        self.graph,
+                        self.candidate_sets,
                         self.max_cluster_points_size,
                         self.critical_minimum_rate,
                     );
@@ -548,17 +566,17 @@ where
 
 /// Build and refine a small component using batch ClusterPointManager construction.
 #[cfg(not(feature = "indicatif"))]
-fn build_and_refine_component(
-    graph: &Arc<CsrGraph>,
-    candidate_sets: &Arc<Vec<Vec<u32>>>,
+fn build_and_refine_component<'a>(
+    graph: &'a CsrGraph,
+    candidate_sets: &'a [Vec<u32>],
     members: &[u32],
     max_size: usize,
     critical_rate: f32,
-) -> Vec<ClusterPointManager> {
+) -> Vec<ClusterPointManager<'a>> {
     let mut cpm = ClusterPointManager::from_members(
         0, // ID assigned later
-        graph.clone(),
-        candidate_sets.clone(),
+        graph,
+        candidate_sets,
         max_size,
         critical_rate,
         members,
@@ -584,27 +602,30 @@ fn build_and_refine_component(
 /// Handle large components by greedy sub-partitioning, then batch-build each partition.
 /// This avoids O(n^2) pairwise cost for huge components.
 #[cfg(not(feature = "indicatif"))]
-fn build_large_component(
-    graph: &Arc<CsrGraph>,
-    candidate_sets: &Arc<Vec<Vec<u32>>>,
+fn build_large_component<'a>(
+    graph: &'a CsrGraph,
+    candidate_sets: &'a [Vec<u32>],
     members: &[u32],
     max_size: usize,
     critical_rate: f32,
-) -> Vec<ClusterPointManager> {
-    let member_set: HashSet<u32> = members.iter().copied().collect();
-    let mut affiliated: HashSet<u32> = HashSet::new();
+    point_affiliation: &mut [i32],
+) -> Vec<ClusterPointManager<'a>> {
+    // Sorted members for binary-search membership checks (replaces HashSet).
+    let mut members_sorted: Vec<u32> = members.to_vec();
+    members_sorted.sort_unstable();
+
+    // Use point_affiliation with AFFILIATED_SENTINEL (-2) instead of a HashSet.
+    // -1 = unaffiliated (default), -2 = affiliated during this call, ≥0 = cluster ID.
     let mut sub_clusters: Vec<Vec<u32>> = Vec::new();
 
-    // Greedy BFS-based sub-partitioning within the component
     for &seed in members {
-        if affiliated.contains(&seed) {
+        if point_affiliation[seed as usize] == AFFILIATED_SENTINEL {
             continue;
         }
 
         let mut cluster = vec![seed];
-        affiliated.insert(seed);
+        point_affiliation[seed as usize] = AFFILIATED_SENTINEL;
 
-        // BFS grow from seed using bidirectional + candidate set edges
         let mut frontier: Vec<u32> = vec![seed];
         while cluster.len() < max_size && !frontier.is_empty() {
             let mut next_frontier = Vec::new();
@@ -613,15 +634,16 @@ fn build_large_component(
                     if cluster.len() >= max_size {
                         break;
                     }
-                    if affiliated.contains(&nbr) || !member_set.contains(&nbr) {
+                    if point_affiliation[nbr as usize] == AFFILIATED_SENTINEL
+                        || members_sorted.binary_search(&nbr).is_err()
+                    {
                         continue;
                     }
-                    // Candidate set check: seed's candidate set should relate to nbr
                     let seed_cs = &candidate_sets[seed as usize];
                     let nbr_cs = &candidate_sets[nbr as usize];
                     if seed_cs.contains(&nbr) || nbr_cs.contains(&seed) {
                         cluster.push(nbr);
-                        affiliated.insert(nbr);
+                        point_affiliation[nbr as usize] = AFFILIATED_SENTINEL;
                         next_frontier.push(nbr);
                     }
                 }
@@ -634,7 +656,14 @@ fn build_large_component(
         }
     }
 
-    // Build each sub-cluster in parallel
+    // Reset sentinel values back to INVALID (-1) for points not placed in sub-clusters.
+    // Points that end up in sub-clusters will get real cluster IDs later.
+    for &m in members {
+        if point_affiliation[m as usize] == AFFILIATED_SENTINEL {
+            point_affiliation[m as usize] = INVALID_CLUSTER_AFFILIATION;
+        }
+    }
+
     sub_clusters
         .into_par_iter()
         .flat_map(|members| {

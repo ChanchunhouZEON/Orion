@@ -16,12 +16,12 @@ pub use algorithm::CohesiveClusterManager;
 pub use algorithm::DistanceConvergenceChecker;
 pub use algorithm::SearchProfile;
 pub use algorithm::search::in_mem_search::{
-    DEFAULT_EPSILON, DEFAULT_SEARCH_LIST_SIZE, DEFAULT_WINDOW_SIZE,
+    DEFAULT_EPSILON, DEFAULT_SEARCH_LIST_SIZE, DEFAULT_WINDOW_SIZE, SearchProfileStats,
 };
+pub use diskann::model::CsrGraph;
 pub use index::DiskANN;
 pub use index::StagedDiskANN;
 pub use index::{BeamSearchConfig, BeamSearchResult, IoLimiter, async_beam_search};
 pub use index::{DIM_32, DIM_128, DIM_960};
 pub use index::{DiskANNBuildResult, build_diskann_index};
-pub use diskann::model::CsrGraph;
 pub use model::{FixedChunkPQTable, NUM_PQ_CENTROIDS};

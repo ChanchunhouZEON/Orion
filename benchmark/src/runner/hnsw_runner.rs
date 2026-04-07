@@ -72,7 +72,10 @@ impl AlgorithmRunner for HNSWRunner {
             _ => panic!("Unsupported dimension: {dimension}"),
         }
 
-        BuildTiming { graph_build: start.elapsed(), overhead: Duration::ZERO }
+        BuildTiming {
+            graph_build: start.elapsed(),
+            overhead: Duration::ZERO,
+        }
     }
 
     fn search(&self, query: &[f32], k: usize) -> SearchResult {

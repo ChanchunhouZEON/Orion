@@ -28,3 +28,25 @@ pub use math_util::*;
 
 pub mod partition;
 pub use partition::*;
+
+/// Return current process RSS as a human-readable string (macOS / Linux).
+pub fn mem_usage() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let pid = std::process::id();
+        if let Ok(out) = Command::new("ps").args(["-o", "rss=", "-p", &pid.to_string()]).output() {
+            if let Ok(s) = std::str::from_utf8(&out.stdout) {
+                if let Ok(kb) = s.trim().parse::<u64>() {
+                    let mb = kb as f64 / 1024.0;
+                    return format!("{:.1} MB (RSS)", mb);
+                }
+            }
+        }
+        "unknown".to_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "unsupported".to_string()
+    }
+}
