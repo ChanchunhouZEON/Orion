@@ -107,16 +107,51 @@ impl Drop for ScratchGuard {
     }
 }
 
+/// Bitset-based visited tracker. For N nodes needs N/8 bytes.
+/// 100K nodes = 12.5 KB (fits in L1), 1M nodes = 125 KB (fits in L2).
+pub struct BitVecSeen {
+    bits: Vec<u64>,
+    num_words: usize,
+}
+
+impl BitVecSeen {
+    pub fn new(num_nodes: usize) -> Self {
+        let num_words = (num_nodes + 63) / 64;
+        Self {
+            bits: vec![0u64; num_words],
+            num_words,
+        }
+    }
+
+    /// Insert node. Returns true if the node was NOT previously seen (newly inserted).
+    #[inline]
+    pub fn insert(&mut self, id: u32) -> bool {
+        let word = id as usize >> 6;
+        let bit = 1u64 << (id & 63);
+        if self.bits[word] & bit != 0 {
+            false
+        } else {
+            self.bits[word] |= bit;
+            true
+        }
+    }
+
+    /// Clear all bits without deallocating.
+    pub fn clear(&mut self) {
+        // memset to zero — much faster than per-element clear for large bitsets.
+        // For small bitsets (< L1) this is a single cache line write.
+        unsafe {
+            std::ptr::write_bytes(self.bits.as_mut_ptr(), 0, self.num_words);
+        }
+    }
+}
+
 /// Pre-allocated scratch for in-memory greedy search.
-///
-/// Mirrors DiskANN's `InMemQueryScratch` pattern: uses diskann's `NeighborPriorityQueue`
-/// (no internal `HashSet`) for the candidate queue, plus an external `hashbrown::HashSet`
-/// for O(1) dedup — identical to what DiskANN's `node_visited_robinset` provides.
 pub struct InMemSearchScratch {
     /// Sorted candidate queue; no internal dedup — dedup is handled by `seen`.
     pub pq: DiskANNPQ,
-    /// Tracks every enqueued/expanded node for O(1) dedup before distance computation.
-    pub seen: BHashSet<u32>,
+    /// Bitset-based visited tracker. O(1) insert + test, L1-friendly.
+    pub seen: BitVecSeen,
     /// Staging buffer: unseen neighbor IDs collected before distance computation.
     pub id_scratch: Vec<u32>,
     /// Reusable convergence checker — avoids per-query allocation.
@@ -125,22 +160,31 @@ pub struct InMemSearchScratch {
 
 impl InMemSearchScratch {
     pub fn new(search_list_size: usize) -> Self {
+        // Default capacity for bitset — will be resized on first prepare_for_query
+        // if the actual num_nodes is larger.
         Self {
             pq: DiskANNPQ::with_capacity(search_list_size),
-            // Pre-allocate 20× the list size matching DiskANN's InMemQueryScratch pattern.
-            seen: BHashSet::with_capacity(20 * search_list_size),
+            seen: BitVecSeen::new(search_list_size * 20),
             id_scratch: Vec::with_capacity(64),
             dcc: DistanceConvergenceChecker::new(5, 0.0),
         }
     }
 
-    /// Reset for reuse without deallocation. Grows backing store if needed.
+    /// Reset for reuse. `num_nodes` sets the bitset capacity.
     pub fn prepare_for_query(&mut self, search_list_size: usize) {
         self.pq.clear();
         self.pq.reserve(search_list_size);
         self.seen.clear();
         self.id_scratch.clear();
         self.dcc.reset();
+    }
+
+    /// Ensure the bitset covers `num_nodes` nodes.
+    pub fn ensure_capacity(&mut self, num_nodes: usize) {
+        let needed = (num_nodes + 63) / 64;
+        if needed > self.seen.num_words {
+            self.seen = BitVecSeen::new(num_nodes);
+        }
     }
 }
 

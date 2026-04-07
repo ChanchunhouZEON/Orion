@@ -49,7 +49,6 @@ pub fn build_diskann_index(
     _n_bits: Option<u32>,
     compute_candidate_sets: bool,
 ) -> diskann::common::ANNResult<DiskANNBuildResult> {
-
     // 1. Build Vamana graph via diskann (parallel, optimized)
     let num_threads = rayon::current_num_threads() as u32;
     let write_params = IndexWriteParametersBuilder::new(search_list_size, graph_degree)
@@ -87,13 +86,14 @@ pub fn build_diskann_index(
         let (g, cs) = index.extract_graph_and_candidates(num_points, graph_degree)?;
         (g, Arc::new(cs))
     } else {
-        let (g, _) = index.extract_graph_and_candidates(num_points, graph_degree)?;
-        (g, Arc::new(vec![Vec::new(); num_points]))
+        // No candidate sets needed — extract graph only via extract_final_graph
+        // to avoid requiring candidate anchor sets.
+        let inmem_graph = index.extract_final_graph(num_points, graph_degree);
+        let mut csr = CsrGraph::from_inmem_graph(inmem_graph, graph_degree)?;
+        csr.compute_bidir();
+        (csr, Arc::new(vec![]))
     };
-    log::info!(
-        "  extract_graph_and_candidates: {:.3}s",
-        t_extract.elapsed().as_secs_f32()
-    );
+    log::info!("  extract: {:.3}s", t_extract.elapsed().as_secs_f32());
 
     // 3. Build PQ if requested
     let pq_start = Instant::now();

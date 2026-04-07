@@ -41,21 +41,18 @@ where
             let neighbor = neighbor_pq.closest_notvisited();
             visited.insert(neighbor.id);
 
-            // Read vertex from the CompressedGraph (single RwLock read)
-            if let Ok(vertex) = self.graph.read_vertex(neighbor.id) {
-                // Switch between full neighbors (Phase 1) and compressed neighbors (Phase 2)
-                let neighbors_to_use = if !dcc.update(neighbor.distance) {
-                    // Phase 1: use ALL neighbors
-                    vertex.get_neighbors()
-                } else {
-                    // Phase 2: use only compressed neighbors
-                    vertex.get_compressed_neighbors()
-                };
+            // Switch between full neighbors (Phase 1) and compressed neighbors (Phase 2)
+            let neighbors_to_use = if !dcc.update(neighbor.distance) {
+                // Phase 1: use ALL neighbors
+                self.graph.neighbors(neighbor.id as usize)
+            } else {
+                // Phase 2: use only compressed neighbors
+                self.graph.compressed_neighbors(neighbor.id as usize)
+            };
 
-                for &nn in neighbors_to_use {
-                    let dist = self.pq_distance(nn, &pq_dists)?;
-                    neighbor_pq.insert(Neighbor::new(nn, dist));
-                }
+            for &nn in neighbors_to_use {
+                let dist = self.pq_distance(nn, &pq_dists)?;
+                neighbor_pq.insert(Neighbor::new(nn, dist));
             }
         }
 
@@ -63,12 +60,11 @@ where
         let mut result: Vec<(u32, f32)> = visited
             .iter()
             .map(|&id| {
-                let dist =
-                    {
-                        let qv = Vertex::new(query, 0);
-                        let v = self.dataset.get_vertex(id).unwrap();
-                        qv.compare(&v, Metric::L2)
-                    };
+                let dist = {
+                    let qv = Vertex::new(query, 0);
+                    let v = self.dataset.get_vertex(id).unwrap();
+                    qv.compare(&v, Metric::L2)
+                };
                 (id, dist)
             })
             .collect();
@@ -109,25 +105,23 @@ where
             }
             visited.insert(neighbor.id);
 
-            if let Ok(vertex) = self.graph.read_vertex(neighbor.id) {
-                if !dcc.update(neighbor.distance) {
-                    // Phase 1: full graph
-                    for &nn in vertex.get_neighbors() {
-                        let dist = self.pq_distance(nn, &pq_dists)?;
-                        neighbor_pq.insert(Neighbor::new(nn, dist));
-                    }
-                } else {
-                    // Phase 2: compressed neighbors only
-                    let compressed_nbrs = vertex.get_compressed_neighbors();
-                    for &nn in compressed_nbrs {
-                        let dist = self.pq_distance(nn, &pq_dists)?;
-                        compressed_neighbors_in_mem.insert(nn);
-                        if let Some(popped) = neighbor_pq.insert(Neighbor::new(nn, dist)) {
-                            compressed_neighbors_in_mem.remove(&popped);
-                        }
-                    }
-                    compressed_ndc += compressed_nbrs.len() as u32;
+            if !dcc.update(neighbor.distance) {
+                // Phase 1: full graph
+                for &nn in self.graph.neighbors(neighbor.id as usize) {
+                    let dist = self.pq_distance(nn, &pq_dists)?;
+                    neighbor_pq.insert(Neighbor::new(nn, dist));
                 }
+            } else {
+                // Phase 2: compressed neighbors only
+                let compressed_nbrs = self.graph.compressed_neighbors(neighbor.id as usize);
+                for &nn in compressed_nbrs {
+                    let dist = self.pq_distance(nn, &pq_dists)?;
+                    compressed_neighbors_in_mem.insert(nn);
+                    if let Some(popped) = neighbor_pq.insert(Neighbor::new(nn, dist)) {
+                        compressed_neighbors_in_mem.remove(&popped);
+                    }
+                }
+                compressed_ndc += compressed_nbrs.len() as u32;
             }
         }
 
@@ -135,12 +129,11 @@ where
         let mut result: Vec<(u32, f32)> = visited
             .iter()
             .map(|&id| {
-                let dist =
-                    {
-                        let qv = Vertex::new(query, 0);
-                        let v = self.dataset.get_vertex(id).unwrap();
-                        qv.compare(&v, Metric::L2)
-                    };
+                let dist = {
+                    let qv = Vertex::new(query, 0);
+                    let v = self.dataset.get_vertex(id).unwrap();
+                    qv.compare(&v, Metric::L2)
+                };
                 (id, dist)
             })
             .collect();
@@ -190,24 +183,22 @@ where
             let neighbor = neighbor_pq.closest_notvisited();
             visited.insert(neighbor.id);
 
-            if let Ok(vertex) = self.graph.read_vertex(neighbor.id) {
-                if !dcc.update(neighbor.distance) {
-                    let p1_start = Instant::now();
-                    phase1_iters += 1;
-                    for &nn in vertex.get_neighbors() {
-                        let dist = self.pq_distance(nn, &pq_dists)?;
-                        neighbor_pq.insert(Neighbor::new(nn, dist));
-                    }
-                    phase1_us += p1_start.elapsed().as_secs_f64() * 1e6;
-                } else {
-                    let p2_start = Instant::now();
-                    phase2_iters += 1;
-                    for &nn in vertex.get_compressed_neighbors() {
-                        let dist = self.pq_distance(nn, &pq_dists)?;
-                        neighbor_pq.insert(Neighbor::new(nn, dist));
-                    }
-                    phase2_us += p2_start.elapsed().as_secs_f64() * 1e6;
+            if !dcc.update(neighbor.distance) {
+                let p1_start = Instant::now();
+                phase1_iters += 1;
+                for &nn in self.graph.neighbors(neighbor.id as usize) {
+                    let dist = self.pq_distance(nn, &pq_dists)?;
+                    neighbor_pq.insert(Neighbor::new(nn, dist));
                 }
+                phase1_us += p1_start.elapsed().as_secs_f64() * 1e6;
+            } else {
+                let p2_start = Instant::now();
+                phase2_iters += 1;
+                for &nn in self.graph.compressed_neighbors(neighbor.id as usize) {
+                    let dist = self.pq_distance(nn, &pq_dists)?;
+                    neighbor_pq.insert(Neighbor::new(nn, dist));
+                }
+                phase2_us += p2_start.elapsed().as_secs_f64() * 1e6;
             }
         }
 
@@ -216,12 +207,11 @@ where
         let mut result: Vec<(u32, f32)> = visited
             .iter()
             .map(|&id| {
-                let dist =
-                    {
-                        let qv = Vertex::new(query, 0);
-                        let v = self.dataset.get_vertex(id).unwrap();
-                        qv.compare(&v, Metric::L2)
-                    };
+                let dist = {
+                    let qv = Vertex::new(query, 0);
+                    let v = self.dataset.get_vertex(id).unwrap();
+                    qv.compare(&v, Metric::L2)
+                };
                 (id, dist)
             })
             .collect();

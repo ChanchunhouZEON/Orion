@@ -575,7 +575,8 @@ where
             .collect();
 
         let mut offsets = Vec::with_capacity(self.num_active_pts + 1);
-        let mut neighbors: Vec<u32> = Vec::with_capacity(self.max_observed_degree as usize * self.num_active_pts);
+        let mut neighbors: Vec<u32> =
+            Vec::with_capacity(self.max_observed_degree as usize * self.num_active_pts);
 
         offsets.push(0u32);
         for i in 0..self.num_active_pts as u32 {
@@ -593,7 +594,7 @@ where
             .into_par_iter()
             .map(|node| -> ANNResult<Vec<u32>> {
                 let start = offsets[node as usize] as usize;
-                let end = offsets[(node + 1)as usize] as usize;
+                let end = offsets[(node + 1) as usize] as usize;
                 let nbrs = &neighbors[start..end];
                 let mut bidir = Vec::with_capacity(nbrs.len());
                 for &nbr in nbrs.iter() {
@@ -653,11 +654,15 @@ where
     pub fn extract_graph_and_candidates(
         &mut self,
     ) -> ANNResult<(crate::model::CsrGraph, Vec<Vec<u32>>)> {
+        use crate::utils::mem_usage;
+
         let anchor_sets = self.candidate_anchor_sets.as_ref().ok_or_else(|| {
             ANNError::log_candidate_anchor_sets_error(
                 "Candidate anchor sets have not been built".to_string(),
             )
         })?;
+
+        log::info!("    extract entry:             mem={}", mem_usage());
 
         // Phase 1: drain + sort each anchor slot in parallel.
         let t1 = std::time::Instant::now();
@@ -670,38 +675,45 @@ where
             })
             .collect();
 
-        log::info!("    extract P1 (anchor sort):  {:.3}s", t1.elapsed().as_secs_f32());
+        // Free drained anchor_sets shells (100K × Mutex + empty Vec ≈ 6 MB)
+        // and query scratch queue (no longer needed after build).
+        self.candidate_anchor_sets = None;
+        self.query_scratch_queue = ArcConcurrentBoxedQueue::new();
 
-        // Phase 2: build CSR — parallel read of all RwLocks, then sequential flatten.
-        //
-        // Pass 1 (parallel): each node reads its RwLock once and copies the
-        // neighbor slice into a thread-local Vec<u32>. This is the expensive
-        // part and benefits from parallelism.
+        log::info!(
+            "    extract P1 (anchor sort + free shells):  {:.3}s  mem={}",
+            t1.elapsed().as_secs_f32(),
+            mem_usage(),
+        );
+
         // Phase 2: consume final_graph → aligned CsrGraph in one pass.
-        // Each node's Vec<u32> is moved out of the RwLock, copied into the
-        // aligned buffer, and immediately dropped — minimal peak memory.
         let t2 = std::time::Instant::now();
         let num_pts = self.num_active_pts;
         let max_degree = self.configuration.index_write_parameter.max_degree;
-        let locked_graph = std::mem::replace(
-            &mut self.final_graph,
-            InMemoryGraph::new(0, max_degree),
-        );
+        let locked_graph =
+            std::mem::replace(&mut self.final_graph, InMemoryGraph::new(0, max_degree));
+        log::info!("    extract P2a (take graph):  mem={}", mem_usage());
+
         let mut csr = crate::model::CsrGraph::from_inmem_graph(locked_graph, max_degree)?;
-        log::info!("    extract P2 (CSR build):    {:.3}s", t2.elapsed().as_secs_f32());
+        log::info!(
+            "    extract P2b (CSR built):   {:.3}s  mem={}",
+            t2.elapsed().as_secs_f32(),
+            mem_usage(),
+        );
 
         // Phase 3: compute bidir bits in-place (parallel).
         let t3 = std::time::Instant::now();
         csr.compute_bidir();
-        log::info!("    extract P3 (bidir):        {:.3}s", t3.elapsed().as_secs_f32());
+        log::info!(
+            "    extract P3 (bidir):        {:.3}s  mem={}",
+            t3.elapsed().as_secs_f32(),
+            mem_usage(),
+        );
 
-        // Phase 4: build candidate sets using bidir bitset from the CsrGraph.
+        // Phase 4: build candidate sets.
         let t4 = std::time::Instant::now();
-
-        // Build candidate sets as sorted Vec<u32> — faster than HashSet
-        // (no SipHash, no rehash, better cache locality).
-        let mut result: Vec<Vec<u32>> =
-            (0..num_pts).map(|_| Vec::with_capacity(32)).collect();
+        let mut result: Vec<Vec<u32>> = (0..num_pts).map(|_| Vec::new()).collect();
+        log::info!("    extract P4a (alloc):       mem={}", mem_usage());
 
         result
             .par_iter_mut()
@@ -726,7 +738,15 @@ where
                 Ok::<(), ANNError>(())
             })?;
 
-        log::info!("    extract P4 (candidates):   {:.3}s", t4.elapsed().as_secs_f32());
+        log::info!(
+            "    extract P4b (candidates):  {:.3}s  mem={}",
+            t4.elapsed().as_secs_f32(),
+            mem_usage(),
+        );
+
+        // Drop anchor_data before returning to free memory earlier.
+        drop(anchor_data);
+        log::info!("    extract P4c (drop anchor): mem={}", mem_usage());
 
         Ok((csr, result))
     }
@@ -742,7 +762,9 @@ where
     T: Default + Copy + Sync + Send + Into<f32> + 'static,
     [T; N]: FullPrecisionDistance<T, N>,
 {
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 
     fn build(&mut self, filename: &str, num_points_to_load: usize) -> ANNResult<()> {
         if !file_exists(filename) {

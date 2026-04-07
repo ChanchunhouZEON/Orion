@@ -79,10 +79,15 @@ where
         _num_points: usize,
         _max_degree: u32,
     ) -> ANNResult<(crate::model::CsrGraph, Vec<Vec<u32>>)> {
-        let cs: Vec<Vec<u32>> = self.extract_candidate_sets()
+        let cs: Vec<Vec<u32>> = self
+            .extract_candidate_sets()
             .unwrap_or_default()
             .into_iter()
-            .map(|hs| { let mut v: Vec<u32> = hs.into_iter().collect(); v.sort_unstable(); v })
+            .map(|hs| {
+                let mut v: Vec<u32> = hs.into_iter().collect();
+                v.sort_unstable();
+                v
+            })
             .collect();
         let graph = self.extract_graph();
         let n = graph.keys().map(|&k| k as usize + 1).max().unwrap_or(0);
@@ -105,7 +110,11 @@ where
     /// Default falls back to the HashMap path for implementations that don't expose
     /// `final_graph` directly.  `InmemIndex` overrides this with a zero-alloc
     /// `std::mem::replace`.
-    fn extract_final_graph(&mut self, num_points: usize, max_degree: u32) -> crate::model::InMemoryGraph {
+    fn extract_final_graph(
+        &mut self,
+        num_points: usize,
+        max_degree: u32,
+    ) -> crate::model::InMemoryGraph {
         use crate::model::InMemoryGraph;
         let map = self.extract_graph();
         InMemoryGraph::from_hashmap(&map, num_points, max_degree)
@@ -125,9 +134,7 @@ where
 }
 
 /// Create Index<T, N> based on configuration
-pub fn create_inmem_index<T>(
-    config: IndexConfiguration,
-) -> ANNResult<Box<dyn ANNInmemIndex<T>>>
+pub fn create_inmem_index<T>(config: IndexConfiguration) -> ANNResult<Box<dyn ANNInmemIndex<T>>>
 where
     T: Default + Copy + Sync + Send + Into<f32> + 'static,
     [T; DIM_32]: FullPrecisionDistance<T, DIM_32>,

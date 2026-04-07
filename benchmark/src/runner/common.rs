@@ -30,6 +30,20 @@ pub trait AlgorithmRunner: Sync {
         queries.par_iter().map(|q| self.search(q, k)).collect()
     }
 
+    /// Batch search with a dedicated thread pool of given size.
+    fn search_batch_with_threads(
+        &self,
+        queries: &[Vec<f32>],
+        k: usize,
+        num_threads: usize,
+    ) -> Vec<SearchResult> {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .expect("failed to build search thread pool");
+        pool.install(|| self.search_batch(queries, k))
+    }
+
     /// Approximate memory usage in bytes.
     fn memory_bytes(&self) -> usize;
 

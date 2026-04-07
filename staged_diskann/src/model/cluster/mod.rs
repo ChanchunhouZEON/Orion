@@ -1,3 +1,6 @@
+pub mod sorted_small;
+pub use sorted_small::*;
+
 pub mod cluster;
 pub use cluster::*;
 
