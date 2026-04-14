@@ -114,11 +114,21 @@ where
     let mut cache_misses: u32 = 0;
     let mut phase1_iters: u32 = 0;
     let mut phase2_iters: u32 = 0;
+    let mut prev_admitted: usize = 1; // optimistic start
 
     while neighbor_pq.has_notvisited_node() {
         let p_star = neighbor_pq.closest_notvisited();
 
-        if !dcc.update(p_star.distance) {
+        let converged = dcc.update(prev_admitted);
+
+        let pq_worst = if neighbor_pq.size() >= config.search_list_size {
+            neighbor_pq[neighbor_pq.size() - 1].distance
+        } else {
+            f32::MAX
+        };
+        let mut admitted = 0usize;
+
+        if !converged {
             // ─── Phase 1: Full graph, standard GreedySearch ───
             phase1_iters += 1;
 
@@ -128,6 +138,9 @@ where
                 let neighbors = parse_neighbors_from_page(nbr_page, max_degree);
                 for nn in &neighbors {
                     let dist = pq_dist(*nn);
+                    if dist < pq_worst || neighbor_pq.size() < config.search_list_size {
+                        admitted += 1;
+                    }
                     neighbor_pq.insert(Neighbor::new(*nn, dist));
                 }
             }
@@ -146,6 +159,9 @@ where
                 let nbrs = cached_nbrs.clone();
                 for nn in &nbrs {
                     let dist = pq_dist(*nn);
+                    if dist < pq_worst || neighbor_pq.size() < config.search_list_size {
+                        admitted += 1;
+                    }
                     neighbor_pq.insert(Neighbor::new(*nn, dist));
                 }
             } else {
@@ -171,6 +187,9 @@ where
                     );
                     for nn in &point_nbrs {
                         let dist = pq_dist(*nn);
+                        if dist < pq_worst || neighbor_pq.size() < config.search_list_size {
+                            admitted += 1;
+                        }
                         neighbor_pq.insert(Neighbor::new(*nn, dist));
                     }
                 }
@@ -189,6 +208,8 @@ where
                 }
             }
         }
+
+        prev_admitted = admitted;
     }
 
     // ─── Final reranking ───

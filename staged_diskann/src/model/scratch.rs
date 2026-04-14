@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use crossbeam::queue::ArrayQueue;
 use diskann::model::NeighborPriorityQueue as DiskANNPQ;
-use hashbrown::HashSet as BHashSet;
 
 use crate::algorithm::search::convergence::DistanceConvergenceChecker;
 use crate::model::NeighborPriorityQueue;
@@ -174,6 +173,7 @@ impl InMemSearchScratch {
     pub fn prepare_for_query(&mut self, search_list_size: usize) {
         self.pq.clear();
         self.pq.reserve(search_list_size);
+        self.pq.set_capacity(search_list_size);
         self.seen.clear();
         self.id_scratch.clear();
         self.dcc.reset();

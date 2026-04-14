@@ -12,16 +12,16 @@ pub mod utils;
 #[cfg(feature = "visualization")]
 pub mod visualization;
 
-pub use algorithm::CohesiveClusterManager;
-pub use algorithm::DistanceConvergenceChecker;
 pub use algorithm::SearchProfile;
+pub use algorithm::search::convergence::DistanceConvergenceChecker;
 pub use algorithm::search::in_mem_search::{
     DEFAULT_EPSILON, DEFAULT_SEARCH_LIST_SIZE, DEFAULT_WINDOW_SIZE, SearchProfileStats,
 };
-pub use diskann::model::CsrGraph;
 pub use index::DiskANN;
+pub use index::NaiveStagedDiskANN;
 pub use index::StagedDiskANN;
 pub use index::{BeamSearchConfig, BeamSearchResult, IoLimiter, async_beam_search};
-pub use index::{DIM_32, DIM_128, DIM_960};
-pub use index::{DiskANNBuildResult, build_diskann_index};
+pub use index::{DIM_32, DIM_100, DIM_128, DIM_960};
+pub use index::{DiskANNBuildResult, build_diskann_index, build_diskann_index_ex};
+pub use model::PhasedGraph;
 pub use model::{FixedChunkPQTable, NUM_PQ_CENTROIDS};

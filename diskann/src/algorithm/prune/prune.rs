@@ -54,7 +54,7 @@ where
         #[cfg(feature = "staged_diskann")]
         let track_candidates = self.candidate_anchor_sets.is_some();
         // Reuse scratch buffer to avoid per-call allocation.
-        // Collects (anchor_id, pruned_id) pairs; flushed to candidate_anchor_sets after the loop.
+        // Collects (distance_bits, pruned_id) pairs; flushed to slab[location] after the loop.
         #[cfg(feature = "staged_diskann")]
         scratch.candidate_buffer.clear();
 
@@ -93,10 +93,13 @@ where
                         }
                     }
 
-                    // Record pruned candidate: neighbor2 was occluded by neighbor (anchor)
+                    // Record pruned candidate with its distance to location.
+                    // Store (distance_bits, pruned_id) so we can sort by distance at extract time.
                     #[cfg(feature = "staged_diskann")]
                     if track_candidates && old_factor <= alpha && occlude_factor[j] > alpha {
-                        scratch.candidate_buffer.push((neighbor.id, neighbor2.id));
+                        scratch
+                            .candidate_buffer
+                            .push((neighbor2.distance.to_bits(), neighbor2.id));
                     }
                 }
             }
@@ -104,34 +107,12 @@ where
             cur_alpha *= 1.2;
         }
 
-        // Flush (anchor, pruned_id) pairs to candidate_anchor_sets.
-        // Sort by anchor first so we acquire each anchor's lock only once.
+        // Flush (distance_bits, pruned_id) pairs to slab[location].
         #[cfg(feature = "staged_diskann")]
         if !scratch.candidate_buffer.is_empty() {
-            if let Some(ref cas) = self.candidate_anchor_sets {
-                if scratch.candidate_buffer.len() > 1 {
-                    scratch
-                        .candidate_buffer
-                        .sort_unstable_by_key(|&(anchor, _)| anchor);
-                }
-                let mut i = 0;
-                while i < scratch.candidate_buffer.len() {
-                    let anchor = scratch.candidate_buffer[i].0;
-                    if let Some(slot) = cas.get(anchor as usize) {
-                        let mut vec = slot.lock().unwrap();
-                        while i < scratch.candidate_buffer.len()
-                            && scratch.candidate_buffer[i].0 == anchor
-                        {
-                            vec.push((location, scratch.candidate_buffer[i].1));
-                            i += 1;
-                        }
-                    } else {
-                        while i < scratch.candidate_buffer.len()
-                            && scratch.candidate_buffer[i].0 == anchor
-                        {
-                            i += 1;
-                        }
-                    }
+            if let Some(ref slab) = self.candidate_anchor_sets {
+                if (location as usize) < slab.num_anchors() {
+                    slab.atomic_append_pairs(location as usize, &scratch.candidate_buffer);
                 }
             }
         }
@@ -233,36 +214,56 @@ where
                 )));
             }
 
-            let neighbors = self.add_to_neighbors(vertex_id, n, range)?;
+            let overflow = {
+                let mut guard = self.final_graph.write_vertex_and_neighbors(vertex_id)?;
+                #[cfg(feature = "staged_diskann")]
+                {
+                    // Sorted insert: compute dist(vertex_id, n) and maintain order.
+                    let dist = self.get_distance(vertex_id, n)?;
+                    guard.add_sorted(n, dist, range)
+                }
+                #[cfg(not(feature = "staged_diskann"))]
+                {
+                    guard.add_to_neighbors(n, range)
+                }
+            };
 
-            if let Some(copy_of_neighbors) = neighbors {
+            if let Some(copy_of_neighbors) = overflow {
                 let mut dummy_pool = self.get_unique_neighbors(&copy_of_neighbors, vertex_id)?;
 
                 let mut new_out_neighbors =
                     AdjacencyList::for_range(self.configuration.write_range());
                 self.prune_neighbors(vertex_id, &mut dummy_pool, &mut new_out_neighbors, scratch)?;
 
-                self.set_neighbors(vertex_id, new_out_neighbors)?;
+                // After prune, neighbors are in pool distance order — store with distances.
+                #[cfg(feature = "staged_diskann")]
+                {
+                    let dists: Vec<f32> = new_out_neighbors
+                        .iter()
+                        .map(|&id| {
+                            dummy_pool
+                                .iter()
+                                .find(|nb| nb.id == id)
+                                .map(|nb| nb.distance)
+                                .unwrap_or(f32::MAX)
+                        })
+                        .collect();
+                    let mut guard = self.final_graph.write_vertex_and_neighbors(vertex_id)?;
+                    guard.set_neighbors_sorted(new_out_neighbors, dists);
+                }
+                #[cfg(not(feature = "staged_diskann"))]
+                {
+                    self.set_neighbors(vertex_id, new_out_neighbors)?;
+                }
             }
         }
 
         Ok(())
     }
 
-    fn add_to_neighbors(
-        &self,
-        vertex_id: u32,
-        node_id: u32,
-        range: u32,
-    ) -> ANNResult<Option<Vec<u32>>> {
-        let mut vertex_guard = self.final_graph.write_vertex_and_neighbors(vertex_id)?;
-
-        Ok(vertex_guard.add_to_neighbors(node_id, range))
-    }
-
+    #[cfg(not(feature = "staged_diskann"))]
     fn set_neighbors(&self, vertex_id: u32, new_out_neighbors: AdjacencyList) -> ANNResult<()> {
         let mut vertex_guard = self.final_graph.write_vertex_and_neighbors(vertex_id)?;
-
         vertex_guard.set_neighbors(new_out_neighbors);
         Ok(())
     }

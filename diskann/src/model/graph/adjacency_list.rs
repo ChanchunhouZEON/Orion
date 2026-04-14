@@ -28,6 +28,11 @@ impl AdjacencyList {
         self.edges.push(node_id);
     }
 
+    /// Insert at position, shifting later elements right.
+    pub fn insert(&mut self, index: usize, node_id: u32) {
+        self.edges.insert(index, node_id);
+    }
+
     /// Consume the adjacency list and return the underlying `Vec<u32>`.
     #[inline(always)]
     pub fn into_vec(self) -> Vec<u32> {

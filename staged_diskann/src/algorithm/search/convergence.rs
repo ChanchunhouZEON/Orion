@@ -3,116 +3,87 @@
  * Licensed under the MIT License.
  */
 
-const MINIMUM_DENOMINATOR: f32 = 1e-12;
-
 /// Maximum supported window size for the stack-allocated ring buffer.
 const MAX_WINDOW_SIZE: usize = 64;
 
-/// Sliding-window convergence detector for the two-phase search.
-/// When the relative range of recent best distances drops below epsilon,
-/// the search switches from full graph to compressed graph.
+/// Admission-rate convergence detector for the two-phase search.
 ///
-/// Uses a stack-allocated fixed ring buffer (`[f32; 64]`) instead of
-/// `VecDeque` to avoid heap allocations on the hot search path.
+/// Tracks how many of the last `window_size` expansion steps had at least
+/// one candidate admitted to the priority queue. When this fraction drops
+/// below `threshold`, the search is considered converged.
+///
+/// Convergence is **reversible**: a burst of admissions pushes the rate
+/// back up and exits convergence.
 pub struct DistanceConvergenceChecker {
     window_size: usize,
-    epsilon: f32,
-    /// Fixed ring buffer stored entirely on the stack.
-    buf: [f32; MAX_WINDOW_SIZE],
-    /// Write head: index of the next slot to write into (wraps around).
+    /// Converge when admission fraction < threshold (e.g., 0.2 = 20%).
+    threshold: f32,
+    /// Ring buffer: 1 = at least one admission this step, 0 = none.
+    buf: [u8; MAX_WINDOW_SIZE],
     head: usize,
-    /// Number of elements currently stored (saturates at `window_size`).
     count: usize,
-    has_converged: bool,
+    /// Running sum of admissions in the window.
+    admit_sum: usize,
+    total_steps: usize,
+    min_steps: usize,
 }
 
 impl DistanceConvergenceChecker {
-    pub fn new(window_size: usize, epsilon: f32) -> Self {
-        debug_assert!(
-            window_size <= MAX_WINDOW_SIZE,
-            "window_size ({}) exceeds MAX_WINDOW_SIZE ({})",
-            window_size,
-            MAX_WINDOW_SIZE,
-        );
+    pub fn new(window_size: usize, threshold: f32) -> Self {
+        debug_assert!(window_size <= MAX_WINDOW_SIZE);
         Self {
             window_size,
-            epsilon,
-            buf: [0.0_f32; MAX_WINDOW_SIZE],
+            threshold,
+            buf: [0u8; MAX_WINDOW_SIZE],
             head: 0,
             count: 0,
-            has_converged: false,
+            admit_sum: 0,
+            total_steps: 0,
+            min_steps: window_size * 2,
         }
     }
 
-    /// Reset the checker for reuse (scratch pattern).
     pub fn reset(&mut self) {
         self.head = 0;
         self.count = 0;
-        self.has_converged = false;
+        self.admit_sum = 0;
+        self.total_steps = 0;
     }
 
-    /// Reconfigure window size and epsilon, then reset state.
-    /// Use this when the scratch-pooled checker needs different parameters per query.
-    pub fn reconfigure(&mut self, window_size: usize, epsilon: f32) {
-        debug_assert!(
-            window_size <= MAX_WINDOW_SIZE,
-            "window_size ({}) exceeds MAX_WINDOW_SIZE ({})",
-            window_size,
-            MAX_WINDOW_SIZE,
-        );
+    pub fn reconfigure(&mut self, window_size: usize, threshold: f32) {
+        debug_assert!(window_size <= MAX_WINDOW_SIZE);
         self.window_size = window_size;
-        self.epsilon = epsilon;
-        self.head = 0;
-        self.count = 0;
-        self.has_converged = false;
+        self.threshold = threshold;
+        self.min_steps = window_size * 2;
+        self.reset();
     }
 
-    /// Returns whether convergence has already been detected.
-    pub fn has_converged(&self) -> bool {
-        self.has_converged
-    }
+    /// Feed the number of admitted candidates from this expansion step.
+    /// Returns true if currently converged (low admission rate).
+    #[inline]
+    pub fn update(&mut self, num_admitted: usize) -> bool {
+        self.total_steps += 1;
 
-    /// Add a new distance value and check for convergence.
-    /// Returns true if converged (relative range of window < epsilon).
-    pub fn update(&mut self, dist: f32) -> bool {
-        if self.has_converged {
-            return true;
-        }
+        let val = if num_admitted > 0 { 1u8 } else { 0u8 };
 
-        // Write into the ring buffer at the current head position.
-        self.buf[self.head] = dist;
-        self.head = (self.head + 1) % self.window_size;
-
-        if self.count < self.window_size {
+        // Evict oldest entry if window is full.
+        if self.count >= self.window_size {
+            let oldest = self.buf[self.head] as usize;
+            self.admit_sum -= oldest;
+        } else {
             self.count += 1;
         }
 
-        if self.count < self.window_size {
+        self.buf[self.head] = val;
+        self.head = (self.head + 1) % self.window_size;
+        self.admit_sum += val as usize;
+
+        if self.count < self.window_size || self.total_steps < self.min_steps {
             return false;
         }
 
-        // Scan the ring buffer to find min and max.
-        // The window is always exactly `window_size` elements at this point,
-        // occupying indices 0..window_size in `buf` (since head wraps within
-        // window_size). Iterating the full window_size slice is correct and
-        // fast for <=64 stack-local floats.
-        let mut min_val = f32::INFINITY;
-        let mut max_val = f32::NEG_INFINITY;
-        for i in 0..self.window_size {
-            let val = self.buf[i];
-            if val < min_val {
-                min_val = val;
-            }
-            if val > max_val {
-                max_val = val;
-            }
-        }
-
-        let range = max_val - min_val;
-        let denominator = min_val.max(MINIMUM_DENOMINATOR);
-
-        self.has_converged = (range / denominator) < self.epsilon;
-        self.has_converged
+        let rate = self.admit_sum as f32 / self.window_size as f32;
+        rate < self.threshold
     }
 }
 
@@ -122,70 +93,72 @@ mod tests {
 
     #[test]
     fn test_pre_window_not_converged() {
-        let mut checker = DistanceConvergenceChecker::new(3, 0.01);
-        assert!(!checker.update(1.0));
-        assert!(!checker.update(1.0));
-        // Not enough history yet (need 3)
+        let mut c = DistanceConvergenceChecker::new(3, 0.2);
+        assert!(!c.update(0));
+        assert!(!c.update(0));
     }
 
     #[test]
-    fn test_stable_convergence() {
-        let mut checker = DistanceConvergenceChecker::new(3, 0.01);
-        checker.update(1.0);
-        checker.update(1.0);
-        let converged = checker.update(1.0);
-        assert!(converged); // all same → range=0 → converged
+    fn test_min_steps() {
+        // ws=3, min_steps=6. Even all-zero window won't converge before 6 steps.
+        let mut c = DistanceConvergenceChecker::new(3, 0.5);
+        for _ in 0..5 {
+            assert!(!c.update(0));
+        }
+        // 6th step: now eligible, window=[0,0,0], rate=0 < 0.5 → converged.
+        assert!(c.update(0));
     }
 
     #[test]
-    fn test_varying_non_convergence() {
-        let mut checker = DistanceConvergenceChecker::new(3, 0.01);
-        checker.update(1.0);
-        checker.update(2.0);
-        let converged = checker.update(3.0);
-        assert!(!converged); // range=2.0, denom=1.0, ratio=2.0 >> 0.01
+    fn test_high_admission_no_convergence() {
+        let mut c = DistanceConvergenceChecker::new(3, 0.2);
+        for _ in 0..10 {
+            assert!(!c.update(3)); // every step admits → rate=1.0 >> 0.2
+        }
     }
 
     #[test]
-    fn test_stays_converged() {
-        let mut checker = DistanceConvergenceChecker::new(2, 0.01);
-        checker.update(1.0);
-        checker.update(1.0); // converged
-        assert!(checker.update(100.0)); // once converged, stays converged
+    fn test_reversible() {
+        let mut c = DistanceConvergenceChecker::new(3, 0.3);
+        // Fill min_steps(6) with no admissions.
+        for _ in 0..6 {
+            c.update(0);
+        }
+        assert!(c.update(0)); // converged: rate=0/3=0 < 0.3
+
+        // One admission: window=[0,0,1], rate=1/3=0.33 > 0.3 → exits convergence.
+        assert!(!c.update(2));
+
+        // Need 3 more zeros to flush the admission out of the window.
+        c.update(0); // window=[0,1,0], rate=1/3=0.33 → not converged
+        c.update(0); // window=[1,0,0], rate=1/3=0.33 → not converged
+        assert!(c.update(0)); // window=[0,0,0], rate=0 < 0.3 → converged again
+    }
+
+    #[test]
+    fn test_convergence_and_exit() {
+        let mut c = DistanceConvergenceChecker::new(4, 0.3);
+        // Fill min_steps(8) with zeros.
+        for _ in 0..8 {
+            c.update(0);
+        }
+        assert!(c.update(0)); // converged
+
+        // Single admission: window=[0,0,0,1], rate=1/4=0.25 < 0.3 → still converged.
+        assert!(c.update(1));
+
+        // Two admissions needed to exit: window=[0,0,1,1], rate=2/4=0.5 > 0.3.
+        assert!(!c.update(1));
     }
 
     #[test]
     fn test_reset() {
-        let mut checker = DistanceConvergenceChecker::new(2, 0.01);
-        checker.update(1.0);
-        checker.update(1.0); // converged
-        checker.reset();
-        assert!(!checker.update(1.0)); // need full window again
-    }
-
-    #[test]
-    fn test_has_converged_getter() {
-        let mut checker = DistanceConvergenceChecker::new(2, 0.01);
-        assert!(!checker.has_converged()); // not yet
-        checker.update(1.0);
-        assert!(!checker.has_converged()); // still not enough history
-        checker.update(1.0); // converges here
-        assert!(checker.has_converged()); // getter reflects convergence
-        checker.reset();
-        assert!(!checker.has_converged()); // reset clears it
-    }
-
-    #[test]
-    fn test_sliding_window() {
-        let mut checker = DistanceConvergenceChecker::new(3, 0.01);
-        checker.update(1.0);
-        checker.update(10.0);
-        assert!(!checker.update(100.0)); // window=[1,10,100], range=99, not converged
-
-        // Window slides: [10,100,100]
-        assert!(!checker.update(100.0));
-
-        // Window slides: [100,100,100] → range=0, converged
-        assert!(checker.update(100.0));
+        let mut c = DistanceConvergenceChecker::new(2, 0.3);
+        for _ in 0..4 {
+            c.update(0);
+        }
+        assert!(c.update(0)); // converged
+        c.reset();
+        assert!(!c.update(0)); // reset, need full window + min_steps again
     }
 }

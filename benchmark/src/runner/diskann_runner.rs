@@ -32,6 +32,10 @@ struct DiskANNMmapState {
 }
 
 impl DiskANNRunner {
+    pub fn set_search_list_size(&mut self, sls: usize) {
+        self.search_list_size = sls as u32;
+    }
+
     pub fn new(search_list_size: usize, graph_degree: u32, alpha: f32) -> Self {
         Self {
             index: None,

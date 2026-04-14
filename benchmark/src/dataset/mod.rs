@@ -30,6 +30,7 @@ impl Dataset {
     }
 
     /// Get query vectors as a flat f32 slice (row-major).
+    #[allow(dead_code)]
     pub fn queries_flat(&self) -> Vec<f32> {
         self.queries.iter().flatten().copied().collect()
     }

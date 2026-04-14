@@ -25,3 +25,8 @@ pub use pq::*;
 
 pub mod aligned_file_reader;
 pub use aligned_file_reader::*;
+
+#[cfg(feature = "staged_diskann")]
+pub mod buffer_pool;
+#[cfg(feature = "staged_diskann")]
+pub use buffer_pool::MmapAnchorSlab;

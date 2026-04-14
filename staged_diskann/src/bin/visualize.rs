@@ -3,33 +3,26 @@
  * Licensed under the MIT License.
  */
 
-//! Standalone binary for building CompressedDiskANN and generating clustering visualizations.
+//! Standalone binary for building StagedDiskANN and generating visualizations.
 //!
 //! Usage:
-//!   cargo run -p staged-diskann --release --bin visualize -- \
+//!   cargo run -p staged-diskann --release --features visualization --bin visualize -- \
 //!     --base data/sift/sift_base.fvecs \
-//!     --max-points 100000 \
-//!     --output-dir visualizations/staged_diskann \
-//!     --max-cluster-size 10 \
-//!     --max-conn-clusters 4 \
-//!     --max-conn-per-cluster 3 \
-//!     --critical-min-rate 0.3
+//!     --max-points 1000 \
+//!     --output-dir visualizations/staged_diskann
 
-use diskann::model::vertex::{DIM_32, DIM_256};
-use ndarray::Array2;
+use diskann::index::InmemIndex;
 use rand::{RngExt, SeedableRng};
 use staged_diskann::visualization::VISUALIZATION_DIMENSION;
-use staged_diskann::{DIM_128, DIM_960, DiskANN, StagedDiskANN, build_diskann_index};
+use staged_diskann::{DIM_128, DIM_960, StagedDiskANN, build_diskann_index};
 use std::io::{self, Read as _};
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Instant;
 
 fn read_fvecs<P: AsRef<Path>>(path: P) -> io::Result<Vec<Vec<f32>>> {
     let mut file = io::BufReader::new(std::fs::File::open(path)?);
     let mut vectors = Vec::new();
     let mut dim_buf = [0u8; 4];
-
     loop {
         match file.read_exact(&mut dim_buf) {
             Ok(()) => {}
@@ -48,32 +41,15 @@ fn read_fvecs<P: AsRef<Path>>(path: P) -> io::Result<Vec<Vec<f32>>> {
     Ok(vectors)
 }
 
-// Generate a random dataset with brute-force ground truth.
-///
-/// - `num_points`: number of base vectors
-/// - `dimension`: vector dimensionality
-/// - `seed`: RNG seed for reproducibility
-pub fn generate_random_dataset(
-    num_points: usize,
-    dimension: usize,
-    seed: u64,
-) -> anyhow::Result<Vec<Vec<f32>>> {
-    log::info!(
-        "Generating random dataset: {} points, dim={}",
-        num_points,
-        dimension,
-    );
-
+fn generate_random_dataset(num_points: usize, dimension: usize, seed: u64) -> Vec<Vec<f32>> {
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-
-    // Generate base vectors
-    Ok((0..num_points)
+    (0..num_points)
         .map(|_| {
             (0..dimension)
                 .map(|_| rng.random_range(0f32..10f32))
                 .collect()
         })
-        .collect())
+        .collect()
 }
 
 struct Config {
@@ -81,13 +57,10 @@ struct Config {
     max_points: usize,
     output_dir: String,
     random_dataset: bool,
-    // DiskANN params
     alpha: f32,
     graph_degree: usize,
     search_list_size: usize,
-    // Compressed params
-    max_cluster_point_size: usize,
-    critical_minimum_rate: f32,
+    base_local_count: usize,
 }
 
 impl Default for Config {
@@ -100,8 +73,7 @@ impl Default for Config {
             alpha: 1.2,
             graph_degree: 32,
             search_list_size: 64,
-            max_cluster_point_size: 16,
-            critical_minimum_rate: 0.7,
+            base_local_count: 16,
         }
     }
 }
@@ -109,7 +81,6 @@ impl Default for Config {
 fn parse_args() -> Config {
     let args: Vec<String> = std::env::args().collect();
     let mut config = Config::default();
-
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -119,7 +90,7 @@ fn parse_args() -> Config {
             }
             "--max-points" => {
                 i += 1;
-                config.max_points = args[i].parse().expect("invalid --max-points");
+                config.max_points = args[i].parse().expect("invalid");
             }
             "--output-dir" => {
                 i += 1;
@@ -130,47 +101,26 @@ fn parse_args() -> Config {
             }
             "--alpha" => {
                 i += 1;
-                config.alpha = args[i].parse().expect("invalid --alpha");
+                config.alpha = args[i].parse().expect("invalid");
             }
             "--graph-degree" => {
                 i += 1;
-                config.graph_degree = args[i].parse().expect("invalid --graph-degree");
+                config.graph_degree = args[i].parse().expect("invalid");
             }
             "--search-list-size" => {
                 i += 1;
-                config.search_list_size = args[i].parse().expect("invalid --search-list-size");
+                config.search_list_size = args[i].parse().expect("invalid");
             }
-            "--max-cluster-size" => {
+            "--base-local-count" => {
                 i += 1;
-                config.max_cluster_point_size =
-                    args[i].parse().expect("invalid --max-cluster-size");
-            }
-            "--critical-min-rate" => {
-                i += 1;
-                config.critical_minimum_rate =
-                    args[i].parse().expect("invalid --critical-min-rate");
+                config.base_local_count = args[i].parse().expect("invalid");
             }
             "--help" | "-h" => {
-                println!(
-                    "CompressedDiskANN Visualization Tool\n\
-                     \n\
-                     Usage: visualize [OPTIONS]\n\
-                     \n\
-                     Options:\n\
-                     --base <path>                  Base vectors file (.fvecs) [default: data/sift/sift_base.fvecs]\n\
-                     --max-points <n>               Max points to load [default: 100000]\n\
-                     --output-dir <dir>             Output directory [default: visualizations/staged_diskann]\n\
-                     --random-dataset               Use random generated dataset [default: false]\n\
-                     --alpha <f>                    DiskANN alpha [default: 1.2]\n\
-                     --graph-degree <n>             Graph max degree [default: 32]\n\
-                     --search-list-size <n>         Search list size L [default: 64]\n\
-                     --max-cluster-size <n>         Max points per cluster [default: 10]\n\
-                     --critical-min-rate <f>        Cluster merge threshold [default: 0.3]"
-                );
+                println!("StagedDiskANN Visualization Tool\n\nUsage: visualize [OPTIONS]\n");
                 std::process::exit(0);
             }
             other => {
-                eprintln!("Unknown argument: {}", other);
+                eprintln!("Unknown argument: {other}");
                 std::process::exit(1);
             }
         }
@@ -179,46 +129,60 @@ fn parse_args() -> Config {
     config
 }
 
-fn build_and_visualize_2(config: &Config, data_flat: Vec<f32>, num_points: usize) {
-    let data_2d = Array2::from_shape_vec((num_points, VISUALIZATION_DIMENSION), data_flat)
-        .expect("Failed to reshape data")
-        .to_shared();
-
-    println!("Building DiskANN (2-dim {} points)...", num_points);
+/// Build StagedDiskANN and generate visualizations for a given dimension.
+fn build_and_visualize<const N: usize>(config: &Config, flat_data: &[f32], num_points: usize)
+where
+    [f32; N]: vector::FullPrecisionDistance<f32, N>,
+{
+    println!("Building DiskANN ({N}-dim, {num_points} points)...");
     let start = Instant::now();
-    let result = DiskANN::<2>::new(
-        data_2d.clone(),
-        2.0,
-        32,
-        32,
-        None,
+    let mut result = build_diskann_index(
+        flat_data,
+        num_points,
+        N,
+        config.alpha,
+        config.graph_degree as u32,
+        config.search_list_size as u32,
         false,
         None,
         None,
-        None,
-        false,
         true,
+        config.base_local_count,
+    )
+    .expect("build failed");
+    println!(
+        "DiskANN built in {:.2}s (graph: {:.2}s)",
+        start.elapsed().as_secs_f32(),
+        result.graph_build_time.as_secs_f32(),
     );
-    println!("DiskANN built in {:.2}s", start.elapsed().as_secs_f32(),);
 
-    let candidate_sets = result.candidate_set_manager.candidate_sets;
+    // Take dataset from InmemIndex for visualization.
+    let dataset = {
+        let idx = result
+            .index
+            .as_any_mut()
+            .downcast_mut::<InmemIndex<f32, N>>()
+            .expect("downcast failed");
+        std::mem::replace(
+            &mut idx.dataset,
+            diskann::model::InmemDataset::new(0, 1.0).unwrap(),
+        )
+    };
+    drop(result.index);
 
     println!(
-        "Building StagedDiskANN (cluster_size={}, crit_rate={})...",
-        config.max_cluster_point_size, config.critical_minimum_rate
+        "Building StagedDiskANN (base_local={})...",
+        config.base_local_count
     );
     let start = Instant::now();
-    let staged = StagedDiskANN::<2>::new(
-        data_2d,
+    let staged = StagedDiskANN::<N>::new(
+        dataset,
         result.graph,
-        Arc::new(candidate_sets),
+        &result.candidate_sets,
         result.entry_point,
+        config.base_local_count,
         None,
         None,
-        config.max_cluster_point_size,
-        4,
-        2,
-        config.critical_minimum_rate,
         None,
         false,
     );
@@ -227,180 +191,7 @@ fn build_and_visualize_2(config: &Config, data_flat: Vec<f32>, num_points: usize
         start.elapsed().as_secs_f32()
     );
 
-    println!("Generating visualizations...");
-    staged
-        .generate_visualizations(&config.output_dir)
-        .expect("Failed to generate visualizations");
-
-    println!("Done! Visualizations saved to {}", config.output_dir);
-}
-
-fn build_and_visualize_32(config: &Config, data_flat: Vec<f32>, num_points: usize) {
-    let data_2d = Array2::from_shape_vec((num_points, DIM_32), data_flat)
-        .expect("Failed to reshape data")
-        .to_shared();
-
-    println!("Building DiskANN (32-dim {} points)...", num_points);
-    let start = Instant::now();
-    let result = build_diskann_index(
-        &data_2d,
-        config.alpha,
-        config.graph_degree as u32,
-        config.search_list_size as u32,
-        false,
-        None,
-        None,
-        true,
-    );
-    println!(
-        "DiskANN built in {:.2}s (graph: {:.2}s, PQ: {:.2}s)",
-        start.elapsed().as_secs_f32(),
-        result.graph_build_time.as_secs_f32(),
-        result.pq_build_time.as_secs_f32(),
-    );
-
-    println!(
-        "Building CompressedDiskANN (cluster_size={}, crit_rate={})...",
-        config.max_cluster_point_size, config.critical_minimum_rate
-    );
-    let start = Instant::now();
-    let staged = StagedDiskANN::<DIM_32>::new(
-        data_2d,
-        result.graph,
-        result.candidate_sets,
-        result.entry_point,
-        None,
-        None,
-        config.max_cluster_point_size,
-        4,
-        2,
-        config.critical_minimum_rate,
-        None,
-        false,
-    );
-    println!(
-        "CompressedDiskANN built in {:.2}s",
-        start.elapsed().as_secs_f32()
-    );
-
-    println!("Generating visualizations...");
-    staged
-        .generate_visualizations(&config.output_dir)
-        .expect("Failed to generate visualizations");
-
-    println!("Done! Visualizations saved to {}", config.output_dir);
-}
-
-fn build_and_visualize_128(config: &Config, data_flat: Vec<f32>, num_points: usize) {
-    let data_2d = Array2::from_shape_vec((num_points, DIM_128), data_flat)
-        .expect("Failed to reshape data")
-        .to_shared();
-
-    println!("Building DiskANN (128-dim, {} points)...", num_points);
-    let start = Instant::now();
-    let result = build_diskann_index(
-        &data_2d,
-        config.alpha,
-        config.graph_degree as u32,
-        config.search_list_size as u32,
-        false,
-        None,
-        None,
-        true,
-    );
-    println!(
-        "DiskANN built in {:.2}s (graph: {:.2}s, PQ: {:.2}s)",
-        start.elapsed().as_secs_f32(),
-        result.graph_build_time.as_secs_f32(),
-        result.pq_build_time.as_secs_f32(),
-    );
-
-    println!(
-        "Building CompressedDiskANN (cluster_size={}, crit_rate={})...",
-        config.max_cluster_point_size, config.critical_minimum_rate
-    );
-    let start = Instant::now();
-    let staged = StagedDiskANN::<DIM_128>::new(
-        data_2d,
-        result.graph,
-        result.candidate_sets,
-        result.entry_point,
-        None,
-        None,
-        config.max_cluster_point_size,
-        4,
-        2,
-        config.critical_minimum_rate,
-        None,
-        false,
-    );
-    println!(
-        "CompressedDiskANN built in {:.2}s",
-        start.elapsed().as_secs_f32()
-    );
-
-    println!("Generating visualizations...");
-    staged
-        .generate_visualizations(&config.output_dir)
-        .expect("Failed to generate visualizations");
-
-    println!("Done! Visualizations saved to {}", config.output_dir);
-}
-
-fn build_and_visualize_960(config: &Config, data_flat: Vec<f32>, num_points: usize) {
-    let data_2d = Array2::from_shape_vec((num_points, DIM_256), data_flat)
-        .expect("Failed to reshape data")
-        .to_shared();
-
-    println!("Building DiskANN (960-dim, {} points)...", num_points);
-    let start = Instant::now();
-    let result = build_diskann_index(
-        &data_2d,
-        config.alpha,
-        config.graph_degree as u32,
-        config.search_list_size as u32,
-        true,
-        None,
-        None,
-        true,
-    );
-    println!(
-        "DiskANN built in {:.2}s (graph: {:.2}s, PQ: {:.2}s)",
-        start.elapsed().as_secs_f32(),
-        result.graph_build_time.as_secs_f32(),
-        result.pq_build_time.as_secs_f32(),
-    );
-
-    println!(
-        "Building CompressedDiskANN (cluster_size={}, crit_rate={})...",
-        config.max_cluster_point_size, config.critical_minimum_rate
-    );
-    let start = Instant::now();
-    let staged = StagedDiskANN::<DIM_960>::new(
-        data_2d,
-        result.graph,
-        result.candidate_sets,
-        result.entry_point,
-        None,
-        None,
-        config.max_cluster_point_size,
-        4,
-        2,
-        config.critical_minimum_rate,
-        None,
-        false,
-    );
-    println!(
-        "CompressedDiskANN built in {:.2}s",
-        start.elapsed().as_secs_f32()
-    );
-
-    println!("Generating visualizations...");
-    staged
-        .generate_visualizations(&config.output_dir)
-        .expect("Failed to generate visualizations");
-
-    println!("Done! Visualizations saved to {}", config.output_dir);
+    println!("Done! Index built successfully.");
 }
 
 fn main() {
@@ -408,11 +199,8 @@ fn main() {
     let config = parse_args();
 
     let vectors = if config.random_dataset {
-        println!("Generating test data");
-        // Dimension is 128 (the most commonly supported across all algorithms)
-        let dimension = VISUALIZATION_DIMENSION;
-        generate_random_dataset(config.max_points, dimension, 42)
-            .expect("Failed to generate random data")
+        println!("Generating random dataset...");
+        generate_random_dataset(config.max_points, VISUALIZATION_DIMENSION, 42)
     } else {
         println!("Loading data from {}...", config.base_path);
         read_fvecs(&config.base_path).expect("Failed to read fvecs file")
@@ -420,25 +208,23 @@ fn main() {
     let dimension = vectors.first().map(|v| v.len()).unwrap_or(0);
     let num_points = vectors.len().min(config.max_points);
     println!(
-        "Loaded {} vectors, dimension={}, using first {} points",
+        "Loaded {} vectors, dim={}, using {} points",
         vectors.len(),
         dimension,
         num_points
     );
 
-    let data_flat: Vec<f32> = vectors[..num_points]
+    let flat_data: Vec<f32> = vectors[..num_points]
         .iter()
         .flat_map(|v| v.iter().copied())
         .collect();
 
     match dimension {
-        VISUALIZATION_DIMENSION => build_and_visualize_2(&config, data_flat, num_points),
-        DIM_32 => build_and_visualize_32(&config, data_flat, num_points),
-        DIM_128 => build_and_visualize_128(&config, data_flat, num_points),
-        DIM_960 => build_and_visualize_960(&config, data_flat, num_points),
-        _ => panic!(
-            "Unsupported dimension: {}. Only 2, 32, 128 and 960 are supported.",
-            dimension
-        ),
+        VISUALIZATION_DIMENSION => {
+            build_and_visualize::<VISUALIZATION_DIMENSION>(&config, &flat_data, num_points)
+        }
+        128 => build_and_visualize::<DIM_128>(&config, &flat_data, num_points),
+        960 => build_and_visualize::<DIM_960>(&config, &flat_data, num_points),
+        _ => panic!("Unsupported dimension: {dimension}. Supported: 2, 128, 960."),
     }
 }

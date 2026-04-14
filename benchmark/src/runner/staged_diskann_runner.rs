@@ -5,34 +5,75 @@
 
 use crate::report::table::BuildTiming;
 use crate::runner::common::{AlgorithmRunner, SearchResult};
-use diskann::index::InmemIndex;
-use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_128, DIM_960};
-use std::time::{Duration, Instant};
+use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
+use std::time::Instant;
 
 /// Benchmark runner for Staged DiskANN with compile-time dimension dispatch.
 pub struct StagedDiskANNRunner {
-    // Runner identity
     name: &'static str,
-    // DiskANN build params
     alpha: f32,
     graph_degree: usize,
     search_list_size: usize,
-    // Staged params
-    max_cluster_point_size: usize,
-    max_connection_clusters: usize,
-    max_connection_per_cluster: usize,
-    critical_minimum_rate: f32,
-    // Search params
+    key_neighbor_count: usize,
+    base_local_count: usize,
+    max_extra: usize,
     window_size: usize,
     epsilon: f32,
-    // State
     dimension: usize,
     inner: Option<StagedInner>,
 }
 
 enum StagedInner {
+    Dim32 { compressed: StagedDiskANN<32> },
+    Dim100 { compressed: StagedDiskANN<100> },
     Dim128 { compressed: StagedDiskANN<128> },
     Dim960 { compressed: StagedDiskANN<960> },
+}
+
+macro_rules! build_staged {
+    ($self:ident, $data:ident, $num_points:ident, $result:ident, $N:literal, $variant:ident) => {{
+        drop($result.index);
+        log::info!(
+            "  mem after drop(index):    {}",
+            crate::metrics::memory::format_bytes(crate::ALLOCATOR.current_bytes())
+        );
+
+        let t1 = Instant::now();
+        let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+        let mut compressed = StagedDiskANN::<$N>::new(
+            empty_ds,
+            $result.graph,
+            &$result.candidate_sets,
+            $result.entry_point,
+            $self.base_local_count,
+            $self.max_extra,
+            None,
+            None,
+            None,
+            false,
+        );
+        log::info!("StagedDiskANN overhead: {:.2}s", t1.elapsed().as_secs_f32());
+
+        let mut ds = diskann::model::InmemDataset::<f32, $N>::new($num_points, 1.0).unwrap();
+        ds.data.memcpy(&$data[..$num_points * $N]).unwrap();
+        compressed.dataset = ds;
+
+        $self.inner = Some(StagedInner::$variant { compressed });
+    }};
+}
+
+macro_rules! search_staged {
+    ($compressed:ident, $query:ident, $k:ident, $self:ident, $N:literal) => {{
+        let mut q = [0.0f32; $N];
+        q.copy_from_slice(&$query[..$N]);
+        $compressed.search(
+            &q,
+            $k,
+            $self.search_list_size,
+            $self.window_size,
+            $self.epsilon,
+        )
+    }};
 }
 
 impl StagedDiskANNRunner {
@@ -42,10 +83,9 @@ impl StagedDiskANNRunner {
         alpha: f32,
         graph_degree: usize,
         search_list_size: usize,
-        max_cluster_point_size: usize,
-        max_connection_clusters: usize,
-        max_connection_per_cluster: usize,
-        critical_minimum_rate: f32,
+        key_neighbor_count: usize,
+        base_local_count: usize,
+        max_extra: usize,
         window_size: usize,
         epsilon: f32,
     ) -> Self {
@@ -54,10 +94,9 @@ impl StagedDiskANNRunner {
             alpha,
             graph_degree,
             search_list_size,
-            max_cluster_point_size,
-            max_connection_clusters,
-            max_connection_per_cluster,
-            critical_minimum_rate,
+            key_neighbor_count,
+            base_local_count,
+            max_extra,
             window_size,
             epsilon,
             dimension: 0,
@@ -75,7 +114,7 @@ impl AlgorithmRunner for StagedDiskANNRunner {
         self.dimension = dimension;
         let start = Instant::now();
 
-        let mut result = build_diskann_index(
+        let result = build_diskann_index(
             data,
             num_points,
             dimension,
@@ -85,102 +124,20 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             false,
             None,
             None,
-            true, // compute candidate sets
+            true,
+            self.key_neighbor_count,
         )
         .expect("build failed");
         log::info!(
             "DiskANN graph build (parallel Vamana + candidate sets): {:.2}s",
             result.graph_build_time.as_secs_f32()
         );
-        log::info!(
-            "  mem after build_diskann_index: {}",
-            crate::metrics::memory::format_bytes(crate::ALLOCATOR.current_bytes())
-        );
 
         match dimension {
-            DIM_128 => {
-                // Downcast to take the InmemDataset from the InmemIndex.
-                let dataset = {
-                    let idx = result
-                        .index
-                        .as_any_mut()
-                        .downcast_mut::<InmemIndex<f32, 128>>()
-                        .expect("downcast to InmemIndex<f32, 128>");
-                    std::mem::replace(
-                        &mut idx.dataset,
-                        diskann::model::InmemDataset::new(0, 1.0).unwrap(),
-                    )
-                };
-                log::info!(
-                    "  mem after take(dataset):  {}",
-                    crate::metrics::memory::format_bytes(crate::ALLOCATOR.current_bytes())
-                );
-                drop(result.index);
-                log::info!(
-                    "  mem after drop(index):    {}",
-                    crate::metrics::memory::format_bytes(crate::ALLOCATOR.current_bytes())
-                );
-
-                let t1 = Instant::now();
-                let compressed = StagedDiskANN::<128>::new(
-                    dataset,
-                    result.graph,
-                    result.candidate_sets,
-                    result.entry_point,
-                    None,
-                    None,
-                    self.max_cluster_point_size,
-                    self.max_connection_clusters,
-                    self.max_connection_per_cluster,
-                    self.critical_minimum_rate,
-                    None,
-                    false,
-                );
-                let compressed_time = t1.elapsed();
-                log::info!(
-                    "StagedDiskANN overhead: {:.2}s",
-                    compressed_time.as_secs_f32()
-                );
-
-                self.inner = Some(StagedInner::Dim128 { compressed });
-            }
-            DIM_960 => {
-                let dataset = {
-                    let idx = result
-                        .index
-                        .as_any_mut()
-                        .downcast_mut::<InmemIndex<f32, 960>>()
-                        .expect("downcast to InmemIndex<f32, 960>");
-                    std::mem::replace(
-                        &mut idx.dataset,
-                        diskann::model::InmemDataset::new(0, 1.0).unwrap(),
-                    )
-                };
-                drop(result.index);
-
-                let t1 = Instant::now();
-                let compressed = StagedDiskANN::<960>::new(
-                    dataset,
-                    result.graph,
-                    result.candidate_sets,
-                    result.entry_point,
-                    None,
-                    None,
-                    self.max_cluster_point_size,
-                    self.max_connection_clusters,
-                    self.max_connection_per_cluster,
-                    self.critical_minimum_rate,
-                    None,
-                    false,
-                );
-                let compressed_time = t1.elapsed();
-                log::info!(
-                    "StagedDiskANN overhead: {:.2}s",
-                    compressed_time.as_secs_f32()
-                );
-
-                self.inner = Some(StagedInner::Dim960 { compressed });
-            }
+            DIM_32 => build_staged!(self, data, num_points, result, 32, Dim32),
+            DIM_100 => build_staged!(self, data, num_points, result, 100, Dim100),
+            DIM_128 => build_staged!(self, data, num_points, result, 128, Dim128),
+            DIM_960 => build_staged!(self, data, num_points, result, 960, Dim960),
             _ => panic!("Unsupported dimension: {dimension}"),
         }
 
@@ -194,29 +151,17 @@ impl AlgorithmRunner for StagedDiskANNRunner {
     fn search(&self, query: &[f32], k: usize) -> SearchResult {
         let start = Instant::now();
         let neighbors = match self.inner.as_ref().expect("Index not built") {
-            StagedInner::Dim128 { compressed, .. } => {
-                let mut q = [0.0f32; 128];
-                q.copy_from_slice(&query[..128]);
-                compressed.search(&q, k, self.search_list_size, self.window_size, self.epsilon)
-            }
-            StagedInner::Dim960 { compressed, .. } => {
-                let mut q = [0.0f32; 960];
-                q.copy_from_slice(&query[..960]);
-                compressed.search(&q, k, self.search_list_size, self.window_size, self.epsilon)
-            }
+            StagedInner::Dim32 { compressed } => search_staged!(compressed, query, k, self, 32),
+            StagedInner::Dim100 { compressed } => search_staged!(compressed, query, k, self, 100),
+            StagedInner::Dim128 { compressed } => search_staged!(compressed, query, k, self, 128),
+            StagedInner::Dim960 { compressed } => search_staged!(compressed, query, k, self, 960),
         }
         .expect("Searching process failed");
-        let duration = start.elapsed();
         SearchResult {
             neighbors,
-            duration,
+            duration: start.elapsed(),
         }
     }
-
-    // Use the trait default search_batch (par_iter over self.search)
-    // so that pool.install() from search_batch_with_threads correctly
-    // controls the thread count. The previous override called
-    // compressed.search_batch() which used the global rayon pool.
 
     fn memory_bytes(&self) -> usize {
         0
