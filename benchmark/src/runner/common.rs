@@ -45,6 +45,7 @@ pub trait AlgorithmRunner: Sync {
     }
 
     /// Approximate memory usage in bytes.
+    #[allow(dead_code)]
     fn memory_bytes(&self) -> usize;
 
     /// Whether this runner supports mmap-based search.

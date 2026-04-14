@@ -12,10 +12,10 @@ use vector::FullPrecisionDistance;
 
 use super::InmemIndex;
 use crate::common::{ANNError, ANNResult};
-use crate::model::vertex::DIM_32;
+use crate::model::vertex::{DIM_32, DIM_100};
 use crate::model::{
     IndexConfiguration,
-    vertex::{DIM_104, DIM_128, DIM_256, DIM_960},
+    vertex::{DIM_104, DIM_128, DIM_256, DIM_784, DIM_960},
 };
 
 /// ANN inmem-index abstraction for custom <T, N>
@@ -66,38 +66,36 @@ where
 
     /// Extract candidate sets (if computed during build).
     #[cfg(feature = "staged_diskann")]
-    fn extract_candidate_sets(&self) -> Option<Vec<HashSet<u32>>>;
+    fn extract_candidate_sets(&mut self) -> Option<Vec<HashSet<u32>>>;
 
-    /// Build an aligned `CsrGraph` from the final graph (with bidir bits) and
-    /// extract candidate sets in one pass.
-    ///
-    /// Returns `(csr_graph, candidate_sets)`. Bidir info is embedded in the
-    /// CsrGraph's per-node bitset — no separate `bidir_neighbors` needed.
+    /// Sort neighbors by distance in-place, enrich slab, extract
+    /// InMemoryGraph + candidate_sets. No CsrGraph intermediate.
     #[cfg(feature = "staged_diskann")]
     fn extract_graph_and_candidates(
         &mut self,
-        _num_points: usize,
-        _max_degree: u32,
-    ) -> ANNResult<(crate::model::CsrGraph, Vec<Vec<u32>>)> {
-        let cs: Vec<Vec<u32>> = self
-            .extract_candidate_sets()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|hs| {
-                let mut v: Vec<u32> = hs.into_iter().collect();
-                v.sort_unstable();
-                v
-            })
-            .collect();
-        let graph = self.extract_graph();
-        let n = graph.keys().map(|&k| k as usize + 1).max().unwrap_or(0);
-        let mut adj = vec![Vec::new(); n];
-        for (k, v) in graph {
-            adj[k as usize] = v;
-        }
-        let mut csr = crate::model::CsrGraph::from_adjacency_list(adj, _max_degree);
-        csr.compute_bidir();
-        Ok((csr, cs))
+        _key_neighbor_count: usize,
+    ) -> ANNResult<(crate::model::InMemoryGraph, Vec<Vec<u32>>)> {
+        Err(ANNError::log_index_error("not implemented".into()))
+    }
+
+    /// Extract graph + candidates with explicit enrich control.
+    #[cfg(feature = "staged_diskann")]
+    fn extract_graph_and_candidates_ex(
+        &mut self,
+        _key_neighbor_count: usize,
+        _enrich: bool,
+    ) -> ANNResult<(crate::model::InMemoryGraph, Vec<Vec<u32>>)> {
+        Err(ANNError::log_index_error("not implemented".into()))
+    }
+
+    /// Free the candidate anchor slab.
+    #[cfg(feature = "staged_diskann")]
+    fn drop_candidate_slab(&mut self) {}
+
+    /// Re-run single-pass prune on all nodes to enrich the candidate slab.
+    #[cfg(feature = "staged_diskann")]
+    fn enrich_candidate_slab(&self) -> ANNResult<()> {
+        Ok(())
     }
 
     /// Extract the final graph as a HashMap for external consumers.
@@ -138,14 +136,20 @@ pub fn create_inmem_index<T>(config: IndexConfiguration) -> ANNResult<Box<dyn AN
 where
     T: Default + Copy + Sync + Send + Into<f32> + 'static,
     [T; DIM_32]: FullPrecisionDistance<T, DIM_32>,
+    [T; DIM_100]: FullPrecisionDistance<T, DIM_100>,
     [T; DIM_104]: FullPrecisionDistance<T, DIM_104>,
     [T; DIM_128]: FullPrecisionDistance<T, DIM_128>,
     [T; DIM_256]: FullPrecisionDistance<T, DIM_256>,
+    [T; DIM_784]: FullPrecisionDistance<T, DIM_784>,
     [T; DIM_960]: FullPrecisionDistance<T, DIM_960>,
 {
     match config.aligned_dim {
         DIM_32 => {
             let index = Box::new(InmemIndex::<T, DIM_32>::new(config)?);
+            Ok(index as Box<dyn ANNInmemIndex<T>>)
+        }
+        DIM_100 => {
+            let index = Box::new(InmemIndex::<T, DIM_100>::new(config)?);
             Ok(index as Box<dyn ANNInmemIndex<T>>)
         }
         DIM_104 => {
@@ -158,6 +162,10 @@ where
         }
         DIM_256 => {
             let index = Box::new(InmemIndex::<T, DIM_256>::new(config)?);
+            Ok(index as Box<dyn ANNInmemIndex<T>>)
+        }
+        DIM_784 => {
+            let index = Box::new(InmemIndex::<T, DIM_784>::new(config)?);
             Ok(index as Box<dyn ANNInmemIndex<T>>)
         }
         DIM_960 => {

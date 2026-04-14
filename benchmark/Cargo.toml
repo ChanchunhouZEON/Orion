@@ -25,3 +25,4 @@ libc = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 comfy-table = { workspace = true }
+serde_yaml = "0.9"

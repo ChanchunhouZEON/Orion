@@ -1,0 +1,31 @@
+# QPS-Recall Sweep Configuration
+
+defaults:
+  diskann:
+    alpha: 2.0
+    graph_degree: 32
+    build_search_list_size: 48
+  staged:
+    alpha: 1.2
+    graph_degree: 32
+    build_search_list_size: 48
+    base_local_count: 0    # 0 = bidir-based
+    max_extra: 4
+    window_size: 5
+    threshold: 0.15
+  sweep:
+    search_list_sizes: [16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256]
+    threads: 8
+    trials: 11
+
+datasets:
+  sift:
+    dimension: 128
+  glove25:
+    dimension: 32
+  glove100:
+    dimension: 100
+  gist:
+    dimension: 960
+    staged:
+      alpha: 1.5

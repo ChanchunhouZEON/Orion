@@ -39,6 +39,7 @@ where
     m_max0: usize,
     m: usize,
     /// Per-node level assignment
+    #[allow(dead_code)]
     node_levels: Vec<usize>,
     /// Offsets into the mmap for each layer's adjacency data
     layer_offsets: Vec<usize>,

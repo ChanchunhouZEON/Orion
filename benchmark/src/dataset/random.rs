@@ -4,7 +4,7 @@
  */
 
 use super::Dataset;
-use rand::{Rng, RngExt, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 
 /// Generate a random dataset with brute-force ground truth.
@@ -72,7 +72,6 @@ pub fn generate_random_dataset(
 /// Uses a `BinaryHeap` of size k to track the k nearest neighbors in a
 /// streaming fashion — O(n log k) time and O(k) memory instead of O(n).
 pub fn brute_force_knn(query: &[f32], base: &[Vec<f32>], k: usize) -> Vec<u32> {
-    use std::cmp::Reverse;
     use std::collections::BinaryHeap;
 
     // Max-heap by distance: the root is the farthest of the current top-k.

@@ -98,6 +98,7 @@ fn write_ivecs<P: AsRef<Path>>(path: P, vectors: &[Vec<u32>]) -> io::Result<()> 
 
 /// Read a .bvecs file (binary format: [dim: u8*4 as u32, u8 * dim] per vector).
 /// Converts u8 to f32 for compatibility.
+#[allow(dead_code)]
 pub fn read_bvecs<P: AsRef<Path>>(path: P) -> io::Result<Vec<Vec<f32>>> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);

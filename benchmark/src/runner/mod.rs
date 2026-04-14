@@ -5,7 +5,6 @@ pub mod nsg_runner;
 pub mod ssd_diskann_runner;
 pub mod staged_diskann_runner;
 
-pub use common::AlgorithmRunner;
 pub use diskann_runner::DiskANNRunner;
 pub use hnsw_runner::HNSWRunner;
 pub use nsg_runner::NSGRunner;

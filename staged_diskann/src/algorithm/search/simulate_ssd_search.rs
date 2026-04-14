@@ -2,9 +2,10 @@
  * Copyright (c) Chanchunhou. All rights reserved.
  * Licensed under the MIT License.
  */
+use crate::StagedDiskANN;
 use crate::algorithm::SearchProfile;
+use crate::algorithm::convergence::DistanceConvergenceChecker;
 use crate::model::{Neighbor, NeighborPriorityQueue};
-use crate::{DistanceConvergenceChecker, StagedDiskANN};
 use diskann::common::ANNResult;
 use diskann::model::Vertex;
 use std::collections::HashSet;
@@ -37,23 +38,45 @@ where
         let mut neighbor_pq = NeighborPriorityQueue::with_capacity(search_list_size);
         neighbor_pq.insert(Neighbor::new(entry, self.pq_distance(entry, &pq_dists)?));
 
+        let mut prev_admitted: usize = 1; // optimistic start
+
         while neighbor_pq.has_notvisited_node() {
             let neighbor = neighbor_pq.closest_notvisited();
             visited.insert(neighbor.id);
 
-            // Switch between full neighbors (Phase 1) and compressed neighbors (Phase 2)
-            let neighbors_to_use = if !dcc.update(neighbor.distance) {
-                // Phase 1: use ALL neighbors
-                self.graph.neighbors(neighbor.id as usize)
-            } else {
-                // Phase 2: use only compressed neighbors
-                self.graph.compressed_neighbors(neighbor.id as usize)
-            };
+            let converged = dcc.update(prev_admitted);
 
-            for &nn in neighbors_to_use {
+            let mut id_scratch = Vec::new();
+            // Switch between full neighbors (Phase 1) and compressed neighbors (Phase 2)
+            if !converged {
+                // Navigation: use all graph neighbors
+                for &nn in self.graph.neighbors(neighbor.id as usize) {
+                    id_scratch.push(nn);
+                }
+            } else {
+                // Reranking: use local + extra candidates
+                let (local, extra) = self.graph.rerank_candidates(neighbor.id as usize);
+                for &nn in local.iter().chain(extra.iter()) {
+                    id_scratch.push(nn);
+                }
+            }
+
+            let pq_worst = if neighbor_pq.size() >= search_list_size {
+                neighbor_pq[neighbor_pq.size() - 1].distance
+            } else {
+                f32::MAX
+            };
+            let mut admitted = 0usize;
+
+            for &nn in &id_scratch {
                 let dist = self.pq_distance(nn, &pq_dists)?;
+                if dist < pq_worst || neighbor_pq.size() < search_list_size {
+                    admitted += 1;
+                }
                 neighbor_pq.insert(Neighbor::new(nn, dist));
             }
+
+            prev_admitted = admitted;
         }
 
         // Rerank all visited nodes with exact distance
@@ -98,6 +121,8 @@ where
         let mut compressed_neighbors_in_mem_cnts: u32 = 0;
         let mut compressed_neighbors_in_mem = HashSet::<u32>::new();
 
+        let mut prev_admitted: usize = 1; // optimistic start
+
         while neighbor_pq.has_notvisited_node() {
             let neighbor = neighbor_pq.closest_notvisited();
             if compressed_neighbors_in_mem.contains(&neighbor.id) {
@@ -105,24 +130,44 @@ where
             }
             visited.insert(neighbor.id);
 
-            if !dcc.update(neighbor.distance) {
-                // Phase 1: full graph
+            let converged = dcc.update(prev_admitted);
+
+            let pq_worst = if neighbor_pq.size() >= search_list_size {
+                neighbor_pq[neighbor_pq.size() - 1].distance
+            } else {
+                f32::MAX
+            };
+            let mut admitted = 0usize;
+
+            if !converged {
+                // Navigation: full graph
                 for &nn in self.graph.neighbors(neighbor.id as usize) {
                     let dist = self.pq_distance(nn, &pq_dists)?;
+                    if dist < pq_worst || neighbor_pq.size() < search_list_size {
+                        admitted += 1;
+                    }
                     neighbor_pq.insert(Neighbor::new(nn, dist));
                 }
             } else {
-                // Phase 2: compressed neighbors only
-                let compressed_nbrs = self.graph.compressed_neighbors(neighbor.id as usize);
-                for &nn in compressed_nbrs {
+                // Reranking: local + extra candidates
+                let (local, extra) = self.graph.rerank_candidates(neighbor.id as usize);
+                let rerank_iter = local.iter().chain(extra.iter());
+                let mut rerank_count = 0u32;
+                for &nn in rerank_iter {
                     let dist = self.pq_distance(nn, &pq_dists)?;
                     compressed_neighbors_in_mem.insert(nn);
+                    if dist < pq_worst || neighbor_pq.size() < search_list_size {
+                        admitted += 1;
+                    }
                     if let Some(popped) = neighbor_pq.insert(Neighbor::new(nn, dist)) {
                         compressed_neighbors_in_mem.remove(&popped);
                     }
+                    rerank_count += 1;
                 }
-                compressed_ndc += compressed_nbrs.len() as u32;
+                compressed_ndc += rerank_count;
             }
+
+            prev_admitted = admitted;
         }
 
         // Rerank with exact L2 distance
@@ -179,27 +224,47 @@ where
         let mut phase1_iters: u32 = 0;
         let mut phase2_iters: u32 = 0;
 
+        let mut prev_admitted: usize = 1; // optimistic start
+
         while neighbor_pq.has_notvisited_node() {
             let neighbor = neighbor_pq.closest_notvisited();
             visited.insert(neighbor.id);
 
-            if !dcc.update(neighbor.distance) {
+            let converged = dcc.update(prev_admitted);
+
+            let pq_worst = if neighbor_pq.size() >= search_list_size {
+                neighbor_pq[neighbor_pq.size() - 1].distance
+            } else {
+                f32::MAX
+            };
+            let mut admitted = 0usize;
+
+            if !converged {
                 let p1_start = Instant::now();
                 phase1_iters += 1;
                 for &nn in self.graph.neighbors(neighbor.id as usize) {
                     let dist = self.pq_distance(nn, &pq_dists)?;
+                    if dist < pq_worst || neighbor_pq.size() < search_list_size {
+                        admitted += 1;
+                    }
                     neighbor_pq.insert(Neighbor::new(nn, dist));
                 }
                 phase1_us += p1_start.elapsed().as_secs_f64() * 1e6;
             } else {
                 let p2_start = Instant::now();
                 phase2_iters += 1;
-                for &nn in self.graph.compressed_neighbors(neighbor.id as usize) {
+                let (local, extra) = self.graph.rerank_candidates(neighbor.id as usize);
+                for &nn in local.iter().chain(extra.iter()) {
                     let dist = self.pq_distance(nn, &pq_dists)?;
+                    if dist < pq_worst || neighbor_pq.size() < search_list_size {
+                        admitted += 1;
+                    }
                     neighbor_pq.insert(Neighbor::new(nn, dist));
                 }
                 phase2_us += p2_start.elapsed().as_secs_f64() * 1e6;
             }
+
+            prev_admitted = admitted;
         }
 
         // Rerank

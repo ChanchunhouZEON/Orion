@@ -107,9 +107,10 @@ impl NeighborPriorityQueue {
     }
 
     pub fn set_capacity(&mut self, capacity: usize) {
-        if capacity < self.data.len() {
-            self.capacity = capacity;
+        if capacity > self.data.len() {
+            self.data.resize(capacity + 1, Neighbor::default());
         }
+        self.capacity = capacity;
     }
 
     pub fn reserve(&mut self, capacity: usize) {

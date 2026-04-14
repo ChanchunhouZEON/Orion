@@ -103,10 +103,10 @@ where
         )
     }
 
-    /// Greedy beam search through CsrGraph + InmemDataset.
+    /// Greedy beam search through PhasedGraph + InmemDataset.
     ///
-    /// Lock-free graph traversal via CsrGraph left-right double buffering.
-    /// InmemDataset::get_vertex + Vertex::compare for distance.
+    /// Pre-convergence: expand all graph neighbors (local + remote).
+    /// Post-convergence: expand reranking candidates (local + extra).
     pub fn search(
         &self,
         query: &[f32; N],
@@ -137,32 +137,46 @@ where
         };
         scratch.pq.insert(DNeighbor::new(entry, entry_dist));
 
+        // Track admission count from PREVIOUS step for convergence detection.
+        // The DCC decides the current step's mode based on how productive
+        // the last step was (admission rate).
+        let mut prev_admitted: usize = 1; // optimistic start
+
         while scratch.pq.has_notvisited_node() {
             let neighbor = scratch.pq.closest_notvisited();
-            let id = neighbor.id;
+            let id = neighbor.id as usize;
 
-            // Prefetch the NEXT node's graph slot while processing current.
             if let Some(next) = scratch.pq.peek_notvisited() {
                 graph.prefetch_node(next.id as usize);
                 dataset.prefetch_vector(next.id);
             }
 
-            let phase_converged = scratch.dcc.update(neighbor.distance);
-            let neighbors_to_use = if !phase_converged {
-                graph.neighbors(id as usize)
-            } else {
-                graph.compressed_neighbors(id as usize)
-            };
+            let converged = scratch.dcc.update(prev_admitted);
 
             scratch.id_scratch.clear();
-            for &nn in neighbors_to_use {
-                if scratch.seen.insert(nn) {
-                    scratch.id_scratch.push(nn);
+            if !converged {
+                for &nn in graph.neighbors(id) {
+                    if scratch.seen.insert(nn) {
+                        scratch.id_scratch.push(nn);
+                    }
+                }
+            } else {
+                let (local, extra) = graph.rerank_candidates(id);
+                for &nn in local.iter().chain(extra.iter()) {
+                    if scratch.seen.insert(nn) {
+                        scratch.id_scratch.push(nn);
+                    }
                 }
             }
 
-            // Prefetch first unseen neighbor's vector before entering distance loop.
             let n_unseen = scratch.id_scratch.len();
+            let pq_worst = if scratch.pq.size() >= search_list_size {
+                scratch.pq[scratch.pq.size() - 1].distance
+            } else {
+                f32::MAX
+            };
+            let mut admitted = 0usize;
+
             if n_unseen > 0 {
                 dataset.prefetch_vector(scratch.id_scratch[0]);
             }
@@ -173,8 +187,13 @@ where
                 let nn = scratch.id_scratch[m];
                 let v = dataset.get_vertex(nn)?;
                 let dist = query_vertex.compare(&v, Metric::L2);
+                if dist < pq_worst || scratch.pq.size() < search_list_size {
+                    admitted += 1;
+                }
                 scratch.pq.insert(DNeighbor::new(nn, dist));
             }
+
+            prev_admitted = admitted;
         }
 
         Ok((0..scratch.pq.size().min(k))
@@ -218,36 +237,48 @@ where
         let mut converged_yet = false;
         let mut phase1_ndc: usize = 0;
         let mut phase2_ndc: usize = 0;
+        let mut prev_admitted: usize = 1; // optimistic start
 
         while scratch.pq.has_notvisited_node() {
             let neighbor = scratch.pq.closest_notvisited();
             total_steps += 1;
-            let id = neighbor.id;
+            let id = neighbor.id as usize;
 
-            let phase_converged = scratch.dcc.update(neighbor.distance);
-            if phase_converged && !converged_yet {
+            let converged = scratch.dcc.update(prev_admitted);
+            if converged && !converged_yet {
                 converge_step = total_steps;
                 converged_yet = true;
             }
 
-            let neighbors_to_use = if !phase_converged {
-                graph.neighbors(id as usize)
-            } else {
-                graph.compressed_neighbors(id as usize)
-            };
-
             scratch.id_scratch.clear();
-            for &nn in neighbors_to_use {
-                if scratch.seen.insert(nn) {
-                    scratch.id_scratch.push(nn);
+            if !converged {
+                for &nn in graph.neighbors(id) {
+                    if scratch.seen.insert(nn) {
+                        scratch.id_scratch.push(nn);
+                    }
+                }
+            } else {
+                let (local, extra) = graph.rerank_candidates(id);
+                for &nn in local.iter().chain(extra.iter()) {
+                    if scratch.seen.insert(nn) {
+                        scratch.id_scratch.push(nn);
+                    }
                 }
             }
+
             let n_unseen = scratch.id_scratch.len();
-            if !phase_converged {
+            if !converged {
                 phase1_ndc += n_unseen;
             } else {
                 phase2_ndc += n_unseen;
             }
+
+            let pq_worst = if scratch.pq.size() >= search_list_size {
+                scratch.pq[scratch.pq.size() - 1].distance
+            } else {
+                f32::MAX
+            };
+            let mut admitted = 0usize;
 
             for m in 0..n_unseen {
                 if m + 1 < n_unseen {
@@ -256,8 +287,13 @@ where
                 let nn = scratch.id_scratch[m];
                 let v = dataset.get_vertex(nn)?;
                 let dist = query_vertex.compare(&v, Metric::L2);
+                if dist < pq_worst || scratch.pq.size() < search_list_size {
+                    admitted += 1;
+                }
                 scratch.pq.insert(DNeighbor::new(nn, dist));
             }
+
+            prev_admitted = admitted;
         }
 
         if !converged_yet {
@@ -270,11 +306,10 @@ where
     }
 
     /// Profile search: accumulates nanosecond-level breakdown across all queries.
-    /// Returns (results, SearchProfileStats).
     pub fn search_profile(
         &self,
         queries: &[[f32; N]],
-        k: usize,
+        _k: usize,
         search_list_size: usize,
         window_size: usize,
         epsilon: f32,
@@ -309,36 +344,49 @@ where
             stats.distance_count += 1;
             scratch.pq.insert(DNeighbor::new(entry, entry_dist));
 
+            let mut prev_admitted: usize = 1; // optimistic start
+
             while scratch.pq.has_notvisited_node() {
                 let t_pq = Instant::now();
                 let neighbor = scratch.pq.closest_notvisited();
                 stats.pq_ops_ns += t_pq.elapsed().as_nanos() as u64;
 
-                let id = neighbor.id;
+                let id = neighbor.id as usize;
 
                 let t_conv = Instant::now();
-                let phase_converged = scratch.dcc.update(neighbor.distance);
+                let converged = scratch.dcc.update(prev_admitted);
                 stats.convergence_ns += t_conv.elapsed().as_nanos() as u64;
 
                 let t_graph = Instant::now();
-                let neighbors_to_use = if !phase_converged {
-                    graph.neighbors(id as usize)
+                scratch.id_scratch.clear();
+                if !converged {
+                    for &nn in graph.neighbors(id) {
+                        if scratch.seen.insert(nn) {
+                            scratch.id_scratch.push(nn);
+                        }
+                    }
                 } else {
-                    graph.compressed_neighbors(id as usize)
-                };
+                    let (local, extra) = graph.rerank_candidates(id);
+                    for &nn in local.iter().chain(extra.iter()) {
+                        if scratch.seen.insert(nn) {
+                            scratch.id_scratch.push(nn);
+                        }
+                    }
+                }
                 stats.graph_read_ns += t_graph.elapsed().as_nanos() as u64;
                 stats.graph_read_count += 1;
 
                 let t_seen = Instant::now();
-                scratch.id_scratch.clear();
-                for &nn in neighbors_to_use {
-                    if scratch.seen.insert(nn) {
-                        scratch.id_scratch.push(nn);
-                    }
-                }
                 stats.seen_ns += t_seen.elapsed().as_nanos() as u64;
 
                 let n_unseen = scratch.id_scratch.len();
+                let pq_worst = if scratch.pq.size() >= search_list_size {
+                    scratch.pq[scratch.pq.size() - 1].distance
+                } else {
+                    f32::MAX
+                };
+                let mut admitted = 0usize;
+
                 for m in 0..n_unseen {
                     let nn = scratch.id_scratch[m];
                     let t_d = Instant::now();
@@ -347,11 +395,16 @@ where
                     stats.distance_ns += t_d.elapsed().as_nanos() as u64;
                     stats.distance_count += 1;
 
+                    if dist < pq_worst || scratch.pq.size() < search_list_size {
+                        admitted += 1;
+                    }
+
                     let t_ins = Instant::now();
                     scratch.pq.insert(DNeighbor::new(nn, dist));
                     stats.pq_ops_ns += t_ins.elapsed().as_nanos() as u64;
                 }
 
+                prev_admitted = admitted;
                 stats.iterations += 1;
             }
 

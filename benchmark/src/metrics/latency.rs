@@ -13,7 +13,9 @@ pub struct LatencyStats {
     pub p95: Duration,
     pub p99: Duration,
     pub p999: Duration,
+    #[allow(dead_code)]
     pub min: Duration,
+    #[allow(dead_code)]
     pub max: Duration,
 }
 

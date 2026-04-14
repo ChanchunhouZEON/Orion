@@ -262,7 +262,7 @@ where
     ///       num_candidates: u32
     ///       candidate_ids:  [u32; num_candidates]
     #[cfg(feature = "staged_diskann")]
-    pub fn save_candidate_sets(&self, candidate_sets_file: &str) -> ANNResult<u64> {
+    pub fn save_candidate_sets(&mut self, candidate_sets_file: &str) -> ANNResult<u64> {
         let candidate_sets = self.extract_candidate_sets()?;
 
         let num_points = candidate_sets.len() as u64;

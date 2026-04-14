@@ -59,13 +59,11 @@ where
 
     pub delete_set: RwLock<HashSet<u32>>,
 
-    /// Per-anchor flat list of (location, pruned_id) pairs recorded during pruning.
-    /// `candidate_anchor_sets[anchor]` = all `(location, pruned_id)` pairs where
-    /// `anchor` caused `pruned_id` to be occluded while `location` was being pruned.
-    /// Populated during build when compute_candidate_sets is true.
-    /// Sorted by `location` before `extract_candidate_sets()` is called.
+    /// mmap-backed storage for `(location, pruned_id)` pairs per anchor.
+    /// OS page cache manages residency; lock-free per-slot atomic append.
+    /// Not tracked by Rust allocator — heap peak stays low.
     #[cfg(feature = "staged_diskann")]
-    pub candidate_anchor_sets: Option<Vec<Mutex<Vec<(u32, u32)>>>>,
+    pub candidate_anchor_sets: Option<crate::model::MmapAnchorSlab>,
 }
 
 impl<T, const N: usize> InmemIndex<T, N>
@@ -92,10 +90,12 @@ where
 
         #[cfg(feature = "staged_diskann")]
         let candidate_anchor_sets = if config.index_write_parameter.compute_candidate_sets {
+            let max_pairs = config.index_write_parameter.max_degree as usize * 2;
+            let tmp_path = std::env::temp_dir()
+                .join(format!("staged_diskann_mmap_{}.bin", std::process::id()));
             Some(
-                (0..total_internal_points)
-                    .map(|_| Mutex::new(Vec::new()))
-                    .collect(),
+                crate::model::MmapAnchorSlab::new(&tmp_path, total_internal_points, max_pairs)
+                    .expect("MmapAnchorSlab creation failed"),
             )
         } else {
             None
@@ -203,8 +203,20 @@ where
             )
         })?;
 
-        let new_neighbors = self.search_for_point_and_prune(scratch, vertex_id)?;
-        self.update_vertex_with_neighbors(vertex_id, new_neighbors)?;
+        #[cfg(feature = "staged_diskann")]
+        {
+            let (new_neighbors, dists) =
+                self.search_for_point_and_prune_with_dists(scratch, vertex_id)?;
+            let mut guard = self.final_graph.write_vertex_and_neighbors(vertex_id)?;
+            guard.set_neighbors_sorted(new_neighbors, dists);
+            assert!(guard.size() <= self.configuration.index_write_parameter.max_degree as usize);
+            drop(guard);
+        }
+        #[cfg(not(feature = "staged_diskann"))]
+        {
+            let new_neighbors = self.search_for_point_and_prune(scratch, vertex_id)?;
+            self.update_vertex_with_neighbors(vertex_id, new_neighbors)?;
+        }
         self.update_neighbors_of_vertex(vertex_id, scratch)?;
 
         Ok(())
@@ -226,6 +238,7 @@ where
         Ok(())
     }
 
+    #[cfg(not(feature = "staged_diskann"))]
     fn update_vertex_with_neighbors(
         &self,
         vertex_id: u32,
@@ -237,6 +250,7 @@ where
         Ok(())
     }
 
+    #[cfg(not(feature = "staged_diskann"))]
     fn search_for_point_and_prune(
         &self,
         scratch: &mut InMemQueryScratch<T, N>,
@@ -266,6 +280,42 @@ where
         }
 
         Ok(pruned_list)
+    }
+
+    /// Like `search_for_point_and_prune` but also returns per-neighbor distances.
+    /// The pruned_list preserves occlude_list order (distance ascending from vertex_id).
+    #[cfg(feature = "staged_diskann")]
+    fn search_for_point_and_prune_with_dists(
+        &self,
+        scratch: &mut InMemQueryScratch<T, N>,
+        vertex_id: u32,
+    ) -> ANNResult<(AdjacencyList, Vec<f32>)> {
+        let mut pruned_list =
+            AdjacencyList::for_range(self.configuration.index_write_parameter.max_degree as usize);
+        let vertex = self.dataset.get_vertex(vertex_id)?;
+        let mut visited_nodes = self.search_for_point(&vertex, scratch)?;
+
+        self.prune_neighbors(vertex_id, &mut visited_nodes, &mut pruned_list, scratch)?;
+
+        if pruned_list.is_empty() {
+            return Err(ANNError::log_index_error(
+                "pruned_list is empty.".to_string(),
+            ));
+        }
+
+        // Extract distances from the pool for pruned neighbors.
+        let dists: Vec<f32> = pruned_list
+            .iter()
+            .map(|&id| {
+                visited_nodes
+                    .iter()
+                    .find(|nb| nb.id == id)
+                    .map(|nb| nb.distance)
+                    .unwrap_or(f32::MAX)
+            })
+            .collect();
+
+        Ok((pruned_list, dists))
     }
 
     fn search(
@@ -369,9 +419,28 @@ where
                 );
                 self.prune_neighbors(vertex_id, &mut dummy_pool, &mut new_out_neighbors, scratch)?;
 
-                self.final_graph
-                    .write_vertex_and_neighbors(vertex_id)?
-                    .set_neighbors(new_out_neighbors);
+                #[cfg(feature = "staged_diskann")]
+                {
+                    let dists: Vec<f32> = new_out_neighbors
+                        .iter()
+                        .map(|&id| {
+                            dummy_pool
+                                .iter()
+                                .find(|nb| nb.id == id)
+                                .map(|nb| nb.distance)
+                                .unwrap_or(f32::MAX)
+                        })
+                        .collect();
+                    self.final_graph
+                        .write_vertex_and_neighbors(vertex_id)?
+                        .set_neighbors_sorted(new_out_neighbors, dists);
+                }
+                #[cfg(not(feature = "staged_diskann"))]
+                {
+                    self.final_graph
+                        .write_vertex_and_neighbors(vertex_id)?
+                        .set_neighbors(new_out_neighbors);
+                }
 
                 Ok(())
             },
@@ -556,40 +625,25 @@ where
     ///
     /// Uses flat sorted `Vec<(location, pruned_id)>` per anchor for cache-friendly lookup.
     #[cfg(feature = "staged_diskann")]
-    pub fn extract_candidate_sets(&self) -> ANNResult<Vec<StdHashSet<u32>>> {
-        let anchor_sets = self.candidate_anchor_sets.as_ref().ok_or_else(|| {
+    pub fn extract_candidate_sets(&mut self) -> ANNResult<Vec<StdHashSet<u32>>> {
+        let slab = self.candidate_anchor_sets.as_mut().ok_or_else(|| {
             ANNError::log_candidate_anchor_sets_error(
                 "Candidate anchor sets have not been built".to_string(),
             )
         })?;
+        slab.sort_all();
 
-        // Phase 1: drain + sort each anchor slot in parallel.
-        // Previously sequential; now distributed across rayon threads.
-        let anchor_data: Vec<Vec<(u32, u32)>> = anchor_sets
-            .par_iter()
-            .map(|slot| {
-                let mut pairs = std::mem::take(&mut *slot.lock().unwrap());
-                pairs.sort_unstable();
-                pairs
-            })
-            .collect();
-
+        // Pre-materialise bidirectional neighbors.
         let mut offsets = Vec::with_capacity(self.num_active_pts + 1);
         let mut neighbors: Vec<u32> =
             Vec::with_capacity(self.max_observed_degree as usize * self.num_active_pts);
-
         offsets.push(0u32);
         for i in 0..self.num_active_pts as u32 {
             if let Ok(v) = self.final_graph.read_vertex_and_neighbors(i) {
                 neighbors.extend(v.get_neighbors());
             }
-
             offsets.push(neighbors.len() as u32);
         }
-
-        // Phase 2: pre-materialise bidirectional neighbors for every node.
-        // Doing this once in a dedicated parallel pass eliminates N × degree RwLock
-        // acquisitions from inside the augmentation loop below.
         let bidir_nbrs: Vec<Vec<u32>> = (0..self.num_active_pts as u32)
             .into_par_iter()
             .map(|node| -> ANNResult<Vec<u32>> {
@@ -606,34 +660,25 @@ where
             })
             .collect::<ANNResult<Vec<Vec<u32>>>>()?;
 
-        // Phase 3: augment candidate sets — fully lock-free.
-        // bidir_nbrs and anchor_data are plain Vec<Vec<_>>; no synchronisation needed.
+        // Augment candidate sets via BPM page reads.
         let mut result: Vec<StdHashSet<u32>> = (0..self.num_active_pts)
             .map(|_| StdHashSet::new())
             .collect();
-
-        result
-            .par_iter_mut()
-            .enumerate()
-            .try_for_each(|(origin, candidates)| {
-                let origin_u32 = origin as u32;
-                candidates.insert(origin_u32);
-
-                for &neighbor in bidir_nbrs[origin].iter() {
-                    candidates.insert(neighbor);
-                    // anchor_data[neighbor] is sorted by (location, pruned_id).
-                    // Binary-search for all pairs where location == origin_u32.
-                    let pairs = &anchor_data[neighbor as usize];
-                    let start = pairs.partition_point(|&(loc, _)| loc < origin_u32);
-                    let mut i = start;
-                    while i < pairs.len() && pairs[i].0 == origin_u32 {
-                        candidates.insert(pairs[i].1);
-                        i += 1;
-                    }
+        for origin in 0..self.num_active_pts {
+            let origin_u32 = origin as u32;
+            let candidates = &mut result[origin];
+            candidates.insert(origin_u32);
+            for &neighbor in bidir_nbrs[origin].iter() {
+                candidates.insert(neighbor);
+                let pairs = slab.pairs(neighbor as usize);
+                let start = pairs.partition_point(|&(loc, _)| loc < origin_u32);
+                let mut i = start;
+                while i < pairs.len() && pairs[i].0 == origin_u32 {
+                    candidates.insert(pairs[i].1);
+                    i += 1;
                 }
-
-                Ok::<(), ANNError>(())
-            })?;
+            }
+        }
 
         Ok(result)
     }
@@ -651,104 +696,278 @@ where
     /// The caller should `drop` the index after this call to free the
     /// `InmemDataset` and scratch queues.
     #[cfg(feature = "staged_diskann")]
+    /// Extract InMemoryGraph + candidate_sets in a memory-efficient pipeline:
+    ///
+    /// 1. Sort each node's neighbors by distance in-place (needs dataset).
+    /// 2. Enrich slab via single-pass prune (needs dataset).
+    /// 3. Build candidate_sets from slab (location=node, anchor=key_nbr).
+    /// 4. Free dataset + slab, return InMemoryGraph.
+    ///
+    /// No CsrGraph intermediate — minimal peak memory.
+    #[cfg(feature = "staged_diskann")]
     pub fn extract_graph_and_candidates(
         &mut self,
-    ) -> ANNResult<(crate::model::CsrGraph, Vec<Vec<u32>>)> {
+        key_neighbor_count: usize,
+    ) -> ANNResult<(InMemoryGraph, Vec<Vec<u32>>)> {
+        self.extract_graph_and_candidates_impl(key_neighbor_count, false)
+    }
+
+    /// Like `extract_graph_and_candidates` but with explicit enrich control.
+    #[cfg(feature = "staged_diskann")]
+    pub fn extract_graph_and_candidates_impl(
+        &mut self,
+        key_neighbor_count: usize,
+        enrich: bool,
+    ) -> ANNResult<(InMemoryGraph, Vec<Vec<u32>>)> {
         use crate::utils::mem_usage;
 
-        let anchor_sets = self.candidate_anchor_sets.as_ref().ok_or_else(|| {
-            ANNError::log_candidate_anchor_sets_error(
-                "Candidate anchor sets have not been built".to_string(),
-            )
-        })?;
-
-        log::info!("    extract entry:             mem={}", mem_usage());
-
-        // Phase 1: drain + sort each anchor slot in parallel.
-        let t1 = std::time::Instant::now();
-        let anchor_data: Vec<Vec<(u32, u32)>> = anchor_sets
-            .par_iter()
-            .map(|slot| {
-                let mut pairs = std::mem::take(&mut *slot.lock().unwrap());
-                pairs.sort_unstable();
-                pairs
-            })
-            .collect();
-
-        // Free drained anchor_sets shells (100K × Mutex + empty Vec ≈ 6 MB)
-        // and query scratch queue (no longer needed after build).
-        self.candidate_anchor_sets = None;
-        self.query_scratch_queue = ArcConcurrentBoxedQueue::new();
-
-        log::info!(
-            "    extract P1 (anchor sort + free shells):  {:.3}s  mem={}",
-            t1.elapsed().as_secs_f32(),
-            mem_usage(),
-        );
-
-        // Phase 2: consume final_graph → aligned CsrGraph in one pass.
-        let t2 = std::time::Instant::now();
         let num_pts = self.num_active_pts;
         let max_degree = self.configuration.index_write_parameter.max_degree;
-        let locked_graph =
-            std::mem::replace(&mut self.final_graph, InMemoryGraph::new(0, max_degree));
-        log::info!("    extract P2a (take graph):  mem={}", mem_usage());
-
-        let mut csr = crate::model::CsrGraph::from_inmem_graph(locked_graph, max_degree)?;
         log::info!(
-            "    extract P2b (CSR built):   {:.3}s  mem={}",
-            t2.elapsed().as_secs_f32(),
-            mem_usage(),
+            "    extract entry (t={}, enrich={}):  mem={}",
+            key_neighbor_count,
+            enrich,
+            mem_usage()
         );
 
-        // Phase 3: compute bidir bits in-place (parallel).
+        // Phase 1: Sort neighbors by distance in-place.
+        // Under staged_diskann, neighbors are kept sorted during build
+        // (via add_sorted + set_neighbors_sorted), so P1 is a no-op.
+        #[cfg(not(feature = "staged_diskann"))]
+        {
+            let t1 = std::time::Instant::now();
+            self.sort_neighbors_by_distance_in_place()?;
+            log::info!(
+                "    P1 (sort in-place):   {:.3}s  mem={}",
+                t1.elapsed().as_secs_f32(),
+                mem_usage()
+            );
+        }
+        #[cfg(feature = "staged_diskann")]
+        log::info!("    P1 (sort):            SKIPPED (maintained during build)");
+
+        // Phase 2: Enrich slab via single-pass prune (optional, disabled by default).
+        // Must run before dataset free since it needs distance computations.
+        if enrich {
+            let t2 = std::time::Instant::now();
+            self.enrich_candidate_slab()?;
+            log::info!(
+                "    P2 (enrich slab):     {:.3}s  mem={}",
+                t2.elapsed().as_secs_f32(),
+                mem_usage()
+            );
+        }
+
+        // Free dataset — candidate extraction (P3/P4) doesn't need it.
+        // This ensures dataset and candidate_sets never coexist in memory.
+        self.dataset = InmemDataset::new(0, 1.0)?;
+        log::info!("    dataset freed:        mem={}", mem_usage());
+
+        // Phase 3: Sort slab for sequential access.
         let t3 = std::time::Instant::now();
-        csr.compute_bidir();
+        if let Some(ref mut slab) = self.candidate_anchor_sets {
+            let (at_cap, overflow, max_count) = slab.truncation_stats();
+            log::info!(
+                "    slab stats: max_pairs={}, at_cap={}/{}, overflow={}, max_count={}",
+                slab.max_pairs(),
+                at_cap,
+                slab.num_anchors(),
+                overflow,
+                max_count
+            );
+            slab.sort_all();
+            slab.advise_sequential();
+        }
         log::info!(
-            "    extract P3 (bidir):        {:.3}s  mem={}",
+            "    P3 (sort slab):       {:.3}s  mem={}",
             t3.elapsed().as_secs_f32(),
-            mem_usage(),
+            mem_usage()
         );
 
-        // Phase 4: build candidate sets.
+        // Phase 4: Build candidate_sets (location=origin, anchor=key_nbr).
         let t4 = std::time::Instant::now();
-        let mut result: Vec<Vec<u32>> = (0..num_pts).map(|_| Vec::new()).collect();
-        log::info!("    extract P4a (alloc):       mem={}", mem_usage());
+        let mut candidate_sets: Vec<Vec<u32>> = (0..num_pts).map(|_| Vec::new()).collect();
 
-        result
-            .par_iter_mut()
-            .enumerate()
-            .try_for_each(|(origin, candidates)| {
-                let origin_u32 = origin as u32;
-                candidates.push(origin_u32);
+        if let Some(ref slab) = self.candidate_anchor_sets {
+            candidate_sets
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(origin, candidates)| {
+                    // Read slab[origin]: pairs are (distance_bits, pruned_id).
+                    // Sort by distance, dedup, take closest pruned candidates.
+                    let pairs = slab.pairs(origin);
+                    if pairs.is_empty() {
+                        return;
+                    }
 
-                for neighbor in csr.bidir_neighbors(origin) {
-                    candidates.push(neighbor);
-                    let pairs = &anchor_data[neighbor as usize];
-                    let start = pairs.partition_point(|&(loc, _)| loc < origin_u32);
-                    let mut i = start;
-                    while i < pairs.len() && pairs[i].0 == origin_u32 {
-                        candidates.push(pairs[i].1);
-                        i += 1;
+                    let mut with_dist: Vec<(f32, u32)> = pairs
+                        .iter()
+                        .map(|&(dist_bits, pid)| (f32::from_bits(dist_bits), pid))
+                        .collect();
+                    with_dist.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                    with_dist.dedup_by_key(|e| e.1);
+
+                    // Cap at key_neighbor_count closest (0 = take all available).
+                    let limit = if key_neighbor_count > 0 {
+                        key_neighbor_count.min(with_dist.len())
+                    } else {
+                        with_dist.len()
+                    };
+
+                    for &(_, pid) in &with_dist[..limit] {
+                        candidates.push(pid);
+                    }
+
+                    candidates.sort_unstable();
+                    candidates.dedup();
+                });
+        }
+        log::info!(
+            "    P4 (candidates):      {:.3}s  mem={}",
+            t4.elapsed().as_secs_f32(),
+            mem_usage()
+        );
+
+        // Phase 5: Free dataset + slab, extract InMemoryGraph.
+        self.query_scratch_queue = ArcConcurrentBoxedQueue::new();
+        self.candidate_anchor_sets = None;
+
+        let graph = std::mem::replace(&mut self.final_graph, InMemoryGraph::new(0, max_degree));
+        log::info!("    P5 (free+extract):    mem={}", mem_usage());
+
+        Ok((graph, candidate_sets))
+    }
+
+    /// Enrich the candidate anchor slab by re-running single-pass robust prune
+    /// on every node's final neighbor list.
+    ///
+    /// Records (anchor, pruned) pairs that were missed when neighbors were
+    /// appended via `inter_insert` without triggering re-prune.
+    ///
+    /// Uses target `alpha` directly (no alpha escalation). Does NOT modify
+    /// the graph.
+    #[cfg(feature = "staged_diskann")]
+    pub fn enrich_candidate_slab(&self) -> ANNResult<()> {
+        use rayon::prelude::*;
+
+        let slab = match self.candidate_anchor_sets {
+            Some(ref s) => s,
+            None => return Ok(()),
+        };
+
+        let alpha = self.configuration.index_write_parameter.alpha;
+        let metric = self.configuration.dist_metric;
+        let num_pts = self.num_active_pts;
+
+        let t_start = std::time::Instant::now();
+
+        (0..num_pts).into_par_iter().try_for_each(|node| {
+            let node_u32 = node as u32;
+
+            let guard = self.final_graph.read_vertex_and_neighbors(node_u32)?;
+            let nbrs: Vec<u32> = guard.get_neighbors().to_vec();
+            drop(guard);
+
+            if nbrs.len() < 2 {
+                return Ok::<(), ANNError>(());
+            }
+
+            // Compute distances, sort ascending.
+            let mut pool: Vec<(u32, f32)> = nbrs
+                .iter()
+                .filter_map(|&n| {
+                    self.dataset
+                        .get_distance(node_u32, n, metric)
+                        .ok()
+                        .map(|d| (n, d))
+                })
+                .collect();
+            pool.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+            // Single-pass occlusion.
+            let len = pool.len();
+            let mut occlude_factor = vec![0.0f32; len];
+            let mut buffer: Vec<(u32, u32)> = Vec::new();
+
+            for i in 0..len {
+                if occlude_factor[i] > alpha {
+                    continue;
+                }
+                occlude_factor[i] = f32::MAX;
+                let anchor_id = pool[i].0;
+
+                for j in (i + 1)..len {
+                    if occlude_factor[j] > alpha {
+                        continue;
+                    }
+                    let old = occlude_factor[j];
+                    let djk = self
+                        .dataset
+                        .get_distance(pool[j].0, anchor_id, metric)
+                        .unwrap_or(f32::MAX);
+                    occlude_factor[j] = if djk == 0.0 {
+                        f32::MAX
+                    } else {
+                        occlude_factor[j].max(pool[j].1 / djk)
+                    };
+
+                    if old <= alpha && occlude_factor[j] > alpha {
+                        // Store (distance_bits, pruned_id): distance from node to pruned point.
+                        buffer.push((pool[j].1.to_bits(), pool[j].0));
                     }
                 }
+            }
 
-                candidates.sort_unstable();
-                candidates.dedup();
-                Ok::<(), ANNError>(())
-            })?;
+            if !buffer.is_empty() {
+                // Write (distance_bits, pruned_id) pairs to slab[node].
+                if (node as usize) < slab.num_anchors() {
+                    slab.atomic_append_pairs(node, &buffer);
+                }
+            }
+
+            Ok(())
+        })?;
 
         log::info!(
-            "    extract P4b (candidates):  {:.3}s  mem={}",
-            t4.elapsed().as_secs_f32(),
-            mem_usage(),
+            "  enrich_candidate_slab: {:.3}s ({} nodes)",
+            t_start.elapsed().as_secs_f32(),
+            num_pts,
         );
+        Ok(())
+    }
 
-        // Drop anchor_data before returning to free memory earlier.
-        drop(anchor_data);
-        log::info!("    extract P4c (drop anchor): mem={}", mem_usage());
+    /// Sort each node's neighbor list by distance in-place.
+    /// Must be called while the dataset is still alive.
+    #[cfg(feature = "staged_diskann")]
+    pub fn sort_neighbors_by_distance_in_place(&self) -> ANNResult<()> {
+        let metric = self.configuration.dist_metric;
+        let num_pts = self.num_active_pts;
 
-        Ok((csr, result))
+        for node in 0..num_pts {
+            let node_u32 = node as u32;
+            let mut guard = self.final_graph.write_vertex_and_neighbors(node_u32)?;
+            let nbrs = guard.get_neighbors();
+            let mut with_dist: Vec<(u32, f32)> = nbrs
+                .iter()
+                .filter_map(|&n| {
+                    self.dataset
+                        .get_distance(node_u32, n, metric)
+                        .ok()
+                        .map(|d| (n, d))
+                })
+                .collect();
+            with_dist.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+            let sorted_ids: Vec<u32> = with_dist.into_iter().map(|(id, _)| id).collect();
+            guard.set_neighbors(sorted_ids.into());
+        }
+        Ok(())
+    }
+
+    /// Free the candidate anchor slab.
+    #[cfg(feature = "staged_diskann")]
+    pub fn drop_candidate_slab(&mut self) {
+        self.candidate_anchor_sets = None;
     }
 
     /// Get number of active points.
@@ -983,7 +1202,7 @@ where
     }
 
     #[cfg(feature = "staged_diskann")]
-    fn extract_candidate_sets(&self) -> Option<Vec<StdHashSet<u32>>> {
+    fn extract_candidate_sets(&mut self) -> Option<Vec<StdHashSet<u32>>> {
         InmemIndex::extract_candidate_sets(self).ok()
     }
 
@@ -998,10 +1217,28 @@ where
     #[cfg(feature = "staged_diskann")]
     fn extract_graph_and_candidates(
         &mut self,
-        _num_points: usize,
-        _max_degree: u32,
-    ) -> ANNResult<(crate::model::CsrGraph, Vec<Vec<u32>>)> {
-        InmemIndex::extract_graph_and_candidates(self)
+        key_neighbor_count: usize,
+    ) -> ANNResult<(crate::model::InMemoryGraph, Vec<Vec<u32>>)> {
+        InmemIndex::extract_graph_and_candidates(self, key_neighbor_count)
+    }
+
+    #[cfg(feature = "staged_diskann")]
+    fn extract_graph_and_candidates_ex(
+        &mut self,
+        key_neighbor_count: usize,
+        enrich: bool,
+    ) -> ANNResult<(crate::model::InMemoryGraph, Vec<Vec<u32>>)> {
+        InmemIndex::extract_graph_and_candidates_impl(self, key_neighbor_count, enrich)
+    }
+
+    #[cfg(feature = "staged_diskann")]
+    fn drop_candidate_slab(&mut self) {
+        InmemIndex::drop_candidate_slab(self)
+    }
+
+    #[cfg(feature = "staged_diskann")]
+    fn enrich_candidate_slab(&self) -> ANNResult<()> {
+        InmemIndex::enrich_candidate_slab(self)
     }
 
     fn num_active_points(&self) -> usize {
