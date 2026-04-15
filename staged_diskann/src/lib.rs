@@ -13,6 +13,7 @@ pub mod utils;
 pub mod visualization;
 
 pub use algorithm::SearchProfile;
+pub use algorithm::search::calibrate::{CalibrationDiagnostics, CalibratedParams};
 pub use algorithm::search::convergence::SearchConvergenceChecker;
 pub use algorithm::search::in_mem_search::{
     DEFAULT_EARLY_EXIT_LIMIT, DEFAULT_EPSILON, DEFAULT_SEARCH_LIST_SIZE, DEFAULT_WINDOW_SIZE,
@@ -23,6 +24,6 @@ pub use index::NaiveStagedDiskANN;
 pub use index::StagedDiskANN;
 pub use index::{BeamSearchConfig, BeamSearchResult, IoLimiter, async_beam_search};
 pub use index::{DIM_32, DIM_100, DIM_128, DIM_960};
-pub use index::{DiskANNBuildResult, build_diskann_index, build_diskann_index_ex};
+pub use index::{DiskANNBuildResult, build_diskann_index};
 pub use model::PhasedGraph;
 pub use model::{FixedChunkPQTable, NUM_PQ_CENTROIDS};

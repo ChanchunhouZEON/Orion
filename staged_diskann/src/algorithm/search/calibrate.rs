@@ -6,6 +6,7 @@
 //! Auto-calibration of convergence threshold and early exit limit.
 
 use crate::StagedDiskANN;
+use crate::algorithm::search::in_mem_search::AlignedQuery;
 use crate::model::scratch::InMemSearchScratch;
 use diskann::common::ANNResult;
 use diskann::model::{Neighbor as DNeighbor, Vertex};
@@ -50,7 +51,8 @@ where
         let mut tail_gaps: Vec<usize> = Vec::new();
 
         for query in warmup_queries {
-            let query_vertex = Vertex::new(query, 0);
+            let aligned = AlignedQuery(*query);
+            let query_vertex = Vertex::new(&aligned.0, 0);
             scratch.prepare_for_query(search_list_size);
             scratch.ensure_capacity(graph.num_nodes());
 
@@ -233,6 +235,174 @@ where
         Ok(CalibratedParams {
             threshold,
             early_exit_limit,
+        })
+    }
+}
+
+/// Raw diagnostic data from calibration for visualization.
+#[derive(Debug, Clone)]
+pub struct CalibrationDiagnostics {
+    /// Per-step admission rate (smoothed).
+    pub admission_rates: Vec<f32>,
+    /// Gaps between consecutive top-k admissions (ee is P95 of this).
+    pub useful_gaps: Vec<usize>,
+    /// Tail gap distribution: steps from last useful admission to search end.
+    pub tail_gaps: Vec<usize>,
+    /// Calibrated parameters.
+    pub params: CalibratedParams,
+}
+
+impl<const N: usize> StagedDiskANN<N>
+where
+    [f32; N]: FullPrecisionDistance<f32, N>,
+{
+    /// Calibrate with full diagnostics for visualization.
+    pub fn calibrate_with_diagnostics(
+        &self,
+        warmup_queries: &[[f32; N]],
+        search_list_size: usize,
+        window_size: usize,
+    ) -> ANNResult<CalibrationDiagnostics> {
+        let entry = self.entry;
+        let dataset = &self.dataset;
+        let graph = &self.graph;
+        let k = 10usize;
+
+        let mut scratch = InMemSearchScratch::new(search_list_size);
+
+        let max_steps = search_list_size * 4;
+        let mut pos_admit_count = vec![0u64; max_steps];
+        let mut pos_total_count = vec![0u64; max_steps];
+        let mut tail_gaps: Vec<usize> = Vec::new();
+        let mut useful_gaps: Vec<usize> = Vec::new();
+
+        for query in warmup_queries {
+            let aligned = AlignedQuery(*query);
+            let query_vertex = Vertex::new(&aligned.0, 0);
+            scratch.prepare_for_query(search_list_size);
+            scratch.ensure_capacity(graph.num_nodes());
+
+            scratch.seen.insert(entry);
+            let entry_dist = {
+                let v = dataset.get_vertex(entry)?;
+                v.compare(&query_vertex, Metric::L2)
+            };
+            scratch.pq.insert(DNeighbor::new(entry, entry_dist));
+
+            let mut admit_step: std::collections::HashMap<u32, usize> =
+                std::collections::HashMap::new();
+            admit_step.insert(entry, 0);
+            let mut step = 0usize;
+
+            while scratch.pq.has_notvisited_node() {
+                let neighbor = scratch.pq.closest_notvisited();
+                let id = neighbor.id as usize;
+
+                scratch.id_scratch.clear();
+                for &nn in graph.neighbors(id) {
+                    if scratch.seen.insert(nn) {
+                        scratch.id_scratch.push(nn);
+                    }
+                }
+
+                let n_unseen = scratch.id_scratch.len();
+                let pq_worst = if scratch.pq.size() >= search_list_size {
+                    scratch.pq[scratch.pq.size() - 1].distance
+                } else {
+                    f32::MAX
+                };
+                let mut admitted = false;
+
+                for m in 0..n_unseen {
+                    let nn = scratch.id_scratch[m];
+                    let v = dataset.get_vertex(nn)?;
+                    let dist = query_vertex.compare(&v, Metric::L2);
+                    if dist < pq_worst || scratch.pq.size() < search_list_size {
+                        admitted = true;
+                        admit_step.insert(nn, step);
+                    }
+                    scratch.pq.insert(DNeighbor::new(nn, dist));
+                }
+
+                if step < max_steps {
+                    pos_total_count[step] += 1;
+                    if admitted {
+                        pos_admit_count[step] += 1;
+                    }
+                }
+                step += 1;
+            }
+
+            let total_steps = step;
+            let top_k: Vec<u32> = (0..scratch.pq.size().min(k))
+                .map(|i| scratch.pq[i].id)
+                .collect();
+            let mut useful_steps: Vec<usize> = top_k
+                .iter()
+                .filter_map(|id| admit_step.get(id))
+                .copied()
+                .collect();
+            useful_steps.sort_unstable();
+            useful_steps.dedup();
+
+            for w in useful_steps.windows(2) {
+                useful_gaps.push(w[1] - w[0]);
+            }
+            if let Some(&last) = useful_steps.last() {
+                tail_gaps.push(total_steps.saturating_sub(last));
+            }
+        }
+
+        // Compute admission rate curve
+        let valid_steps = pos_total_count
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(max_steps);
+        let rates: Vec<f32> = (0..valid_steps)
+            .map(|i| {
+                if pos_total_count[i] > 0 {
+                    pos_admit_count[i] as f32 / pos_total_count[i] as f32
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        let sw = window_size.max(3);
+        let smoothed: Vec<f32> = (0..rates.len())
+            .map(|i| {
+                let s = i.saturating_sub(sw / 2);
+                let e = (i + sw / 2 + 1).min(rates.len());
+                rates[s..e].iter().sum::<f32>() / (e - s) as f32
+            })
+            .collect();
+
+        // Derive params (same logic as calibrate)
+        let mut threshold = 0.15f32;
+        if smoothed.len() > sw * 3 {
+            let derivs: Vec<f32> = smoothed.windows(2).map(|w| w[1] - w[0]).collect();
+            let skip = sw * 2;
+            for i in skip..derivs.len() {
+                if derivs[i].abs() < 0.003 && smoothed[i] < 0.25 {
+                    threshold = smoothed[i];
+                    break;
+                }
+            }
+        }
+        threshold = threshold.max(0.05).min(0.25);
+
+        useful_gaps.sort_unstable();
+        tail_gaps.sort_unstable();
+        let early_exit_limit = percentile(&useful_gaps, 95).max(3);
+
+        Ok(CalibrationDiagnostics {
+            admission_rates: smoothed,
+            useful_gaps,
+            tail_gaps,
+            params: CalibratedParams {
+                threshold,
+                early_exit_limit,
+            },
         })
     }
 }

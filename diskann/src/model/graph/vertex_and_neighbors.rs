@@ -14,7 +14,7 @@ pub struct VertexAndNeighbors {
     neighbors: AdjacencyList,
     /// Parallel distance array (sorted ascending), maintained under `staged_diskann`.
     #[cfg(feature = "staged_diskann")]
-    neighbor_dists: Vec<f32>,
+    pub neighbor_dists: Vec<f32>,
 }
 
 impl VertexAndNeighbors {
@@ -64,6 +64,13 @@ impl VertexAndNeighbors {
     #[inline(always)]
     pub fn get_neighbors(&self) -> &AdjacencyList {
         &self.neighbors
+    }
+
+    /// Get the parallel distance array (only populated under `staged_diskann`).
+    #[cfg(feature = "staged_diskann")]
+    #[inline(always)]
+    pub fn get_neighbor_dists(&self) -> &[f32] {
+        &self.neighbor_dists
     }
 
     /// Consume self and return the neighbor list as a plain `Vec<u32>`.

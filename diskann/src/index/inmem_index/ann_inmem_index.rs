@@ -69,34 +69,18 @@ where
     fn extract_candidate_sets(&mut self) -> Option<Vec<HashSet<u32>>>;
 
     /// Sort neighbors by distance in-place, enrich slab, extract
-    /// InMemoryGraph + candidate_sets. No CsrGraph intermediate.
+    /// Extract pre-partitioned node data: Vec<(local, remote, extra)> per node.
     #[cfg(feature = "staged_diskann")]
     fn extract_graph_and_candidates(
         &mut self,
-        _key_neighbor_count: usize,
-    ) -> ANNResult<(crate::model::InMemoryGraph, Vec<Vec<u32>>)> {
-        Err(ANNError::log_index_error("not implemented".into()))
-    }
-
-    /// Extract graph + candidates with explicit enrich control.
-    #[cfg(feature = "staged_diskann")]
-    fn extract_graph_and_candidates_ex(
-        &mut self,
-        _key_neighbor_count: usize,
-        _enrich: bool,
-    ) -> ANNResult<(crate::model::InMemoryGraph, Vec<Vec<u32>>)> {
+        _max_extra: usize,
+    ) -> ANNResult<Vec<(Vec<u32>, Vec<u32>, Vec<u32>)>> {
         Err(ANNError::log_index_error("not implemented".into()))
     }
 
     /// Free the candidate anchor slab.
     #[cfg(feature = "staged_diskann")]
     fn drop_candidate_slab(&mut self) {}
-
-    /// Re-run single-pass prune on all nodes to enrich the candidate slab.
-    #[cfg(feature = "staged_diskann")]
-    fn enrich_candidate_slab(&self) -> ANNResult<()> {
-        Ok(())
-    }
 
     /// Extract the final graph as a HashMap for external consumers.
     fn extract_graph(&self) -> HashMap<u32, Vec<u32>> {

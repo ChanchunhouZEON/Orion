@@ -9,6 +9,11 @@ use diskann::model::{Neighbor as DNeighbor, Vertex};
 use rayon::prelude::*;
 use vector::{FullPrecisionDistance, Metric};
 
+/// 16-byte aligned query buffer for efficient NEON loads.
+/// Query is copied once at search entry, then reused for all distance computations.
+#[repr(C, align(16))]
+pub struct AlignedQuery<const N: usize>(pub [f32; N]);
+
 pub const DEFAULT_SEARCH_LIST_SIZE: usize = 48;
 pub const DEFAULT_WINDOW_SIZE: usize = 5;
 pub const DEFAULT_EPSILON: f32 = 0.0;
@@ -125,7 +130,8 @@ where
         let entry = self.entry;
         let dataset = &self.dataset;
         let graph = &self.graph;
-        let query_vertex = Vertex::new(query, 0);
+        let aligned = AlignedQuery(*query);
+        let query_vertex = Vertex::new(&aligned.0, 0);
 
         let pool = self.inmem_scratch_pool.get_or_init(|| {
             InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
@@ -191,11 +197,15 @@ where
                 }
                 let nn = scratch.id_scratch[m];
                 let v = dataset.get_vertex(nn)?;
-                let dist = query_vertex.compare(&v, Metric::L2);
-                if dist < pq_worst || scratch.pq.size() < search_list_size {
-                    admitted += 1;
+                let dist = query_vertex.compare_with_bound(&v, pq_worst);
+                if dist >= 0.0 {
+                    // Distance is valid and < pq_worst (or PQ not full yet)
+                    if scratch.pq.size() < search_list_size || dist < pq_worst {
+                        admitted += 1;
+                    }
+                    scratch.pq.insert(DNeighbor::new(nn, dist));
                 }
-                scratch.pq.insert(DNeighbor::new(nn, dist));
+                // dist < 0.0: abandoned — partial distance already exceeded pq_worst
             }
 
             prev_admitted = admitted;
@@ -223,7 +233,8 @@ where
         let entry = self.entry;
         let dataset = &self.dataset;
         let graph = &self.graph;
-        let query_vertex = Vertex::new(query, 0);
+        let aligned = AlignedQuery(*query);
+        let query_vertex = Vertex::new(&aligned.0, 0);
 
         let pool = self.inmem_scratch_pool.get_or_init(|| {
             InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
@@ -297,11 +308,13 @@ where
                 }
                 let nn = scratch.id_scratch[m];
                 let v = dataset.get_vertex(nn)?;
-                let dist = query_vertex.compare(&v, Metric::L2);
-                if dist < pq_worst || scratch.pq.size() < search_list_size {
-                    admitted += 1;
+                let dist = query_vertex.compare_with_bound(&v, pq_worst);
+                if dist >= 0.0 {
+                    if scratch.pq.size() < search_list_size || dist < pq_worst {
+                        admitted += 1;
+                    }
+                    scratch.pq.insert(DNeighbor::new(nn, dist));
                 }
-                scratch.pq.insert(DNeighbor::new(nn, dist));
             }
 
             prev_admitted = admitted;
@@ -342,7 +355,8 @@ where
         let mut stats = SearchProfileStats::default();
 
         for query in queries {
-            let query_vertex = Vertex::new(query, 0);
+            let aligned = AlignedQuery(*query);
+            let query_vertex = Vertex::new(&aligned.0, 0);
             let mut guard = pool.acquire();
             let scratch = guard.scratch();
             scratch.prepare_for_query(search_list_size);

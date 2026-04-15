@@ -23,6 +23,15 @@ use crate::l2_scalar_distance::{distance_l2_vector_f16, distance_l2_vector_f32};
 pub trait FullPrecisionDistance<T, const N: usize> {
     /// Get the distance between vertex a and vertex b
     fn distance_compare(a: &[T; N], b: &[T; N], vec_type: Metric) -> f32;
+
+    /// L2 distance with early abandon: returns the actual distance if it is
+    /// less than `upper_bound`, or a negative value (-1.0) if the partial
+    /// distance already exceeds `upper_bound` before all dimensions are
+    /// processed. Callers check `result < 0.0` to detect abandonment.
+    fn distance_compare_with_bound(a: &[T; N], b: &[T; N], upper_bound: f32) -> f32 {
+        let d = Self::distance_compare(a, b, Metric::L2);
+        if d < upper_bound { d } else { -1.0 }
+    }
 }
 
 #[allow(clippy::panic)]
@@ -32,6 +41,19 @@ impl<const N: usize> FullPrecisionDistance<f32, N> for [f32; N] {
         match metric {
             Metric::L2 => distance_l2_vector_f32::<N>(a, b),
             _ => panic!("Not supported Metric type {:?}", metric),
+        }
+    }
+
+    #[inline(always)]
+    fn distance_compare_with_bound(a: &[f32; N], b: &[f32; N], upper_bound: f32) -> f32 {
+        #[cfg(target_arch = "aarch64")]
+        {
+            crate::l2_neon_distance::distance_l2_early_abandon_f32::<N>(a, b, upper_bound)
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let d = distance_l2_vector_f32::<N>(a, b);
+            if d < upper_bound { d } else { -1.0 }
         }
     }
 }

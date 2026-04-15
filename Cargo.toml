@@ -80,3 +80,10 @@ codegen-units = 1
 lto = "fat"
 strip = "symbols"
 panic = "abort"
+
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = 2
+lto = "thin"
+codegen-units = 4

@@ -102,155 +102,28 @@ impl PhasedGraph {
         }
     }
 
-    /// Build from InMemoryGraph + candidate_sets (borrow only).
+    /// Build from pre-computed partitions (from extract_graph_and_candidates).
     ///
-    /// For each node the distance-sorted neighbors are partitioned:
-    /// 1. `local` = closest t + rest neighbors in candidate_set
-    /// 2. `remote` = rest neighbors NOT in candidate_set
-    /// 3. `extra` = candidate_set members NOT in graph
-    /// Build from InMemoryGraph + candidate_sets.
-    ///
-    /// Local/remote split is based on **bidirectional edges**: if u→v AND v→u
-    /// both exist, v is local (true near neighbor); otherwise remote (navigation
-    /// shortcut). No distance information needed.
-    ///
-    /// - `base_local_count`: >0 = fixed override (ignores bidir detection).
-    /// - `max_extra`: max extra candidates per node (caps stride allocation).
-    pub fn build_from_inmem_graph(
-        graph: diskann::model::InMemoryGraph,
-        candidate_sets: &[Vec<u32>],
-        base_local_count: usize,
+    /// Each element: `(local_ids, remote_ids, extra_ids)`.
+    /// Writes directly into the slab — no bidir computation, no candidate
+    /// filtering, no distance information needed.
+    pub fn build_from_partitions(
+        partitions: &[(Vec<u32>, Vec<u32>, Vec<u32>)],
+        max_degree: u32,
         max_extra: usize,
     ) -> Self {
         use rayon::prelude::*;
 
-        let num_nodes = graph.size();
-        let max_degree = graph.max_degree();
+        let num_nodes = partitions.len();
         let max_data = max_degree as usize + max_extra;
+        let pg = Self::allocate(num_nodes, max_data, max_degree, 0);
 
-        let pg = Self::allocate(num_nodes, max_data, max_degree, base_local_count as u32);
-
-        if base_local_count > 0 {
-            // Fixed local count — single pass, no bidir needed.
-            graph
-                .final_graph
-                .into_par_iter()
-                .enumerate()
-                .for_each(|(node, lock)| {
-                    let vn = lock.into_inner().unwrap_or_else(|e| e.into_inner());
-                    let nbrs = vn.into_neighbors();
-                    let cs = &candidate_sets[node];
-                    let degree = nbrs.len();
-                    let t = base_local_count.min(degree);
-
-                    let mut local_buf = [0u32; 64];
-                    let mut remote_buf = [0u32; 64];
-                    let mut extra_buf = [0u32; 128];
-                    let mut lc = 0usize;
-                    let mut rc = 0usize;
-                    let mut ec = 0usize;
-
-                    for &n in &nbrs[..t] {
-                        local_buf[lc] = n;
-                        lc += 1;
-                    }
-                    for &n in &nbrs[t..] {
-                        if cs.binary_search(&n).is_ok() {
-                            local_buf[lc] = n;
-                            lc += 1;
-                        } else {
-                            remote_buf[rc] = n;
-                            rc += 1;
-                        }
-                    }
-                    for &c in cs {
-                        if ec >= max_extra {
-                            break;
-                        }
-                        if !nbrs.contains(&c) {
-                            extra_buf[ec] = c;
-                            ec += 1;
-                        }
-                    }
-
-                    unsafe {
-                        pg.write_node_unchecked(
-                            node,
-                            &local_buf[..lc],
-                            &remote_buf[..rc],
-                            &extra_buf[..ec],
-                        );
-                    }
-                });
-        } else {
-            // Bidir-based split: two passes.
-            // Pass 1 (read-only): compute bidir bits per node in parallel.
-            let bidir_bits: Vec<u32> = (0..num_nodes)
-                .into_par_iter()
-                .map(|node| {
-                    let guard = graph
-                        .read_vertex_and_neighbors(node as u32)
-                        .expect("read_vertex_and_neighbors");
-                    let nbrs = guard.get_neighbors();
-                    let mut bits = 0u32;
-                    for (j, &n) in nbrs.iter().enumerate() {
-                        if let Ok(n_guard) = graph.read_vertex_and_neighbors(n) {
-                            if n_guard.get_neighbors().contains(&(node as u32)) {
-                                bits |= 1u32 << j;
-                            }
-                        }
-                    }
-                    bits
-                })
-                .collect();
-
-            // Pass 2 (consume): partition using bidir bits.
-            graph
-                .final_graph
-                .into_par_iter()
-                .enumerate()
-                .for_each(|(node, lock)| {
-                    let vn = lock.into_inner().unwrap_or_else(|e| e.into_inner());
-                    let nbrs = vn.into_neighbors();
-                    let cs = &candidate_sets[node];
-                    let bits = bidir_bits[node];
-
-                    let mut local_buf = [0u32; 64];
-                    let mut remote_buf = [0u32; 64];
-                    let mut extra_buf = [0u32; 128];
-                    let mut lc = 0usize;
-                    let mut rc = 0usize;
-                    let mut ec = 0usize;
-
-                    for (j, &n) in nbrs.iter().enumerate() {
-                        if bits & (1u32 << j) != 0 {
-                            local_buf[lc] = n;
-                            lc += 1;
-                        } else {
-                            remote_buf[rc] = n;
-                            rc += 1;
-                        }
-                    }
-                    for &c in cs {
-                        if ec >= max_extra {
-                            break;
-                        }
-                        if !nbrs.contains(&c) {
-                            extra_buf[ec] = c;
-                            ec += 1;
-                        }
-                    }
-
-                    unsafe {
-                        pg.write_node_unchecked(
-                            node,
-                            &local_buf[..lc],
-                            &remote_buf[..rc],
-                            &extra_buf[..ec],
-                        );
-                    }
-                });
-        }
+        partitions
+            .par_iter()
+            .enumerate()
+            .for_each(|(node, (local, remote, extra))| unsafe {
+                pg.write_node_unchecked(node, local, remote, extra);
+            });
 
         pg
     }
@@ -626,20 +499,13 @@ mod tests {
 
     #[test]
     fn test_phased_graph_layout() {
-        let graph = diskann::model::InMemoryGraph::new(4, 4);
-        graph.set_neighbors_from_vec(0, vec![1, 2, 3]).unwrap();
-        graph.set_neighbors_from_vec(1, vec![0, 2]).unwrap();
-        graph.set_neighbors_from_vec(2, vec![0, 1, 3]).unwrap();
-        graph.set_neighbors_from_vec(3, vec![0, 2]).unwrap();
-
-        let cs: Vec<Vec<u32>> = vec![
-            vec![1, 2, 3, 5], // nbr 3 in CS → promoted, 5 is extra
-            vec![0, 2],
-            vec![0, 1, 3],
-            vec![0, 2],
+        let partitions = vec![
+            (vec![1, 2, 3], vec![], vec![5]), // node 0: all local, extra=[5]
+            (vec![0, 2], vec![], vec![]),     // node 1
+            (vec![0, 1, 3], vec![], vec![]),  // node 2
+            (vec![0, 2], vec![], vec![]),     // node 3
         ];
-
-        let pg = PhasedGraph::build_from_inmem_graph(graph, &cs, 2, 4);
+        let pg = PhasedGraph::build_from_partitions(&partitions, 4, 4);
 
         // Node 0: degree=3, nbr 3 promoted → local_count=3, extra=[5]
         assert_eq!(pg.degree(0), 3);
@@ -665,11 +531,8 @@ mod tests {
 
     #[test]
     fn test_write_node_and_guard() {
-        let graph = diskann::model::InMemoryGraph::new(2, 4);
-        graph.set_neighbors_from_vec(0, vec![1]).unwrap();
-        graph.set_neighbors_from_vec(1, vec![0]).unwrap();
-        let cs: Vec<Vec<u32>> = vec![vec![1], vec![0]];
-        let pg = PhasedGraph::build_from_inmem_graph(graph, &cs, 4, 4);
+        let partitions = vec![(vec![1], vec![], vec![]), (vec![0], vec![], vec![])];
+        let pg = PhasedGraph::build_from_partitions(&partitions, 4, 4);
 
         assert_eq!(pg.neighbors(0), &[1]);
 
@@ -690,12 +553,12 @@ mod tests {
 
     #[test]
     fn test_save_load() {
-        let graph = diskann::model::InMemoryGraph::new(3, 4);
-        graph.set_neighbors_from_vec(0, vec![1, 2]).unwrap();
-        graph.set_neighbors_from_vec(1, vec![0, 2]).unwrap();
-        graph.set_neighbors_from_vec(2, vec![0, 1]).unwrap();
-        let cs: Vec<Vec<u32>> = vec![vec![1, 2], vec![0, 2], vec![0, 1]];
-        let pg = PhasedGraph::build_from_inmem_graph(graph, &cs, 1, 4);
+        let partitions = vec![
+            (vec![1], vec![2], vec![]),
+            (vec![0], vec![2], vec![]),
+            (vec![0], vec![1], vec![]),
+        ];
+        let pg = PhasedGraph::build_from_partitions(&partitions, 4, 4);
 
         let dir = std::env::temp_dir().join("phased_graph_test");
         std::fs::create_dir_all(&dir).ok();
@@ -714,11 +577,8 @@ mod tests {
 
     #[test]
     fn test_clone() {
-        let graph = diskann::model::InMemoryGraph::new(2, 4);
-        graph.set_neighbors_from_vec(0, vec![1]).unwrap();
-        graph.set_neighbors_from_vec(1, vec![0]).unwrap();
-        let cs: Vec<Vec<u32>> = vec![vec![1], vec![0]];
-        let pg = PhasedGraph::build_from_inmem_graph(graph, &cs, 4, 4);
+        let partitions = vec![(vec![1], vec![], vec![]), (vec![0], vec![], vec![])];
+        let pg = PhasedGraph::build_from_partitions(&partitions, 4, 4);
 
         let pg2 = pg.clone();
         assert_eq!(pg2.neighbors(0), pg.neighbors(0));
