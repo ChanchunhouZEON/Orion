@@ -4,7 +4,7 @@
  */
 use crate::StagedDiskANN;
 use crate::algorithm::SearchProfile;
-use crate::algorithm::convergence::DistanceConvergenceChecker;
+use crate::algorithm::convergence::SearchConvergenceChecker;
 use crate::model::{Neighbor, NeighborPriorityQueue};
 use diskann::common::ANNResult;
 use diskann::model::Vertex;
@@ -31,7 +31,7 @@ where
         pq.preprocess_query(&mut query_vec);
         let pq_dists = pq.populate_chunk_distances(&query_vec);
 
-        let mut dcc = DistanceConvergenceChecker::new(window_size, epsilon);
+        let mut dcc = SearchConvergenceChecker::new(window_size, epsilon);
         let entry = self.entry;
         let mut visited = HashSet::<u32>::new();
 
@@ -110,7 +110,7 @@ where
         pq.preprocess_query(&mut query_vec);
         let pq_dists = pq.populate_chunk_distances(&query_vec);
 
-        let mut dcc = DistanceConvergenceChecker::new(window_size, epsilon);
+        let mut dcc = SearchConvergenceChecker::new(window_size, epsilon);
         let entry = self.entry;
         let mut visited = HashSet::<u32>::new();
 
@@ -212,7 +212,7 @@ where
         let pq_dists = pq.populate_chunk_distances(&query_vec);
         let adc_table_us = t0.elapsed().as_secs_f64() * 1e6;
 
-        let mut dcc = DistanceConvergenceChecker::new(window_size, epsilon);
+        let mut dcc = SearchConvergenceChecker::new(window_size, epsilon);
         let entry = self.entry;
         let mut visited = HashSet::<u32>::new();
 

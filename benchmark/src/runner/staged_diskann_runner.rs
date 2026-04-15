@@ -19,15 +19,16 @@ pub struct StagedDiskANNRunner {
     max_extra: usize,
     window_size: usize,
     epsilon: f32,
+    early_exit_limit: usize,
     dimension: usize,
     inner: Option<StagedInner>,
 }
 
 enum StagedInner {
-    Dim32 { compressed: StagedDiskANN<32> },
-    Dim100 { compressed: StagedDiskANN<100> },
-    Dim128 { compressed: StagedDiskANN<128> },
-    Dim960 { compressed: StagedDiskANN<960> },
+    Dim32 { staged: StagedDiskANN<32> },
+    Dim100 { staged: StagedDiskANN<100> },
+    Dim128 { staged: StagedDiskANN<128> },
+    Dim960 { staged: StagedDiskANN<960> },
 }
 
 macro_rules! build_staged {
@@ -40,7 +41,7 @@ macro_rules! build_staged {
 
         let t1 = Instant::now();
         let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-        let mut compressed = StagedDiskANN::<$N>::new(
+        let mut staged = StagedDiskANN::<$N>::new(
             empty_ds,
             $result.graph,
             &$result.candidate_sets,
@@ -56,22 +57,23 @@ macro_rules! build_staged {
 
         let mut ds = diskann::model::InmemDataset::<f32, $N>::new($num_points, 1.0).unwrap();
         ds.data.memcpy(&$data[..$num_points * $N]).unwrap();
-        compressed.dataset = ds;
+        staged.dataset = ds;
 
-        $self.inner = Some(StagedInner::$variant { compressed });
+        $self.inner = Some(StagedInner::$variant { staged });
     }};
 }
 
 macro_rules! search_staged {
-    ($compressed:ident, $query:ident, $k:ident, $self:ident, $N:literal) => {{
+    ($staged:ident, $query:ident, $k:ident, $self:ident, $N:literal) => {{
         let mut q = [0.0f32; $N];
         q.copy_from_slice(&$query[..$N]);
-        $compressed.search(
+        $staged.search(
             &q,
             $k,
             $self.search_list_size,
             $self.window_size,
             $self.epsilon,
+            $self.early_exit_limit,
         )
     }};
 }
@@ -88,6 +90,7 @@ impl StagedDiskANNRunner {
         max_extra: usize,
         window_size: usize,
         epsilon: f32,
+        early_exit_limit: usize,
     ) -> Self {
         Self {
             name,
@@ -99,6 +102,7 @@ impl StagedDiskANNRunner {
             max_extra,
             window_size,
             epsilon,
+            early_exit_limit,
             dimension: 0,
             inner: None,
         }
@@ -151,10 +155,10 @@ impl AlgorithmRunner for StagedDiskANNRunner {
     fn search(&self, query: &[f32], k: usize) -> SearchResult {
         let start = Instant::now();
         let neighbors = match self.inner.as_ref().expect("Index not built") {
-            StagedInner::Dim32 { compressed } => search_staged!(compressed, query, k, self, 32),
-            StagedInner::Dim100 { compressed } => search_staged!(compressed, query, k, self, 100),
-            StagedInner::Dim128 { compressed } => search_staged!(compressed, query, k, self, 128),
-            StagedInner::Dim960 { compressed } => search_staged!(compressed, query, k, self, 960),
+            StagedInner::Dim32 { staged } => search_staged!(staged, query, k, self, 32),
+            StagedInner::Dim100 { staged } => search_staged!(staged, query, k, self, 100),
+            StagedInner::Dim128 { staged } => search_staged!(staged, query, k, self, 128),
+            StagedInner::Dim960 { staged } => search_staged!(staged, query, k, self, 960),
         }
         .expect("Searching process failed");
         SearchResult {

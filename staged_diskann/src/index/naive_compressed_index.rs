@@ -98,9 +98,9 @@ where
         let graph = &self.graph;
         let query_vertex = Vertex::new(query, 0);
 
-        let pool = self
-            .inmem_scratch_pool
-            .get_or_init(|| InMemScratchPool::new(32, search_list_size));
+        let pool = self.inmem_scratch_pool.get_or_init(|| {
+            InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
+        });
 
         let mut guard = pool.acquire();
         let scratch = guard.scratch();
@@ -180,8 +180,9 @@ where
         window_size: usize,
         epsilon: f32,
     ) -> diskann::common::ANNResult<Vec<Vec<u32>>> {
-        self.inmem_scratch_pool
-            .get_or_init(|| InMemScratchPool::new(32, search_list_size));
+        self.inmem_scratch_pool.get_or_init(|| {
+            InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
+        });
 
         let results: Vec<Vec<u32>> = queries
             .par_iter()

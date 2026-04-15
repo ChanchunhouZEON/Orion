@@ -14,7 +14,7 @@ const MAX_WINDOW_SIZE: usize = 64;
 ///
 /// Convergence is **reversible**: a burst of admissions pushes the rate
 /// back up and exits convergence.
-pub struct DistanceConvergenceChecker {
+pub struct SearchConvergenceChecker {
     window_size: usize,
     /// Converge when admission fraction < threshold (e.g., 0.2 = 20%).
     threshold: f32,
@@ -28,7 +28,7 @@ pub struct DistanceConvergenceChecker {
     min_steps: usize,
 }
 
-impl DistanceConvergenceChecker {
+impl SearchConvergenceChecker {
     pub fn new(window_size: usize, threshold: f32) -> Self {
         debug_assert!(window_size <= MAX_WINDOW_SIZE);
         Self {
@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn test_pre_window_not_converged() {
-        let mut c = DistanceConvergenceChecker::new(3, 0.2);
+        let mut c = SearchConvergenceChecker::new(3, 0.2);
         assert!(!c.update(0));
         assert!(!c.update(0));
     }
@@ -101,7 +101,7 @@ mod tests {
     #[test]
     fn test_min_steps() {
         // ws=3, min_steps=6. Even all-zero window won't converge before 6 steps.
-        let mut c = DistanceConvergenceChecker::new(3, 0.5);
+        let mut c = SearchConvergenceChecker::new(3, 0.5);
         for _ in 0..5 {
             assert!(!c.update(0));
         }
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_high_admission_no_convergence() {
-        let mut c = DistanceConvergenceChecker::new(3, 0.2);
+        let mut c = SearchConvergenceChecker::new(3, 0.2);
         for _ in 0..10 {
             assert!(!c.update(3)); // every step admits → rate=1.0 >> 0.2
         }
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_reversible() {
-        let mut c = DistanceConvergenceChecker::new(3, 0.3);
+        let mut c = SearchConvergenceChecker::new(3, 0.3);
         // Fill min_steps(6) with no admissions.
         for _ in 0..6 {
             c.update(0);
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn test_convergence_and_exit() {
-        let mut c = DistanceConvergenceChecker::new(4, 0.3);
+        let mut c = SearchConvergenceChecker::new(4, 0.3);
         // Fill min_steps(8) with zeros.
         for _ in 0..8 {
             c.update(0);
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn test_reset() {
-        let mut c = DistanceConvergenceChecker::new(2, 0.3);
+        let mut c = SearchConvergenceChecker::new(2, 0.3);
         for _ in 0..4 {
             c.update(0);
         }

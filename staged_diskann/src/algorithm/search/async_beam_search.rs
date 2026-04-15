@@ -21,7 +21,7 @@
 //! Page faults from mmap reads do NOT block the algorithm's next iteration
 //! because the spawn/await pattern overlaps IO with computation.
 
-use crate::algorithm::search::convergence::DistanceConvergenceChecker;
+use crate::algorithm::search::convergence::SearchConvergenceChecker;
 use crate::model::{FixedChunkPQTable, Neighbor, NeighborPriorityQueue};
 use crate::storage::MmapStorage;
 use std::collections::HashMap;
@@ -91,7 +91,7 @@ where
     let mut query_vec = query.to_vec();
     pq.preprocess_query(&mut query_vec);
     let pq_dists = pq.populate_chunk_distances(&query_vec);
-    let mut dcc = DistanceConvergenceChecker::new(config.window_size, config.epsilon);
+    let mut dcc = SearchConvergenceChecker::new(config.window_size, config.epsilon);
 
     // Helper closure: compute PQ distance for a point by its ID
     let pq_dist = |point_id: u32| -> f32 {

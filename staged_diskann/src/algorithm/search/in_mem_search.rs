@@ -12,6 +12,7 @@ use vector::{FullPrecisionDistance, Metric};
 pub const DEFAULT_SEARCH_LIST_SIZE: usize = 48;
 pub const DEFAULT_WINDOW_SIZE: usize = 5;
 pub const DEFAULT_EPSILON: f32 = 0.0;
+pub const DEFAULT_EARLY_EXIT_LIMIT: usize = 7;
 
 /// Per-operation timing breakdown accumulated across queries.
 #[derive(Default)]
@@ -100,13 +101,18 @@ where
             DEFAULT_SEARCH_LIST_SIZE,
             DEFAULT_WINDOW_SIZE,
             DEFAULT_EPSILON,
+            DEFAULT_WINDOW_SIZE * 2,
         )
     }
 
     /// Greedy beam search through PhasedGraph + InmemDataset.
     ///
+    /// Greedy beam search through PhasedGraph + InmemDataset.
+    ///
     /// Pre-convergence: expand all graph neighbors (local + remote).
     /// Post-convergence: expand reranking candidates (local + extra).
+    /// Early exit: stop after `early_exit_limit` consecutive zero-admission
+    /// steps in the converged phase.
     pub fn search(
         &self,
         query: &[f32; N],
@@ -114,21 +120,23 @@ where
         search_list_size: usize,
         window_size: usize,
         epsilon: f32,
+        early_exit_limit: usize,
     ) -> ANNResult<Vec<u32>> {
         let entry = self.entry;
         let dataset = &self.dataset;
         let graph = &self.graph;
         let query_vertex = Vertex::new(query, 0);
 
-        let pool = self
-            .inmem_scratch_pool
-            .get_or_init(|| InMemScratchPool::new(32, search_list_size));
+        let pool = self.inmem_scratch_pool.get_or_init(|| {
+            InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
+        });
 
         let mut guard = pool.acquire();
         let scratch = guard.scratch();
         scratch.prepare_for_query(search_list_size);
         scratch.ensure_capacity(graph.num_nodes());
         scratch.dcc.reconfigure(window_size, epsilon);
+        scratch.early_exit.reconfigure(early_exit_limit);
 
         scratch.seen.insert(entry);
         let entry_dist = {
@@ -137,10 +145,7 @@ where
         };
         scratch.pq.insert(DNeighbor::new(entry, entry_dist));
 
-        // Track admission count from PREVIOUS step for convergence detection.
-        // The DCC decides the current step's mode based on how productive
-        // the last step was (admission rate).
-        let mut prev_admitted: usize = 1; // optimistic start
+        let mut prev_admitted: usize = 1;
 
         while scratch.pq.has_notvisited_node() {
             let neighbor = scratch.pq.closest_notvisited();
@@ -194,6 +199,10 @@ where
             }
 
             prev_admitted = admitted;
+
+            if scratch.early_exit.should_exit(converged, admitted) {
+                break;
+            }
         }
 
         Ok((0..scratch.pq.size().min(k))
@@ -201,7 +210,7 @@ where
             .collect())
     }
 
-    /// Diagnostic search: returns convergence statistics.
+    /// Diagnostic search: returns (results, converge_step, total_steps, phase1_ndc, phase2_ndc).
     pub fn search_diag(
         &self,
         query: &[f32; N],
@@ -209,21 +218,23 @@ where
         search_list_size: usize,
         window_size: usize,
         epsilon: f32,
+        early_exit_limit: usize,
     ) -> ANNResult<(Vec<u32>, usize, usize, usize, usize)> {
         let entry = self.entry;
         let dataset = &self.dataset;
         let graph = &self.graph;
         let query_vertex = Vertex::new(query, 0);
 
-        let pool = self
-            .inmem_scratch_pool
-            .get_or_init(|| InMemScratchPool::new(32, search_list_size));
+        let pool = self.inmem_scratch_pool.get_or_init(|| {
+            InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
+        });
 
         let mut guard = pool.acquire();
         let scratch = guard.scratch();
         scratch.prepare_for_query(search_list_size);
         scratch.ensure_capacity(graph.num_nodes());
         scratch.dcc.reconfigure(window_size, epsilon);
+        scratch.early_exit.reconfigure(early_exit_limit);
 
         scratch.seen.insert(entry);
         let entry_dist = {
@@ -237,7 +248,7 @@ where
         let mut converged_yet = false;
         let mut phase1_ndc: usize = 0;
         let mut phase2_ndc: usize = 0;
-        let mut prev_admitted: usize = 1; // optimistic start
+        let mut prev_admitted: usize = 1;
 
         while scratch.pq.has_notvisited_node() {
             let neighbor = scratch.pq.closest_notvisited();
@@ -294,6 +305,10 @@ where
             }
 
             prev_admitted = admitted;
+
+            if scratch.early_exit.should_exit(converged, admitted) {
+                break;
+            }
         }
 
         if !converged_yet {
@@ -320,9 +335,9 @@ where
         let dataset = &self.dataset;
         let graph = &self.graph;
 
-        let pool = self
-            .inmem_scratch_pool
-            .get_or_init(|| InMemScratchPool::new(32, search_list_size));
+        let pool = self.inmem_scratch_pool.get_or_init(|| {
+            InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
+        });
 
         let mut stats = SearchProfileStats::default();
 
@@ -422,15 +437,24 @@ where
         search_list_size: usize,
         window_size: usize,
         epsilon: f32,
+        early_exit_limit: usize,
     ) -> ANNResult<Vec<Vec<u32>>> {
-        self.inmem_scratch_pool
-            .get_or_init(|| InMemScratchPool::new(32, search_list_size));
+        self.inmem_scratch_pool.get_or_init(|| {
+            InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
+        });
 
         let results: Vec<Vec<u32>> = queries
             .par_iter()
             .map(|query| {
-                self.search(query, k, search_list_size, window_size, epsilon)
-                    .unwrap_or_default()
+                self.search(
+                    query,
+                    k,
+                    search_list_size,
+                    window_size,
+                    epsilon,
+                    early_exit_limit,
+                )
+                .unwrap_or_default()
             })
             .collect();
         Ok(results)

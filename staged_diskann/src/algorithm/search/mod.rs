@@ -8,4 +8,8 @@ pub mod utils;
 
 pub mod convergence;
 
+pub mod early_exit;
+
+pub mod calibrate;
+
 pub use utils::SearchProfile;
