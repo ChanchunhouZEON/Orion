@@ -828,7 +828,7 @@ where
             mem_usage()
         );
 
-        // Phase 5: Free dataset + slab, extract InMemoryGraph.
+        // Phase 5: Free slab, extract InMemoryGraph.
         self.query_scratch_queue = ArcConcurrentBoxedQueue::new();
         self.candidate_anchor_sets = None;
 

@@ -13,6 +13,7 @@ defaults:
     max_extra: 4
     window_size: 5
     threshold: 0.15
+    early_exit_limit: 7
   sweep:
     search_list_sizes: [16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256]
     threads: 8
@@ -29,3 +30,4 @@ datasets:
     dimension: 960
     staged:
       alpha: 1.5
+      threshold: 0.30   # more aggressive convergence for high-dim

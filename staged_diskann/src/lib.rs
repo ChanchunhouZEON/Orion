@@ -13,9 +13,10 @@ pub mod utils;
 pub mod visualization;
 
 pub use algorithm::SearchProfile;
-pub use algorithm::search::convergence::DistanceConvergenceChecker;
+pub use algorithm::search::convergence::SearchConvergenceChecker;
 pub use algorithm::search::in_mem_search::{
-    DEFAULT_EPSILON, DEFAULT_SEARCH_LIST_SIZE, DEFAULT_WINDOW_SIZE, SearchProfileStats,
+    DEFAULT_EARLY_EXIT_LIMIT, DEFAULT_EPSILON, DEFAULT_SEARCH_LIST_SIZE, DEFAULT_WINDOW_SIZE,
+    SearchProfileStats,
 };
 pub use index::DiskANN;
 pub use index::NaiveStagedDiskANN;

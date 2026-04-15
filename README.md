@@ -86,8 +86,15 @@ Under the `staged_diskann` feature, `VertexAndNeighbors` maintains a parallel `n
 | Bidir-based local/remote split | Data-adaptive, no distance info needed at search time |
 | Admission-based convergence | More accurate than distance-based, works across all dataset types |
 | Reversible convergence | Prevents permanent recall loss from false convergence |
+| Early exit after convergence | Stops search when consecutive steps produce no PQ admissions |
 | Two-slice reranking (`local + extra`) | Smaller working set after convergence |
 | Prefetch pipeline | Next node's graph slot and vector prefetched during current expansion |
+
+### Early Exit
+
+After convergence, the priority queue often contains many unvisited candidates that will not improve the result. The `EarlyExitChecker` tracks consecutive expansion steps with zero admissions during the converged phase. When this count exceeds the configured limit, the search terminates immediately.
+
+This is especially effective for high-dimensional data (e.g., GIST-960) where distance computation dominates runtime — early exit directly reduces the number of expensive distance calls rather than just the number of neighbors per step.
 
 ## Configuration
 
@@ -129,14 +136,15 @@ QPS interpolated at identical Recall@10 targets (100K points, 8 threads):
 
 | Dataset | Dimension | Recall@10 | DiskANN QPS | StagedDiskANN QPS | Improvement |
 |---|---|---|---|---|---|
-| SIFT | 128 | 0.95 | 110,029 | 131,494 | **+20%** |
-| SIFT | 128 | 0.98 | 82,024 | 91,370 | **+11%** |
-| GloVe-25 | 32 | 0.95 | 177,458 | 245,510 | **+38%** |
-| GloVe-25 | 32 | 0.98 | 124,043 | 159,214 | **+28%** |
-| GloVe-100 | 100 | 0.85 | 37,667 | 49,791 | **+32%** |
-| GloVe-100 | 100 | 0.90 | 24,435 | 29,424 | **+20%** |
-| GIST | 960 | 0.85 | 12,834 | 13,383 | **+4%** |
-| GIST | 960 | 0.90 | 9,702 | 10,026 | **+3%** |
+| SIFT | 128 | 0.95 | 110,418 | 129,925 | **+18%** |
+| SIFT | 128 | 0.98 | 76,378 | 93,953 | **+23%** |
+| GloVe-25 | 32 | 0.95 | 147,984 | 230,993 | **+56%** |
+| GloVe-25 | 32 | 0.98 | 95,540 | 145,219 | **+52%** |
+| GloVe-100 | 100 | 0.85 | 36,473 | 37,163 | **+2%** |
+| GloVe-100 | 100 | 0.90 | 21,062 | 21,891 | **+4%** |
+| GIST | 960 | 0.85 | 12,262 | 13,132 | **+7%** |
+| GIST | 960 | 0.90 | 9,082 | 9,705 | **+7%** |
+| GIST | 960 | 0.95 | 5,848 | 6,242 | **+7%** |
 
 ### QPS vs Recall@10 Curves
 
@@ -165,7 +173,8 @@ staged_diskann/
     algorithm/
       search/
         convergence.rs      # Admission-based convergence detector
-        in_mem_search.rs     # Two-phase greedy beam search
+        early_exit.rs       # Early exit after consecutive zero-admission steps
+        in_mem_search.rs     # Two-phase greedy beam search with early exit
     index/
       builder.rs            # build_diskann_index / build_diskann_index_ex
       compressed_index.rs   # StagedDiskANN: PhasedGraph construction + search entry points
