@@ -6,7 +6,7 @@ pub mod naive_compressed_index;
 pub use crate::algorithm::search::async_beam_search::{
     BeamSearchConfig, BeamSearchResult, IoLimiter, async_beam_search,
 };
-pub use builder::{DiskANNBuildResult, build_diskann_index, build_diskann_index_ex};
+pub use builder::{DiskANNBuildResult, build_diskann_index};
 pub use compressed_index::StagedDiskANN;
 pub use diskann_base::DiskANN;
 pub use naive_compressed_index::NaiveStagedDiskANN;

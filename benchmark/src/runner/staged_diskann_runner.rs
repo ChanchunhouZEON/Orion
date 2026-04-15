@@ -14,11 +14,11 @@ pub struct StagedDiskANNRunner {
     alpha: f32,
     graph_degree: usize,
     search_list_size: usize,
-    key_neighbor_count: usize,
-    base_local_count: usize,
     max_extra: usize,
     window_size: usize,
+    /// Auto-calibrated during build.
     epsilon: f32,
+    /// Auto-calibrated during build.
     early_exit_limit: usize,
     dimension: usize,
     inner: Option<StagedInner>,
@@ -43,10 +43,9 @@ macro_rules! build_staged {
         let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
         let mut staged = StagedDiskANN::<$N>::new(
             empty_ds,
-            $result.graph,
-            &$result.candidate_sets,
+            &$result.partitions,
             $result.entry_point,
-            $self.base_local_count,
+            $self.graph_degree as u32,
             $self.max_extra,
             None,
             None,
@@ -58,6 +57,21 @@ macro_rules! build_staged {
         let mut ds = diskann::model::InmemDataset::<f32, $N>::new($num_points, 1.0).unwrap();
         ds.data.memcpy(&$data[..$num_points * $N]).unwrap();
         staged.dataset = ds;
+
+        // Auto-calibrate convergence parameters from warmup queries.
+        let calib_n = $num_points.min(200);
+        let calib_queries: Vec<[f32; $N]> = (0..calib_n)
+            .map(|i| {
+                let mut q = [0.0f32; $N];
+                q.copy_from_slice(&$data[i * $N..(i + 1) * $N]);
+                q
+            })
+            .collect();
+        if let Ok(calib) = staged.calibrate(&calib_queries, $self.search_list_size, $self.window_size) {
+            $self.epsilon = calib.threshold;
+            $self.early_exit_limit = calib.early_exit_limit;
+            log::info!("Calibrated: threshold={:.2}, early_exit_limit={}", calib.threshold, calib.early_exit_limit);
+        }
 
         $self.inner = Some(StagedInner::$variant { staged });
     }};
@@ -79,30 +93,23 @@ macro_rules! search_staged {
 }
 
 impl StagedDiskANNRunner {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: &'static str,
         alpha: f32,
         graph_degree: usize,
         search_list_size: usize,
-        key_neighbor_count: usize,
-        base_local_count: usize,
         max_extra: usize,
         window_size: usize,
-        epsilon: f32,
-        early_exit_limit: usize,
     ) -> Self {
         Self {
             name,
             alpha,
             graph_degree,
             search_list_size,
-            key_neighbor_count,
-            base_local_count,
             max_extra,
             window_size,
-            epsilon,
-            early_exit_limit,
+            epsilon: 0.0,
+            early_exit_limit: 0,
             dimension: 0,
             inner: None,
         }
@@ -129,7 +136,7 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             None,
             None,
             true,
-            self.key_neighbor_count,
+            self.max_extra,
         )
         .expect("build failed");
         log::info!(

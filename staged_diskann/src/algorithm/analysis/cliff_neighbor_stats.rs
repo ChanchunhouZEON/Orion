@@ -734,13 +734,13 @@ mod tests {
             3.0, 0.0, // node 2
             10.0, 0.0, // node 3
         ];
-        let graph = diskann::model::InMemoryGraph::new(4, 4);
-        graph.set_neighbors_from_vec(0, vec![1, 2, 3]).unwrap();
-        graph.set_neighbors_from_vec(1, vec![0, 2]).unwrap();
-        graph.set_neighbors_from_vec(2, vec![0, 1, 3]).unwrap();
-        graph.set_neighbors_from_vec(3, vec![0, 2]).unwrap();
-        let cs: Vec<Vec<u32>> = vec![vec![1, 2, 3], vec![0, 2], vec![0, 1, 3], vec![0, 2]];
-        let pg = PhasedGraph::build_from_inmem_graph(graph, &cs, 4, 4);
+        let partitions = vec![
+            (vec![1, 2, 3], vec![], vec![]),
+            (vec![0, 2], vec![], vec![]),
+            (vec![0, 1, 3], vec![], vec![]),
+            (vec![0, 2], vec![], vec![]),
+        ];
+        let pg = PhasedGraph::build_from_partitions(&partitions, 4, 4);
         (pg, flat, dim)
     }
 

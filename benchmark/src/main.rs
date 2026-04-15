@@ -10,11 +10,76 @@ mod runner;
 
 use clap::Parser;
 use dataset::Dataset;
-use metrics::{measure_qps, LatencyStats};
+use metrics::LatencyStats;
 use report::table::{print_results_table, BenchmarkResult};
 use runner::common::AlgorithmRunner;
 use runner::{DiskANNRunner, HNSWRunner, NSGRunner, SSDDiskANNRunner, StagedDiskANNRunner};
 use std::path::PathBuf;
+
+/// Resolved per-dataset staged config (defaults merged with dataset overrides).
+struct StagedConfig {
+    alpha: f32,
+    graph_degree: u32,
+    build_search_list_size: usize,
+    max_extra: usize,
+    window_size: usize,
+}
+
+fn load_staged_config(dimension: usize) -> StagedConfig {
+    #[derive(serde::Deserialize)]
+    struct Cfg {
+        defaults: Defaults,
+        #[serde(default)]
+        datasets: std::collections::HashMap<String, DsCfg>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Defaults {
+        staged: StagedDef,
+    }
+    #[derive(serde::Deserialize)]
+    struct StagedDef {
+        alpha: f32,
+        graph_degree: u32,
+        build_search_list_size: usize,
+        max_extra: usize,
+        window_size: usize,
+    }
+    #[derive(serde::Deserialize, Default)]
+    struct DsCfg {
+        staged: Option<DsOverride>,
+    }
+    #[derive(serde::Deserialize, Default)]
+    struct DsOverride {
+        alpha: Option<f32>,
+        build_search_list_size: Option<usize>,
+    }
+
+    let path = "benchmark/configs/sweep.yaml";
+    let cfg: Cfg = serde_yaml::from_str(
+        &std::fs::read_to_string(path).unwrap_or_else(|_| panic!("Cannot read {path}")),
+    )
+    .expect("Invalid sweep config YAML");
+
+    let dim_name = match dimension {
+        32 => "glove25",
+        100 => "glove100",
+        128 => "sift",
+        960 => "gist",
+        _ => "unknown",
+    };
+    let ds = cfg.datasets.get(dim_name);
+    let ov = ds.and_then(|d| d.staged.as_ref());
+
+    StagedConfig {
+        alpha: ov.and_then(|o| o.alpha).unwrap_or(cfg.defaults.staged.alpha),
+        graph_degree: cfg.defaults.staged.graph_degree,
+        build_search_list_size: ov
+            .and_then(|o| o.build_search_list_size)
+            .unwrap_or(cfg.defaults.staged.build_search_list_size),
+        max_extra: cfg.defaults.staged.max_extra,
+        window_size: cfg.defaults.staged.window_size,
+    }
+}
 
 #[global_allocator]
 static ALLOCATOR: metrics::TrackingAllocator = metrics::TrackingAllocator::new();
@@ -261,15 +326,11 @@ fn main() {
             "staged-diskann" => {
                 let mut runner = StagedDiskANNRunner::new(
                     "StagedDiskANN",
-                    1.2,  // alpha (sparser graph, more remote shortcuts)
-                    32,   // graph_degree (same R as DiskANN)
-                    48,   // search_list_size
-                    0,    // key_neighbor_count (all slab candidates)
-                    0,    // base_local_count (0 = bidir-based)
-                    4,    // max_extra
-                    5,    // window_size
-                    0.15, // admission threshold
-                    12,   // early_exit_limit
+                    1.2, // alpha (sparser graph, more remote shortcuts)
+                    32,  // graph_degree
+                    48,  // search_list_size
+                    4,   // max_extra
+                    5,   // window_size
                 );
                 run_benchmark(
                     &mut runner,
@@ -284,19 +345,14 @@ fn main() {
                 );
             }
             "in_mem_staged_diskann" => {
-                // staged_diskann in_mem_search with epsilon=0 → pure greedy on full graph,
-                // equivalent to DiskANN Vamana. Uses same build params as "diskann".
+                // staged_diskann in_mem_search with auto-calibrated convergence.
                 let mut runner = StagedDiskANNRunner::new(
                     "InMemStagedDiskANN",
                     1.2, // alpha
                     32,  // graph_degree
-                    48,  // search_list_size — matches DiskANN runner
-                    4,   // key_neighbor_count
-                    16,  // base_local_count
+                    48,  // search_list_size
                     4,   // max_extra
                     5,   // window_size
-                    0.0, // epsilon=0 → never converge → always full graph
-                    12,  // early_exit_limit
                 );
                 run_benchmark(
                     &mut runner,
@@ -353,6 +409,9 @@ fn main() {
             }
             "extra-profile" => {
                 run_extra_profile(&dataset, args.k);
+            }
+            "calibration-diag" => {
+                run_calibration_diag(&dataset);
             }
             other => {
                 log::warn!("Unknown algorithm: {other}");
@@ -541,7 +600,7 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
     }
 
     println!("Building DiskANN graph ({num_points} pts, dim={dimension})...");
-    let mut result = build_diskann_index(
+    let result = build_diskann_index(
         &flat_base, num_points, dimension, 1.2, 32, 48, false, None, None, true, 16,
     )
     .expect("build failed");
@@ -550,24 +609,11 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
         result.graph_build_time.as_secs_f32()
     );
 
-    // Free the index to reduce peak memory; we build InmemDataset from data_2d below.
-    {
-        let idx = result
-            .index
-            .as_any_mut()
-            .downcast_mut::<diskann::index::InmemIndex<f32, 128>>()
-            .expect("downcast to InmemIndex<f32, 128>");
-        let _ = std::mem::replace(
-            &mut idx.dataset,
-            diskann::model::InmemDataset::new(0, 1.0).unwrap(),
-        );
-    }
     drop(result.index);
 
     // Build PhasedGraph once, clone for each config.
-    let phased_graph = PhasedGraph::build_from_inmem_graph(
-        result.graph,
-        &result.candidate_sets,
+    let phased_graph = PhasedGraph::build_from_partitions(
+        &result.partitions,
         16,
         4, // max_extra
     );
@@ -719,7 +765,7 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
     // Build StagedDiskANN index
     println!("Building StagedDiskANN index ({num_points} pts)...");
     let mut staged_runner =
-        runner::StagedDiskANNRunner::new("StagedDiskANN", 1.2, 32, 48, 4, 16, 4, 5, 0.01, 12);
+        runner::StagedDiskANNRunner::new("StagedDiskANN", 1.2, 32, 48, 4, 5);
     staged_runner.build(&flat_base, num_points, dimension);
 
     let queries = &dataset.queries;
@@ -850,10 +896,9 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
         let t_staged = Instant::now();
         let _ = StagedDiskANN::<128>::new(
             dataset_128,
-            result.graph,
-            &result.candidate_sets,
+            &result.partitions,
             result.entry_point,
-            16, // base_local_count
+            32, // max_degree
             4,  // max_extra
             None,
             None,
@@ -923,13 +968,14 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
+    let scfg = load_staged_config(dimension);
 
     macro_rules! profile {
         ($N:literal) => {{
-            let alpha = if $N > 500 { 1.5f32 } else { 1.2f32 };
+            let alpha = scfg.alpha;
             println!("Building StagedDiskANN ({}-dim, alpha={})...", $N, alpha);
             let result = build_diskann_index(
-                &flat_base, num_points, dimension, alpha, 32, 48, false, None, None, true, 0,
+                &flat_base, num_points, dimension, alpha, scfg.graph_degree, scfg.build_search_list_size as u32, false, None, None, true, scfg.max_extra,
             )
             .expect("build failed");
             drop(result.index);
@@ -937,10 +983,9 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
             let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
             let mut staged = StagedDiskANN::<$N>::new(
                 empty_ds,
-                result.graph,
-                &result.candidate_sets,
+                &result.partitions,
                 result.entry_point,
-                0,
+                32,
                 4,
                 None,
                 None,
@@ -1212,7 +1257,7 @@ fn run_memory_profile(dataset: &Dataset) {
 
     ALLOCATOR.reset_peak();
     let peak_before_extract = ALLOCATOR.current_bytes();
-    let (csr, candidate_sets) = idx.extract_graph_and_candidates(16).expect("extract");
+    let partitions = idx.extract_graph_and_candidates(16).expect("extract");
     let peak_during_extract = ALLOCATOR.peak_bytes();
     m("S3. extract_graph_and_candidates");
     println!(
@@ -1235,10 +1280,9 @@ fn run_memory_profile(dataset: &Dataset) {
     let empty_ds = InmemDataset::<f32, 128>::new(0, 1.0).unwrap();
     let mut _staged = StagedDiskANN::<128>::new(
         empty_ds,
-        csr,
-        &candidate_sets,
+        &partitions,
         entry_point,
-        16, // base_local_count
+        32, // max_degree
         4,  // max_extra
         None,
         None,
@@ -1321,11 +1365,8 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
         alpha: f32,
         graph_degree: u32,
         build_search_list_size: usize,
-        base_local_count: usize,
         max_extra: usize,
         window_size: usize,
-        threshold: f32,
-        early_exit_limit: usize,
     }
     #[derive(serde::Deserialize)]
     struct SweepDefaults {
@@ -1343,7 +1384,6 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
     struct DatasetStagedOverride {
         alpha: Option<f32>,
         build_search_list_size: Option<usize>,
-        threshold: Option<f32>,
     }
 
     let config_path = "benchmark/configs/sweep.yaml";
@@ -1371,12 +1411,6 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
         .as_ref()
         .and_then(|s| s.build_search_list_size)
         .unwrap_or(cfg.defaults.staged.build_search_list_size);
-    let _staged_threshold = ds_cfg
-        .staged
-        .as_ref()
-        .and_then(|s| s.threshold)
-        .unwrap_or(cfg.defaults.staged.threshold);
-
     let num_threads = cfg.defaults.sweep.threads;
     let trials = cfg.defaults.sweep.trials;
     let pool = rayon::ThreadPoolBuilder::new()
@@ -1386,12 +1420,10 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
 
     let search_list_sizes = &cfg.defaults.sweep.search_list_sizes;
     let staged_ws = cfg.defaults.staged.window_size;
-    let _staged_early_exit = cfg.defaults.staged.early_exit_limit;
     let da_alpha = cfg.defaults.diskann.alpha;
     let da_degree = cfg.defaults.diskann.graph_degree;
     let da_build_l = cfg.defaults.diskann.build_search_list_size;
     let st_degree = cfg.defaults.staged.graph_degree;
-    let st_base_local = cfg.defaults.staged.base_local_count;
     let st_max_extra = cfg.defaults.staged.max_extra;
 
     println!("Config: DiskANN(R={da_degree}, α={da_alpha}) vs StagedDiskANN(R={st_degree}, α={staged_alpha})");
@@ -1429,14 +1461,14 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
             println!("Building StagedDiskANN ({}-dim, R={}, α={})...", $N, st_degree, staged_alpha);
             let st_result = build_diskann_index(
                 &flat_base, num_points, dimension, staged_alpha, st_degree, staged_build_l as u32,
-                false, None, None, true, 0,
+                false, None, None, true, st_max_extra,
             ).expect("build failed");
             let st_entry = st_result.entry_point;
             drop(st_result.index);
             let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
             let mut staged_idx = StagedDiskANN::<$N>::new(
-                empty_ds, st_result.graph, &st_result.candidate_sets, st_entry,
-                st_base_local, st_max_extra, None, None, None, false,
+                empty_ds, &st_result.partitions, st_entry,
+                st_degree, st_max_extra, None, None, None, false,
             );
             staged_idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
 
@@ -1562,7 +1594,7 @@ fn run_cliff_profile(dataset: &Dataset) {
         16,
     )
     .expect("build failed");
-    let phased = PhasedGraph::build_from_inmem_graph(result.graph, &result.candidate_sets, 16, 4);
+    let phased = PhasedGraph::build_from_partitions(&result.partitions, 16, 4);
     let graph = &phased;
 
     // ── Phase 1: Full cliff analysis (all nodes, no brute-force) ────────
@@ -1753,6 +1785,7 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
     let _k = 10;
+    let scfg = load_staged_config(dimension);
 
     macro_rules! run_profile {
         ($N:literal) => {{
@@ -1762,18 +1795,17 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
                 arr
             }).collect();
 
-            // Build index with alpha=2.0 (same as sweep).
-            println!("Building StagedDiskANN ({}-dim, alpha=2.0)...", $N);
+            println!("Building StagedDiskANN ({}-dim, alpha={})...", $N, scfg.alpha);
             let result = build_diskann_index(
-                &flat_base, num_points, dimension, 2.0, 32, 48,
-                false, None, None, true, 0,
+                &flat_base, num_points, dimension, scfg.alpha, scfg.graph_degree,
+                scfg.build_search_list_size as u32, false, None, None, true, scfg.max_extra,
             ).expect("build failed");
             let entry = result.entry_point;
             drop(result.index);
             let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
             let mut staged = StagedDiskANN::<$N>::new(
-                empty_ds, result.graph, &result.candidate_sets, entry,
-                16, 4, None, None, None, false,
+                empty_ds, &result.partitions, entry,
+                scfg.graph_degree, scfg.max_extra, None, None, None, false,
             );
             staged.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
 
@@ -1938,6 +1970,57 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
                 let remote_share = if total_nav > 0 { nav_remote.admitted as f64 / total_nav as f64 * 100.0 } else { 0.0 };
                 println!("\n  Remote share of nav admissions: {:.1}%", remote_share);
             }
+
+            // ── Bidir edge distribution: per-neighbor-rank bidir rate ──
+            // For each rank position r (0..max_degree), compute what fraction
+            // of nodes have a bidirectional edge at rank r.
+            // Bidir = neighbor is in local zone (rank < local_count).
+            let max_deg = scfg.graph_degree as usize;
+            let mut bidir_at_rank = vec![0u64; max_deg];
+            let mut total_at_rank = vec![0u64; max_deg];
+            for i in 0..num_points {
+                let deg = graph.neighbors(i).len();
+                let lc = graph.local_count(i);
+                for r in 0..deg.min(max_deg) {
+                    total_at_rank[r] += 1;
+                    if r < lc {
+                        bidir_at_rank[r] += 1;
+                    }
+                }
+            }
+            let bidir_rate_by_rank: Vec<f64> = (0..max_deg)
+                .map(|r| {
+                    if total_at_rank[r] > 0 {
+                        bidir_at_rank[r] as f64 / total_at_rank[r] as f64
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+
+            // Per-node bidir fraction histogram
+            let bidir_fractions: Vec<f64> = (0..num_points)
+                .map(|i| {
+                    let deg = graph.neighbors(i).len();
+                    if deg > 0 { graph.local_count(i) as f64 / deg as f64 } else { 0.0 }
+                })
+                .collect();
+
+            let dim_name = match $N {
+                32 => "glove25", 100 => "glove100", 128 => "sift", 960 => "gist", _ => "unknown",
+            };
+            let bidir_json = serde_json::json!({
+                "dataset": dim_name,
+                "dimension": $N,
+                "alpha": scfg.alpha,
+                "num_points": num_points,
+                "bidir_rate_by_rank": bidir_rate_by_rank,
+                "bidir_fractions": bidir_fractions,
+            });
+            let bidir_path = format!("visualizations/bidir_distribution_{}.json", dim_name);
+            std::fs::write(&bidir_path, serde_json::to_string(&bidir_json).unwrap())
+                .expect("write bidir json");
+            println!("\nSaved {bidir_path}");
         }};
     }
 
@@ -1952,6 +2035,7 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
 
 fn run_extra_profile(dataset: &Dataset, k: usize) {
     use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
+    let scfg = load_staged_config(dataset.dimension);
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
@@ -1969,7 +2053,7 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
                 })
                 .collect();
 
-            let alpha = if $N > 500 { 1.5f32 } else { 1.2f32 };
+            let alpha = scfg.alpha;
 
             // Sweep max_extra = 0, 2, 4, 8, 16, 32.
             println!(
@@ -1986,7 +2070,8 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
 
             for &max_extra in &[0usize, 2, 4, 8, 16, 32] {
                 let result = build_diskann_index(
-                    &flat_base, num_points, dimension, alpha, 32, 48, false, None, None, true, 0,
+                    &flat_base, num_points, dimension, alpha, 32, 48, false, None, None, true,
+                    max_extra,
                 )
                 .expect("build failed");
                 let entry = result.entry_point;
@@ -1995,10 +2080,9 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
                 let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
                 let mut staged = StagedDiskANN::<$N>::new(
                     empty_ds,
-                    result.graph,
-                    &result.candidate_sets,
+                    &result.partitions,
                     entry,
-                    0,
+                    32,
                     max_extra,
                     None,
                     None,
@@ -2061,16 +2145,12 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
             println!("\n  Extra coverage of true top-10 (brute-force, 200 sampled nodes):");
             // Rebuild with max_extra=32 for coverage check.
             let result_cov = build_diskann_index(
-                &flat_base, num_points, dimension, alpha, 32, 48, false, None, None, true, 0,
+                &flat_base, num_points, dimension, alpha, 32, 48, false, None, None, true, 32,
             )
             .expect("build failed");
             drop(result_cov.index);
-            let pg = staged_diskann::PhasedGraph::build_from_inmem_graph(
-                result_cov.graph,
-                &result_cov.candidate_sets,
-                0,
-                32,
-            );
+            let pg =
+                staged_diskann::PhasedGraph::build_from_partitions(&result_cov.partitions, 32, 32);
 
             let dim = $N;
             let l2 = |a: usize, b: usize| -> f32 {
@@ -2166,6 +2246,100 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
         DIM_100 => run_extra!(100),
         DIM_128 => run_extra!(128),
         DIM_960 => run_extra!(960),
+        _ => panic!("Unsupported dimension: {dimension}"),
+    }
+}
+
+fn run_calibration_diag(dataset: &Dataset) {
+    use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
+    use std::time::Instant;
+
+    let num_points = dataset.num_base();
+    let dimension = dataset.dimension;
+    let flat_base = dataset.base_flat();
+    let scfg = load_staged_config(dimension);
+
+    let dim_name = match dimension {
+        32 => "glove25", 100 => "glove100", 128 => "sift", 960 => "gist",
+        _ => "unknown",
+    };
+
+    macro_rules! run_diag {
+        ($N:literal) => {{
+            let queries: Vec<[f32; $N]> = dataset.queries.iter().map(|q| {
+                let mut arr = [0f32; $N];
+                arr.copy_from_slice(&q[..$N]);
+                arr
+            }).collect();
+
+            // Build StagedDiskANN
+            let t_build = Instant::now();
+            let result = build_diskann_index(
+                &flat_base, num_points, dimension, scfg.alpha,
+                scfg.graph_degree, scfg.build_search_list_size as u32,
+                false, None, None, true, scfg.max_extra,
+            ).expect("build failed");
+            let graph_build_s = result.graph_build_time.as_secs_f64();
+            drop(result.index);
+
+            let t_staged = Instant::now();
+            let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+            let mut staged = StagedDiskANN::<$N>::new(
+                empty_ds, &result.partitions, result.entry_point,
+                scfg.graph_degree, scfg.max_extra, None, None, None, false,
+            );
+            staged.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+            let staged_overhead_s = t_staged.elapsed().as_secs_f64();
+            let total_build_s = t_build.elapsed().as_secs_f64();
+
+            // Also build vanilla DiskANN for comparison
+            let t_da = Instant::now();
+            let _da_result = build_diskann_index(
+                &flat_base, num_points, dimension, 2.0, 32, 48,
+                false, None, None, false, 0,
+            ).expect("diskann build failed");
+            let diskann_build_s = t_da.elapsed().as_secs_f64();
+
+            // Calibrate with diagnostics
+            let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(500)].to_vec();
+            let diag = staged.calibrate_with_diagnostics(&calib_qs, 100, 5)
+                .expect("calibrate failed");
+
+            // Write JSON
+            let json = serde_json::json!({
+                "dataset": dim_name,
+                "dimension": $N,
+                "num_points": num_points,
+                "alpha": scfg.alpha,
+                "admission_rates": diag.admission_rates,
+                "useful_gaps": diag.useful_gaps,
+                "tail_gaps": diag.tail_gaps,
+                "threshold": diag.params.threshold,
+                "early_exit_limit": diag.params.early_exit_limit,
+                "build": {
+                    "diskann_s": diskann_build_s,
+                    "staged_graph_s": graph_build_s,
+                    "staged_overhead_s": staged_overhead_s,
+                    "staged_total_s": total_build_s,
+                }
+            });
+
+            let path = format!("visualizations/calibration_diag_{}.json", dim_name);
+            std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap())
+                .expect("write json");
+            println!("Saved {path}");
+            println!("  threshold={:.2}, early_exit_limit={}", diag.params.threshold, diag.params.early_exit_limit);
+            println!("  DiskANN build: {:.2}s", diskann_build_s);
+            println!("  Staged graph build: {:.2}s  overhead: {:.2}s  total: {:.2}s",
+                graph_build_s, staged_overhead_s, total_build_s);
+        }};
+    }
+
+    match dimension {
+        DIM_32 => run_diag!(32),
+        DIM_100 => run_diag!(100),
+        DIM_128 => run_diag!(128),
+        DIM_960 => run_diag!(960),
         _ => panic!("Unsupported dimension: {dimension}"),
     }
 }

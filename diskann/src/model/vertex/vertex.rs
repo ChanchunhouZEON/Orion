@@ -31,6 +31,13 @@ where
         <[T; N]>::distance_compare(self.val, other.val, metric)
     }
 
+    /// L2 distance with early abandon. Returns distance if < upper_bound,
+    /// or a negative value if partial distance exceeds the bound.
+    #[inline(always)]
+    pub fn compare_with_bound(&self, other: &Vertex<'a, T, N>, upper_bound: f32) -> f32 {
+        <[T; N]>::distance_compare_with_bound(self.val, other.val, upper_bound)
+    }
+
     #[inline]
     pub fn vector(&self) -> &[T; N] {
         self.val

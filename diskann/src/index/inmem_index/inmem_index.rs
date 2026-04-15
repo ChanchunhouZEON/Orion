@@ -703,75 +703,65 @@ where
     /// 3. Build candidate_sets from slab (location=node, anchor=key_nbr).
     /// 4. Free dataset + slab, return InMemoryGraph.
     ///
-    /// No CsrGraph intermediate — minimal peak memory.
+    /// Extract pre-partitioned node data for PhasedGraph construction.
+    ///
+    /// Returns `Vec<(local, remote, extra)>` per node where:
+    /// - `local`: bidir neighbors + promoted remotes (for navigation + reranking)
+    /// - `remote`: remaining non-bidir neighbors (navigation only)
+    /// - `extra`: pruned candidates from slab within top-N merge (reranking only)
+    ///
+    /// Steps:
+    /// 0. Free dataset (neighbors already distance-sorted from build).
+    /// 1. Snapshot InMemoryGraph → flat Vec (lock-free), drop InMemoryGraph.
+    /// 2. Sort slab, extract extras with distances.
+    /// 3. Per-node: compute bidir, merge remote+extras by distance, partition.
     #[cfg(feature = "staged_diskann")]
     pub fn extract_graph_and_candidates(
         &mut self,
-        key_neighbor_count: usize,
-    ) -> ANNResult<(InMemoryGraph, Vec<Vec<u32>>)> {
-        self.extract_graph_and_candidates_impl(key_neighbor_count, false)
-    }
-
-    /// Like `extract_graph_and_candidates` but with explicit enrich control.
-    #[cfg(feature = "staged_diskann")]
-    pub fn extract_graph_and_candidates_impl(
-        &mut self,
-        key_neighbor_count: usize,
-        enrich: bool,
-    ) -> ANNResult<(InMemoryGraph, Vec<Vec<u32>>)> {
+        max_extra: usize,
+    ) -> ANNResult<Vec<(Vec<u32>, Vec<u32>, Vec<u32>)>> {
         use crate::utils::mem_usage;
 
         let num_pts = self.num_active_pts;
-        let max_degree = self.configuration.index_write_parameter.max_degree;
+        let max_extra = if max_extra > 0 { max_extra } else { 8 };
         log::info!(
-            "    extract entry (t={}, enrich={}):  mem={}",
-            key_neighbor_count,
-            enrich,
+            "    extract entry (max_extra={}):  mem={}",
+            max_extra,
             mem_usage()
         );
 
-        // Phase 1: Sort neighbors by distance in-place.
-        // Under staged_diskann, neighbors are kept sorted during build
-        // (via add_sorted + set_neighbors_sorted), so P1 is a no-op.
-        #[cfg(not(feature = "staged_diskann"))]
-        {
-            let t1 = std::time::Instant::now();
-            self.sort_neighbors_by_distance_in_place()?;
-            log::info!(
-                "    P1 (sort in-place):   {:.3}s  mem={}",
-                t1.elapsed().as_secs_f32(),
-                mem_usage()
-            );
-        }
-        #[cfg(feature = "staged_diskann")]
-        log::info!("    P1 (sort):            SKIPPED (maintained during build)");
-
-        // Phase 2: Enrich slab via single-pass prune (optional, disabled by default).
-        // Must run before dataset free since it needs distance computations.
-        if enrich {
-            let t2 = std::time::Instant::now();
-            self.enrich_candidate_slab()?;
-            log::info!(
-                "    P2 (enrich slab):     {:.3}s  mem={}",
-                t2.elapsed().as_secs_f32(),
-                mem_usage()
-            );
-        }
-
-        // Free dataset — candidate extraction (P3/P4) doesn't need it.
-        // This ensures dataset and candidate_sets never coexist in memory.
+        // P0: Free dataset — not needed after build.
         self.dataset = InmemDataset::new(0, 1.0)?;
-        log::info!("    dataset freed:        mem={}", mem_usage());
+        log::info!("    P0 (dataset freed):   mem={}", mem_usage());
 
-        // Phase 3: Sort slab for sequential access.
-        let t3 = std::time::Instant::now();
+        // P1: Snapshot InMemoryGraph → flat Vec, drop InMemoryGraph.
+        // Each node: (neighbor_ids, neighbor_dists). Lock-free after this.
+        let t1 = std::time::Instant::now();
+        let max_degree = self.configuration.index_write_parameter.max_degree;
+        let old_graph = std::mem::replace(&mut self.final_graph, InMemoryGraph::new(0, max_degree));
+        let snapshot: Vec<(Vec<u32>, Vec<f32>)> = old_graph
+            .final_graph
+            .into_iter()
+            .map(|lock| {
+                let vn = lock.into_inner().unwrap_or_else(|e| e.into_inner());
+                vn.into_neighbors_and_dists()
+            })
+            .collect();
+        log::info!(
+            "    P1 (snapshot):        {:.3}s  mem={}",
+            t1.elapsed().as_secs_f32(),
+            mem_usage()
+        );
+
+        // P2: Sort slab for sequential access.
+        let t2 = std::time::Instant::now();
         if let Some(ref mut slab) = self.candidate_anchor_sets {
             let (at_cap, overflow, max_count) = slab.truncation_stats();
             log::info!(
                 "    slab stats: max_pairs={}, at_cap={}/{}, overflow={}, max_count={}",
                 slab.max_pairs(),
                 at_cap,
-                slab.num_anchors(),
+                num_pts,
                 overflow,
                 max_count
             );
@@ -779,161 +769,108 @@ where
             slab.advise_sequential();
         }
         log::info!(
-            "    P3 (sort slab):       {:.3}s  mem={}",
+            "    P2 (sort slab):       {:.3}s  mem={}",
+            t2.elapsed().as_secs_f32(),
+            mem_usage()
+        );
+
+        // P3: Per-node partition: bidir + merge remote/extras → (local, remote, extra).
+        let t3 = std::time::Instant::now();
+        let partitions: Vec<(Vec<u32>, Vec<u32>, Vec<u32>)> = (0..num_pts)
+            .into_par_iter()
+            .map(|node| {
+                let (ref nbrs, ref dists) = snapshot[node];
+                let node_u32 = node as u32;
+                let degree = nbrs.len();
+
+                if degree == 0 {
+                    return (Vec::new(), Vec::new(), Vec::new());
+                }
+
+                // Classify bidir (local) vs non-bidir (remote with dist).
+                let mut local: Vec<u32> = Vec::new();
+                let mut remote_with_dist: Vec<(u32, f32)> = Vec::new();
+
+                for (j, &n) in nbrs.iter().enumerate() {
+                    let is_bidir = if (n as usize) < snapshot.len() {
+                        snapshot[n as usize].0.contains(&node_u32)
+                    } else {
+                        false
+                    };
+                    if is_bidir {
+                        local.push(n);
+                    } else if j < dists.len() {
+                        remote_with_dist.push((n, dists[j]));
+                    } else {
+                        remote_with_dist.push((n, f32::MAX));
+                    }
+                }
+                // remote_with_dist is already distance-sorted (neighbors were sorted during build).
+
+                // Extract extras from slab: (dist, id) sorted by distance.
+                let mut extras_with_dist: Vec<(f32, u32)> = Vec::new();
+                if let Some(ref slab) = self.candidate_anchor_sets {
+                    let pairs = slab.pairs(node);
+                    for &(dist_bits, pid) in pairs {
+                        if !nbrs.contains(&pid) {
+                            extras_with_dist.push((f32::from_bits(dist_bits), pid));
+                        }
+                    }
+                    extras_with_dist.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                    extras_with_dist.dedup_by_key(|e| e.1);
+                }
+
+                // Sorted merge of remote + extras, take top max_extra.
+                // Remote in top-N → promote to local.
+                // Extra in top-N → extra zone.
+                let mut ri = 0usize;
+                let mut ei = 0usize;
+                let mut remote: Vec<u32> = Vec::new();
+                let mut extra: Vec<u32> = Vec::new();
+                let mut promoted = 0usize;
+
+                while promoted + extra.len() < max_extra
+                    && (ri < remote_with_dist.len() || ei < extras_with_dist.len())
+                {
+                    let pick_remote = if ri < remote_with_dist.len() && ei < extras_with_dist.len()
+                    {
+                        remote_with_dist[ri].1 <= extras_with_dist[ei].0
+                    } else {
+                        ri < remote_with_dist.len()
+                    };
+
+                    if pick_remote {
+                        // Remote neighbor in top-N → promote to local.
+                        local.push(remote_with_dist[ri].0);
+                        ri += 1;
+                        promoted += 1;
+                    } else {
+                        extra.push(extras_with_dist[ei].1);
+                        ei += 1;
+                    }
+                }
+
+                // Remaining remotes → remote zone.
+                for &(id, _) in &remote_with_dist[ri..] {
+                    remote.push(id);
+                }
+
+                (local, remote, extra)
+            })
+            .collect();
+        log::info!(
+            "    P3 (partition):       {:.3}s  mem={}",
             t3.elapsed().as_secs_f32(),
             mem_usage()
         );
 
-        // Phase 4: Build candidate_sets (location=origin, anchor=key_nbr).
-        let t4 = std::time::Instant::now();
-        let mut candidate_sets: Vec<Vec<u32>> = (0..num_pts).map(|_| Vec::new()).collect();
-
-        if let Some(ref slab) = self.candidate_anchor_sets {
-            candidate_sets
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(origin, candidates)| {
-                    // Read slab[origin]: pairs are (distance_bits, pruned_id).
-                    // Sort by distance, dedup, take closest pruned candidates.
-                    let pairs = slab.pairs(origin);
-                    if pairs.is_empty() {
-                        return;
-                    }
-
-                    let mut with_dist: Vec<(f32, u32)> = pairs
-                        .iter()
-                        .map(|&(dist_bits, pid)| (f32::from_bits(dist_bits), pid))
-                        .collect();
-                    with_dist.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-                    with_dist.dedup_by_key(|e| e.1);
-
-                    // Cap at key_neighbor_count closest (0 = take all available).
-                    let limit = if key_neighbor_count > 0 {
-                        key_neighbor_count.min(with_dist.len())
-                    } else {
-                        with_dist.len()
-                    };
-
-                    for &(_, pid) in &with_dist[..limit] {
-                        candidates.push(pid);
-                    }
-
-                    candidates.sort_unstable();
-                    candidates.dedup();
-                });
-        }
-        log::info!(
-            "    P4 (candidates):      {:.3}s  mem={}",
-            t4.elapsed().as_secs_f32(),
-            mem_usage()
-        );
-
-        // Phase 5: Free slab, extract InMemoryGraph.
+        // P4: Free slab + snapshot.
+        drop(snapshot);
         self.query_scratch_queue = ArcConcurrentBoxedQueue::new();
         self.candidate_anchor_sets = None;
+        log::info!("    P4 (cleanup):         mem={}", mem_usage());
 
-        let graph = std::mem::replace(&mut self.final_graph, InMemoryGraph::new(0, max_degree));
-        log::info!("    P5 (free+extract):    mem={}", mem_usage());
-
-        Ok((graph, candidate_sets))
-    }
-
-    /// Enrich the candidate anchor slab by re-running single-pass robust prune
-    /// on every node's final neighbor list.
-    ///
-    /// Records (anchor, pruned) pairs that were missed when neighbors were
-    /// appended via `inter_insert` without triggering re-prune.
-    ///
-    /// Uses target `alpha` directly (no alpha escalation). Does NOT modify
-    /// the graph.
-    #[cfg(feature = "staged_diskann")]
-    pub fn enrich_candidate_slab(&self) -> ANNResult<()> {
-        use rayon::prelude::*;
-
-        let slab = match self.candidate_anchor_sets {
-            Some(ref s) => s,
-            None => return Ok(()),
-        };
-
-        let alpha = self.configuration.index_write_parameter.alpha;
-        let metric = self.configuration.dist_metric;
-        let num_pts = self.num_active_pts;
-
-        let t_start = std::time::Instant::now();
-
-        (0..num_pts).into_par_iter().try_for_each(|node| {
-            let node_u32 = node as u32;
-
-            let guard = self.final_graph.read_vertex_and_neighbors(node_u32)?;
-            let nbrs: Vec<u32> = guard.get_neighbors().to_vec();
-            drop(guard);
-
-            if nbrs.len() < 2 {
-                return Ok::<(), ANNError>(());
-            }
-
-            // Compute distances, sort ascending.
-            let mut pool: Vec<(u32, f32)> = nbrs
-                .iter()
-                .filter_map(|&n| {
-                    self.dataset
-                        .get_distance(node_u32, n, metric)
-                        .ok()
-                        .map(|d| (n, d))
-                })
-                .collect();
-            pool.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-
-            // Single-pass occlusion.
-            let len = pool.len();
-            let mut occlude_factor = vec![0.0f32; len];
-            let mut buffer: Vec<(u32, u32)> = Vec::new();
-
-            for i in 0..len {
-                if occlude_factor[i] > alpha {
-                    continue;
-                }
-                occlude_factor[i] = f32::MAX;
-                let anchor_id = pool[i].0;
-
-                for j in (i + 1)..len {
-                    if occlude_factor[j] > alpha {
-                        continue;
-                    }
-                    let old = occlude_factor[j];
-                    let djk = self
-                        .dataset
-                        .get_distance(pool[j].0, anchor_id, metric)
-                        .unwrap_or(f32::MAX);
-                    occlude_factor[j] = if djk == 0.0 {
-                        f32::MAX
-                    } else {
-                        occlude_factor[j].max(pool[j].1 / djk)
-                    };
-
-                    if old <= alpha && occlude_factor[j] > alpha {
-                        // Store (distance_bits, pruned_id): distance from node to pruned point.
-                        buffer.push((pool[j].1.to_bits(), pool[j].0));
-                    }
-                }
-            }
-
-            if !buffer.is_empty() {
-                // Write (distance_bits, pruned_id) pairs to slab[node].
-                if (node as usize) < slab.num_anchors() {
-                    slab.atomic_append_pairs(node, &buffer);
-                }
-            }
-
-            Ok(())
-        })?;
-
-        log::info!(
-            "  enrich_candidate_slab: {:.3}s ({} nodes)",
-            t_start.elapsed().as_secs_f32(),
-            num_pts,
-        );
-        Ok(())
+        Ok(partitions)
     }
 
     /// Sort each node's neighbor list by distance in-place.
@@ -1217,28 +1154,14 @@ where
     #[cfg(feature = "staged_diskann")]
     fn extract_graph_and_candidates(
         &mut self,
-        key_neighbor_count: usize,
-    ) -> ANNResult<(crate::model::InMemoryGraph, Vec<Vec<u32>>)> {
-        InmemIndex::extract_graph_and_candidates(self, key_neighbor_count)
-    }
-
-    #[cfg(feature = "staged_diskann")]
-    fn extract_graph_and_candidates_ex(
-        &mut self,
-        key_neighbor_count: usize,
-        enrich: bool,
-    ) -> ANNResult<(crate::model::InMemoryGraph, Vec<Vec<u32>>)> {
-        InmemIndex::extract_graph_and_candidates_impl(self, key_neighbor_count, enrich)
+        max_extra: usize,
+    ) -> ANNResult<Vec<(Vec<u32>, Vec<u32>, Vec<u32>)>> {
+        InmemIndex::extract_graph_and_candidates(self, max_extra)
     }
 
     #[cfg(feature = "staged_diskann")]
     fn drop_candidate_slab(&mut self) {
         InmemIndex::drop_candidate_slab(self)
-    }
-
-    #[cfg(feature = "staged_diskann")]
-    fn enrich_candidate_slab(&self) -> ANNResult<()> {
-        InmemIndex::enrich_candidate_slab(self)
     }
 
     fn num_active_points(&self) -> usize {

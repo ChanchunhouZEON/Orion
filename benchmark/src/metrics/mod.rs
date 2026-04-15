@@ -5,4 +5,3 @@ pub mod throughput;
 
 pub use latency::LatencyStats;
 pub use memory::TrackingAllocator;
-pub use throughput::measure_qps;

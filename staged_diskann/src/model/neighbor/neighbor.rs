@@ -43,15 +43,14 @@ impl PartialEq for Neighbor {
 impl Eq for Neighbor {}
 
 impl Ord for Neighbor {
+    #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
-        let ord = self
-            .distance
-            .partial_cmp(&other.distance)
-            .unwrap_or(Ordering::Equal);
+        let ord = self.distance.total_cmp(&other.distance);
         if ord == Ordering::Equal {
-            return self.id.cmp(&other.id);
+            self.id.cmp(&other.id)
+        } else {
+            ord
         }
-        ord
     }
 }
 

@@ -69,7 +69,7 @@ impl AlgorithmRunner for SSDDiskANNRunner {
             .to_shared();
 
         // Build DiskANN graph + PQ
-        let result = build_diskann_index(
+        let mut result = build_diskann_index(
             data,
             num_points,
             dimension,
@@ -80,7 +80,7 @@ impl AlgorithmRunner for SSDDiskANNRunner {
             Some(self.n_pq_chunks),
             Some(self.n_bits),
             false, // no need for candidate sets
-            0,     // key_neighbor_count (unused when compute_candidate_sets=false)
+            0,     // max_extra (unused when compute_candidate_sets=false)
         )
         .expect("build failed");
         log::info!(
@@ -92,6 +92,11 @@ impl AlgorithmRunner for SSDDiskANNRunner {
         let pq = result.pq.expect("PQ should be built");
         let pq_codes = result.pq_codes.expect("PQ codes should be built");
 
+        // Extract the graph from the index before dropping it.
+        let graph = result
+            .index
+            .extract_final_graph(num_points, self.graph_degree);
+
         // Write disk index and create SSD index
         let disk_dir = PathBuf::from("ssd_diskann_graphs");
         std::fs::create_dir_all(&disk_dir).expect("create disk dir");
@@ -102,7 +107,7 @@ impl AlgorithmRunner for SSDDiskANNRunner {
             DIM_128 => {
                 let index = SSDIndex::<128>::build(
                     &data_2d,
-                    &result.graph,
+                    &graph,
                     result.entry_point,
                     pq,
                     pq_codes,
@@ -117,7 +122,7 @@ impl AlgorithmRunner for SSDDiskANNRunner {
             DIM_960 => {
                 let index = SSDIndex::<960>::build(
                     &data_2d,
-                    &result.graph,
+                    &graph,
                     result.entry_point,
                     pq,
                     pq_codes,

@@ -6,7 +6,7 @@
 use crate::model::FixedChunkPQTable;
 use crate::model::PhasedGraph;
 use crate::model::scratch::InMemScratchPool;
-use diskann::model::{InMemoryGraph, InmemDataset};
+use diskann::model::InmemDataset;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -50,28 +50,21 @@ impl<const N: usize> StagedDiskANN<N>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
-    /// Build a StagedDiskANN from an `InMemoryGraph`, candidate sets, and an `InmemDataset`.
-    ///
-    /// Internally builds a `PhasedGraph` (local/remote/extra layout + bidir bits).
-    #[allow(clippy::too_many_arguments)]
+    /// Build a StagedDiskANN from pre-computed partitions.
     pub fn new(
         dataset: InmemDataset<f32, N>,
-        inmem_graph: InMemoryGraph,
-        candidate_sets: &[Vec<u32>],
+        partitions: &[(Vec<u32>, Vec<u32>, Vec<u32>)],
         entry: u32,
-        base_local_count: usize,
+        max_degree: u32,
         max_extra: usize,
         pq: Option<Arc<FixedChunkPQTable>>,
         pq_codes: Option<Vec<u8>>,
         compressed_graph_save_path: Option<PathBuf>,
         is_save: bool,
     ) -> Self {
-        let num_nodes = inmem_graph.size();
+        let num_nodes = partitions.len();
 
-        let mut num_pq_chunks: Option<usize> = None;
-        if let Some(ref pq) = pq {
-            num_pq_chunks = Some(pq.get_num_chunks());
-        }
+        let num_pq_chunks = pq.as_ref().map(|p| p.get_num_chunks());
 
         let compressed_graph_save_path = compressed_graph_save_path.unwrap_or_else(|| {
             let dir = PathBuf::from("staged_diskann_graphs");
@@ -79,14 +72,8 @@ where
             dir.join(format!("staged_diskann_n{}.bin", num_nodes))
         });
 
-        // Build PhasedGraph from InMemoryGraph + candidate_sets (borrow only).
         let t_graph = Instant::now();
-        let graph = PhasedGraph::build_from_inmem_graph(
-            inmem_graph,
-            candidate_sets,
-            base_local_count,
-            max_extra,
-        );
+        let graph = PhasedGraph::build_from_partitions(partitions, max_degree, max_extra);
         log::info!(
             "🏗️: PhasedGraph built in {:.3}s  mem={}",
             t_graph.elapsed().as_secs_f32(),
