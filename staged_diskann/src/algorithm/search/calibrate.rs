@@ -248,6 +248,8 @@ pub struct CalibrationDiagnostics {
     pub useful_gaps: Vec<usize>,
     /// Tail gap distribution: steps from last useful admission to search end.
     pub tail_gaps: Vec<usize>,
+    /// Per-step cumulative fraction of final top-k results found (averaged over queries).
+    pub topk_coverage_by_step: Vec<f32>,
     /// Calibrated parameters.
     pub params: CalibratedParams,
 }
@@ -395,10 +397,97 @@ where
         tail_gaps.sort_unstable();
         let early_exit_limit = percentile(&useful_gaps, 95).max(3);
 
+        // Compute per-step top-k coverage: for each step s, what fraction of
+        // final top-k results have been admitted at step <= s (averaged over queries).
+        let max_steps_seen = pos_total_count
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(max_steps);
+        let mut topk_coverage_by_step = vec![0.0f32; max_steps_seen];
+        // Re-run to collect per-step coverage (reuse data from above)
+        // We already collected per-query useful_steps; reconstruct coverage from admit_step data.
+        // Actually, we need to re-collect. Use a second pass.
+        {
+            let mut per_step_coverage_sum = vec![0.0f64; max_steps_seen];
+            let mut n_queries = 0usize;
+
+            for query in warmup_queries {
+                let aligned = AlignedQuery(*query);
+                let query_vertex = Vertex::new(&aligned.0, 0);
+                scratch.prepare_for_query(search_list_size);
+                scratch.ensure_capacity(graph.num_nodes());
+
+                scratch.seen.insert(entry);
+                let entry_dist = {
+                    let v = dataset.get_vertex(entry)?;
+                    v.compare(&query_vertex, Metric::L2)
+                };
+                scratch.pq.insert(DNeighbor::new(entry, entry_dist));
+
+                let mut admit_step_map: std::collections::HashMap<u32, usize> =
+                    std::collections::HashMap::new();
+                admit_step_map.insert(entry, 0);
+                let mut step = 0usize;
+
+                while scratch.pq.has_notvisited_node() {
+                    let neighbor = scratch.pq.closest_notvisited();
+                    let id = neighbor.id as usize;
+                    scratch.id_scratch.clear();
+                    for &nn in graph.neighbors(id) {
+                        if scratch.seen.insert(nn) {
+                            scratch.id_scratch.push(nn);
+                        }
+                    }
+                    let pq_worst = if scratch.pq.size() >= search_list_size {
+                        scratch.pq[scratch.pq.size() - 1].distance
+                    } else {
+                        f32::MAX
+                    };
+                    for m in 0..scratch.id_scratch.len() {
+                        let nn = scratch.id_scratch[m];
+                        let v = dataset.get_vertex(nn)?;
+                        let dist = query_vertex.compare(&v, Metric::L2);
+                        if dist < pq_worst || scratch.pq.size() < search_list_size {
+                            admit_step_map.insert(nn, step);
+                        }
+                        scratch.pq.insert(DNeighbor::new(nn, dist));
+                    }
+                    step += 1;
+                }
+
+                // Get final top-k
+                let top_k: Vec<u32> = (0..scratch.pq.size().min(k))
+                    .map(|i| scratch.pq[i].id)
+                    .collect();
+                let k_actual = top_k.len() as f64;
+
+                // Build per-step cumulative coverage
+                for s in 0..max_steps_seen.min(step) {
+                    let found = top_k
+                        .iter()
+                        .filter(|id| admit_step_map.get(id).map_or(false, |&as_| as_ <= s))
+                        .count();
+                    per_step_coverage_sum[s] += found as f64 / k_actual;
+                }
+                // Fill remaining steps with 1.0 (all found)
+                for s in step..max_steps_seen {
+                    per_step_coverage_sum[s] += 1.0;
+                }
+                n_queries += 1;
+            }
+
+            if n_queries > 0 {
+                for s in 0..max_steps_seen {
+                    topk_coverage_by_step[s] = (per_step_coverage_sum[s] / n_queries as f64) as f32;
+                }
+            }
+        }
+
         Ok(CalibrationDiagnostics {
             admission_rates: smoothed,
             useful_gaps,
             tail_gaps,
+            topk_coverage_by_step,
             params: CalibratedParams {
                 threshold,
                 early_exit_limit,

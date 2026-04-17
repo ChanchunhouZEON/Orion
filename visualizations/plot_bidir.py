@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
-"""Plot bidirectional edge distribution: bidir rate by neighbor rank + per-node bidir fraction."""
+"""Bidirectional edge distribution: edge composition + per-node bidir fraction."""
 
-import json
-import os
+import json, os, sys
+import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import numpy as np
+sys.path.insert(0, os.path.dirname(__file__))
+from chart_style import *
 
 datasets = [
-    ("sift",    "SIFT (128-dim)"),
-    ("glove25", "GloVe-25 (32-dim)"),
-    ("glove100","GloVe-100 (100-dim)"),
-    ("gist",    "GIST (960-dim)"),
+    ("sift",    "SIFT"), ("glove25", "GloVe-25"),
+    ("glove100","GloVe-100"), ("gist",    "GIST"),
 ]
-
-colors = {'sift': '#CBF3F0', 'glove25': '#CBF3F0', 'glove100': '#CBF3F0', 'gist': '#CBF3F0'}
 
 bidir_data = {}
 for name, _ in datasets:
@@ -25,99 +22,77 @@ for name, _ in datasets:
             bidir_data[name] = json.load(f)
 
 present = [(n, t) for n, t in datasets if n in bidir_data]
-n_ds = len(present)
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
+style_fig(fig)
 
-# ── Left: Per-dataset edge composition (stacked bar) ──
+# ── Left: Edge composition (stacked rounded bars) ──
 ax = axes[0]
-x = np.arange(n_ds)
-w = 0.5
+x = np.arange(len(present))
+w = 0.45
 
-avg_locals = []
-avg_remotes = []
-avg_extras = []
-labels = []
-bidir_ratios = []
-
+avg_locals = []; avg_remotes = []; labels = []; bidir_ratios = []
 for name, title in present:
     d = bidir_data[name]
     fracs = np.array(d['bidir_fractions'])
     rates = d['bidir_rate_by_rank']
-    n_pts = d['num_points']
-    deg = len(rates)
-
-    # Compute aggregate: total bidir edges / total edges
-    total_local = sum(int(f * deg + 0.5) for f in fracs)
-    total_edges = sum(min(deg, len(d['bidir_rate_by_rank'])) for _ in range(n_pts))
-    # More accurate: sum degree per node
-    # degree per node ~ len(rates) but capped; use fractions * degree
     avg_frac = fracs.mean()
     bidir_ratios.append(avg_frac)
+    deg = len(rates)
+    avg_locals.append(avg_frac * deg)
+    avg_remotes.append((1 - avg_frac) * deg)
+    labels.append(f'{title}\n(a={d["alpha"]:.1f})')
 
-    # Per-node averages for stacked bar
-    avg_deg = deg  # max degree
-    avg_lc = avg_frac * avg_deg
-    avg_remote = avg_deg - avg_lc
-    # extra from the data
-    avg_locals.append(avg_lc)
-    avg_remotes.append(avg_remote)
-    labels.append(f'{title.split("(")[0].strip()}\n(a={d["alpha"]:.1f})')
+h1 = rounded_bars(ax, x, avg_locals, w, PALETTE['blue'], label='Local (bidir)')
+# Stack remote on top — draw as separate bars at offset height
+for i in range(len(present)):
+    rounded_bar(ax, x[i], avg_locals[i] + avg_remotes[i], w, PALETTE['orange'], alpha=0.85)
+# Redraw local on top so it's visible
+for i in range(len(present)):
+    rounded_bar(ax, x[i], avg_locals[i], w, PALETTE['blue'], alpha=0.9)
 
-bars_local = ax.bar(x, avg_locals, w, label='Local (bidir edges)', color='#0466C8')
-bars_remote = ax.bar(x, avg_remotes, w, bottom=avg_locals, label='Remote (unidir edges)', color='#023E7D')
+h2 = rounded_patch(PALETTE['orange'], alpha=0.85, label='Remote (unidir)')
 
-# Annotate bidir ratio on each bar
 for i, ratio in enumerate(bidir_ratios):
     total = avg_locals[i] + avg_remotes[i]
-    ax.annotate(f'{ratio:.0%} bidir',
-                xy=(i, total + 0.3), ha='center', fontsize=10, fontweight='bold', color='#023E7D')
+    ax.annotate(f'{ratio:.0%} bidir', xy=(x[i], total),
+                ha='center', va='bottom', fontsize=10, fontweight='bold', color=PALETTE['annot'])
 
-ax.set_xticks(x)
-ax.set_xticklabels(labels)
+ax.set_xticks(x); ax.set_xticklabels(labels)
 ax.set_ylabel('Avg Neighbors per Node')
-ax.set_title('Graph Edge Composition: Local (Bidir) vs Remote (Unidir)', fontweight='bold')
-ax.legend(fontsize=10)
-ax.grid(True, alpha=0.3, axis='y')
+ax.set_title('Edge Composition: Local vs Remote', fontweight='bold')
+make_legend(ax, [h1, h2], fontsize=10)
+style_ax(ax)
+apply_ylim(ax, [l + r for l, r in zip(avg_locals, avg_remotes)], headroom=1.2)
+ax.set_xlim(-0.6, len(present) - 0.4)
 
-# ── Right: Per-node bidir fraction violin plot ──
+# ── Right: Per-node bidir fraction boxplot ──
 ax = axes[1]
-violin_data = []
-violin_labels = []
-violin_colors = []
-violin_means = []
-
+box_data = []; box_labels = []; box_colors = []
 for name, title in present:
     d = bidir_data[name]
-    frac_arr = np.array(d['bidir_fractions'])
-    violin_data.append(frac_arr)
-    violin_labels.append(f'{title.split("(")[0].strip()}\n(a={d["alpha"]:.1f})')
-    violin_colors.append(colors[name])
-    violin_means.append(frac_arr.mean())
+    box_data.append(np.array(d['bidir_fractions']))
+    box_labels.append(f'{title}\n(a={d["alpha"]:.1f})')
+    box_colors.append(DATASET_COLORS.get(name, PALETTE['grey']))
 
-bp = ax.boxplot(violin_data, positions=range(len(violin_data)),
-                widths=0.2, patch_artist=True,
-                medianprops=dict(color='#2EC4B6', linewidth=2),
-                whiskerprops=dict(color='#333'), capprops=dict(color='#333'),
+bp = ax.boxplot(box_data, positions=range(len(box_data)),
+                widths=0.25, patch_artist=True,
+                medianprops=dict(color=PALETTE['red'], linewidth=2),
+                whiskerprops=dict(color='#999'), capprops=dict(color='#999'),
                 flierprops=dict(marker='.', markersize=2, alpha=0.3))
 for i, patch in enumerate(bp['boxes']):
-    patch.set_facecolor(violin_colors[i])
-    patch.set_edgecolor('#333')
+    patch.set_facecolor(box_colors[i])
+    patch.set_edgecolor('#999')
     patch.set_alpha(0.7)
 
-# Annotate mean
-# for i, m in enumerate(violin_means):
-#     ax.annotate(f'mean={m:.2f}', xy=(i, m - 0.06),
-#                 ha='center', fontsize=9, fontweight='bold', color=violin_colors[i])
-
-ax.set_xticks(range(len(violin_labels)))
-ax.set_xticklabels(violin_labels)
+ax.set_xticks(range(len(box_labels)))
+ax.set_xticklabels(box_labels)
 ax.set_ylabel('Bidir Fraction (local / degree)')
 ax.set_title('Per-Node Bidir Fraction Distribution', fontweight='bold')
 ax.set_ylim(0, 1.05)
-ax.grid(True, alpha=0.3, axis='y')
+style_ax(ax)
 
 plt.tight_layout()
 out = 'visualizations/bidir_analysis.png'
-plt.savefig(out, dpi=150, bbox_inches='tight')
+fig.savefig(out, dpi=150, bbox_inches='tight', facecolor='white')
 print(f'Saved {out}')

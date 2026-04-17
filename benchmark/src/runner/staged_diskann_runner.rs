@@ -67,10 +67,16 @@ macro_rules! build_staged {
                 q
             })
             .collect();
-        if let Ok(calib) = staged.calibrate(&calib_queries, $self.search_list_size, $self.window_size) {
+        if let Ok(calib) =
+            staged.calibrate(&calib_queries, $self.search_list_size, $self.window_size)
+        {
             $self.epsilon = calib.threshold;
             $self.early_exit_limit = calib.early_exit_limit;
-            log::info!("Calibrated: threshold={:.2}, early_exit_limit={}", calib.threshold, calib.early_exit_limit);
+            log::info!(
+                "Calibrated: threshold={:.2}, early_exit_limit={}",
+                calib.threshold,
+                calib.early_exit_limit
+            );
         }
 
         $self.inner = Some(StagedInner::$variant { staged });

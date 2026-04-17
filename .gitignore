@@ -4,6 +4,8 @@
 *.ivecs
 
 /visualizations/staged_diskann/
+/visualizations/**/*.json
+/visualizations/__pycache__/
 /*_graphs/
 
 .idea/
