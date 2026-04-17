@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 /// Measure queries per second for a batch of queries.
 /// Returns (QPS, total_duration, individual_durations).
+#[allow(dead_code)]
 pub fn measure_qps<F>(num_queries: usize, mut search_fn: F) -> (f64, Duration, Vec<Duration>)
 where
     F: FnMut(usize) -> Duration,

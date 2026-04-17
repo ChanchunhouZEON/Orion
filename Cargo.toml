@@ -7,8 +7,6 @@ members = [
     "staged_diskann",
     "vector",
     "ssd_diskann",
-    "hnsw",
-    "nsg",
 ]
 resolver = "2"
 

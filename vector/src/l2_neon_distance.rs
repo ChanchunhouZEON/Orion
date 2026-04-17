@@ -212,6 +212,10 @@ pub fn distance_l2_early_abandon_f32<const N: usize>(
 
         let total = vaddq_f32(vaddq_f32(sum0, sum1), vaddq_f32(sum2, sum3));
         let dist = vaddvq_f32(total);
-        if dist >= upper_bound { -1.0 } else { dist }
+        if dist >= upper_bound {
+            -1.0
+        } else {
+            dist
+        }
     }
 }

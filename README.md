@@ -141,9 +141,15 @@ All benchmarks: 100K points, 8 threads, Recall@10 vs QPS. Convergence parameters
 
 ### QPS vs Recall@10 Curves
 
-![QPS vs Recall](visualizations/qps_recall_all.png)
+![DiskANN vs StagedDiskANN](visualizations/qps_recall_diskann_vs_staged.png)
 
 Shaded bands show min-max range across 3 independent runs. StagedDiskANN consistently achieves higher QPS than DiskANN at the same recall level across all four datasets.
+
+### Comparison with Other ANN Algorithms
+
+![All Algorithms](visualizations/qps_recall_all.png)
+
+StagedDiskANN and DiskANN dominate the Pareto frontier across all datasets. HNSW (hnswlib) is competitive but slower. FAISS IVF-Flat achieves high QPS at low recall but drops sharply at high recall. FAISS IVF-PQ suffers from quantization error (recall caps at ~0.62). Annoy is the slowest across all settings.
 
 ### Same-L QPS Comparison (Median of 3 Runs)
 
@@ -167,14 +173,39 @@ Shaded bands show min-max range across 3 independent runs. StagedDiskANN consist
 | **GloVe-100** | 100 | 1.3x -- 1.5x | Moderate: distance cost partially offsets traversal savings |
 | **GIST** | 960 | 1.0x -- 1.1x | Distance computation dominates (72% of time); early abandon helps at high L |
 
+### Ablation Study
+
+![Ablation](visualizations/ablation_study.png)
+
+Grouped bar chart at representative L values. Grey bars show DiskANN (Vamana, alpha=2.0) as baseline; percentage labels show QPS change relative to DiskANN:
+- **Full StagedDiskANN**: all components active. +86% to +118% over DiskANN on SIFT/GloVe-100 at L=32; +42% to +88% at L=256.
+- **No Early Exit** (convergence on, ee=MAX): still provides large speedup over DiskANN through two-phase neighbor reduction, but early exit accounts for ~25-30% of the total gain at high L.
+- **No Extra Candidates** (max_extra=0): reranking uses only local (bidir) neighbors. Similar to no-ee, confirming that extra candidates provide incremental reranking quality.
+
+The jump from DiskANN (grey) to any Staged variant (colored) is the largest, showing that the core two-phase convergence mechanism is the primary contributor. Early exit and extra candidates each add further incremental improvements.
+
+### Extra Candidate Enrichment
+
+![Extra Enrichment](visualizations/extra_enrichment.png)
+
+Post-convergence admission rate by neighbor zone across all datasets. Local (bidir) neighbors have 1.0-1.3% admission rate; Extra (pruned candidates) match or exceed local at 0.9-1.2%. Remote (unidir) neighbors have the lowest rate at 0.4-1.2%. This validates the reranking strategy: local+extra captures the most useful candidates while skipping low-yield remote neighbors.
+
+### Early Stop Analysis
+
+![Early Stop Coverage](visualizations/earlystop_coverage.png)
+
+Cumulative fraction of final top-10 results found at each search step. By the early exit point (dashed lines), 99.3-99.9% of top-k results have already been admitted. The remaining steps contribute < 0.1-0.7% to recall but consume 15-35% of total search time — early termination trades negligible recall for significant speedup.
+
 ### Convergence & Early Exit Analysis
 
 ![Diagnostics](visualizations/diagnostics.png)
 
-- **Early Exit: Steps Saved** (top-left): SIFT saves 35% of search steps at L=200, while GIST saves 16% — high-dimensional search converges more slowly, leaving less room for early termination.
-- **Distance Computation Reduction** (top-right): Staged reduces distance calls by 27% (SIFT) vs 13% (GIST) at L=200. Combined with early abandon (skipping partial distance computation when partial sum exceeds PQ worst), the effective compute savings are higher.
-- **PhasedGraph Structure** (bottom-left): Both datasets have similar average degree (~25), but SIFT has more local neighbors (19.9 vs 18.1) due to lower alpha producing more bidirectional edges. More local neighbors means more reranking-only candidates, which amplifies the convergence benefit.
-- **Early Exit Trade-off** (bottom-right): Recall loss is minimal (< 0.1 percentage points for SIFT, < 0.5 for GIST) even when saving 35% of steps. The trade-off is favorable — large compute savings with negligible recall cost.
+Same Staged graph, two search configurations: `no-ee` runs until L is full (no convergence check, no early exit); `staged` uses the auto-calibrated threshold + early exit limit. This isolates the pure contribution of the convergence module on a fixed graph.
+
+- **Steps Saved** (top-left): at L=200, SIFT cuts 28% of search steps (203 → 147) and GIST cuts 15% (203 → 173). At small L=48, the beam is already close to saturation, so savings are modest (1–3%). High-dimensional GIST converges more slowly, so early exit fires later and saves less.
+- **Distance Computations** (top-right): mirrors steps at L=200 — SIFT saves 20% of distance calls (2478 → 1978), GIST 12% (3476 → 3048). Combined with early-abandon distance (skipping remaining dims when the partial sum already exceeds the PQ worst), the effective compute savings are higher than the step count alone suggests.
+- **PhasedGraph Structure** (bottom-left): SIFT (α=1.2) and GIST (α=1.5) produce similar total degree (~25–26), but SIFT has slightly more local neighbors (19.9 vs 18.1) because lower α allows more bidirectional edges. Rerank = local + extra is what the convergence tracker monitors; both datasets sit around 21–23.
+- **Early Exit Trade-off** (bottom-right): recall loss is negligible for SIFT (< 0.07 pp even at 28% steps saved) and bounded at ~0.37 pp for GIST — a favorable trade given the compute cut. The absolute recall loss stays within the same order across L values, so early exit is safe to enable by default.
 
 ### Bidirectional Edge Analysis
 
@@ -199,7 +230,20 @@ Shaded bands show min-max range across 3 independent runs. StagedDiskANN consist
 
 ### Memory
 
-PhasedGraph uses a fixed stride of 48 u32 per node (cache-line aligned), totaling **18.3 MB** for 100K nodes. StagedDiskANN uses a lower alpha (sparser base graph), so total index memory is comparable to DiskANN despite the extra structure.
+![Memory](visualizations/memory_analysis.png)
+
+Peak RSS measured via the `TrackingAllocator` at 100K points, comparing DiskANN (α=2.0) against StagedDiskANN at the per-dataset configured α.
+
+| Dataset    | DiskANN peak | Staged peak | Staged final | Peak ratio |
+|------------|-------------:|------------:|-------------:|-----------:|
+| SIFT       | 94.6 MB      | 87.9 MB     | 89.3 MB      | 0.93× (-7.1%) |
+| GloVe-25   | 58.5 MB      | 58.1 MB     | 53.5 MB      | 0.99× (-0.6%) |
+| GloVe-100  | 84.6 MB      | 82.2 MB     | 81.0 MB      | 0.97× (-2.9%) |
+| GIST       | 410.4 MB     | 406.8 MB    | 407.0 MB     | 0.99× (-0.9%) |
+
+StagedDiskANN's peak is **≤ DiskANN peak** on every dataset. The candidate-set machinery adds no peak overhead because the dataset is freed before the reranking partitions are materialized, and the lower α keeps the base graph sparser than DiskANN's α=2.0. Absolute footprint is dominated by the base vectors (e.g. GIST 960 × 4 B × 100K ≈ 384 MB), so dataset dimension — not index overhead — sets the memory budget.
+
+PhasedGraph itself uses a fixed stride of 48 u32 per node (cache-line aligned), totaling **18.3 MB** for 100K nodes.
 
 ## Code Structure
 

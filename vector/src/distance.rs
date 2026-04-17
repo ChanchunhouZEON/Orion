@@ -30,7 +30,11 @@ pub trait FullPrecisionDistance<T, const N: usize> {
     /// processed. Callers check `result < 0.0` to detect abandonment.
     fn distance_compare_with_bound(a: &[T; N], b: &[T; N], upper_bound: f32) -> f32 {
         let d = Self::distance_compare(a, b, Metric::L2);
-        if d < upper_bound { d } else { -1.0 }
+        if d < upper_bound {
+            d
+        } else {
+            -1.0
+        }
     }
 }
 
@@ -53,7 +57,11 @@ impl<const N: usize> FullPrecisionDistance<f32, N> for [f32; N] {
         #[cfg(not(target_arch = "aarch64"))]
         {
             let d = distance_l2_vector_f32::<N>(a, b);
-            if d < upper_bound { d } else { -1.0 }
+            if d < upper_bound {
+                d
+            } else {
+                -1.0
+            }
         }
     }
 }

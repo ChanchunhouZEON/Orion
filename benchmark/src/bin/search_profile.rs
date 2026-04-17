@@ -32,11 +32,13 @@ macro_rules! run_profile {
     ($data:ident, $queries:ident, $n:ident, $N:literal, $alpha:expr, $max_pts:ident) => {{
         use staged_diskann::{build_diskann_index, StagedDiskANN};
 
-        eprintln!("Building index ({}-dim, {} points, alpha={})...", $N, $n, $alpha);
-        let result = build_diskann_index(
-            &$data, $n, $N, $alpha, 32, 48, false, None, None, true, 4,
-        )
-        .expect("build failed");
+        eprintln!(
+            "Building index ({}-dim, {} points, alpha={})...",
+            $N, $n, $alpha
+        );
+        let result =
+            build_diskann_index(&$data, $n, $N, $alpha, 32, 48, false, None, None, true, 4)
+                .expect("build failed");
         let entry = result.entry_point;
         drop(result.index);
 
@@ -113,7 +115,14 @@ macro_rules! run_profile {
         for &l in &search_ls {
             let t = Instant::now();
             for q in &queries_arr {
-                let _ = staged.search(q, k, l as usize, ws, calib.threshold, calib.early_exit_limit);
+                let _ = staged.search(
+                    q,
+                    k,
+                    l as usize,
+                    ws,
+                    calib.threshold,
+                    calib.early_exit_limit,
+                );
             }
             let elapsed = t.elapsed();
             let total_ms = elapsed.as_secs_f64() * 1000.0;
@@ -136,10 +145,7 @@ macro_rules! run_profile {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let dataset = args.get(1).map(|s| s.as_str()).unwrap_or("sift");
-    let max_points: usize = args
-        .get(2)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(100_000);
+    let max_points: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(100_000);
 
     let (base_path, query_path, dim) = match dataset {
         "sift" => (
@@ -179,10 +185,19 @@ fn main() {
     let cache_lines = (vec_bytes + 127) / 128;
     let dataset_mb = (n * vec_bytes) as f64 / 1_048_576.0;
     eprintln!("--- Cache Analysis ---");
-    eprintln!("  Vector size:    {} bytes ({} cache lines)", vec_bytes, cache_lines);
+    eprintln!(
+        "  Vector size:    {} bytes ({} cache lines)",
+        vec_bytes, cache_lines
+    );
     eprintln!("  Dataset size:   {:.1} MB", dataset_mb);
-    eprintln!("  L1D capacity:   64 KB  ({:.0} vectors)", 65536.0 / vec_bytes as f64);
-    eprintln!("  L2 capacity:    16 MB  ({:.0} vectors)", 16_777_216.0 / vec_bytes as f64);
+    eprintln!(
+        "  L1D capacity:   64 KB  ({:.0} vectors)",
+        65536.0 / vec_bytes as f64
+    );
+    eprintln!(
+        "  L2 capacity:    16 MB  ({:.0} vectors)",
+        16_777_216.0 / vec_bytes as f64
+    );
     eprintln!(
         "  L2 fit ratio:   {:.1}%",
         (16_777_216.0 / (n * vec_bytes) as f64 * 100.0).min(100.0)

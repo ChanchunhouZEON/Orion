@@ -13,7 +13,7 @@ pub mod utils;
 pub mod visualization;
 
 pub use algorithm::SearchProfile;
-pub use algorithm::search::calibrate::{CalibrationDiagnostics, CalibratedParams};
+pub use algorithm::search::calibrate::{CalibratedParams, CalibrationDiagnostics};
 pub use algorithm::search::convergence::SearchConvergenceChecker;
 pub use algorithm::search::in_mem_search::{
     DEFAULT_EARLY_EXIT_LIMIT, DEFAULT_EPSILON, DEFAULT_SEARCH_LIST_SIZE, DEFAULT_WINDOW_SIZE,

@@ -8,6 +8,7 @@ use rayon::prelude::*;
 
 /// A loaded dataset with base vectors, query vectors, and ground truth.
 pub struct Dataset {
+    #[allow(dead_code)]
     pub name: String,
     pub dimension: usize,
     pub base: Vec<Vec<f32>>,

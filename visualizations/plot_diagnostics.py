@@ -1,132 +1,159 @@
 #!/usr/bin/env python3
-"""Generate diagnostic charts: early exit savings, distance computation breakdown."""
+"""Convergence diagnostics (SIFT + GIST): steps saved, distance calls saved,
+graph structure, trade-off.
 
+Data source: visualizations/convergence_diag_{name}.json.
+"""
+
+import json, os, sys
+import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import numpy as np
+sys.path.insert(0, os.path.dirname(__file__))
+from chart_style import *
 
-# ── Data from search-profile runs ──
+datasets = [("sift", "SIFT"), ("gist", "GIST")]
 
-L_values = [48, 100, 200]
+data = {}
+for name, _ in datasets:
+    path = f"visualizations/convergence_diag_{name}.json"
+    if os.path.exists(path):
+        with open(path) as f:
+            data[name] = json.load(f)
 
-# SIFT 128-dim (10K queries, threshold=0.21, ee=11)
-sift = {
-    'baseline_steps': [52.1, 103.6, 203.2],
-    'staged_steps':   [49.3, 83.6, 132.2],
-    'baseline_dist':  [893.0, 1505.1, 2476.4],
-    'staged_dist':    [854.5, 1288.3, 1818.4],
-    'baseline_recall':[0.9836, 0.9965, 0.9993],
-    'staged_recall':  [0.9829, 0.9954, 0.9985],
-}
+present = [(n, t) for n, t in datasets if n in data]
+if not present:
+    print("No convergence_diag data. Run: cargo run ... --algorithms convergence-diag")
+    sys.exit(1)
 
-# GIST 960-dim (1K queries, threshold=0.23, ee=14)
-gist = {
-    'baseline_steps': [52.1, 103.1, 202.5],
-    'staged_steps':   [51.5, 96.8, 170.0],
-    'baseline_dist':  [1185.6, 2059.6, 3482.2],
-    'staged_dist':    [1157.3, 1934.8, 3018.5],
-    'baseline_recall':[0.8988, 0.9605, 0.9850],
-    'staged_recall':  [0.8953, 0.9559, 0.9807],
-}
-
-# Graph structure
-graph_info = {
-    'sift': {'dim': 128, 'avg_degree': 24.7, 'avg_local': 19.9, 'avg_extra': 3.5, 'alpha': 1.2},
-    'gist': {'dim': 960, 'avg_degree': 25.9, 'avg_local': 18.1, 'avg_extra': 2.6, 'alpha': 1.5},
-}
+L_values = data[present[0][0]]['L_values']
+n_L = len(L_values)
+x = np.arange(n_L)
+w = 0.18
+gap = 0.03
 
 fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+style_fig(fig)
 
-# ── Chart 1: Steps saved (early exit effectiveness) ──
+# Per-dataset color pair: lighter = no-ee baseline, solid = staged.
+color_pairs = {
+    'sift': (PALETTE['cyan'],   PALETTE['blue']),
+    'gist': (PALETTE['orange'], PALETTE['red']),
+}
+
+# ── Chart 1: Avg steps per query ──
 ax = axes[0, 0]
-x = np.arange(len(L_values))
-w = 0.18
-for i, (name, data, color) in enumerate([
-    ('SIFT baseline', sift['baseline_steps'], '#90CAF9'),
-    ('SIFT staged',   sift['staged_steps'],   '#1565C0'),
-    ('GIST baseline', gist['baseline_steps'],  '#FFAB91'),
-    ('GIST staged',   gist['staged_steps'],    '#BF360C'),
-]):
-    ax.bar(x + (i - 1.5) * w, data, w, label=name, color=color)
+handles = []
+all_step_vals = []
+for di, (name, title) in enumerate(present):
+    d = data[name]
+    no_ee = d['no_early_exit']['steps']
+    staged = d['staged']['steps']
+    all_step_vals.extend(no_ee + staged)
+    c_bl, c_st = color_pairs.get(name, (PALETTE['grey'], PALETTE['blue']))
 
-ax.set_xticks(x)
-ax.set_xticklabels([f'L={l}' for l in L_values])
+    pos_bl = x + (2 * di - len(present) + 0.5) * (w + gap) - (w + gap) / 2
+    pos_st = x + (2 * di - len(present) + 0.5) * (w + gap) + (w + gap) / 2
+
+    h_bl = rounded_bars(ax, pos_bl, no_ee, w, c_bl, label=f'{title} no-ee')
+    h_st = rounded_bars(ax, pos_st, staged, w, c_st, label=f'{title} staged')
+    if h_bl: handles.append(h_bl)
+    if h_st: handles.append(h_st)
+
+    for j in range(n_L):
+        pct = (staged[j] / no_ee[j] - 1) * 100
+        ax.annotate(f'{pct:+.0f}%', xy=(pos_st[j], staged[j]),
+                    ha='center', va='bottom', fontsize=8, color=c_st, fontweight='bold')
+
+ax.set_xticks(x); ax.set_xticklabels([f'L={l}' for l in L_values])
 ax.set_ylabel('Avg Steps per Query')
 ax.set_title('Early Exit: Steps Saved', fontweight='bold')
-ax.legend(fontsize=9, ncol=2)
-ax.grid(True, alpha=0.3, axis='y')
+make_legend(ax, handles, ncol=2, fontsize=9)
+style_ax(ax)
+apply_ylim(ax, all_step_vals, headroom=1.25)
+ax.set_xlim(x[0] - 0.6, x[-1] + 0.6)
 
-# Add % saved annotations
-for i, l in enumerate(L_values):
-    sift_pct = (1 - sift['staged_steps'][i] / sift['baseline_steps'][i]) * 100
-    gist_pct = (1 - gist['staged_steps'][i] / gist['baseline_steps'][i]) * 100
-    ax.annotate(f'-{sift_pct:.0f}%', xy=(i - 0.5*w, sift['staged_steps'][i]),
-                ha='center', va='bottom', fontsize=8, color='#1565C0', fontweight='bold')
-    ax.annotate(f'-{gist_pct:.0f}%', xy=(i + 1.5*w, gist['staged_steps'][i]),
-                ha='center', va='bottom', fontsize=8, color='#BF360C', fontweight='bold')
-
-# ── Chart 2: Distance calls saved ──
+# ── Chart 2: Avg distance computations per query ──
 ax = axes[0, 1]
-for i, (name, data, color) in enumerate([
-    ('SIFT baseline', sift['baseline_dist'], '#90CAF9'),
-    ('SIFT staged',   sift['staged_dist'],   '#1565C0'),
-    ('GIST baseline', gist['baseline_dist'],  '#FFAB91'),
-    ('GIST staged',   gist['staged_dist'],    '#BF360C'),
-]):
-    ax.bar(x + (i - 1.5) * w, data, w, label=name, color=color)
+handles2 = []
+all_ndc_vals = []
+for di, (name, title) in enumerate(present):
+    d = data[name]
+    no_ee = d['no_early_exit']['ndc']
+    staged = d['staged']['ndc']
+    all_ndc_vals.extend(no_ee + staged)
+    c_bl, c_st = color_pairs.get(name, (PALETTE['grey'], PALETTE['blue']))
 
-ax.set_xticks(x)
-ax.set_xticklabels([f'L={l}' for l in L_values])
+    pos_bl = x + (2 * di - len(present) + 0.5) * (w + gap) - (w + gap) / 2
+    pos_st = x + (2 * di - len(present) + 0.5) * (w + gap) + (w + gap) / 2
+
+    h_bl = rounded_bars(ax, pos_bl, no_ee, w, c_bl, label=f'{title} no-ee')
+    h_st = rounded_bars(ax, pos_st, staged, w, c_st, label=f'{title} staged')
+    if h_bl: handles2.append(h_bl)
+    if h_st: handles2.append(h_st)
+
+    for j in range(n_L):
+        pct = (staged[j] / no_ee[j] - 1) * 100
+        ax.annotate(f'{pct:+.0f}%', xy=(pos_st[j], staged[j]),
+                    ha='center', va='bottom', fontsize=8, color=c_st, fontweight='bold')
+
+ax.set_xticks(x); ax.set_xticklabels([f'L={l}' for l in L_values])
 ax.set_ylabel('Avg Distance Computations per Query')
 ax.set_title('Distance Computation Reduction', fontweight='bold')
-ax.legend(fontsize=9, ncol=2)
-ax.grid(True, alpha=0.3, axis='y')
+make_legend(ax, handles2, ncol=2, fontsize=9)
+style_ax(ax)
+apply_ylim(ax, all_ndc_vals, headroom=1.25)
+ax.set_xlim(x[0] - 0.6, x[-1] + 0.6)
 
-for i, l in enumerate(L_values):
-    sift_pct = (1 - sift['staged_dist'][i] / sift['baseline_dist'][i]) * 100
-    gist_pct = (1 - gist['staged_dist'][i] / gist['baseline_dist'][i]) * 100
-    ax.annotate(f'-{sift_pct:.0f}%', xy=(i - 0.5*w, sift['staged_dist'][i]),
-                ha='center', va='bottom', fontsize=8, color='#1565C0', fontweight='bold')
-    ax.annotate(f'-{gist_pct:.0f}%', xy=(i + 1.5*w, gist['staged_dist'][i]),
-                ha='center', va='bottom', fontsize=8, color='#BF360C', fontweight='bold')
-
-# ── Chart 3: Graph structure comparison ──
+# ── Chart 3: PhasedGraph structure ──
 ax = axes[1, 0]
-categories = ['Avg Degree', 'Avg Local', 'Avg Extra', 'Avg Rerank\n(Local+Extra)']
-sift_vals = [24.7, 19.9, 3.5, 23.3]
-gist_vals = [25.9, 18.1, 2.6, 20.7]
-x3 = np.arange(len(categories))
+categories = ['Avg Degree', 'Avg Local', 'Avg Extra', 'Avg Rerank']
+x3 = np.arange(len(categories)) * 1.1
 w3 = 0.3
-ax.bar(x3 - w3/2, sift_vals, w3, label=f'SIFT (dim=128, a=1.2)', color='#1565C0')
-ax.bar(x3 + w3/2, gist_vals, w3, label=f'GIST (dim=960, a=1.5)', color='#BF360C')
-ax.set_xticks(x3)
-ax.set_xticklabels(categories)
+gap3 = 0.04
+
+handles3 = []
+all_g_vals = []
+for di, (name, title) in enumerate(present):
+    g = data[name]['graph']
+    vals = [g['avg_degree'], g['avg_local'], g['avg_extra'], g['avg_rerank']]
+    all_g_vals.extend(vals)
+    _, c_st = color_pairs.get(name, (PALETTE['grey'], PALETTE['blue']))
+    pos = x3 + (di - (len(present) - 1) / 2) * (w3 + gap3)
+    alpha_label = f"α={data[name]['alpha_staged']:.1f}"
+    h = rounded_bars(ax, pos, vals, w3, c_st, label=f'{title} ({alpha_label})')
+    if h: handles3.append(h)
+
+ax.set_xticks(x3); ax.set_xticklabels(categories)
 ax.set_ylabel('Count')
 ax.set_title('PhasedGraph Structure', fontweight='bold')
-ax.legend(fontsize=10)
-ax.grid(True, alpha=0.3, axis='y')
+make_legend(ax, handles3, fontsize=10)
+style_ax(ax)
+apply_ylim(ax, all_g_vals, headroom=1.2)
+ax.set_xlim(x3[0] - 0.6, x3[-1] + 0.6)
 
-# ── Chart 4: Recall vs steps saved trade-off ──
+# ── Chart 4: Steps saved vs recall loss ──
 ax = axes[1, 1]
-for i, l in enumerate(L_values):
-    sift_saved = (1 - sift['staged_steps'][i] / sift['baseline_steps'][i]) * 100
-    gist_saved = (1 - gist['staged_steps'][i] / gist['baseline_steps'][i]) * 100
-    sift_loss = (sift['baseline_recall'][i] - sift['staged_recall'][i]) * 100
-    gist_loss = (gist['baseline_recall'][i] - gist['staged_recall'][i]) * 100
-
-    ax.scatter(sift_saved, sift_loss, s=100, color='#1565C0', marker='o', zorder=5)
-    ax.annotate(f'SIFT L={l}', (sift_saved + 0.5, sift_loss), fontsize=8, color='#1565C0')
-    ax.scatter(gist_saved, gist_loss, s=100, color='#BF360C', marker='s', zorder=5)
-    ax.annotate(f'GIST L={l}', (gist_saved + 0.5, gist_loss), fontsize=8, color='#BF360C')
+for name, title in present:
+    d = data[name]
+    _, c_st = color_pairs.get(name, (PALETTE['grey'], PALETTE['blue']))
+    marker = 'o' if name == 'sift' else 's'
+    for j, l in enumerate(L_values):
+        saved_pct = (1 - d['staged']['steps'][j] / d['no_early_exit']['steps'][j]) * 100
+        recall_loss_pp = (d['no_early_exit']['recall'][j] - d['staged']['recall'][j]) * 100
+        ax.scatter(saved_pct, recall_loss_pp, s=110, color=c_st, marker=marker,
+                   zorder=5, edgecolor='white', linewidth=1.5)
+        ax.annotate(f'{title} L={l}', (saved_pct + 0.5, recall_loss_pp),
+                    fontsize=9, color=c_st)
 
 ax.set_xlabel('Steps Saved (%)')
-ax.set_ylabel('Recall Loss (percentage points)')
+ax.set_ylabel('Recall Loss (pp)')
 ax.set_title('Early Exit Trade-off: Savings vs Recall', fontweight='bold')
-ax.grid(True, alpha=0.3)
-ax.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+ax.axhline(y=0, color='#ccc', linestyle='--', alpha=0.5)
+style_ax(ax)
 
 plt.tight_layout()
 out = 'visualizations/diagnostics.png'
-plt.savefig(out, dpi=150, bbox_inches='tight')
+fig.savefig(out, dpi=150, bbox_inches='tight', facecolor='white')
 print(f'Saved {out}')
