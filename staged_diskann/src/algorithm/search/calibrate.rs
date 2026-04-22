@@ -47,6 +47,10 @@ where
         let max_steps = search_list_size * 4;
         let mut pos_admit_count = vec![0u64; max_steps];
         let mut pos_total_count = vec![0u64; max_steps];
+        // Per-hop admit counts across ALL queries × hops. Used to derive
+        // the batch_merge-vs-per-insert admit threshold from the actual
+        // distribution (bugfix: previous `admitted: bool` only counted
+        // whether any admission happened, losing the per-hop count).
         let mut useful_gaps: Vec<usize> = Vec::new();
         let mut tail_gaps: Vec<usize> = Vec::new();
 
@@ -54,7 +58,6 @@ where
             let aligned = AlignedQuery(*query);
             let query_vertex = Vertex::new(&aligned.0, 0);
             scratch.prepare_for_query(search_list_size);
-            scratch.ensure_capacity(graph.num_nodes());
 
             scratch.seen.insert(entry);
             let entry_dist = {
@@ -282,7 +285,6 @@ where
             let aligned = AlignedQuery(*query);
             let query_vertex = Vertex::new(&aligned.0, 0);
             scratch.prepare_for_query(search_list_size);
-            scratch.ensure_capacity(graph.num_nodes());
 
             scratch.seen.insert(entry);
             let entry_dist = {
@@ -415,7 +417,6 @@ where
                 let aligned = AlignedQuery(*query);
                 let query_vertex = Vertex::new(&aligned.0, 0);
                 scratch.prepare_for_query(search_list_size);
-                scratch.ensure_capacity(graph.num_nodes());
 
                 scratch.seen.insert(entry);
                 let entry_dist = {

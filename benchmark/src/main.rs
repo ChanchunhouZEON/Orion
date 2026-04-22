@@ -372,6 +372,9 @@ fn main() {
             "qps-recall-sweep" => {
                 run_qps_recall_sweep(&dataset, args.k);
             }
+            "staged-parlayann-sweep" => {
+                run_staged_parlayann_sweep(&dataset, args.k);
+            }
             "cliff-profile" => {
                 run_cliff_profile(&dataset);
             }
@@ -386,6 +389,9 @@ fn main() {
             }
             "ablation" => {
                 run_ablation(&dataset, args.k);
+            }
+            "ads-comparison" => {
+                run_ads_comparison(&dataset, args.k);
             }
             other => {
                 log::warn!("Unknown algorithm: {other}");
@@ -1397,7 +1403,9 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
-    let flat_base = dataset.base_flat();
+    // Note: `flat_base` is loaded per-build-block below via `dataset.base_flat()`
+    // (which returns a fresh owned Vec) and explicitly dropped before the sweep
+    // phase so only one dataset copy is resident at a time (critical for GIST full).
 
     // Load config.
     #[derive(serde::Deserialize)]
@@ -1495,14 +1503,48 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
             }).collect();
 
             let max_l = *search_list_sizes.last().unwrap();
-            println!("Building DiskANN ({}-dim, R={}, α={}, build_L={})...", $N, da_degree, da_alpha, da_build_l);
+
+            // Helper: sweep a DiskANN runner across all search_list_sizes.
+            let sweep_diskann = |runner: &mut crate::runner::DiskANNRunner, label: &str| -> Vec<(f64, f64)> {
+                println!("\n{label}:");
+                let mut data = Vec::new();
+                for &sls in search_list_sizes {
+                    runner.set_search_list_size(sls);
+                    let mut qps_samples = Vec::with_capacity(trials);
+                    let mut recall = 0.0f64;
+                    for _ in 0..trials {
+                        let t = Instant::now();
+                        let results: Vec<crate::runner::common::SearchResult> = pool.install(|| {
+                            dataset.queries.par_iter().map(|q| runner.search(q, k)).collect()
+                        });
+                        let wall = t.elapsed();
+                        qps_samples.push(dataset.queries.len() as f64 / wall.as_secs_f64());
+                        let ids: Vec<Vec<u32>> = results.into_iter().map(|r| r.neighbors).collect();
+                        recall = metrics::recall::mean_recall(&ids, &dataset.ground_truth, k);
+                    }
+                    qps_samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    let qps = qps_samples[trials / 2];
+                    data.push((recall, qps));
+                    println!("  L={sls:>4}  R@10={recall:.4}  QPS={qps:.0}");
+                }
+                data
+            };
+
+            println!("\n═══ QPS vs Recall@10: {} ({num_points} pts, {num_threads} threads, k={k}) ═══", $dim_name);
+
+            // ── DiskANN(α=2.0): build → sweep → drop ──
+            let da_cache_path = crate::runner::cache::diskann_path(
+                $dim_name, num_points, da_degree, da_build_l, da_alpha,
+            );
+            println!("\nBuilding DiskANN ({}-dim, R={}, α={}, build_L={})...", $N, da_degree, da_alpha, da_build_l);
             let mut diskann_runner = crate::runner::DiskANNRunner::new(da_build_l, da_degree, da_alpha);
-            diskann_runner.build(&flat_base, num_points, dimension);
-            // Pre-expand scratch on ALL threads to avoid runtime resize.
+            diskann_runner.set_cache_path(&da_cache_path);
+            {
+                let flat_base = dataset.base_flat();
+                diskann_runner.build(&flat_base, num_points, dimension);
+            } // flat_base dropped here; index retains its own internal dataset.
             if max_l > da_build_l {
                 diskann_runner.set_search_list_size(max_l);
-                // DiskANN creates 5+num_threads scratch objects; send enough
-                // queries to ensure every scratch is expanded.
                 let warmup_queries: Vec<Vec<f32>> = (0..num_threads * 4 + 20)
                     .map(|_| vec![0.0f32; dimension])
                     .collect();
@@ -1512,22 +1554,78 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
                     });
                 });
             }
-            println!("  DiskANN built.");
+            let diskann_data = sweep_diskann(&mut diskann_runner, "DiskANN (α=2.0)");
+            drop(diskann_runner);
 
-            // ── StagedDiskANN: R=32, alpha=1.2 (more remote shortcuts) ──
-            println!("Building StagedDiskANN ({}-dim, R={}, α={})...", $N, st_degree, staged_alpha);
-            let st_result = build_diskann_index(
-                &flat_base, num_points, dimension, staged_alpha, st_degree, staged_build_l as u32,
-                false, None, None, true, st_max_extra,
-            ).expect("build failed");
-            let st_entry = st_result.entry_point;
-            drop(st_result.index);
-            let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut staged_idx = StagedDiskANN::<$N>::new(
-                empty_ds, &st_result.partitions, st_entry,
-                st_degree, st_max_extra, None, None, None, false,
+            // ── DiskANN-matched (same α as Staged): build → sweep → drop ──
+            let dam_cache_path = crate::runner::cache::diskann_path(
+                $dim_name, num_points, st_degree, staged_build_l, staged_alpha,
             );
-            staged_idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+            println!("\nBuilding DiskANN-matched ({}-dim, R={}, α={}, build_L={})...",
+                $N, st_degree, staged_alpha, staged_build_l);
+            let mut diskann_matched_runner = crate::runner::DiskANNRunner::new(
+                staged_build_l, st_degree, staged_alpha,
+            );
+            diskann_matched_runner.set_cache_path(&dam_cache_path);
+            {
+                let flat_base = dataset.base_flat();
+                diskann_matched_runner.build(&flat_base, num_points, dimension);
+            } // flat_base dropped.
+            if max_l > staged_build_l {
+                diskann_matched_runner.set_search_list_size(max_l);
+                let warmup_queries: Vec<Vec<f32>> = (0..num_threads * 4 + 20)
+                    .map(|_| vec![0.0f32; dimension])
+                    .collect();
+                pool.install(|| {
+                    warmup_queries.par_iter().for_each(|q| {
+                        let _ = diskann_matched_runner.search(q, k);
+                    });
+                });
+            }
+            let diskann_matched_data = sweep_diskann(
+                &mut diskann_matched_runner,
+                &format!("DiskANN (α={}, R={}) [α matches Staged]", staged_alpha, st_degree),
+            );
+            drop(diskann_matched_runner);
+
+            // ── StagedDiskANN: build/load → calibrate → sweep → drop ──
+            let cache_path = crate::runner::cache::staged_path(
+                $dim_name, num_points, st_degree, staged_build_l, staged_alpha, st_max_extra,
+            );
+            let pgraph_path = cache_path.with_extension("pgraph");
+
+            let staged_idx = if cache_path.exists() && pgraph_path.exists() {
+                println!("\nLoading cached PhasedGraph from {:?}", pgraph_path);
+                let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                let mut idx = StagedDiskANN::<$N>::load_from_cache(&cache_path, empty_ds)
+                    .expect("load_from_cache failed");
+                {
+                    let flat_base = dataset.base_flat();
+                    idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                } // flat_base dropped.
+                idx
+            } else {
+                println!("\nBuilding StagedDiskANN ({}-dim, R={}, α={})...", $N, st_degree, staged_alpha);
+                let flat_base = dataset.base_flat();
+                let st_result = build_diskann_index(
+                    &flat_base, num_points, dimension, staged_alpha, st_degree, staged_build_l as u32,
+                    false, None, None, true, st_max_extra,
+                ).expect("build failed");
+                let st_entry = st_result.entry_point;
+                drop(st_result.index);
+                let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                let mut idx = StagedDiskANN::<$N>::new(
+                    empty_ds, &st_result.partitions, st_entry,
+                    st_degree, st_max_extra, None, None, Some(cache_path.clone()), true,
+                );
+                idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                drop(flat_base);
+                println!("Saved PhasedGraph cache to {:?}", pgraph_path);
+                idx
+            };
+            // Eagerly build/load the u8 quantized dataset now (outside the
+            // measured sweep) and persist to `.qds` on first-build.
+            let _ = staged_idx.ensure_quantized_dataset();
 
             let measure_staged = |run: &(dyn Fn() -> Vec<Vec<u32>> + Sync)| -> (f64, f64) {
                 let mut qps_samples = Vec::with_capacity(trials);
@@ -1543,46 +1641,15 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
                 (recall, qps_samples[trials / 2])
             };
 
-            let staged_graph_mb = (staged_idx.graph.stride() * staged_idx.graph.num_nodes() * 4) as f64 / 1_048_576.0;
-            println!("\n  Memory: DiskANN(R={}, α={}) ≈ {:.1} MB",
-                da_degree, da_alpha, num_points as f64 * da_degree as f64 * 4.0 / 1_048_576.0);
-            println!("  Memory: StagedDiskANN(R={}, α={}) PhasedGraph = {:.1} MB",
-                st_degree, staged_alpha, staged_graph_mb);
-
-            println!("\n═══ QPS vs Recall@10: {} ({num_points} pts, {num_threads} threads, k={k}) ═══\n", $dim_name);
-
-            // DiskANN(R=32): sweep L via native runner.
-            println!("DiskANN (R=32):");
-            let mut diskann_data: Vec<(f64, f64)> = Vec::new();
-            for &sls in search_list_sizes {
-                diskann_runner.set_search_list_size(sls);
-                let mut qps_samples = Vec::with_capacity(trials);
-                let mut recall = 0.0f64;
-                for _ in 0..trials {
-                    let t = Instant::now();
-                    let results: Vec<crate::runner::common::SearchResult> = pool.install(|| {
-                        dataset.queries.par_iter().map(|q| diskann_runner.search(q, k)).collect()
-                    });
-                    let wall = t.elapsed();
-                    qps_samples.push(dataset.queries.len() as f64 / wall.as_secs_f64());
-                    let ids: Vec<Vec<u32>> = results.into_iter().map(|r| r.neighbors).collect();
-                    recall = metrics::recall::mean_recall(&ids, &dataset.ground_truth, k);
-                }
-                qps_samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                let qps = qps_samples[trials / 2];
-                diskann_data.push((recall, qps));
-                println!("  L={sls:>4}  R@10={recall:.4}  QPS={qps:.0}");
-            }
-
             // Auto-calibrate convergence params from warmup queries.
-            let calib_sample: Vec<[f32; $N]> = queries[..queries.len().min(200)].to_vec();
+            let calib_sample: Vec<[f32; $N]> = queries[..queries.len().min(500)].to_vec();
             let calib = staged_idx.calibrate(&calib_sample, 48, staged_ws)
                 .expect("calibrate failed");
             let cal_thr = calib.threshold;
             let cal_ee = calib.early_exit_limit;
             println!("\nCalibrated: threshold={:.2}, early_exit_limit={}", cal_thr, cal_ee);
 
-            println!("StagedDiskANN (R={}, α={}, ws={staged_ws}, thr={cal_thr:.2}, ee={cal_ee}):",
+            println!("\nStagedDiskANN (R={}, α={}, ws={staged_ws}, thr={cal_thr:.2}, ee={cal_ee}):",
                 st_degree, staged_alpha);
             let mut staged_data: Vec<(f64, f64)> = Vec::new();
             for &sls in search_list_sizes {
@@ -1592,14 +1659,16 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
                 staged_data.push((recall, qps));
                 println!("  L={sls:>4}  R@10={recall:.4}  QPS={qps:.0}");
             }
+            drop(staged_idx);
 
             // Write JSON
             let json_path = format!("visualizations/qps_recall_{}.json", $dim_name);
             std::fs::create_dir_all("visualizations").ok();
             let json = format!(
-                "{{\n  \"dataset\": \"{}\",\n  \"dimension\": {},\n  \"num_points\": {},\n  \"threads\": {},\n  \"diskann\": [{}],\n  \"staged\": [{}]\n}}",
-                $dim_name, $N, num_points, num_threads,
+                "{{\n  \"dataset\": \"{}\",\n  \"dimension\": {},\n  \"num_points\": {},\n  \"threads\": {},\n  \"staged_alpha\": {},\n  \"diskann\": [{}],\n  \"diskann_matched\": [{}],\n  \"staged\": [{}]\n}}",
+                $dim_name, $N, num_points, num_threads, staged_alpha,
                 diskann_data.iter().map(|(r, q)| format!("[{:.4}, {:.0}]", r, q)).collect::<Vec<_>>().join(", "),
+                diskann_matched_data.iter().map(|(r, q)| format!("[{:.4}, {:.0}]", r, q)).collect::<Vec<_>>().join(", "),
                 staged_data.iter().map(|(r, q)| format!("[{:.4}, {:.0}]", r, q)).collect::<Vec<_>>().join(", "),
             );
             std::fs::write(&json_path, &json).expect("write json");
@@ -1614,6 +1683,353 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
         DIM_960 => run_sweep!(960, "gist"),
         _ => panic!("Unsupported dimension: {dimension}"),
     }
+}
+
+/// Staged-only sweep on a ParlayANN-built graph. Requires the env var
+/// `PARLAYANN_STAGED_FILE` to point to a `.staged` v2 file produced by
+/// ParlayANN's `neighbors -staged_outfile`. Emits
+/// `visualizations/staged_parlayann_{dim_name}.json` — directly comparable
+/// to ParlayANN's own search curves on the same graph.
+fn run_staged_parlayann_sweep(dataset: &Dataset, k: usize) {
+    use rayon::prelude::*;
+    use staged_diskann::{StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
+    use std::time::Instant;
+
+    let staged_file = std::env::var("PARLAYANN_STAGED_FILE")
+        .expect("PARLAYANN_STAGED_FILE must be set for staged-parlayann-sweep");
+
+    let num_points = dataset.num_base();
+    let dimension = dataset.dimension;
+
+    // Reuse the same sweep config as qps-recall-sweep for apples-to-apples.
+    #[derive(serde::Deserialize)]
+    struct SweepConfig { defaults: Defaults, datasets: std::collections::HashMap<String, DS> }
+    #[derive(serde::Deserialize)]
+    struct Defaults { staged: Staged, sweep: Sweep }
+    #[derive(serde::Deserialize)]
+    struct Staged { alpha: f32, graph_degree: u32, build_search_list_size: usize,
+                    max_extra: usize, window_size: usize }
+    #[derive(serde::Deserialize)]
+    struct Sweep { search_list_sizes: Vec<usize>, threads: usize, trials: usize }
+    #[derive(serde::Deserialize, Default, Clone)]
+    struct DS { staged: Option<Override> }
+    #[derive(serde::Deserialize, Default, Clone)]
+    struct Override { alpha: Option<f32>, build_search_list_size: Option<usize> }
+
+    let cfg: SweepConfig = serde_yaml::from_str(
+        &std::fs::read_to_string("benchmark/configs/sweep.yaml")
+            .expect("cannot read benchmark/configs/sweep.yaml"),
+    ).expect("invalid sweep.yaml");
+
+    let dim_name = match dimension {
+        32 => "glove25", 100 => "glove100", 128 => "sift", 960 => "gist",
+        _ => "unknown"
+    };
+    let ds_cfg = cfg.datasets.get(dim_name).cloned().unwrap_or_default();
+    let staged_alpha = ds_cfg.staged.as_ref().and_then(|s| s.alpha)
+        .unwrap_or(cfg.defaults.staged.alpha);
+    let staged_build_l = ds_cfg.staged.as_ref().and_then(|s| s.build_search_list_size)
+        .unwrap_or(cfg.defaults.staged.build_search_list_size);
+    let num_threads = cfg.defaults.sweep.threads;
+    let trials = cfg.defaults.sweep.trials;
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(num_threads).build().unwrap();
+    let search_list_sizes = &cfg.defaults.sweep.search_list_sizes;
+    let staged_ws = cfg.defaults.staged.window_size;
+    let st_degree = cfg.defaults.staged.graph_degree;
+    let st_max_extra = cfg.defaults.staged.max_extra;
+
+    let flat_base = dataset.base_flat();
+
+    macro_rules! run_sweep {
+        ($N:literal, $dim_name:expr) => {{
+            let queries: Vec<[f32; $N]> = dataset.queries.iter().map(|q| {
+                let mut a = [0f32; $N];
+                a.copy_from_slice(&q[..$N]);
+                a
+            }).collect();
+
+            // Cache: key on the staged file name + params so multiple ParlayANN
+            // outputs don't collide.
+            let stub = std::path::Path::new(&staged_file)
+                .file_stem().unwrap().to_string_lossy().to_string();
+            let cache_dir = std::path::PathBuf::from("cache/staged_parlayann");
+            std::fs::create_dir_all(&cache_dir).ok();
+            let alpha_tag = format!("{:.2}", staged_alpha).replace('.', "_");
+            let cache_path = cache_dir.join(format!(
+                "{}_{}_n{}_r{}_l{}_a{}_ex{}.bin",
+                $dim_name, stub, num_points, st_degree, staged_build_l, alpha_tag, st_max_extra
+            ));
+            let pgraph_path = cache_path.with_extension("pgraph");
+
+            let staged_idx = if cache_path.exists() && pgraph_path.exists() {
+                println!("Loading cached ParlayANN PhasedGraph from {:?}", pgraph_path);
+                let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                let mut idx = StagedDiskANN::<$N>::load_from_cache(&cache_path, empty_ds)
+                    .expect("load_from_cache failed");
+                idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                idx
+            } else {
+                println!("Loading ParlayANN staged export from {}", staged_file);
+                let input = crate::runner::parlayann_bridge::load_from_staged_file(
+                    &staged_file, &flat_base, dimension,
+                ).expect("parlayann_bridge load failed");
+                let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                let mut idx = StagedDiskANN::<$N>::new(
+                    empty_ds, &input.partitions, input.entry_point,
+                    st_degree, st_max_extra, None, None, Some(cache_path.clone()), true,
+                );
+                idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                println!("Saved cache to {:?}", pgraph_path);
+                idx
+            };
+            // Eagerly build/load the u8 quantized dataset now (outside the
+            // measured sweep) and persist to `.qds` on first-build.
+            let _ = staged_idx.ensure_quantized_dataset();
+
+            // Calibrate with warmup queries.
+            let calib_sample: Vec<[f32; $N]> = queries[..queries.len().min(500)].to_vec();
+            let calib = staged_idx.calibrate(&calib_sample, 48, staged_ws)
+                .expect("calibrate failed");
+            let cal_thr = calib.threshold;
+            let cal_ee = calib.early_exit_limit;
+            println!("Calibrated: threshold={:.2}, early_exit_limit={}", cal_thr, cal_ee);
+
+            println!("\n═══ Staged on ParlayANN graph (unchecked) — {} ({num_points} pts, {num_threads}T, k={k}) ═══",
+                     $dim_name);
+            let mut staged_data: Vec<(f64, f64)> = Vec::new();
+            for &sls in search_list_sizes {
+                let mut qps_samples = Vec::with_capacity(trials);
+                let mut recall = 0.0f64;
+                for _ in 0..trials {
+                    let t = Instant::now();
+                    let results = pool.install(|| {
+                        staged_idx.search_batch(&queries, k, sls, staged_ws, cal_thr, cal_ee)
+                            .unwrap()
+                    });
+                    let wall = t.elapsed();
+                    qps_samples.push(queries.len() as f64 / wall.as_secs_f64());
+                    recall = metrics::recall::mean_recall(&results, &dataset.ground_truth, k);
+                }
+                qps_samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let qps = qps_samples[trials / 2];
+                staged_data.push((recall, qps));
+                println!("  L={sls:>4}  R@10={recall:.4}  QPS={qps:.0}");
+            }
+
+            let out = format!("visualizations/staged_parlayann_{}.json", $dim_name);
+            std::fs::create_dir_all("visualizations").ok();
+            let json = format!(
+                "{{\n  \"dataset\": \"{}\",\n  \"dimension\": {},\n  \"num_points\": {},\n  \"threads\": {},\n  \"staged_alpha\": {},\n  \"source_staged_file\": \"{}\",\n  \"staged_on_parlayann\": [{}]\n}}",
+                $dim_name, $N, num_points, num_threads, staged_alpha, staged_file,
+                staged_data.iter().map(|(r, q)| format!("[{:.4}, {:.0}]", r, q))
+                    .collect::<Vec<_>>().join(", "),
+            );
+            std::fs::write(&out, &json).expect("write json");
+            println!("Saved to {out}");
+        }};
+    }
+
+    match dimension {
+        DIM_32 => run_sweep!(32, "glove25"),
+        DIM_100 => run_sweep!(100, "glove100"),
+        DIM_128 => run_sweep!(128, "sift"),
+        DIM_960 => run_sweep!(960, "gist"),
+        _ => panic!("Unsupported dimension: {dimension}"),
+    }
+}
+
+/// 4-way ADSampling comparison: {DiskANN, DiskANN+ADS, Staged, Staged+ADS} ×
+/// full QPS/Recall sweep on the current dataset. Emits
+/// `visualizations/ads_{dataset}.json` for plotting.
+fn run_ads_comparison(dataset: &Dataset, k: usize) {
+    use crate::runner::common::{AlgorithmRunner, SearchResult};
+    use crate::runner::{
+        DiskANNAdsRunner, DiskANNRunner, StagedDiskANNAdsRunner, StagedDiskANNRunner,
+    };
+    use rayon::prelude::*;
+    use std::time::Instant;
+
+    let num_points = dataset.num_base();
+    let dimension = dataset.dimension;
+    let flat_base = dataset.base_flat();
+
+    // Config for graph degree / α / sweep L values — match run_qps_recall_sweep so
+    // numbers are directly comparable across benchmarks.
+    let config_path = "benchmark/configs/sweep.yaml";
+    let cfg: serde_yaml::Value = serde_yaml::from_str(
+        &std::fs::read_to_string(config_path)
+            .unwrap_or_else(|_| panic!("Cannot read {config_path}")),
+    )
+    .expect("Invalid sweep config YAML");
+    let defaults = &cfg["defaults"];
+    let da_alpha = defaults["diskann"]["alpha"].as_f64().unwrap_or(2.0) as f32;
+    let da_degree = defaults["diskann"]["graph_degree"].as_u64().unwrap_or(32) as u32;
+    let da_build_l = defaults["diskann"]["build_search_list_size"]
+        .as_u64()
+        .unwrap_or(128) as usize;
+    let staged_alpha_default = defaults["staged"]["alpha"].as_f64().unwrap_or(1.2) as f32;
+    let st_degree = defaults["staged"]["graph_degree"].as_u64().unwrap_or(32) as usize;
+    let st_max_extra = defaults["staged"]["max_extra"].as_u64().unwrap_or(16) as usize;
+    let staged_build_l = defaults["staged"]["build_search_list_size"]
+        .as_u64()
+        .unwrap_or(128) as usize;
+    let staged_ws = defaults["staged"]["window_size"].as_u64().unwrap_or(5) as usize;
+    let search_list_sizes: Vec<usize> = defaults["sweep"]["search_list_sizes"]
+        .as_sequence()
+        .map(|s| {
+            s.iter()
+                .map(|v| v.as_u64().unwrap() as usize)
+                .collect()
+        })
+        .unwrap_or_else(|| vec![16, 24, 32, 48, 64, 96, 128, 192, 256]);
+    let num_threads = defaults["sweep"]["threads"].as_u64().unwrap_or(8) as usize;
+    let trials = defaults["sweep"]["trials"].as_u64().unwrap_or(3) as usize;
+
+    // Per-dataset α override for staged (matches run_qps_recall_sweep).
+    let dim_name = match dimension {
+        32 => "glove25",
+        100 => "glove100",
+        128 => "sift",
+        960 => "gist",
+        _ => "unknown",
+    };
+    let staged_alpha = cfg["datasets"][dim_name]["staged"]["alpha"]
+        .as_f64()
+        .map(|v| v as f32)
+        .unwrap_or(staged_alpha_default);
+
+    // ADSampling ε: higher = tighter confidence, less speedup but safer.
+    let ads_epsilon = 2.1_f32;
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .expect("thread pool");
+
+    println!(
+        "\n═══ ADSampling 4-way ({dim_name}, {num_points} pts, {num_threads}T, k={k}, ε_ads={ads_epsilon}) ═══\n"
+    );
+
+    // Build the 4 runners. Each holds its own index — rotation is isolated per variant.
+    println!("Building DiskANN (α={da_alpha}, R={da_degree})...");
+    let mut da_runner = DiskANNRunner::new(da_build_l, da_degree, da_alpha);
+    da_runner.build(&flat_base, num_points, dimension);
+
+    println!("Building DiskANN+ADS (α={da_alpha}, R={da_degree})...");
+    let mut da_ads_runner = DiskANNAdsRunner::new(da_build_l, da_degree, da_alpha, ads_epsilon);
+    da_ads_runner.build(&flat_base, num_points, dimension);
+
+    println!("Building Staged (α={staged_alpha}, R={st_degree}, extra={st_max_extra})...");
+    let mut st_runner = StagedDiskANNRunner::new(
+        "Staged",
+        staged_alpha,
+        st_degree,
+        staged_build_l,
+        st_max_extra,
+        staged_ws,
+    );
+    st_runner.build(&flat_base, num_points, dimension);
+
+    println!("Building Staged+ADS (α={staged_alpha}, R={st_degree}, extra={st_max_extra})...");
+    let mut st_ads_runner = StagedDiskANNAdsRunner::new(
+        "Staged+ADS",
+        staged_alpha,
+        st_degree,
+        staged_build_l,
+        st_max_extra,
+        staged_ws,
+        ads_epsilon,
+    );
+    st_ads_runner.build(&flat_base, num_points, dimension);
+
+    // Sweep helper: swap L on the runner, run batch search `trials` times, take median QPS.
+    let sweep_runner = |runner: &mut dyn RunnerWithL, label: &str| -> Vec<(f64, f64)> {
+        println!("\n{label}:");
+        let mut rows: Vec<(f64, f64)> = Vec::new();
+        for &sls in &search_list_sizes {
+            runner.set_l(sls);
+            let mut qps_samples = Vec::with_capacity(trials);
+            let mut recall = 0.0f64;
+            for _ in 0..trials {
+                let t = Instant::now();
+                let results: Vec<SearchResult> = pool.install(|| {
+                    dataset
+                        .queries
+                        .par_iter()
+                        .map(|q| runner.search_ref().search(q, k))
+                        .collect()
+                });
+                let wall = t.elapsed();
+                qps_samples.push(dataset.queries.len() as f64 / wall.as_secs_f64());
+                let ids: Vec<Vec<u32>> = results.into_iter().map(|r| r.neighbors).collect();
+                recall = metrics::recall::mean_recall(&ids, &dataset.ground_truth, k);
+            }
+            qps_samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let qps = qps_samples[trials / 2];
+            rows.push((recall, qps));
+            println!("  L={sls:>4}  R@10={recall:.4}  QPS={qps:.0}");
+        }
+        rows
+    };
+
+    // Trait-object shim so the sweep helper can accept heterogeneous runners.
+    trait RunnerWithL: Sync {
+        fn set_l(&mut self, sls: usize);
+        fn search_ref(&self) -> &dyn AlgorithmRunner;
+    }
+    impl RunnerWithL for DiskANNRunner {
+        fn set_l(&mut self, sls: usize) {
+            self.set_search_list_size(sls);
+        }
+        fn search_ref(&self) -> &dyn AlgorithmRunner {
+            self
+        }
+    }
+    impl RunnerWithL for DiskANNAdsRunner {
+        fn set_l(&mut self, sls: usize) {
+            self.set_search_list_size(sls);
+        }
+        fn search_ref(&self) -> &dyn AlgorithmRunner {
+            self
+        }
+    }
+    impl RunnerWithL for StagedDiskANNRunner {
+        fn set_l(&mut self, sls: usize) {
+            self.set_search_list_size(sls);
+        }
+        fn search_ref(&self) -> &dyn AlgorithmRunner {
+            self
+        }
+    }
+    impl RunnerWithL for StagedDiskANNAdsRunner {
+        fn set_l(&mut self, sls: usize) {
+            self.set_search_list_size(sls);
+        }
+        fn search_ref(&self) -> &dyn AlgorithmRunner {
+            self
+        }
+    }
+
+    let da_rows = sweep_runner(&mut da_runner, "DiskANN");
+    let da_ads_rows = sweep_runner(&mut da_ads_runner, "DiskANN+ADS");
+    let st_rows = sweep_runner(&mut st_runner, "Staged");
+    let st_ads_rows = sweep_runner(&mut st_ads_runner, "Staged+ADS");
+
+    // Emit JSON for the plot script.
+    let json_path = format!("visualizations/ads_{dim_name}.json");
+    std::fs::create_dir_all("visualizations").ok();
+    let fmt = |rows: &[(f64, f64)]| {
+        rows.iter()
+            .map(|(r, q)| format!("[{:.4}, {:.0}]", r, q))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let json = format!(
+        "{{\n  \"dataset\": \"{dim_name}\",\n  \"dimension\": {dimension},\n  \"num_points\": {num_points},\n  \"threads\": {num_threads},\n  \"ads_epsilon\": {ads_epsilon},\n  \"diskann\": [{}],\n  \"diskann_ads\": [{}],\n  \"staged\": [{}],\n  \"staged_ads\": [{}]\n}}",
+        fmt(&da_rows), fmt(&da_ads_rows), fmt(&st_rows), fmt(&st_ads_rows),
+    );
+    std::fs::write(&json_path, &json).expect("write json");
+    println!("\nSaved to {json_path}");
 }
 
 fn run_cliff_profile(dataset: &Dataset) {

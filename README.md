@@ -98,6 +98,26 @@ After convergence, the priority queue often contains many unvisited candidates t
 
 This is especially effective for high-dimensional data (e.g., GIST-960) where distance computation dominates runtime — early exit directly reduces the number of expensive distance calls rather than just the number of neighbors per step.
 
+### Search Path — ParlayANN-style Pipeline
+
+`search` runs a two-stage distance pipeline on top of the PhasedGraph. The design is tuned for the 100M-range SIFT1M workload where vector addresses are essentially random offsets into `base_flat` — the hardware stream prefetcher cannot predict scattered neighbor IDs, so the entire cost of hiding DRAM latency has to be paid by the SW prefetch pipeline.
+
+- **`PF_BATCH = 8` lookahead.** Both the u8 pre-filter and full-precision compare loops issue one SW prefetch per iteration for the vector 8 iterations ahead, giving ~160 ns of compute runway to hide L3 / partial-DRAM misses. Shorter lookahead (PF=4) left too little runway; deeper prefetch frequency reductions (e.g. every-other-iter) missed half the cache fills because HW can't cover scattered-address gaps.
+- **Branch-free stage-2 admission.** Writes every computed distance into `dist_buffer` and advances the write pointer conditionally (`w += (dist < pq_worst) as usize`). Eliminates the mid-L branch-mispredict cost where the admission coin-flip is roughly 50/50.
+- **Unified flush cadence.** A single counter drives `flush_interval = 1 + 3 * (converged as usize)`: flush every hop in the navigation phase, every 4 hops in the rerank phase. Cross-hop accumulation amortizes sort+merge cost while keeping `pq_worst` fresh enough for `early_exit` to fire promptly at high L.
+- **3-way merge routing** derived empirically from a `pq_merge_bench` sweep of per-insert vs gallop-merge vs linear-merge at each (L, K):
+  - `K < L / 12` → per-element `pq.insert` (cache-friendly at small K)
+  - `L / 12 ≤ K ≤ L / 2` → `pq.batch_merge_gallop` (log-factor wins via `partition_point` on a shrinking suffix)
+  - `K > L / 2` → linear `pq.batch_merge` (bulk rewrite via `mem::swap`)
+- **`batch_merge` + `mem::swap` ending.** The merged sequence is built in a caller-owned scratch Vec and installed in-place by swapping buffer pointers, skipping a final copy-back memcpy.
+- **`batch_merge_gallop`.** Galloping binary-search merge using `partition_point` on `self.data[src_pos..size]`, bulk-copying runs of existing entries between insertion points and installing via `mem::swap`.
+
+The `pq_merge_bench` binary (`cargo run --release --bin pq_merge_bench`) sweeps `L × K` with random distances to report per-cell winners, so the two crossover boundaries above replace what used to be a hand-tuned `BATCH_MERGE_THRESHOLD` magic number.
+
+![StagedDiskANN vs ParlayANN — SIFT1M](visualizations/qps_recall_sift_vs_parlayann.png)
+
+Measured against ParlayANN Vamana on the **same ParlayANN-built base graph** (loaded via `PARLAYANN_STAGED_FILE` + the `parlayann_bridge` loader), averaged geometrically over two back-to-back runs with alternating execution order (PA-first, then Staged-first with a 20 s cooldown) to cancel per-session thermal bias. Across the productive QPS-recall band (R = 0.91 – 0.998), StagedDiskANN runs **+6 % to +26 %** faster than ParlayANN, with the largest wins (+20 % to +26 %) in the mid-L region R ∈ [0.98, 0.997]. Only the R ≥ 0.9991 tail is a regression (−9 %), where the extras-heavy rerank phase hits diminishing returns.
+
 ## Configuration
 
 StagedDiskANN uses a lower alpha than DiskANN to produce more diverse graph edges (more remote shortcuts for navigation, more pruned candidates for reranking):
