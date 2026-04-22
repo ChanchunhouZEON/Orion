@@ -5,6 +5,7 @@
 
 use crate::model::FixedChunkPQTable;
 use crate::model::PhasedGraph;
+use crate::model::QuantizedDataset;
 use crate::model::scratch::InMemScratchPool;
 use diskann::model::InmemDataset;
 use std::fs::{self, File};
@@ -44,6 +45,11 @@ where
     /// Pool of pre-allocated scratch spaces for in-memory search.
     /// Lazily initialized on first call to `search()`.
     pub(crate) inmem_scratch_pool: OnceLock<InMemScratchPool>,
+
+    /// U8-quantized copy of `dataset` for low-precision pre-filter during
+    /// `search` (ParlayANN-style). Built lazily on first access
+    /// via `ensure_quantized_dataset`.
+    pub(crate) q_dataset: OnceLock<QuantizedDataset<N>>,
 }
 
 impl<const N: usize> StagedDiskANN<N>
@@ -92,6 +98,7 @@ where
             compressed_graph_save_path,
             is_save,
             inmem_scratch_pool: OnceLock::new(),
+            q_dataset: OnceLock::new(),
         };
 
         if is_save {
@@ -124,7 +131,41 @@ where
             compressed_graph_save_path: PathBuf::from(""),
             is_save: false,
             inmem_scratch_pool: OnceLock::new(),
+            q_dataset: OnceLock::new(),
         }
+    }
+
+    /// Lazily obtain the u8 quantized dataset. Tries the sidecar `.qds`
+    /// file next to the cache path first (O(ms) memcpy); on miss, builds
+    /// from the f32 dataset (O(N × dim) scan + scale) and writes it back
+    /// so subsequent runs hit the fast path.
+    pub fn ensure_quantized_dataset(&self) -> &QuantizedDataset<N> {
+        self.q_dataset.get_or_init(|| {
+            let qds_path = self.compressed_graph_save_path.with_extension("qds");
+            if qds_path.exists() {
+                match QuantizedDataset::<N>::load(&qds_path) {
+                    Ok(qds) => {
+                        log::info!("QuantizedDataset loaded from {:?}", qds_path);
+                        return qds;
+                    }
+                    Err(e) => log::warn!("QuantizedDataset load failed ({e}), rebuilding"),
+                }
+            }
+            let t = Instant::now();
+            let qds = QuantizedDataset::from_f32_dataset(&self.dataset);
+            log::info!(
+                "QuantizedDataset built in {:.2}s",
+                t.elapsed().as_secs_f32()
+            );
+            if !self.compressed_graph_save_path.as_os_str().is_empty() {
+                if let Err(e) = qds.save(&qds_path) {
+                    log::warn!("QuantizedDataset save failed: {e}");
+                } else {
+                    log::info!("QuantizedDataset saved to {:?}", qds_path);
+                }
+            }
+            qds
+        })
     }
 
     /// Return per-node (degree, local_count) from the PhasedGraph.
@@ -137,8 +178,7 @@ where
 
     // --- IO ---
 
-    #[allow(dead_code)]
-    fn save<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
         let dir = path.as_ref().parent().unwrap_or(Path::new("."));
         fs::create_dir_all(dir)?;
 
@@ -158,23 +198,30 @@ where
         Ok(())
     }
 
-    #[allow(dead_code)]
-    fn load<P: AsRef<Path> + ?Sized>(&mut self, path: &P) -> anyhow::Result<()> {
+    /// Construct from cached PhasedGraph + metadata on disk.
+    /// `path` is the metadata `.bin` file; PhasedGraph is read from `path.with_extension("pgraph")`.
+    /// The returned instance has an empty `dataset` — caller must install it afterwards.
+    pub fn load_from_cache<P: AsRef<Path>>(
+        path: P,
+        dataset: InmemDataset<f32, N>,
+    ) -> anyhow::Result<Self> {
         let graph_path = path.as_ref().with_extension("pgraph");
         if !graph_path.exists() {
             anyhow::bail!("PhasedGraph file not found: {:?}", graph_path);
         }
-        self.graph = PhasedGraph::load(&graph_path)?;
+        let graph = PhasedGraph::load(&graph_path)?;
 
-        let file = File::open(path)?;
+        let file = File::open(&path)?;
         let mut reader = std::io::BufReader::new(file);
         let config = bincode::config::standard()
             .with_fixed_int_encoding()
             .with_little_endian();
         let meta: StagedDiskANNMeta = bincode::serde::decode_from_std_read(&mut reader, config)?;
-        self.entry = meta.entry;
-        self.num_nodes = self.graph.num_nodes();
-        Ok(())
+        let mut idx = Self::from_phased_graph(dataset, graph, meta.entry, None, None);
+        // Preserve the cache path so `ensure_quantized_dataset` can locate
+        // the `.qds` sidecar next to it (load fast path).
+        idx.compressed_graph_save_path = path.as_ref().to_path_buf();
+        Ok(idx)
     }
 }
 

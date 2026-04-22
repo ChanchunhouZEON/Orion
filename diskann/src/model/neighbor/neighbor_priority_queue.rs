@@ -62,11 +62,15 @@ impl NeighborPriorityQueue {
         if lo < self.capacity {
             self.data.copy_within(lo..self.size, lo + 1);
         }
-        self.data[lo] = Neighbor::new(nbr.id, nbr.distance);
+        // Preserve caller-set `visited` so pre-expanded buffer entries stay
+        // marked when inserted into the queue.
+        self.data[lo] = nbr;
         if self.size < self.capacity {
             self.size += 1;
         }
-        if lo < self.cur {
+        // Only rewind `cur` if the inserted element itself is not already
+        // visited — otherwise the cur should skip over it.
+        if lo < self.cur && !nbr.visited {
             self.cur = lo;
         }
     }
@@ -123,6 +127,189 @@ impl NeighborPriorityQueue {
     pub fn clear(&mut self) {
         self.size = 0;
         self.cur = 0;
+    }
+
+    /// ParlayANN-style linear set-union merge with `mem::swap` ending.
+    /// `sorted_cands` must be sorted by distance ascending. Streams both
+    /// inputs in one linear pass (cache-friendly at typical L), installs
+    /// the result via `mem::swap` instead of a copy-back memcpy.
+    ///
+    /// Preserves `visited` bits on dedup'd existing entries. Best when
+    /// `sorted_cands.len()` is comparable to `self.size` — for large L
+    /// or admits > 24 per hop.
+    pub fn batch_merge(&mut self, sorted_cands: &[Neighbor], scratch: &mut Vec<Neighbor>) {
+        if sorted_cands.is_empty() {
+            return;
+        }
+
+        if self.size == self.capacity {
+            let worst = &self.data[self.size - 1];
+            if !sorted_cands[0].lt(worst) {
+                return;
+            }
+        }
+
+        let cap = self.capacity;
+        let data_len = self.data.len();
+        scratch.clear();
+        scratch.reserve(data_len);
+
+        let mut i = 0usize;
+        let mut j = 0usize;
+        let mut new_cur: usize = usize::MAX;
+
+        while i < self.size && j < sorted_cands.len() && scratch.len() < cap {
+            let a = unsafe { *self.data.get_unchecked(i) };
+            let b = unsafe { *sorted_cands.get_unchecked(j) };
+            if a.id == b.id {
+                if !a.visited && new_cur == usize::MAX {
+                    new_cur = scratch.len();
+                }
+                scratch.push(a);
+                i += 1;
+                j += 1;
+            } else if a.lt(&b) {
+                if !a.visited && new_cur == usize::MAX {
+                    new_cur = scratch.len();
+                }
+                scratch.push(a);
+                i += 1;
+            } else {
+                if !b.visited && new_cur == usize::MAX {
+                    new_cur = scratch.len();
+                }
+                scratch.push(b);
+                j += 1;
+            }
+        }
+        while i < self.size && scratch.len() < cap {
+            let a = unsafe { *self.data.get_unchecked(i) };
+            if !a.visited && new_cur == usize::MAX {
+                new_cur = scratch.len();
+            }
+            scratch.push(a);
+            i += 1;
+        }
+        while j < sorted_cands.len() && scratch.len() < cap {
+            let b = unsafe { *sorted_cands.get_unchecked(j) };
+            if !b.visited && new_cur == usize::MAX {
+                new_cur = scratch.len();
+            }
+            scratch.push(b);
+            j += 1;
+        }
+
+        let new_len = scratch.len();
+        let target_len = data_len.max(cap + 1);
+        if scratch.len() < target_len {
+            scratch.resize(target_len, Neighbor::default());
+        }
+        std::mem::swap(&mut self.data, scratch);
+        self.size = new_len;
+        self.cur = if new_cur == usize::MAX { new_len } else { new_cur };
+    }
+
+    /// Galloping binary-search merge for the case where `sorted_cands`
+    /// accumulates across many hops with sparse admits (converged-phase
+    /// cross-hop batching). For each candidate, `partition_point` on the
+    /// shrinking suffix `self.data[src_pos..size]` gives a log-cost
+    /// insertion point; runs of existing entries between insertion points
+    /// are bulk-copied in one `extend_from_slice`. Final install via
+    /// `mem::swap`.
+    ///
+    /// Preserves `visited` bits; scratch may briefly exceed `cap` during
+    /// build — logical `self.size` is truncated at swap time.
+    pub fn batch_merge_gallop(&mut self, sorted_cands: &[Neighbor], scratch: &mut Vec<Neighbor>) {
+        if sorted_cands.is_empty() {
+            return;
+        }
+
+        // Fast path: PQ full and best cand not better than PQ's worst.
+        if self.size == self.capacity {
+            let worst = &self.data[self.size - 1];
+            if !sorted_cands[0].lt(worst) {
+                return;
+            }
+        }
+
+        let cap = self.capacity;
+        let data_len = self.data.len(); // ≥ cap + 1 by pq invariant
+        scratch.clear();
+        // Overallocate: scratch may briefly exceed cap during build (we
+        // truncate the logical size at the end). Upper bound is self.size +
+        // sorted_cands.len().
+        let build_cap_hint = self.size + sorted_cands.len();
+        scratch.reserve(build_cap_hint.max(data_len));
+
+        let mut src_pos: usize = 0;
+        let mut new_cur: usize = usize::MAX;
+
+        for b in sorted_cands.iter() {
+            // Binary search for insertion point of b in self.data[src_pos..size].
+            // Shrinking suffix gives gallop-like amortized cost.
+            let sub = &self.data[src_pos..self.size];
+            let local_pos = sub.partition_point(|x| x.lt(b));
+            let abs_pos = src_pos + local_pos;
+            let dedup = abs_pos < self.size && self.data[abs_pos].id == b.id;
+
+            // Bulk-copy self.data[src_pos..abs_pos] into scratch.
+            if abs_pos > src_pos {
+                let run = &self.data[src_pos..abs_pos];
+                if new_cur == usize::MAX {
+                    for (i, n) in run.iter().enumerate() {
+                        if !n.visited {
+                            new_cur = scratch.len() + i;
+                            break;
+                        }
+                    }
+                }
+                scratch.extend_from_slice(run);
+            }
+
+            // Emit b (or its dedup'd existing twin, preserving visited).
+            if dedup {
+                let existing = self.data[abs_pos];
+                if !existing.visited && new_cur == usize::MAX {
+                    new_cur = scratch.len();
+                }
+                scratch.push(existing);
+                src_pos = abs_pos + 1;
+            } else {
+                if !b.visited && new_cur == usize::MAX {
+                    new_cur = scratch.len();
+                }
+                scratch.push(*b);
+                src_pos = abs_pos;
+            }
+        }
+
+        // Tail: remaining self.data[src_pos..size] in one bulk copy.
+        if src_pos < self.size {
+            let run = &self.data[src_pos..self.size];
+            if new_cur == usize::MAX {
+                for (i, x) in run.iter().enumerate() {
+                    if !x.visited {
+                        new_cur = scratch.len() + i;
+                        break;
+                    }
+                }
+            }
+            scratch.extend_from_slice(run);
+        }
+
+        // Logical size capped at `capacity`; entries beyond are ignored.
+        let new_len = scratch.len().min(cap);
+        // Ensure post-swap self.data.len() ≥ max(data_len, new_len + 1) so
+        // the pq invariant (data.len() ≥ capacity + 1) and future insert()
+        // copy_within(lo..size, lo+1) remain safe.
+        let target_len = data_len.max(cap + 1);
+        if scratch.len() < target_len {
+            scratch.resize(target_len, Neighbor::default());
+        }
+
+        std::mem::swap(&mut self.data, scratch);
+        self.size = new_len;
+        self.cur = if new_cur == usize::MAX { new_len } else { new_cur };
     }
 }
 
