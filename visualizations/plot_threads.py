@@ -10,8 +10,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from chart_style import *
 
 datasets = [
-    ("sift",    "SIFT"),      ("glove25",  "GloVe-25"),
-    ("glove100","GloVe-100"), ("gist",     "GIST"),
+    ("sift",    "SIFT"), ("gist",     "GIST"),
 ]
 
 data = {}
@@ -26,7 +25,7 @@ if not present:
     print("No thread_sweep data. Run: cargo run ... --algorithms thread-sweep")
     sys.exit(1)
 
-fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 style_fig(fig)
 axes = axes.flatten()
 
@@ -80,7 +79,7 @@ for idx, (name, title) in enumerate(present):
 
 plt.tight_layout()
 out = 'visualizations/thread_scaling.png'
-fig.savefig(out, dpi=150, bbox_inches='tight', facecolor='white')
+save_png_and_pdf(fig, out)
 print(f'Saved {out}')
 
 print("\n─── Parallel Efficiency @ 8 threads ───")

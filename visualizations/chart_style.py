@@ -170,3 +170,41 @@ def make_legend(ax, handles, **kwargs):
                     labelcolor=PALETTE['text'], handler_map=_HANDLER_MAP)
     defaults.update(kwargs)
     ax.legend(handles=handles, **defaults)
+
+
+def _scale_fig_text(fig, scale):
+    """Multiply every text element's fontsize by `scale`. Idempotent across
+    calls because we just read-back and multiply — no state stashed."""
+    for ax in fig.axes:
+        for item in (
+            [ax.title, ax.xaxis.label, ax.yaxis.label]
+            + list(ax.get_xticklabels())
+            + list(ax.get_yticklabels())
+            + list(ax.texts)
+        ):
+            item.set_fontsize(item.get_fontsize() * scale)
+        leg = ax.get_legend()
+        if leg is not None:
+            for t in leg.get_texts():
+                t.set_fontsize(t.get_fontsize() * scale)
+            ttl = leg.get_title()
+            if ttl is not None and ttl.get_text():
+                ttl.set_fontsize(ttl.get_fontsize() * scale)
+    # Figure-level suptitle if any.
+    if fig._suptitle is not None:
+        fig._suptitle.set_fontsize(fig._suptitle.get_fontsize() * scale)
+
+
+def save_png_and_pdf(fig, png_path, pdf_font_scale=1.5, dpi=150):
+    """Save a PNG with unchanged font sizes and a sibling PDF with all text
+    uniformly scaled up (for embedding in a paper at half-page width).
+
+    Emits both `{name}.png` and `{name}.pdf` side by side.
+    """
+    assert png_path.endswith('.png'), f"png_path must end with .png, got {png_path}"
+    pdf_path = png_path[:-4] + '.pdf'
+    fig.savefig(png_path, dpi=dpi, bbox_inches='tight', facecolor='white')
+    _scale_fig_text(fig, pdf_font_scale)
+    fig.savefig(pdf_path, bbox_inches='tight', facecolor='white')
+    _scale_fig_text(fig, 1.0 / pdf_font_scale)
+    return png_path, pdf_path

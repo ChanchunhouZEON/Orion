@@ -7,9 +7,10 @@
 
 use crate::StagedDiskANN;
 use crate::algorithm::search::in_mem_search::AlignedQuery;
+use crate::model::Neighbor as DNeighbor;
 use crate::model::scratch::InMemSearchScratch;
 use diskann::common::ANNResult;
-use diskann::model::{Neighbor as DNeighbor, Vertex};
+use diskann::model::Vertex;
 use vector::{FullPrecisionDistance, Metric};
 
 /// Calibrated search parameters.

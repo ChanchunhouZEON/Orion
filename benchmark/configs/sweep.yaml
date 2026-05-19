@@ -1,29 +1,127 @@
 # QPS-Recall Sweep Configuration
+#
+# Per-dataset source of truth for the benchmark harness. `main.rs` and
+# `staged_sweep.rs` both resolve dataset paths, build parameters, and
+# the staged search metric through this file.
 
 defaults:
   diskann:
     alpha: 2.0
-    graph_degree: 32
-    build_search_list_size: 48
+    graph_degree: 64
+    build_search_list_size: 100
   staged:
     alpha: 1.2
-    graph_degree: 32
-    build_search_list_size: 48
-    max_extra: 4
+    graph_degree: 64
+    build_search_list_size: 100
+    # Hard cap on per-node `extras` zone after the top-X% partition.
+    # 16 chosen empirically (R=100 / 6.25) — the cap controls
+    # PhasedGraph slot stride directly so smaller = better cache
+    # locality. Per-dataset overrides may set a different value.
+    max_extra: 16
     window_size: 5
+    # Default search metric used by StagedDiskANN — the 2-phase
+    # u8 prefilter + f32 L2 rerank production path. Angular datasets
+    # override this to `mips` (low-dim) or `mips-q` (≥100 dim).
+    metric: l2
   sweep:
-    search_list_sizes: [16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256]
+    search_list_sizes: [16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256, 512, 768, 1024]
     threads: 8
-    trials: 11
+    trials: 1
+
+# ── Base-graph source policy ───────────────────────────────────────────────
+# Each dataset may set `base_graph.source = rust|parlayann`:
+#   rust       — build the graph in-process via `build_diskann_index`
+#                using the `staged.{alpha,graph_degree,...}` params above.
+#   parlayann  — import a `.staged v2` export produced by ParlayANN's
+#                `./neighbors -staged_outfile`, so our PhasedGraph sits
+#                on top of PA's RNG-pruned Vamana graph. Requires
+#                `base_graph.staged_file`. The importer is
+#                `benchmark/src/runner/parlayann_bridge.rs`; the resulting
+#                PhasedGraph is cached under `cache/staged_parlayann/`
+#                so subsequent runs hit the fast load path.
+#
+# When `source: parlayann`, the `staged.{graph_degree, alpha, build_l,
+# max_extra}` params above are **advisory** (they feed the cache-filename
+# convention and calibration) — the actual graph topology comes from PA.
+#
+# `staged_file` paths may contain the placeholder `${PA_ROOT}`, which is
+# resolved against the `PA_ROOT` env var at load time (default
+# `../ParlayANN`, relative to the repo root). Keep user-specific
+# absolute paths out of this file so the config stays portable.
 
 datasets:
   sift:
     dimension: 128
+    paths:
+      base:        "data/sift/sift_base.fvecs"
+      query:       "data/sift/sift_query.fvecs"
+      groundtruth: "data/sift/sift_groundtruth.ivecs"
+    base_graph:
+      source: parlayann
+      # PA's `-two_pass 1` vamana export (α=1.15 R=64) — the graph PA
+      # publishes its SIFT1M recall-QPS numbers on. Produced by:
+      #   PA_NUM_PASSES=2 DATASET=sift bash benchmark/scripts/prepare_parlayann_data.sh
+      staged_file: "${PA_ROOT}/data/sift1m/sift1m_ex${max_extra}.staged"
+    staged:
+      alpha: 1.15
+      graph_degree: 64
+      build_search_list_size: 128
+      metric: l2-q
   glove25:
     dimension: 32
+    paths:
+      # Pre-normalized fvecs — cosine on normalized ≡ L2 on unit
+      # vectors, so the graph built under L2 is the same shape PA
+      # would build in angular mode.
+      base:        "data/glove25_norm/glove-25-angular_base.fvecs"
+      query:       "data/glove25_norm/glove-25-angular_query.fvecs"
+      groundtruth: "data/glove25_norm/glove-25-angular_groundtruth.ivecs"
+    base_graph:
+      source: parlayann
+      # Produced by:
+      #   PA_NUM_PASSES=2 DATASET=glove25 bash benchmark/scripts/prepare_parlayann_data.sh
+      staged_file: "${PA_ROOT}/data/glove25/glove25_ex${max_extra}.staged"
+    staged:
+      alpha: 1.0
+      graph_degree: 100
+      build_search_list_size: 200
+      # 32-dim angular data: compute-bound, no bandwidth win from
+      # i8 quantization — single-phase MIPS is the right call.
+      metric: mips
   glove100:
     dimension: 100
+    paths:
+      base:        "data/glove100_norm/glove-100-angular_base.fvecs"
+      query:       "data/glove100_norm/glove-100-angular_query.fvecs"
+      groundtruth: "data/glove100_norm/glove-100-angular_groundtruth.ivecs"
+    base_graph:
+      source: parlayann
+      # 2-pass PA-built graph — our production config that wins ~10%
+      # vs PA native angular in the main sweep. Produced by:
+      #   PA_NUM_PASSES=2 DATASET=glove100 bash benchmark/scripts/prepare_parlayann_data.sh
+      staged_file: "${PA_ROOT}/data/glove100/glove100_ex${max_extra}.staged"
+    staged:
+      alpha: 1.0
+      graph_degree: 100
+      build_search_list_size: 200
+      # 100-dim angular data: memory-bound — PA-style i8 beam +
+      # top-20 f32 rerank (matches `vamana/scripts/glove100`).
+      metric: mips-q
   gist:
     dimension: 960
+    paths:
+      base:        "data/gist/gist_base.fvecs"
+      query:       "data/gist/gist_query.fvecs"
+      groundtruth: "data/gist/gist_groundtruth.ivecs"
+    base_graph:
+      source: parlayann
+      # GIST-100k subset — PA export with R=32 L=48 α=1.5. Produced by:
+      #   PA_NUM_PASSES=2 DATASET=gist bash benchmark/scripts/prepare_parlayann_data.sh
+      staged_file: "${PA_ROOT}/data/gist100k/gist100k_ex${max_extra}.staged"
     staged:
       alpha: 1.5
+      # GIST 100k — smaller graph than the 1M-scale default to keep
+      # build memory manageable.
+      graph_degree: 32
+      build_search_list_size: 48
+      metric: l2-q

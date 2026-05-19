@@ -63,7 +63,7 @@ ax.set_ylabel('Avg Neighbors per Node')
 ax.set_title('Edge Composition: Local vs Remote', fontweight='bold')
 make_legend(ax, [h1, h2], fontsize=10)
 style_ax(ax)
-apply_ylim(ax, [l + r for l, r in zip(avg_locals, avg_remotes)], headroom=1.2)
+apply_ylim(ax, [l + r for l, r in zip(avg_locals, avg_remotes)], headroom=1.45)
 ax.set_xlim(-0.6, len(present) - 0.4)
 
 # ── Right: Per-node bidir fraction boxplot ──
@@ -94,5 +94,5 @@ style_ax(ax)
 
 plt.tight_layout()
 out = 'visualizations/bidir_analysis.png'
-fig.savefig(out, dpi=150, bbox_inches='tight', facecolor='white')
+save_png_and_pdf(fig, out)
 print(f'Saved {out}')

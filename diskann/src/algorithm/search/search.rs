@@ -31,6 +31,27 @@ where
         Ok(cmp)
     }
 
+    /// ADSampling variant of [`Self::search_with_l_override`].
+    ///
+    /// Both `query` and the stored vectors in `self.dataset` must have been
+    /// rotated by the same random orthogonal matrix before this is called.
+    /// Under rotation, the graph is unchanged (L2 is rotation-invariant) but
+    /// the per-dimension variance becomes approximately uniform, which is the
+    /// precondition for the scaled partial-sum early abort.
+    pub fn search_with_l_override_adsampling(
+        &self,
+        query: &Vertex<T, N>,
+        scratch: &mut InMemQueryScratch<T, N>,
+        search_list_size: usize,
+        ads_epsilon: f32,
+    ) -> ANNResult<u32> {
+        let init_ids = self.get_init_ids()?;
+        self.init_graph_for_point(query, init_ids, scratch)?;
+        scratch.best_candidates.set_capacity(search_list_size);
+        let (_, cmp) = self.greedy_search_adsampling(query, scratch, ads_epsilon)?;
+        Ok(cmp)
+    }
+
     pub fn search_for_point(
         &self,
         query: &Vertex<T, N>,
@@ -106,6 +127,76 @@ where
         }
 
         Ok(())
+    }
+
+    /// ADSampling-aware greedy search. Mirrors [`Self::greedy_search`] but
+    /// uses `compare_adsampling` against the current priority-queue worst as
+    /// the upper bound — so most far-away candidates are abandoned after
+    /// processing only a fraction of dimensions. Assumes pre-rotated data.
+    fn greedy_search_adsampling(
+        &self,
+        query: &Vertex<T, N>,
+        scratch: &mut InMemQueryScratch<T, N>,
+        ads_epsilon: f32,
+    ) -> ANNResult<(Vec<Neighbor>, u32)> {
+        let mut visited_nodes =
+            Vec::with_capacity((3 * scratch.candidate_size + scratch.max_degree) as usize);
+        let mut cmps: u32 = 0;
+
+        let query_vertex = Vertex::<T, N>::try_from((&scratch.query[..], query.vertex_id()))
+            .map_err(|err| {
+                ANNError::log_index_error(format!(
+                    "TryFromSliceError: failed to get Vertex for query, err={}",
+                    err
+                ))
+            })?;
+
+        while scratch.best_candidates.has_notvisited_node() {
+            let closest_node = scratch.best_candidates.closest_notvisited();
+            visited_nodes.push(closest_node);
+
+            scratch.id_scratch.clear();
+            let max_vertex_id = self.configuration.max_points + self.configuration.num_frozen_pts;
+            for id in self
+                .final_graph
+                .read_vertex_and_neighbors(closest_node.id)?
+                .get_neighbors()
+            {
+                let current = *id;
+                debug_assert!((current as usize) < max_vertex_id);
+                if current as usize >= max_vertex_id {
+                    continue;
+                }
+                if scratch.node_visited_robinset.insert(current) {
+                    scratch.id_scratch.push(current);
+                }
+            }
+
+            let len = scratch.id_scratch.len();
+            for (m, &id) in scratch.id_scratch.iter().enumerate() {
+                if m + 1 < len {
+                    let next_node = unsafe { *scratch.id_scratch.get_unchecked(m + 1) };
+                    self.dataset.prefetch_vector(next_node);
+                }
+
+                // Upper bound = current PQ worst; if PQ not full, f32::MAX.
+                let bound = if scratch.best_candidates.size() >= scratch.best_candidates.capacity()
+                {
+                    scratch.best_candidates[scratch.best_candidates.size() - 1].distance
+                } else {
+                    f32::MAX
+                };
+
+                let vertex = self.dataset.get_vertex(id)?;
+                let dist = query_vertex.compare_adsampling(&vertex, bound, ads_epsilon);
+                if dist >= 0.0 {
+                    scratch.best_candidates.insert(Neighbor::new(id, dist));
+                }
+            }
+            cmps += len as u32;
+        }
+
+        Ok((visited_nodes, cmps))
     }
 
     fn greedy_search(

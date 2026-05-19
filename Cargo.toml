@@ -1,7 +1,9 @@
 [workspace]
 members = [
+    "adsampling",
     "benchmark",
     "diskann",
+    "early_stop_baselines",
     "logger",
     "platform",
     "staged_diskann",

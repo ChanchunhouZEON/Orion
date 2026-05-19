@@ -1,6 +1,8 @@
-pub mod simulate_ssd_search;
-
 pub mod in_mem_search;
+pub mod in_mem_search_l2;
+pub mod in_mem_search_l2_q;
+pub mod in_mem_search_mips;
+pub mod in_mem_search_mips_q;
 
 pub mod async_beam_search;
 

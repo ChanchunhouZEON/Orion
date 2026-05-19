@@ -376,7 +376,7 @@ where
         }
 
         if self.build_candidate_sets && !pruned_pairs.is_empty() {
-            if let Some(ref cas) = self.candidate_set_manager.candidate_anchor_sets {
+            if let Some(ref cas) = self.candidate_set_manager.anchor_sets {
                 for (anchor, pruned) in pruned_pairs.iter() {
                     if let Some(slot) = cas.get(*anchor as usize) {
                         let mut map = slot.lock().unwrap();
@@ -398,11 +398,11 @@ where
     fn augment_candidate_sets(&mut self) -> ANNResult<()> {
         let anchor_sets = self
             .candidate_set_manager
-            .candidate_anchor_sets
+            .anchor_sets
             .as_ref()
             .ok_or_else(|| {
-                ANNError::log_candidate_anchor_sets_error(
-                    "Candidate anchor sets is NULL.".to_string(),
+                ANNError::log_candidate_sets_error(
+                    "Anchor sets is NULL.".to_string(),
                 )
             })?;
         self.candidate_set_manager

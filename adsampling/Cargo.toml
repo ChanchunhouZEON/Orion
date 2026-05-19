@@ -1,0 +1,13 @@
+[package]
+name = "adsampling"
+version = "0.1.0"
+edition = "2024"
+description = "ADSampling: random rotation + incremental distance with probabilistic early abandon (Gao & Long, SIGMOD 2023)."
+
+[dependencies]
+rand = { workspace = true }
+rayon = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

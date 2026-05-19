@@ -5,8 +5,8 @@
 
 use crate::model::FixedChunkPQTable;
 use crate::model::PhasedGraph;
-use crate::model::QuantizedDataset;
 use crate::model::scratch::InMemScratchPool;
+use crate::model::{L2U8, MipsI8, MipsI16, QuantSpec, QuantizedDataset};
 use diskann::model::InmemDataset;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -46,10 +46,20 @@ where
     /// Lazily initialized on first call to `search()`.
     pub(crate) inmem_scratch_pool: OnceLock<InMemScratchPool>,
 
-    /// U8-quantized copy of `dataset` for low-precision pre-filter during
-    /// `search` (ParlayANN-style). Built lazily on first access
-    /// via `ensure_quantized_dataset`.
-    pub(crate) q_dataset: OnceLock<QuantizedDataset<N>>,
+    /// U8-quantized base for the L2 prefilter (ParlayANN-style). Built
+    /// lazily on first `ensure_quantized_dataset`. Sidecar `.qds`.
+    pub(crate) q_dataset: OnceLock<QuantizedDataset<L2U8, N>>,
+
+    /// I8-quantized base for the MIPS search path on unit-normalized
+    /// data. Built lazily on first `ensure_quantized_dataset_mips`.
+    /// Sidecar `.qdm8`.
+    pub(crate) q_dataset_mips: OnceLock<QuantizedDataset<MipsI8, N>>,
+
+    /// I16 twin of the above — 2× per-element precision for the
+    /// high-recall band where i8's distance-collision ceiling caps
+    /// recall on hard angular workloads. Built lazily on first
+    /// `ensure_quantized_dataset_mips_i16`. Sidecar `.qdm16`.
+    pub(crate) q_dataset_mips_i16: OnceLock<QuantizedDataset<MipsI16, N>>,
 }
 
 impl<const N: usize> StagedDiskANN<N>
@@ -99,6 +109,8 @@ where
             is_save,
             inmem_scratch_pool: OnceLock::new(),
             q_dataset: OnceLock::new(),
+            q_dataset_mips: OnceLock::new(),
+            q_dataset_mips_i16: OnceLock::new(),
         };
 
         if is_save {
@@ -132,39 +144,30 @@ where
             is_save: false,
             inmem_scratch_pool: OnceLock::new(),
             q_dataset: OnceLock::new(),
+            q_dataset_mips: OnceLock::new(),
+            q_dataset_mips_i16: OnceLock::new(),
         }
     }
 
-    /// Lazily obtain the u8 quantized dataset. Tries the sidecar `.qds`
-    /// file next to the cache path first (O(ms) memcpy); on miss, builds
-    /// from the f32 dataset (O(N × dim) scan + scale) and writes it back
-    /// so subsequent runs hit the fast path.
-    pub fn ensure_quantized_dataset(&self) -> &QuantizedDataset<N> {
-        self.q_dataset.get_or_init(|| {
-            let qds_path = self.compressed_graph_save_path.with_extension("qds");
-            if qds_path.exists() {
-                match QuantizedDataset::<N>::load(&qds_path) {
-                    Ok(qds) => {
-                        log::info!("QuantizedDataset loaded from {:?}", qds_path);
-                        return qds;
-                    }
-                    Err(e) => log::warn!("QuantizedDataset load failed ({e}), rebuilding"),
-                }
-            }
-            let t = Instant::now();
-            let qds = QuantizedDataset::from_f32_dataset(&self.dataset);
-            log::info!(
-                "QuantizedDataset built in {:.2}s",
-                t.elapsed().as_secs_f32()
-            );
-            if !self.compressed_graph_save_path.as_os_str().is_empty() {
-                if let Err(e) = qds.save(&qds_path) {
-                    log::warn!("QuantizedDataset save failed: {e}");
-                } else {
-                    log::info!("QuantizedDataset saved to {:?}", qds_path);
-                }
-            }
-            qds
+    /// Lazily obtain the u8 quantized dataset (L2 prefilter path).
+    /// Tries the sidecar `.qds` first (memcpy load); on miss, builds
+    /// from the f32 dataset and writes back.
+    pub fn ensure_quantized_dataset(&self) -> &QuantizedDataset<L2U8, N> {
+        self.q_dataset
+            .get_or_init(|| build_quant::<L2U8, N>(&self.dataset, &self.compressed_graph_save_path))
+    }
+
+    /// Lazily obtain the i8 MIPS quantized dataset. Sidecar `.qdm8`.
+    pub fn ensure_quantized_dataset_mips(&self) -> &QuantizedDataset<MipsI8, N> {
+        self.q_dataset_mips.get_or_init(|| {
+            build_quant::<MipsI8, N>(&self.dataset, &self.compressed_graph_save_path)
+        })
+    }
+
+    /// Lazily obtain the i16 MIPS quantized dataset. Sidecar `.qdm16`.
+    pub fn ensure_quantized_dataset_mips_i16(&self) -> &QuantizedDataset<MipsI16, N> {
+        self.q_dataset_mips_i16.get_or_init(|| {
+            build_quant::<MipsI16, N>(&self.dataset, &self.compressed_graph_save_path)
         })
     }
 
@@ -230,4 +233,45 @@ where
 struct StagedDiskANNMeta {
     version: u32,
     entry: u32,
+}
+
+/// Shared "load sidecar or build from f32, then save" helper for
+/// every `QuantSpec`. Per-spec behaviour (file extension, log label,
+/// quantization scale, NEON kernel) goes through the trait.
+fn build_quant<Q, const N: usize>(
+    dataset: &InmemDataset<f32, N>,
+    cache_base: &Path,
+) -> QuantizedDataset<Q, N>
+where
+    Q: QuantSpec,
+    [f32; N]: FullPrecisionDistance<f32, N>,
+{
+    let path = cache_base.with_extension(Q::FILE_EXT);
+    if path.exists() {
+        match QuantizedDataset::<Q, N>::load(&path) {
+            Ok(q) => {
+                log::info!("QuantizedDataset<{}> loaded from {:?}", Q::LABEL, path);
+                return q;
+            }
+            Err(e) => log::warn!(
+                "QuantizedDataset<{}> load failed ({e}), rebuilding",
+                Q::LABEL
+            ),
+        }
+    }
+    let t = Instant::now();
+    let q = QuantizedDataset::<Q, N>::from_f32_dataset(dataset);
+    log::info!(
+        "QuantizedDataset<{}> built in {:.2}s",
+        Q::LABEL,
+        t.elapsed().as_secs_f32()
+    );
+    if !cache_base.as_os_str().is_empty() {
+        if let Err(e) = q.save(&path) {
+            log::warn!("QuantizedDataset<{}> save failed: {e}", Q::LABEL);
+        } else {
+            log::info!("QuantizedDataset<{}> saved to {:?}", Q::LABEL, path);
+        }
+    }
+    q
 }

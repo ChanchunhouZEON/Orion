@@ -6,31 +6,52 @@
  * Licensed under the MIT License.
  */
 
-/// Prefetch the given vector in chunks of 64 bytes (cache line size).
-/// NOTE: good efficiency when total_vec_size is integral multiple of 64
+/// Cache-line size for the supported architectures. **Apple Silicon
+/// (M1 / M2 / M3) has 128-byte cache lines**; x86-64 has 64. Stepping
+/// `prefetch_vector` at this granularity issues at most one `prfm`
+/// per real cache line — no duplicates on aarch64, and the trailing
+/// partial line is still covered because we round up.
+#[cfg(target_arch = "aarch64")]
+pub const CACHE_LINE_BYTES: usize = 128;
+#[cfg(target_arch = "x86_64")]
+pub const CACHE_LINE_BYTES: usize = 64;
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+pub const CACHE_LINE_BYTES: usize = 64;
+
+/// Prefetch every cache line that backs `vec`, including the trailing
+/// partial line. The previous implementation rounded *down*
+/// (`(vecsize / 64) * 64`) and stepped by 64 bytes, which on M2
+/// (128-byte lines) had two problems: (a) for vectors whose size
+/// wasn't a multiple of 128, the trailing partial line was never
+/// prefetched — a 400-byte f32 vector at N=100 only got 3 of its 4
+/// lines touched, leaving a ~100 ns demand-fetch miss inside the
+/// compute loop; (b) consecutive `prfm` ops at offsets 0 and 64 hit
+/// the same 128-byte line on aarch64, wasting issue slots. The fixed
+/// version rounds *up* and steps by `CACHE_LINE_BYTES`, so every line
+/// is touched exactly once.
 #[inline]
 pub fn prefetch_vector<T>(vec: &[T]) {
     let vec_ptr = vec.as_ptr() as *const i8;
     let vecsize = std::mem::size_of_val(vec);
-    let max_prefetch_size = (vecsize / 64) * 64;
-
-    for d in (0..max_prefetch_size).step_by(64) {
+    if vecsize == 0 {
+        return;
+    }
+    // Round-up: cover every line that holds at least one byte of `vec`.
+    let n_lines = vecsize.div_ceil(CACHE_LINE_BYTES);
+    for i in 0..n_lines {
+        let off = i * CACHE_LINE_BYTES;
         #[cfg(target_arch = "x86_64")]
         unsafe {
-            std::arch::x86_64::_mm_prefetch(vec_ptr.add(d), std::arch::x86_64::_MM_HINT_T0);
+            std::arch::x86_64::_mm_prefetch(vec_ptr.add(off), std::arch::x86_64::_MM_HINT_T0);
         }
-
         #[cfg(target_arch = "aarch64")]
         unsafe {
-            // NEON prefetch using inline assembly
-            let addr = vec_ptr.add(d);
+            let addr = vec_ptr.add(off);
             std::arch::asm!("prfm pldl1keep, [{x}]", x = in(reg) addr);
         }
-
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
-            let _ = d;
-            // No prefetch available on this architecture
+            let _ = off;
         }
     }
 }

@@ -22,6 +22,9 @@ pub struct DiskANNRunner {
     temp_data_file: Option<PathBuf>,
     /// Mmap graph for zero-copy neighbor and vector access
     mmap_state: Option<DiskANNMmapState>,
+    /// Persistent cache file for Vamana graph + dataset. When set and file exists,
+    /// `build()` skips Vamana construction and loads from disk instead.
+    cache_path: Option<PathBuf>,
 }
 
 /// State for mmap-based DiskANN search.
@@ -45,7 +48,12 @@ impl DiskANNRunner {
             alpha,
             temp_data_file: None,
             mmap_state: None,
+            cache_path: None,
         }
+    }
+
+    pub fn set_cache_path<P: Into<PathBuf>>(&mut self, path: P) {
+        self.cache_path = Some(path.into());
     }
 
     /// Write flat f32 data to a temp file in diskann binary format:
@@ -84,13 +92,6 @@ impl AlgorithmRunner for DiskANNRunner {
         self.dimension = dimension;
         let start = Instant::now();
 
-        // Write data to temp file (diskann-core requires file-based loading)
-        let temp_path = Self::write_temp_data_file(data, num_points, dimension)
-            .expect("Failed to write temp data file");
-        self.temp_data_file = Some(temp_path.clone());
-
-        // Use rayon thread count so enough query scratch objects are pre-allocated
-        // for parallel search_batch (initialize_query_scratch creates 5 + num_threads).
         let num_threads = rayon::current_num_threads() as u32;
         let write_params =
             IndexWriteParametersBuilder::new(self.search_list_size, self.graph_degree)
@@ -101,22 +102,54 @@ impl AlgorithmRunner for DiskANNRunner {
         let config = IndexConfiguration::new(
             Metric::L2,
             dimension,
-            dimension, // aligned_dim = dim for standard dimensions
+            dimension,
             num_points,
-            false, // use_pq_dist
-            0,     // num_pq_chunks
-            false, // use_opq
-            0,     // num_frozen_pts
-            1.0,   // growth_potential
+            false,
+            0,
+            false,
+            0,
+            1.0,
             write_params,
         );
 
         let mut index: Box<dyn ANNInmemIndex<f32>> =
             create_inmem_index(config).expect("Failed to create DiskANN index");
 
+        // Cache hit: load Vamana graph + data from disk, skip build entirely.
+        if let Some(cp) = self.cache_path.as_ref() {
+            let graph_file = cp.as_path();
+            let data_file = cp.with_extension("bin.data");
+            if graph_file.exists() && data_file.exists() {
+                log::info!("Loading cached DiskANN index from {:?}", graph_file);
+                index
+                    .load(graph_file.to_str().unwrap(), num_points)
+                    .expect("DiskANN cache load failed");
+                self.index = Some(index);
+                return BuildTiming {
+                    graph_build: start.elapsed(),
+                    overhead: Duration::ZERO,
+                };
+            }
+        }
+
+        // Cache miss: write temp data file, run Vamana build.
+        let temp_path = Self::write_temp_data_file(data, num_points, dimension)
+            .expect("Failed to write temp data file");
+        self.temp_data_file = Some(temp_path.clone());
+
         index
             .build(temp_path.to_str().unwrap(), num_points)
             .expect("DiskANN build failed");
+
+        if let Some(cp) = self.cache_path.as_ref() {
+            if let Some(parent) = cp.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            match index.save(cp.to_str().unwrap()) {
+                Ok(()) => log::info!("Saved DiskANN cache to {:?}", cp),
+                Err(e) => log::warn!("Failed to save DiskANN cache: {}", e),
+            }
+        }
 
         let elapsed = start.elapsed();
         self.index = Some(index);
@@ -127,41 +160,14 @@ impl AlgorithmRunner for DiskANNRunner {
     }
 
     fn search(&self, query: &[f32], k: usize) -> SearchResult {
-        // If mmap mode is active, use the standalone mmap search (reads vectors from mmap)
-        if let Some(ref state) = self.mmap_state {
-            let start = Instant::now();
-            let results = match self.dimension {
-                128 => {
-                    let q = slice_to_array::<128>(query);
-                    platform::mmap_greedy_search::<128>(
-                        &state.graph,
-                        &q,
-                        state.start,
-                        self.search_list_size as usize,
-                        k,
-                        Metric::L2,
-                    )
-                }
-                960 => {
-                    let q = slice_to_array::<960>(query);
-                    platform::mmap_greedy_search::<960>(
-                        &state.graph,
-                        &q,
-                        state.start,
-                        self.search_list_size as usize,
-                        k,
-                        Metric::L2,
-                    )
-                }
-                _ => panic!("Unsupported dimension for mmap search: {}", self.dimension),
-            };
-            let duration = start.elapsed();
-            return SearchResult {
-                neighbors: results.iter().map(|n| n.id).collect(),
-                duration,
-            };
-        }
-
+        // Pure in-memory path. The mmap-search branch that used to
+        // live here (gated on `self.mmap_state`) was dead in all
+        // current benchmark modes — thread-sweep / qps-recall-sweep
+        // never call `enable_mmap_search`, so the branch always took
+        // the fall-through. Removing it keeps the hot path one
+        // straight call into `ANNInmemIndex::search` and clarifies
+        // that this runner is in-memory only. Re-introduce a separate
+        // `MmapDiskANNRunner` if SSD search ever comes back.
         let index = self.index.as_ref().expect("Index not built");
         let start = Instant::now();
         let mut indices = vec![0u32; k];

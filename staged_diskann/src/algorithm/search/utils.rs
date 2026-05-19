@@ -15,6 +15,7 @@ where
     /// Compute PQ distance for a point given its ID and pre-computed chunk distances.
     /// SAFETY: Should be invoked only when pq is activated.
     #[inline]
+    #[allow(dead_code)]
     pub(super) fn pq_distance(&self, point_id: u32, pq_dists: &[f32]) -> ANNResult<f32> {
         let (pq, pq_codes, num_pq_chunks) = self.get_unwrapped_pq_component()?;
 

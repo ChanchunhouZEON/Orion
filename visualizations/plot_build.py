@@ -60,7 +60,7 @@ for i in range(len(present)):
     total = st_graph[i] + st_overhead[i]
     pct = st_overhead[i] / total * 100 if total > 0 else 0
     ax.annotate(f'+{pct:.1f}%', xy=(x[i] + w/2 + gap/2, total),
-                ha='center', va='bottom', fontsize=9, color=PALETTE['annot'], fontweight='bold')
+                ha='center', va='bottom', fontsize=12, color=PALETTE['annot'], fontweight='bold')
 
 ax.set_xticks(x); ax.set_xticklabels(short_labels)
 ax.set_ylabel('Build Time (seconds)', fontsize=11)
@@ -88,8 +88,8 @@ for i, ((n, t), s, c) in enumerate(zip(present, speedup, ds_colors)):
 
 ax.axhline(y=1.0, color='#ccc', linestyle='--', alpha=0.5, linewidth=1)
 for i, (s, o) in enumerate(zip(speedup, overhead_pct)):
-    ax.annotate(f'{s:.2f}x\n(+{o:.1f}% overhead)', xy=(x[i], s),
-                ha='center', va='bottom', fontsize=9, fontweight='bold', color=PALETTE['annot'])
+    ax.annotate(f'{s:.2f}x', xy=(x[i], s),
+                ha='center', va='bottom', fontsize=12, fontweight='bold', color=PALETTE['annot'])
 
 ax.set_xticks(x); ax.set_xticklabels(short_labels)
 ax.set_ylabel('Build Speed Ratio (DiskANN / Staged)', fontsize=11)
@@ -101,5 +101,5 @@ ax.set_xlim(x[0] - 0.6, x[-1] + 0.6)
 
 plt.tight_layout()
 out = 'visualizations/build_analysis.png'
-fig.savefig(out, dpi=150, bbox_inches='tight', facecolor='white')
+save_png_and_pdf(fig, out)
 print(f'Saved {out}')

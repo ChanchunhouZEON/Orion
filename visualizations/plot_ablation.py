@@ -43,9 +43,9 @@ for idx, (name, title) in enumerate(present):
 
     n_L = len(L_indices)
     n_var = len(variants)
-    x = np.arange(n_L) * 1.15
-    w = 0.18
-    gap = 0.03
+    x = np.arange(n_L) * 2.4
+    w = 0.28
+    gap = 0.18
 
     handles = []
     all_qps = []
@@ -58,15 +58,6 @@ for idx, (name, title) in enumerate(present):
         h = rounded_bars(ax, positions, qps_vals, w, variant_colors[vi], label=label)
         if h: handles.append(h)
 
-        if key != "diskann" and "diskann" in data:
-            da_qps = [data["diskann"][i][1] for i in L_indices]
-            for j, (q, dq) in enumerate(zip(qps_vals, da_qps)):
-                if dq > 0:
-                    pct = (q / dq - 1) * 100
-                    ax.annotate(f'{pct:+.0f}%', xy=(positions[j], q),
-                                ha='center', va='bottom', fontsize=7,
-                                color=PALETTE['annot'], fontweight='bold')
-
     ax.set_xticks(x)
     ax.set_xticklabels(L_labels)
     ax.set_ylabel('QPS', fontsize=11)
@@ -75,10 +66,10 @@ for idx, (name, title) in enumerate(present):
     ax.set_title(f'{title} ({n_pts//1000}K, {threads}T)', fontsize=12, fontweight='bold')
     make_legend(ax, handles, loc='upper right', fontsize=8)
     style_ax(ax)
-    apply_ylim(ax, all_qps, headroom=1.35)
-    ax.set_xlim(x[0] - 0.6, x[-1] + 0.6)
+    apply_ylim(ax, all_qps, headroom=1.25)
+    ax.set_xlim(x[0] - 1.1, x[-1] + 1.1)
 
 plt.tight_layout()
 out = 'visualizations/ablation_study.png'
-fig.savefig(out, dpi=150, bbox_inches='tight', facecolor='white')
+save_png_and_pdf(fig, out)
 print(f'Saved {out}')

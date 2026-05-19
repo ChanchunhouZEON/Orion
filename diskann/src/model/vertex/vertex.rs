@@ -38,6 +38,19 @@ where
         <[T; N]>::distance_compare_with_bound(self.val, other.val, upper_bound)
     }
 
+    /// ADSampling L2 distance: assumes `self` (query) and `other` (stored
+    /// vector) have been pre-rotated by a random orthogonal matrix. Abandons
+    /// when the scaled partial sum exceeds `upper_bound × (1 + ε/√d')`.
+    #[inline(always)]
+    pub fn compare_adsampling(
+        &self,
+        other: &Vertex<'a, T, N>,
+        upper_bound: f32,
+        epsilon: f32,
+    ) -> f32 {
+        <[T; N]>::distance_compare_adsampling(self.val, other.val, upper_bound, epsilon)
+    }
+
     #[inline]
     pub fn vector(&self) -> &[T; N] {
         self.val

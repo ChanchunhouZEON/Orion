@@ -63,7 +63,7 @@ where
     /// OS page cache manages residency; lock-free per-slot atomic append.
     /// Not tracked by Rust allocator — heap peak stays low.
     #[cfg(feature = "staged_diskann")]
-    pub candidate_anchor_sets: Option<crate::model::MmapAnchorSlab>,
+    pub candidate_sets: Option<crate::model::MmapAnchorSlab>,
 }
 
 impl<T, const N: usize> InmemIndex<T, N>
@@ -89,7 +89,7 @@ where
         let delete_set = RwLock::new(HashSet::<u32>::new());
 
         #[cfg(feature = "staged_diskann")]
-        let candidate_anchor_sets = if config.index_write_parameter.compute_candidate_sets {
+        let candidate_sets = if config.index_write_parameter.compute_candidate_sets {
             let max_pairs = config.index_write_parameter.max_degree as usize * 2;
             let tmp_path = std::env::temp_dir()
                 .join(format!("staged_diskann_mmap_{}.bin", std::process::id()));
@@ -114,7 +114,7 @@ where
             query_scratch_queue,
             delete_set,
             #[cfg(feature = "staged_diskann")]
-            candidate_anchor_sets,
+            candidate_sets,
         })
     }
 
@@ -316,6 +316,58 @@ where
             .collect();
 
         Ok((pruned_list, dists))
+    }
+
+    /// ADSampling variant of [`Self::search`]. See
+    /// [`Self::search_with_l_override_adsampling`] for preconditions.
+    pub fn search_adsampling(
+        &self,
+        query: &Vertex<T, N>,
+        k_value: usize,
+        l_value: u32,
+        ads_epsilon: f32,
+        indices: &mut [u32],
+    ) -> ANNResult<u32> {
+        if k_value > l_value as usize {
+            return Err(ANNError::log_index_error(format!(
+                "Set L: {} to a value of at least K: {}",
+                l_value, k_value
+            )));
+        }
+
+        let mut scratch_manager =
+            ScratchStoreManager::new(self.query_scratch_queue.clone(), Duration::from_millis(10))?;
+        let scratch = scratch_manager.scratch_space().ok_or_else(|| {
+            ANNError::log_index_error(
+                "ScratchStoreManager doesn't have InMemQueryScratch instance available".to_string(),
+            )
+        })?;
+        if l_value > scratch.candidate_size {
+            scratch.resize_for_new_candidate_size(l_value);
+        }
+
+        let cmp =
+            self.search_with_l_override_adsampling(query, scratch, l_value as usize, ads_epsilon)?;
+        let mut pos = 0;
+
+        for i in 0..scratch.best_candidates.size() {
+            if scratch.best_candidates[i].id < self.configuration.max_points as u32 {
+                if let Ok(delete_set_guard) = self.delete_set.read() {
+                    if !delete_set_guard.contains(&scratch.best_candidates[i].id) {
+                        indices[pos] = scratch.best_candidates[i].id;
+                        pos += 1;
+                    }
+                } else {
+                    return Err(ANNError::log_lock_poison_error(
+                        "failed to acquire the lock for delete_set.".to_string(),
+                    ));
+                }
+            }
+            if pos == k_value {
+                break;
+            }
+        }
+        Ok(cmp)
     }
 
     fn search(
@@ -616,19 +668,19 @@ where
         Ok(())
     }
 
-    /// Augment candidate anchor sets with graph structure to produce final candidate sets.
+    /// Augment candidate sets with graph structure to produce final per-node candidate sets.
     ///
     /// For each node `origin`:
     /// 1. Add `origin` itself
     /// 2. For each bidirectional neighbor `n` (where `n` was the pruning anchor):
-    ///    add `n` + all pruned_ids from `candidate_anchor_sets[n]` where location == `origin`
+    ///    add `n` + all pruned_ids from `candidate_sets[n]` where location == `origin`
     ///
     /// Uses flat sorted `Vec<(location, pruned_id)>` per anchor for cache-friendly lookup.
     #[cfg(feature = "staged_diskann")]
     pub fn extract_candidate_sets(&mut self) -> ANNResult<Vec<StdHashSet<u32>>> {
-        let slab = self.candidate_anchor_sets.as_mut().ok_or_else(|| {
-            ANNError::log_candidate_anchor_sets_error(
-                "Candidate anchor sets have not been built".to_string(),
+        let slab = self.candidate_sets.as_mut().ok_or_else(|| {
+            ANNError::log_candidate_sets_error(
+                "Candidate sets have not been built".to_string(),
             )
         })?;
         slab.sort_all();
@@ -705,28 +757,50 @@ where
     ///
     /// Extract pre-partitioned node data for PhasedGraph construction.
     ///
-    /// Returns `Vec<(local, remote, extra)>` per node where:
-    /// - `local`: bidir neighbors + promoted remotes (for navigation + reranking)
-    /// - `remote`: remaining non-bidir neighbors (navigation only)
-    /// - `extra`: pruned candidates from slab within top-N merge (reranking only)
+    /// Returns `Vec<(local, remote, extra)>` per node, partitioned by the
+    /// **top-X% rule** (matches the C++ side's `staged_export.h` v3):
+    ///
+    /// For each node `i`, combine its graph neighbours `G[i]` (with their
+    /// original distances from the build) and the captured extras pool
+    /// (with distances from the slab) into one list, sort by distance asc,
+    /// and threshold at `cutoff = round(0.60 × len(G[i]))`:
+    ///
+    /// - top-cutoff ∩ G[i]:        → `local`   (close graph edges)
+    /// - top-cutoff ∩ not-in-G[i]: → `extra`   (close pruned candidates)
+    /// - past-cutoff ∩ G[i]:       → `remote`  (far graph edges)
+    /// - past-cutoff ∩ not-in-G[i]: → discarded
+    ///
+    /// Replaces the legacy bidir-based local classification — local is now
+    /// purely distance-driven. `dists` from `into_neighbors_and_dists()`
+    /// supplies the original build-time distances directly.
+    ///
+    /// `max_extra > 0` applies a post-partition hard cap on the extras
+    /// zone (kept for backward compatibility with the slab capacity).
+    /// Pass 0 for "no cap"; cutoff alone bounds extras to ≤ 0.60 × deg.
     ///
     /// Steps:
-    /// 0. Free dataset (neighbors already distance-sorted from build).
+    /// 0. Free dataset (no longer needed after build).
     /// 1. Snapshot InMemoryGraph → flat Vec (lock-free), drop InMemoryGraph.
-    /// 2. Sort slab, extract extras with distances.
-    /// 3. Per-node: compute bidir, merge remote+extras by distance, partition.
+    /// 2. Sort slab for sequential access during the per-node scan.
+    /// 3. Per-node: build combined list, sort, partition by top-X% rule.
     #[cfg(feature = "staged_diskann")]
     pub fn extract_graph_and_candidates(
         &mut self,
         max_extra: usize,
     ) -> ANNResult<Vec<(Vec<u32>, Vec<u32>, Vec<u32>)>> {
         use crate::utils::mem_usage;
+        use std::collections::HashSet;
+
+        // Top-X% local-cutoff fraction (60%, matches `staged_export.h`'s
+        // `local_pct` default). Hardcoded for now; promote to a parameter
+        // if/when callers need to tune it.
+        const LOCAL_PCT: f64 = 0.60;
 
         let num_pts = self.num_active_pts;
-        let max_extra = if max_extra > 0 { max_extra } else { 8 };
         log::info!(
-            "    extract entry (max_extra={}):  mem={}",
+            "    extract entry (max_extra_cap={}, local_pct={:.0}%):  mem={}",
             max_extra,
+            LOCAL_PCT * 100.0,
             mem_usage()
         );
 
@@ -755,7 +829,7 @@ where
 
         // P2: Sort slab for sequential access.
         let t2 = std::time::Instant::now();
-        if let Some(ref mut slab) = self.candidate_anchor_sets {
+        if let Some(ref mut slab) = self.candidate_sets {
             let (at_cap, overflow, max_count) = slab.truncation_stats();
             log::info!(
                 "    slab stats: max_pairs={}, at_cap={}/{}, overflow={}, max_count={}",
@@ -774,7 +848,10 @@ where
             mem_usage()
         );
 
-        // P3: Per-node partition: bidir + merge remote/extras → (local, remote, extra).
+        // P3: Top-X% partition. For each node, combine G[i] (with original
+        // build-time distances) and the captured extras pool, sort by dist,
+        // split at `cutoff = round(LOCAL_PCT × deg)`. No bidir lookup any
+        // more — pure distance-based classification.
         let t3 = std::time::Instant::now();
         let partitions: Vec<(Vec<u32>, Vec<u32>, Vec<u32>)> = (0..num_pts)
             .into_par_iter()
@@ -787,72 +864,68 @@ where
                     return (Vec::new(), Vec::new(), Vec::new());
                 }
 
-                // Classify bidir (local) vs non-bidir (remote with dist).
-                let mut local: Vec<u32> = Vec::new();
-                let mut remote_with_dist: Vec<(u32, f32)> = Vec::new();
+                // O(1) `is in G[i]?` lookup for the extras-vs-G[i] check.
+                let nbr_set: HashSet<u32> = nbrs.iter().copied().collect();
 
+                // Combined list: (dist, id, in_g).
+                let mut combined: Vec<(f32, u32, bool)> = Vec::with_capacity(degree);
+
+                // Add G[i] neighbours with their build-time distances.
                 for (j, &n) in nbrs.iter().enumerate() {
-                    let is_bidir = if (n as usize) < snapshot.len() {
-                        snapshot[n as usize].0.contains(&node_u32)
-                    } else {
-                        false
-                    };
-                    if is_bidir {
-                        local.push(n);
-                    } else if j < dists.len() {
-                        remote_with_dist.push((n, dists[j]));
-                    } else {
-                        remote_with_dist.push((n, f32::MAX));
-                    }
+                    let d = dists.get(j).copied().unwrap_or(f32::MAX);
+                    combined.push((d, n, true));
                 }
-                // remote_with_dist is already distance-sorted (neighbors were sorted during build).
 
-                // Extract extras from slab: (dist, id) sorted by distance.
-                let mut extras_with_dist: Vec<(f32, u32)> = Vec::new();
-                if let Some(ref slab) = self.candidate_anchor_sets {
+                // Add extras from slab: filter self + dups against G[i],
+                // dedup by id (slab can contain the same id twice across
+                // different anchors).
+                if let Some(ref slab) = self.candidate_sets {
                     let pairs = slab.pairs(node);
+                    let mut seen_extras: HashSet<u32> = HashSet::with_capacity(pairs.len());
                     for &(dist_bits, pid) in pairs {
-                        if !nbrs.contains(&pid) {
-                            extras_with_dist.push((f32::from_bits(dist_bits), pid));
+                        if pid == node_u32 {
+                            continue;
                         }
-                    }
-                    extras_with_dist.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-                    extras_with_dist.dedup_by_key(|e| e.1);
-                }
-
-                // Sorted merge of remote + extras, take top max_extra.
-                // Remote in top-N → promote to local.
-                // Extra in top-N → extra zone.
-                let mut ri = 0usize;
-                let mut ei = 0usize;
-                let mut remote: Vec<u32> = Vec::new();
-                let mut extra: Vec<u32> = Vec::new();
-                let mut promoted = 0usize;
-
-                while promoted + extra.len() < max_extra
-                    && (ri < remote_with_dist.len() || ei < extras_with_dist.len())
-                {
-                    let pick_remote = if ri < remote_with_dist.len() && ei < extras_with_dist.len()
-                    {
-                        remote_with_dist[ri].1 <= extras_with_dist[ei].0
-                    } else {
-                        ri < remote_with_dist.len()
-                    };
-
-                    if pick_remote {
-                        // Remote neighbor in top-N → promote to local.
-                        local.push(remote_with_dist[ri].0);
-                        ri += 1;
-                        promoted += 1;
-                    } else {
-                        extra.push(extras_with_dist[ei].1);
-                        ei += 1;
+                        if nbr_set.contains(&pid) {
+                            continue;
+                        }
+                        if !seen_extras.insert(pid) {
+                            continue;
+                        }
+                        combined.push((f32::from_bits(dist_bits), pid, false));
                     }
                 }
 
-                // Remaining remotes → remote zone.
-                for &(id, _) in &remote_with_dist[ri..] {
-                    remote.push(id);
+                combined.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+                // cutoff anchored to graph degree (not combined.size()) so
+                // |local + extra| stays proportional to graph density,
+                // independent of how many extras the slab happened to
+                // capture for this node.
+                let cutoff = (LOCAL_PCT * degree as f64).round() as usize;
+
+                let mut local: Vec<u32> = Vec::with_capacity(cutoff);
+                let mut remote: Vec<u32> = Vec::with_capacity(degree.saturating_sub(cutoff));
+                let mut extra: Vec<u32> = Vec::with_capacity(cutoff);
+
+                for (k, &(_, id, in_g)) in combined.iter().enumerate() {
+                    if k < cutoff {
+                        if in_g {
+                            local.push(id);
+                        } else {
+                            extra.push(id);
+                        }
+                    } else if in_g {
+                        remote.push(id);
+                    }
+                    // else: past-cutoff non-G[i] candidates are discarded.
+                }
+
+                // Optional post-partition hard cap on extras zone (slab
+                // can carry many candidates; cap the array length even
+                // when the top-X% rule would admit more).
+                if max_extra > 0 && extra.len() > max_extra {
+                    extra.truncate(max_extra);
                 }
 
                 (local, remote, extra)
@@ -867,7 +940,7 @@ where
         // P4: Free slab + snapshot.
         drop(snapshot);
         self.query_scratch_queue = ArcConcurrentBoxedQueue::new();
-        self.candidate_anchor_sets = None;
+        self.candidate_sets = None;
         log::info!("    P4 (cleanup):         mem={}", mem_usage());
 
         Ok(partitions)
@@ -901,10 +974,10 @@ where
         Ok(())
     }
 
-    /// Free the candidate anchor slab.
+    /// Free the candidate set slab.
     #[cfg(feature = "staged_diskann")]
     pub fn drop_candidate_slab(&mut self) {
-        self.candidate_anchor_sets = None;
+        self.candidate_sets = None;
     }
 
     /// Get number of active points.
@@ -1088,6 +1161,18 @@ where
     ) -> ANNResult<u32> {
         let query_vector = Vertex::new(<&[T; N]>::try_from(query)?, 0);
         InmemIndex::search(self, &query_vector, k_value, l_value, indices)
+    }
+
+    fn search_adsampling(
+        &self,
+        query: &[T],
+        k_value: usize,
+        l_value: u32,
+        ads_epsilon: f32,
+        indices: &mut [u32],
+    ) -> ANNResult<u32> {
+        let query_vector = Vertex::new(<&[T; N]>::try_from(query)?, 0);
+        InmemIndex::search_adsampling(self, &query_vector, k_value, l_value, ads_epsilon, indices)
     }
 
     fn soft_delete(

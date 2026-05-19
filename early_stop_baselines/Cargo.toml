@@ -1,0 +1,16 @@
+[package]
+name = "early_stop_baselines"
+version = "0.1.0"
+edition = "2024"
+description = "Early-stop ANN search baselines (Patience, LAET, AdaptNN) implemented against the DiskANN InmemIndex."
+
+[dependencies]
+diskann = { path = "../diskann" }
+vector = { path = "../vector" }
+rayon = { workspace = true }
+hashbrown = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
