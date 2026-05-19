@@ -3,11 +3,15 @@
 
 import json
 import os
+import sys
 import glob
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+sys.path.insert(0, os.path.dirname(__file__))
+from chart_style import save_png_and_pdf
 
 datasets = [
     ("sift",    "SIFT (dim=128)"),
@@ -25,6 +29,22 @@ def load_runs(name):
         with open(f) as fh:
             runs.append(json.load(fh))
     return runs
+
+def annotate_ours(ax, recall, qps):
+    """Place a small 'ours' label to the left of the Staged curve's start.
+
+    The starting point (leftmost, highest-QPS) sits at the upper-left of the
+    plot; a left offset lands in the upper-left margin, diagonally opposite
+    the upper-right legend so the two never collide."""
+    if len(recall) == 0:
+        return
+    i = 0
+    ax.annotate('ours', xy=(recall[i], qps[i]),
+                xytext=(-10, 0), textcoords='offset points',
+                fontsize=10, fontweight='bold', color='#598392',
+                ha='right', va='center')
+    ax.margins(x=0.05)
+
 
 def compute_bands(runs, key):
     """Compute median, min, max QPS per L value across runs."""
@@ -64,7 +84,8 @@ for idx, (name, title) in enumerate(datasets):
             s_recall = [p[0] for p in data["staged"]]
             s_qps = [p[1] for p in data["staged"]]
             ax.plot(d_recall, d_qps, 'o-', color='#EEC170', label='DiskANN', markersize=5, linewidth=2)
-            ax.plot(s_recall, s_qps, 's-', color='#598392', label='StagedDiskANN', markersize=5, linewidth=2)
+            ax.plot(s_recall, s_qps, 's-', color='#598392', label='StagedDiskANN (ours)', markersize=5, linewidth=2)
+            annotate_ours(ax, s_recall, s_qps)
             num_points = data.get('num_points', 0)
             threads = data.get('threads', 0)
             ax.set_title(f"{title} ({num_points//1000}K, {threads}T) [1 run]", fontsize=12, fontweight='bold')
@@ -75,7 +96,10 @@ for idx, (name, title) in enumerate(datasets):
         num_points = runs[0].get('num_points', 0)
         threads = runs[0].get('threads', 0)
 
-        # DiskANN bands
+        # DiskANN bands. Built at the dataset's staged params (sweep.yaml
+        # `datasets.<name>.staged` block), so this single line is the
+        # apples-to-apples comparison vs Staged. The legacy
+        # `diskann_matched` JSON key from older runs is no longer read.
         d_recall, d_med, d_lo, d_hi = compute_bands(runs, 'diskann')
         ax.fill_between(d_recall, d_lo, d_hi, alpha=0.15, color='#EEC170')
         ax.plot(d_recall, d_med, 'o-', color='#EEC170', label='DiskANN', markersize=5, linewidth=2)
@@ -83,7 +107,8 @@ for idx, (name, title) in enumerate(datasets):
         # Staged bands
         s_recall, s_med, s_lo, s_hi = compute_bands(runs, 'staged')
         ax.fill_between(s_recall, s_lo, s_hi, alpha=0.15, color='#598392')
-        ax.plot(s_recall, s_med, 's-', color='#598392', label='StagedDiskANN', markersize=5, linewidth=2)
+        ax.plot(s_recall, s_med, 's-', color='#598392', label='StagedDiskANN (ours)', markersize=5, linewidth=2)
+        annotate_ours(ax, s_recall, s_med)
 
         ax.set_title(f"{title} ({num_points//1000}K, {threads}T, {n_runs} runs)", fontsize=12, fontweight='bold')
 
@@ -107,13 +132,18 @@ for idx, (name, title) in enumerate(datasets):
 
     ax.set_xlabel('Recall@10', fontsize=11)
     ax.set_ylabel('QPS', fontsize=11)
-    ax.legend(fontsize=8, loc='upper right')
+    # ann-benchmarks–style legend: horizontal row below the axes, no frame.
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(handles, labels, fontsize=8, loc='upper center',
+              bbox_to_anchor=(0.5, -0.16), ncol=min(len(handles), 4),
+              frameon=False, borderaxespad=0)
     ax.grid(True, alpha=0.3)
 
 plt.tight_layout()
+fig.subplots_adjust(hspace=0.55, wspace=0.25)
 out = "visualizations/qps_recall_all.png"
-plt.savefig(out, dpi=150, bbox_inches='tight')
-print(f"Saved {out}")
+save_png_and_pdf(fig, out, pdf_font_scale=1.0)
+print(f"Saved {out} (+ .pdf)")
 plt.close(fig)
 
 # ── DiskANN vs StagedDiskANN only (clean comparison) ──
@@ -134,7 +164,8 @@ for idx, (name, title) in enumerate(datasets):
             s_recall = [p[0] for p in data["staged"]]
             s_qps = [p[1] for p in data["staged"]]
             ax.plot(d_recall, d_qps, 'o-', color='#EEC170', label='DiskANN', markersize=5, linewidth=2)
-            ax.plot(s_recall, s_qps, 's-', color='#598392', label='StagedDiskANN', markersize=5, linewidth=2)
+            ax.plot(s_recall, s_qps, 's-', color='#598392', label='StagedDiskANN (ours)', markersize=5, linewidth=2)
+            annotate_ours(ax, s_recall, s_qps)
             num_points = data.get('num_points', 0)
             threads = data.get('threads', 0)
             ax.set_title(f"{title} ({num_points//1000}K, {threads}T)", fontsize=12, fontweight='bold')
@@ -151,19 +182,25 @@ for idx, (name, title) in enumerate(datasets):
 
         s_recall, s_med, s_lo, s_hi = compute_bands(runs, 'staged')
         ax.fill_between(s_recall, s_lo, s_hi, alpha=0.15, color='#598392')
-        ax.plot(s_recall, s_med, 's-', color='#598392', label='StagedDiskANN', markersize=5, linewidth=2)
+        ax.plot(s_recall, s_med, 's-', color='#598392', label='StagedDiskANN (ours)', markersize=5, linewidth=2)
+        annotate_ours(ax, s_recall, s_med)
 
         ax.set_title(f"{title} ({num_points//1000}K, {threads}T, {n_runs} runs)", fontsize=12, fontweight='bold')
 
     ax.set_xlabel('Recall@10', fontsize=11)
     ax.set_ylabel('QPS', fontsize=11)
-    ax.legend(fontsize=10)
+    # ann-benchmarks–style legend: horizontal row below the axes, no frame.
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(handles, labels, fontsize=8, loc='upper center',
+              bbox_to_anchor=(0.5, -0.16), ncol=min(len(handles), 4),
+              frameon=False, borderaxespad=0)
     ax.grid(True, alpha=0.3)
 
 plt.tight_layout()
+fig_da.subplots_adjust(hspace=0.55, wspace=0.25)
 out_da = "visualizations/qps_recall_diskann_vs_staged.png"
-fig_da.savefig(out_da, dpi=150, bbox_inches='tight')
-print(f"Saved {out_da}")
+save_png_and_pdf(fig_da, out_da, pdf_font_scale=1.0)
+print(f"Saved {out_da} (+ .pdf)")
 plt.close(fig_da)
 
 # Also save individual plots
@@ -183,7 +220,8 @@ for name, title in datasets:
 
     s_recall, s_med, s_lo, s_hi = compute_bands(runs, 'staged')
     ax2.fill_between(s_recall, s_lo, s_hi, alpha=0.15, color='#598392')
-    ax2.plot(s_recall, s_med, 's-', color='#598392', label='StagedDiskANN', markersize=6, linewidth=2.5)
+    ax2.plot(s_recall, s_med, 's-', color='#598392', label='StagedDiskANN (ours)', markersize=6, linewidth=2.5)
+    annotate_ours(ax2, s_recall, s_med)
 
     # Overlay baselines if available
     baseline_path = f"visualizations/baseline_{name}.json"
@@ -207,10 +245,15 @@ for name, title in datasets:
     ax2.set_ylabel('QPS', fontsize=12)
     ax2.set_title(f"QPS vs Recall@10 -- {title}\n({num_points//1000}K points, {threads} threads, {n_runs} runs)",
                   fontsize=13, fontweight='bold')
-    ax2.legend(fontsize=9)
+    handles2, labels2 = ax2.get_legend_handles_labels()
+    ax2.legend(handles2, labels2, fontsize=9, loc='upper center',
+               bbox_to_anchor=(0.5, -0.16), ncol=min(len(handles2), 4),
+               frameon=False, borderaxespad=0)
     ax2.grid(True, alpha=0.3)
+    # Shrink axes to preserve figure size while making room for bottom legend.
+    fig2.subplots_adjust(bottom=0.28)
 
     out2 = f"visualizations/qps_recall_{name}.png"
-    fig2.savefig(out2, dpi=150, bbox_inches='tight')
+    save_png_and_pdf(fig2, out2, pdf_font_scale=1.0)
     plt.close(fig2)
     print(f"Saved {out2}")

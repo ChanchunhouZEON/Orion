@@ -52,7 +52,7 @@ where
         occlude_factor.resize(pool.len(), 0.0);
 
         #[cfg(feature = "staged_diskann")]
-        let track_candidates = self.candidate_anchor_sets.is_some();
+        let track_candidates = self.candidate_sets.is_some();
         // Reuse scratch buffer to avoid per-call allocation.
         // Collects (distance_bits, pruned_id) pairs; flushed to slab[location] after the loop.
         #[cfg(feature = "staged_diskann")]
@@ -110,7 +110,7 @@ where
         // Flush (distance_bits, pruned_id) pairs to slab[location].
         #[cfg(feature = "staged_diskann")]
         if !scratch.candidate_buffer.is_empty() {
-            if let Some(ref slab) = self.candidate_anchor_sets {
+            if let Some(ref slab) = self.candidate_sets {
                 if (location as usize) < slab.num_anchors() {
                     slab.atomic_append_pairs(location as usize, &scratch.candidate_buffer);
                 }

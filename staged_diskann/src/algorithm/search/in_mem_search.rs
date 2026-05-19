@@ -3,11 +3,198 @@
  * Licensed under the MIT License.
  */
 use crate::StagedDiskANN;
+use crate::model::Neighbor as DNeighbor;
 use crate::model::scratch::InMemScratchPool;
 use diskann::common::ANNResult;
-use diskann::model::{Neighbor as DNeighbor, Vertex};
+use diskann::model::Vertex;
 use rayon::prelude::*;
+use std::sync::atomic::AtomicU64;
 use vector::{FullPrecisionDistance, Metric};
+
+// ── Per-phase instrumentation counters (shared across search paths) ──
+// All atomic with `Relaxed`; counter accuracy across threads is
+// approximate but ordering doesn't matter for averaging. Mirrors PA's
+// `average visited` / `average cmps` fields for direct A/B comparison.
+//
+// Used by `staged_sweep` to print per-L stats. Reset between trials
+// via the same Ordering. Live here (not in `in_mem_search_mips_q`)
+// so the L2, MIPS, and MIPS-Q paths can all increment the same set
+// without cross-module dependencies.
+pub static VISIT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static QUERY_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static PRE_CONV_HOPS: AtomicU64 = AtomicU64::new(0);
+pub static POST_CONV_HOPS: AtomicU64 = AtomicU64::new(0);
+pub static PRE_CONV_ADMITS: AtomicU64 = AtomicU64::new(0);
+pub static POST_CONV_ADMITS: AtomicU64 = AtomicU64::new(0);
+/// Total distance computations per query — counts every Stage-1
+/// quantized distance (one per unseen neighbour per hop) + every
+/// Stage-2 f32 truth/rerank distance. Mirrors PA's `average cmps`.
+pub static NDC_I8: AtomicU64 = AtomicU64::new(0);
+pub static NDC_F32: AtomicU64 = AtomicU64::new(0);
+/// Total nanoseconds spent in per-query setup (normalise + quantize
+/// query + scratch acquire/prepare/reconfigure + entry insert),
+/// summed across all threads. Divide by `QUERY_COUNT` for per-query
+/// setup cost; useful for diagnosing whether the low-recall QPS
+/// plateau is dominated by setup overhead rather than search work.
+pub static SETUP_NS: AtomicU64 = AtomicU64::new(0);
+
+/// **PA-style adaptive prefilter toggle**. When `STAGED_USE_FILTER=1`,
+/// the L2 search path replaces the multiplicative `pq_worst · slope² ·
+/// Q_SLACK` cutoff with PA's running-mean filter: every hop where
+/// the frontier is full, take the mean of the frontier-tail's u8
+/// distances, accumulate into a running average, and use that as the
+/// per-hop u8-prefilter threshold (PA `beamSearch.h:130–145`).
+///
+/// Off by default — the multiplicative cutoff is simpler and works
+/// well on glove100. Turn on for SIFT1M where the multiplicative
+/// cutoff over-admits to the f32 rerank stage (causing the 1.5×
+/// NDC-vs-PA gap measured at recall 0.91–0.99).
+pub(super) fn use_filter() -> bool {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("STAGED_USE_FILTER")
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
+/// L-adaptive `par_chunks` BATCH size for per-query parallelism in
+/// `search_batch_*`. Picked by an LA × L probe on glove100 i8: low L
+/// favors slightly larger batches (amortise rayon dispatch over
+/// short queries), high L favors smaller batches (work-stealing tail
+/// rebalances across threads when the per-query wall is long).
+///
+/// Used by the **MIPS-Q** path (i8 / i16 quantized beam, glove100).
+#[inline]
+pub(super) fn search_batch_size(search_list_size: usize) -> usize {
+    if search_list_size < 64 {
+        32
+    } else if search_list_size < 256 {
+        16
+    } else if search_list_size < 768 {
+        8
+    } else {
+        4
+    }
+}
+
+/// L-adaptive `par_chunks` BATCH size for the **L2** path (SIFT-family).
+/// Half the MIPS-Q schedule per L band — measured empirically on
+/// SIFT1M to be the sweet spot. The L2 path's two-stage pipeline
+/// (u8 prefilter + f32 rerank, with cmov-compact between) makes
+/// each query slower than MIPS-Q's single-stage flow, so smaller
+/// batches give work-stealing more opportunities to rebalance the
+/// late-finishing tail across threads.
+///
+/// Schedule:
+///   L < 64        → BATCH = 16
+///   64 ≤ L < 256  → BATCH = 8
+///   256 ≤ L < 768 → BATCH = 4
+///   L ≥ 768       → BATCH = 2
+#[inline]
+pub(super) fn search_batch_size_l2(search_list_size: usize) -> usize {
+    (search_batch_size(search_list_size) / 2).max(1)
+}
+
+// ── Search-loop tuning constants ──────────────────────────────────────────
+/// Cache-line lookahead for the software-pipelined `DistanceStream`
+/// **Stage-1 quantized prefilter**. Stage-1 vert sizes:
+/// glove100 i8 = **1 line/vert** (LA=12 ⇒ 12 verts ahead),
+/// glove100 i16 = 2 lines/vert (LA=12 ⇒ 6 verts ahead),
+/// SIFT u8 = 1 line/vert. Steady-state issues `LA_Q` prfm per outer
+/// iter; M2 MSHR ≈ 12. Override via `STAGED_DSTREAM_LA_Q=<N>`
+/// (back-compat: `STAGED_DSTREAM_LOOKAHEAD` still honored).
+pub(super) fn dstream_la_q() -> usize {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<usize> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("STAGED_DSTREAM_LA_Q")
+            .ok()
+            .or_else(|| std::env::var("STAGED_DSTREAM_LOOKAHEAD").ok())
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&v| v <= 128)
+            // 64 chosen via LA × L sweep on glove100 i8 with the
+            // sliding-window continuous-stride prefetch design.
+            // LA=64 wins low/mid band (L=16=204k, L=32=126k, L=56=86k)
+            // and ties LA=48/128 at high L. Yields 1.34× geomean PA
+            // across 7 recall-aligned anchor points. Larger LA
+            // (96/128) over-prefetches at narrow beam (L=16); smaller
+            // LA (8/16) under-fills the MSHR queue.
+            .unwrap_or(10)
+    })
+}
+
+/// Cache-line lookahead for the software-pipelined `DistanceStream`
+/// **Stage-2 f32 truth**. f32 vert sizes are larger:
+/// glove100 f32 = 4 lines/vert (LA=12 ⇒ **3 verts ahead**),
+/// SIFT f32 = 4 lines/vert, GIST f32 = **30 lines/vert** (LA=12 ⇒
+/// 0 verts — LA is sub-vert here, prologue still primes lines for
+/// the in-progress vert). Stage-2's per-vert compute (~25 ns @ N=100,
+/// 4-acc kernel) is ~4× longer than Stage-1's, so the same line
+/// budget translates to similar runway in nanoseconds.
+/// Override via `STAGED_DSTREAM_LA_TRUTH=<N>`.
+pub(super) fn dstream_la_truth() -> usize {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<usize> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("STAGED_DSTREAM_LA_TRUTH")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&v| v <= 256)
+            // 64 — same default as `dstream_la_q`. Sliding-window
+            // continuous-stride prefetch in `DistanceStream::run`
+            // works the same way for Stage-1 quantized and Stage-2
+            // f32 truth: one prfm per outer iter at distance
+            // `lookahead_lines` ahead, keeping MSHR at steady state
+            // without burst eviction. Larger LA gives a deeper
+            // runway to hide DRAM latency on the f32 truth read,
+            // which has the same per-line miss cost as Stage-1.
+            .unwrap_or(6)
+    })
+}
+/// Slack multiplier on the u8 pre-filter cutoff: quantized distance is
+/// noisy, so keep candidates within this factor of the scale-converted
+/// `pq_worst`.
+#[allow(dead_code)]
+pub(super) const Q_SLACK: f32 = 1.3;
+/// Flush cadence by phase: `FLUSH_INTERVAL[converged as usize]` hops.
+/// Pre-converged flushes every hop to keep pq_worst tight; converged
+/// accumulates across 4 hops to amortize sort+merge over sparse admits
+/// without letting pq_worst drift enough to defeat `early_exit`.
+pub(super) const FLUSH_INTERVAL: [usize; 2] = [1, 4];
+/// 3-way merge routing divisors re-fit from `pq_merge_bench` under
+/// the pad16 PQ layout:
+///   K * 8   < L → per-insert   (K < L / 8,    small-batch regime)
+///   K * 1.5 > L → linear merge (K > L · 0.67, near-or-over-capacity)
+///   otherwise   → gallop merge (log + bulk-memcpy wins in the middle)
+///
+/// The bench shows gallop owns the entire `K/L ∈ [0.125, 0.67]` band
+/// for L ≥ 64 — its "binary-search insertion + extend_from_slice run
+/// of cache-line-sized memcpys" pattern beats both per-insert
+/// (O(K·L)) and linear merge (3-way branchy set-union) by 10-30 ns
+/// per call. Per-insert wins below the 1/8 line because its constant
+/// factor is just one binary-search + one copy_within with no scratch
+/// swap. Linear merge wins above the 2/3 line because gallop's
+/// `partition_point` degenerates to length-1 runs when admits are
+/// near-uniform across the full PQ range.
+///
+/// Encoded as pure shifts + adds — both comparisons lower to one or
+/// two shifts + an add + a compare, no integer multiply:
+///   K * 8   = K << 3
+///   K * 1.5 = K + (K >> 1)
+const INSERT_ROUTE_SHIFT: u32 = 3; // << 3 = × 8
+
+#[inline(always)]
+pub(super) const fn insert_route_mul(k: usize) -> usize {
+    k << INSERT_ROUTE_SHIFT
+}
+
+#[inline(always)]
+pub(super) const fn linear_merge_mul(k: usize) -> usize {
+    k + (k >> 1)
+}
 
 /// 16-byte aligned query buffer for efficient NEON loads.
 /// Query is copied once at search entry, then reused for all distance computations.
@@ -99,208 +286,17 @@ impl<const N: usize> StagedDiskANN<N>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
+    /// Convenience wrapper around [`Self::search_l2_u8`] with the
+    /// crate's default L / window / epsilon / early-exit knobs.
     pub fn search_default(&self, query: &[f32; N], k: usize) -> ANNResult<Vec<u32>> {
-        self.search(
+        self.search_l2_u8(
             query,
             k,
             DEFAULT_SEARCH_LIST_SIZE,
             DEFAULT_WINDOW_SIZE,
             DEFAULT_EPSILON,
-            DEFAULT_WINDOW_SIZE * 2,
+            DEFAULT_WINDOW_SIZE << 1,
         )
-    }
-
-    /// Greedy beam search over PhasedGraph + InmemDataset with ParlayANN-style
-    /// u8 pre-filter → full-precision compute pipeline.
-    ///
-    /// Pipeline per hop:
-    ///   1. Expand neighbors (local+remote if pre-converged, local+extra if rerank).
-    ///   2. Stage-1 u8 pre-filter drops candidates obviously worse than `pq_worst`.
-    ///   3. Stage-2 full-precision NEON compare on survivors (branch-free cmov push).
-    ///   4. Flush the hop-batch to the PQ via 3-way routing (insert / gallop / merge)
-    ///      derived from the K-vs-L crossover map measured in `pq_merge_bench`.
-    ///
-    /// `search_list_size` = L is the beam width; `early_exit_limit` stops
-    /// the search after that many consecutive zero-admit hops in the rerank
-    /// phase. SAFETY: all neighbor IDs from `graph.neighbors()` /
-    /// `graph.rerank_candidates()` are trusted to be < `dataset.num_active_pts`.
-    pub fn search(
-        &self,
-        query: &[f32; N],
-        k: usize,
-        search_list_size: usize,
-        window_size: usize,
-        epsilon: f32,
-        early_exit_limit: usize,
-    ) -> ANNResult<Vec<u32>> {
-        let entry = self.entry;
-        let dataset = &self.dataset;
-        let graph = &self.graph;
-        let aligned = AlignedQuery(*query);
-        let query_vertex = Vertex::new(&aligned.0, 0);
-
-        let q_ds = self.ensure_quantized_dataset();
-        let q_query = q_ds.quantize_query(query);
-        let slope_sq = q_ds.params.slope * q_ds.params.slope;
-        let q_slack: f32 = 1.3;
-
-        let pool = self.inmem_scratch_pool.get_or_init(|| {
-            InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
-        });
-
-        let mut guard = pool.acquire();
-        let scratch = guard.scratch();
-        scratch.prepare_for_query(search_list_size);
-        scratch.dcc.reconfigure(window_size, epsilon);
-        scratch.early_exit.reconfigure(early_exit_limit);
-
-        scratch.seen.insert(entry);
-        let entry_dist = {
-            // SAFETY: entry is the stored graph entry point, always valid.
-            let v_arr = unsafe { dataset.get_vertex_unchecked(entry) };
-            let v = Vertex::new(v_arr, entry);
-            query_vertex.compare(&v, Metric::L2)
-        };
-        scratch.pq.insert(DNeighbor::new(entry, entry_dist));
-
-        let mut prev_admitted: usize = 1;
-        // Unified flush cadence: 1 hop pre-converged, 4 hops post-converged
-        // (cross-hop accumulation amortizes merge cost in the sparse rerank
-        // phase while keeping pq_worst fresh enough for early_exit).
-        let mut hops_since_flush: usize = 0;
-        // Prefetch lookahead for stage-1/stage-2 distance loops. 8 iters of
-        // ~20 ns compute ≈ 160 ns runway — enough to hide L3 / partial DRAM.
-        const PF_BATCH: usize = 8;
-
-        while scratch.pq.has_notvisited_node() {
-            let id = scratch.pq.closest_notvisited().id as usize;
-
-            if let Some(next) = scratch.pq.peek_notvisited() {
-                graph.prefetch_node(next.id as usize);
-                dataset.prefetch_vector(next.id);
-            }
-
-            let converged = scratch.dcc.update(prev_admitted);
-
-            scratch.id_scratch.clear();
-            if !converged {
-                for &nn in graph.neighbors(id) {
-                    if scratch.seen.insert(nn) {
-                        scratch.id_scratch.push(nn);
-                    }
-                }
-            } else {
-                let (local, extra) = graph.rerank_candidates(id);
-                for &nn in local.iter().chain(extra.iter()) {
-                    if scratch.seen.insert(nn) {
-                        scratch.id_scratch.push(nn);
-                    }
-                }
-            }
-
-            let n_unseen = scratch.id_scratch.len();
-            let pq_worst = if scratch.pq.size() >= search_list_size {
-                scratch.pq[scratch.pq.size() - 1].distance
-            } else {
-                f32::MAX
-            };
-
-            // Stage 1: u8 pre-filter.
-            let pf_head = n_unseen.min(PF_BATCH);
-            for m in 0..pf_head {
-                q_ds.prefetch_vector(scratch.id_scratch[m]);
-            }
-            let q_threshold: f32 = if pq_worst.is_finite() {
-                pq_worst * slope_sq * q_slack
-            } else {
-                f32::MAX
-            };
-            let mut pre_kept: usize = 0;
-            for m in 0..n_unseen {
-                if m + PF_BATCH < n_unseen {
-                    q_ds.prefetch_vector(scratch.id_scratch[m + PF_BATCH]);
-                }
-                let nn = scratch.id_scratch[m];
-                let q_dist = unsafe { q_ds.qdist(nn, &q_query) };
-                if q_dist <= q_threshold {
-                    scratch.id_scratch[pre_kept] = nn;
-                    pre_kept += 1;
-                }
-            }
-
-            // Stage 2: branch-free cmov-style write + conditional advance.
-            let pf2 = pre_kept.min(PF_BATCH);
-            for m in 0..pf2 {
-                dataset.prefetch_vector(scratch.id_scratch[m]);
-            }
-            let hop_start = scratch.dist_buffer.len();
-            scratch.dist_buffer.reserve(pre_kept);
-            let hop_admits: usize = unsafe {
-                let base = scratch.dist_buffer.as_mut_ptr().add(hop_start);
-                let mut w = 0usize;
-                for m in 0..pre_kept {
-                    if m + PF_BATCH < pre_kept {
-                        dataset.prefetch_vector(scratch.id_scratch[m + PF_BATCH]);
-                    }
-                    let nn = scratch.id_scratch[m];
-                    let v_arr = dataset.get_vertex_unchecked(nn);
-                    let v = Vertex::new(v_arr, nn);
-                    let dist = query_vertex.compare(&v, Metric::L2);
-                    base.add(w).write(DNeighbor::new(nn, dist));
-                    w += (dist < pq_worst) as usize;
-                }
-                scratch.dist_buffer.set_len(hop_start + w);
-                w
-            };
-            prev_admitted = hop_admits;
-
-            let should_exit = scratch.early_exit.should_exit(converged, hop_admits);
-            let will_stop = should_exit | !scratch.pq.has_notvisited_node();
-
-            hops_since_flush += 1;
-            let flush_interval = 1 + 3 * (converged as usize);
-            let must_flush = (hops_since_flush >= flush_interval) | will_stop;
-
-            if must_flush {
-                // 3-way routing from `pq_merge_bench` crossover map:
-                //   K < L/12  → per-insert   (cache-friendly for small K)
-                //   K > L/2   → linear merge (bulk rewrite)
-                //   otherwise → gallop merge (log-factor wins)
-                let cnt = scratch.dist_buffer.len();
-                if cnt > 0 {
-                    if cnt * 12 < search_list_size {
-                        for c in scratch.dist_buffer.drain(..) {
-                            scratch.pq.insert(c);
-                        }
-                    } else {
-                        scratch.dist_buffer.sort_unstable_by(|a, b| {
-                            a.distance
-                                .total_cmp(&b.distance)
-                                .then_with(|| a.id.cmp(&b.id))
-                        });
-                        if cnt * 2 > search_list_size {
-                            scratch
-                                .pq
-                                .batch_merge(&scratch.dist_buffer, &mut scratch.merge_scratch);
-                        } else {
-                            scratch
-                                .pq
-                                .batch_merge_gallop(&scratch.dist_buffer, &mut scratch.merge_scratch);
-                        }
-                        scratch.dist_buffer.clear();
-                    }
-                }
-                hops_since_flush = 0;
-            }
-
-            if should_exit {
-                break;
-            }
-        }
-
-        Ok((0..scratch.pq.size().min(k))
-            .map(|i| scratch.pq[i].id)
-            .collect())
     }
 
     /// Two-phase search with ADSampling distance computations.
@@ -663,36 +659,5 @@ where
         }
 
         Ok(stats)
-    }
-
-    /// Parallel batch search using rayon.
-    pub fn search_batch(
-        &self,
-        queries: &[[f32; N]],
-        k: usize,
-        search_list_size: usize,
-        window_size: usize,
-        epsilon: f32,
-        early_exit_limit: usize,
-    ) -> ANNResult<Vec<Vec<u32>>> {
-        self.inmem_scratch_pool.get_or_init(|| {
-            InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
-        });
-
-        let results: Vec<Vec<u32>> = queries
-            .par_iter()
-            .map(|query| {
-                self.search(
-                    query,
-                    k,
-                    search_list_size,
-                    window_size,
-                    epsilon,
-                    early_exit_limit,
-                )
-                .unwrap_or_default()
-            })
-            .collect();
-        Ok(results)
     }
 }

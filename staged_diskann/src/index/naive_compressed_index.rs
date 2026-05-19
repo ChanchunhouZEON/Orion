@@ -90,7 +90,8 @@ where
         window_size: usize,
         epsilon: f32,
     ) -> diskann::common::ANNResult<Vec<u32>> {
-        use diskann::model::{Neighbor as DNeighbor, Vertex};
+        use crate::model::Neighbor as DNeighbor;
+        use diskann::model::Vertex;
         use vector::Metric;
 
         let entry = self.entry;
@@ -105,7 +106,6 @@ where
         let mut guard = pool.acquire();
         let scratch = guard.scratch();
         scratch.prepare_for_query(search_list_size);
-        scratch.ensure_capacity(graph.num_nodes());
         scratch.dcc.reconfigure(window_size, epsilon);
 
         scratch.seen.insert(entry);

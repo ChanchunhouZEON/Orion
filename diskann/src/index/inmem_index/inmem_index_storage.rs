@@ -162,7 +162,7 @@ where
         // #[cfg(feature = "staged_diskann")]
         // {
         //     candidates_offset = index_size as u32;
-        //     if self.candidate_anchor_sets.is_some() {
+        //     if self.candidate_sets.is_some() {
         //         let candidate_sets = self.extract_candidate_sets()?;
         //         for i in 0..self.num_active_pts + self.configuration.num_frozen_pts {
         //             let candidate_set_size: u32 = candidate_sets[i].len() as u32;
@@ -253,7 +253,7 @@ where
     /// Save candidate sets to a binary file.
     ///
     /// Uses `extract_candidate_sets()` to compute the final candidate sets from
-    /// anchor sets and graph structure, then serializes them.
+    /// the per-anchor pruned-pair slab and graph structure, then serializes them.
     ///
     /// Binary format (all little-endian):
     ///   - file_size:  u64  (total bytes excluding this field itself... actually total data size)

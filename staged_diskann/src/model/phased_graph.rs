@@ -140,6 +140,15 @@ impl PhasedGraph {
         self.stride
     }
 
+    /// Raw slab as bytes — used by benchmarks to `mlock` the graph
+    /// pages so they cannot be swapped between warmup and the timed
+    /// sweep.
+    #[inline]
+    pub fn buffer_bytes(&self) -> &[u8] {
+        let n = self.buffer.len() * std::mem::size_of::<u32>();
+        unsafe { std::slice::from_raw_parts(self.buffer.as_ptr() as *const u8, n) }
+    }
+
     #[inline]
     fn slot(&self, i: usize) -> &[u32] {
         let base = i * self.stride;

@@ -62,8 +62,8 @@ pub enum ANNError {
         err: TryFromSliceError,
     },
 
-    #[error("CandidateAnchorSetsError: {err}")]
-    CandidateAnchorSetsError { err: String },
+    #[error("CandidateSetsError: {err}")]
+    CandidateSetsError { err: String },
 
     #[error("SerializeError: {err}")]
     SerializeError {
@@ -168,8 +168,8 @@ impl ANNError {
     }
 
     #[inline]
-    pub fn log_candidate_anchor_sets_error(err: String) -> Self {
-        let ann_err = ANNError::CandidateAnchorSetsError { err };
+    pub fn log_candidate_sets_error(err: String) -> Self {
+        let ann_err = ANNError::CandidateSetsError { err };
         match log_error(ann_err.to_string()) {
             Ok(()) => ann_err,
             Err(log_err) => ANNError::LogError { err: log_err },

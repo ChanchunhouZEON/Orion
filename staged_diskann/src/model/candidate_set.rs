@@ -9,9 +9,11 @@ use std::sync::{Arc, Mutex};
 /// Manages candidate sets gained from robust pruning process.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct CandidateSetManager {
-    /// Mirrors diskann's member `candidate_anchor_set` for independent diskann-base construction.
+    /// Per-anchor map of pruned-pair sets (anchor → origin → pruned-ids), used by
+    /// the standalone Vamana implementation in `diskann_base.rs`. Distinct from
+    /// the per-node `candidate_sets` field below.
     #[serde(skip, default)]
-    pub candidate_anchor_sets:
+    pub anchor_sets:
         Option<Vec<Arc<Mutex<std::collections::HashMap<u32, HashSet<u32>>>>>>,
 
     /// candidate_sets[node_id] = HashSet of candidate node IDs
@@ -22,20 +24,20 @@ pub struct CandidateSetManager {
 impl CandidateSetManager {
     pub fn new(n: usize) -> Self {
         Self {
-            candidate_anchor_sets: None,
+            anchor_sets: None,
             candidate_sets: vec![HashSet::new(); n],
         }
     }
 
     pub fn with_anchor_sets(n: usize) -> Self {
-        let candidate_anchor_sets = Some(
+        let anchor_sets = Some(
             (0..n)
                 .map(|_| Arc::new(Mutex::new(std::collections::HashMap::new())))
                 .collect(),
         );
 
         Self {
-            candidate_anchor_sets,
+            anchor_sets,
             candidate_sets: vec![HashSet::new(); n],
         }
     }

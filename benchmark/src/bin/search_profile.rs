@@ -85,7 +85,7 @@ macro_rules! run_profile {
         // Warmup
         eprintln!("Warmup (100 queries)...");
         for q in queries_arr.iter().take(100) {
-            let _ = staged.search(q, 10, 48, 5, calib.threshold, calib.early_exit_limit);
+            let _ = staged.search_l2_u8_q(q, 10, 48, 5, calib.threshold, calib.early_exit_limit);
         }
 
         // Signal readiness via marker file, then sleep to let xctrace attach.
@@ -115,7 +115,7 @@ macro_rules! run_profile {
         for &l in &search_ls {
             let t = Instant::now();
             for q in &queries_arr {
-                let _ = staged.search(
+                let _ = staged.search_l2_u8_q(
                     q,
                     k,
                     l as usize,

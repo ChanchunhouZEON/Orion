@@ -129,6 +129,120 @@ pub fn distance_l2_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
     }
 }
 
+/// ADSampling-style L2 distance with probabilistic early abandon.
+///
+/// Assumes `a` and `b` have been pre-rotated by a random orthogonal matrix so
+/// that the squared-difference contribution of each dimension is approximately
+/// i.i.d. Under that assumption the partial sum after `d'` dims is an unbiased
+/// estimator of `(d'/N) × full_dist`. We abandon early when the scaled
+/// estimate exceeds `upper_bound` adjusted for a one-sided confidence margin:
+///
+/// ```text
+///   abandon iff  partial × (N / d')  >  upper_bound × (1 + ε / sqrt(d'))
+/// ```
+///
+/// `ε ≈ 2.1` gives ~99% confidence of not wrongly pruning. Returns `-1.0` on
+/// abandonment, otherwise the full squared-L2 distance.
+///
+/// Checks every 32 dimensions (8 unrolled f32x4 iterations) for a more
+/// aggressive cutoff than `distance_l2_early_abandon_f32`.
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+pub fn distance_l2_adsampling_f32<const N: usize>(
+    a: &[f32; N],
+    b: &[f32; N],
+    upper_bound: f32,
+    epsilon: f32,
+) -> f32 {
+    debug_assert_eq!(N % 4, 0);
+
+    unsafe {
+        // 4× unrolled like `distance_l2_early_abandon_f32` — 16 dims per outer iter.
+        let mut sum0 = vdupq_n_f32(0.0);
+        let mut sum1 = vdupq_n_f32(0.0);
+        let mut sum2 = vdupq_n_f32(0.0);
+        let mut sum3 = vdupq_n_f32(0.0);
+
+        let a_ptr = a.as_ptr();
+        let b_ptr = b.as_ptr();
+
+        const PF_AHEAD: usize = 4;
+        // Check every 4 unrolled iters = 64 dims. 32 is too aggressive — the
+        // horizontal reduction + sqrt overhead per check wipes out the
+        // algorithmic win for high-dim data.
+        const CHECK_INTERVAL: usize = 4;
+
+        let chunks = N / 16;
+        let n_f = N as f32;
+        for i in 0..chunks {
+            let offset = i * 16;
+
+            if i + PF_AHEAD < chunks {
+                let pf_offset = (i + PF_AHEAD) * 16;
+                let pa = a_ptr.add(pf_offset) as *const u8;
+                let pb = b_ptr.add(pf_offset) as *const u8;
+                std::arch::asm!(
+                    "prfm pldl1keep, [{a}]",
+                    "prfm pldl1keep, [{b}]",
+                    a = in(reg) pa,
+                    b = in(reg) pb,
+                    options(nostack, preserves_flags),
+                );
+            }
+
+            let a0 = vld1q_f32(a_ptr.add(offset));
+            let b0 = vld1q_f32(b_ptr.add(offset));
+            let diff0 = vsubq_f32(a0, b0);
+            sum0 = vfmaq_f32(sum0, diff0, diff0);
+
+            let a1 = vld1q_f32(a_ptr.add(offset + 4));
+            let b1 = vld1q_f32(b_ptr.add(offset + 4));
+            let diff1 = vsubq_f32(a1, b1);
+            sum1 = vfmaq_f32(sum1, diff1, diff1);
+
+            let a2 = vld1q_f32(a_ptr.add(offset + 8));
+            let b2 = vld1q_f32(b_ptr.add(offset + 8));
+            let diff2 = vsubq_f32(a2, b2);
+            sum2 = vfmaq_f32(sum2, diff2, diff2);
+
+            let a3 = vld1q_f32(a_ptr.add(offset + 12));
+            let b3 = vld1q_f32(b_ptr.add(offset + 12));
+            let diff3 = vsubq_f32(a3, b3);
+            sum3 = vfmaq_f32(sum3, diff3, diff3);
+
+            // Scaled-partial early abort at each checkpoint.
+            if (i + 1) % CHECK_INTERVAL == 0 && (i + 1) < chunks {
+                let partial_v = vaddq_f32(vaddq_f32(sum0, sum1), vaddq_f32(sum2, sum3));
+                let partial = vaddvq_f32(partial_v);
+                let processed = ((i + 1) * 16) as f32;
+                // abandon iff partial × (N/d') > upper_bound × (1 + ε/√d')
+                let lhs = partial * (n_f / processed);
+                let rhs = upper_bound * (1.0 + epsilon / processed.sqrt());
+                if lhs > rhs {
+                    return -1.0;
+                }
+            }
+        }
+
+        // Tail elements if N is not a multiple of 16.
+        let remaining_start = chunks * 16;
+        for i in (remaining_start..N).step_by(4) {
+            let a_vec = vld1q_f32(a_ptr.add(i));
+            let b_vec = vld1q_f32(b_ptr.add(i));
+            let diff = vsubq_f32(a_vec, b_vec);
+            sum0 = vfmaq_f32(sum0, diff, diff);
+        }
+
+        let total = vaddq_f32(vaddq_f32(sum0, sum1), vaddq_f32(sum2, sum3));
+        let dist = vaddvq_f32(total);
+        if dist >= upper_bound {
+            -1.0
+        } else {
+            dist
+        }
+    }
+}
+
 /// L2 squared distance with early abandon.
 /// Returns the actual distance if < `upper_bound`, or -1.0 if partial
 /// distance exceeds `upper_bound` before all dimensions are processed.

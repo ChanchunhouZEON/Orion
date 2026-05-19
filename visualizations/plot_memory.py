@@ -46,17 +46,6 @@ h1 = rounded_bars(ax, x - (w + gap), diskann_mb, w, PALETTE['cyan'], label='Disk
 h2 = rounded_bars(ax, x, staged_peak_mb, w, PALETTE['blue'], label='Staged peak')
 h3 = rounded_bars(ax, x + (w + gap), staged_final_mb, w, PALETTE['green'], label='Staged final')
 
-for i in range(n):
-    da = diskann_mb[i]
-    sp = staged_peak_mb[i]
-    ratio = sp / da if da > 0 else 1
-    ax.annotate(f'{sp:.0f}', xy=(x[i], sp), ha='center', va='bottom',
-                fontsize=8, color=PALETTE['annot'], fontweight='bold')
-    ax.annotate(f'{da:.0f}', xy=(x[i] - (w + gap), da), ha='center', va='bottom',
-                fontsize=8, color=PALETTE['annot'], fontweight='bold')
-    ax.annotate(f'{staged_final_mb[i]:.0f}', xy=(x[i] + (w + gap), staged_final_mb[i]),
-                ha='center', va='bottom', fontsize=8, color=PALETTE['annot'], fontweight='bold')
-
 ax.set_xticks(x); ax.set_xticklabels([t for _, t in present])
 ax.set_ylabel('Memory (MB)', fontsize=11)
 ax.set_title('Peak Memory: DiskANN vs StagedDiskANN', fontweight='bold')
@@ -77,9 +66,8 @@ for i, ((k, t), r, c) in enumerate(zip(present, ratio_peak, ds_colors)):
 
 ax.axhline(y=1.0, color='#ccc', linestyle='--', alpha=0.5, linewidth=1)
 for i, r in enumerate(ratio_peak):
-    pct = (r - 1) * 100
-    ax.annotate(f'{r:.2f}x\n({pct:+.1f}%)', xy=(x[i], r),
-                ha='center', va='bottom', fontsize=9, fontweight='bold', color=PALETTE['annot'])
+    ax.annotate(f'{r:.2f}x', xy=(x[i], r),
+                ha='center', va='bottom', fontsize=12, fontweight='bold', color=PALETTE['annot'])
 
 ax.set_xticks(x); ax.set_xticklabels([t for _, t in present])
 ax.set_ylabel('Peak Memory Ratio (Staged / DiskANN)', fontsize=11)
@@ -91,5 +79,5 @@ ax.set_xlim(x[0] - 0.6, x[-1] + 0.6)
 
 plt.tight_layout()
 out = 'visualizations/memory_analysis.png'
-fig.savefig(out, dpi=150, bbox_inches='tight', facecolor='white')
+save_png_and_pdf(fig, out)
 print(f'Saved {out}')

@@ -62,7 +62,11 @@ def main():
     ax.set_xlabel("Recall@10")
     ax.set_ylabel("QPS (queries / sec)")
     ax.set_yscale("log")
-    ax.set_xlim(0.9, 1.0)
+    # ParlayANN's sweep starts well below 0.9 (down to ~0.53 on SIFT)
+    # — pin the left edge to the leftmost data point across both
+    # curves so we show the whole comparison, not just the high-recall
+    # tail.
+    ax.set_xlim(max(0.0, min(pa_r + s_r) - 0.01), 1.0)
     ax.set_title("SIFT1M — StagedDiskANN vs ParlayANN on ParlayANN base graph\n"
                  "(geometric mean of two back-to-back runs)")
     ax.grid(True, which="both", alpha=0.25)

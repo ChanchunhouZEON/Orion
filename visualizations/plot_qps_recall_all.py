@@ -3,9 +3,13 @@
 
 import json
 import os
+import sys
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+sys.path.insert(0, os.path.dirname(__file__))
+from chart_style import save_png_and_pdf
 
 datasets = [
     ("sift",    "SIFT (dim=128)"),
@@ -47,8 +51,8 @@ for idx, (name, title) in enumerate(datasets):
 
 plt.tight_layout()
 out = "visualizations/qps_recall_all.png"
-plt.savefig(out, dpi=150, bbox_inches='tight')
-print(f"Saved {out}")
+save_png_and_pdf(fig, out)
+print(f"Saved {out} (+ .pdf)")
 
 # Also save individual plots
 for name, title in datasets:
@@ -75,6 +79,6 @@ for name, title in datasets:
     ax2.grid(True, alpha=0.3)
 
     out2 = f"visualizations/qps_recall_{name}.png"
-    fig2.savefig(out2, dpi=150, bbox_inches='tight')
+    save_png_and_pdf(fig2, out2)
     plt.close(fig2)
-    print(f"Saved {out2}")
+    print(f"Saved {out2} (+ .pdf)")

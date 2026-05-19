@@ -6,57 +6,62 @@
 use std::sync::Arc;
 
 use crossbeam::queue::ArrayQueue;
-use diskann::model::NeighborPriorityQueue as DiskANNPQ;
 
 use crate::algorithm::search::convergence::SearchConvergenceChecker;
-
-/// Bitset-based visited tracker. For N nodes needs N/8 bytes.
-/// 100K nodes = 12.5 KB (fits in L1), 1M nodes = 125 KB (fits in L2).
-pub struct BitVecSeen {
-    bits: Vec<u64>,
-    num_words: usize,
-}
-
-impl BitVecSeen {
-    pub fn new(num_nodes: usize) -> Self {
-        let num_words = (num_nodes + 63) / 64;
-        Self {
-            bits: vec![0u64; num_words],
-            num_words,
-        }
-    }
-
-    /// Insert node. Returns true if the node was NOT previously seen (newly inserted).
-    #[inline]
-    pub fn insert(&mut self, id: u32) -> bool {
-        let word = id as usize >> 6;
-        let bit = 1u64 << (id & 63);
-        if self.bits[word] & bit != 0 {
-            false
-        } else {
-            self.bits[word] |= bit;
-            true
-        }
-    }
-
-    /// Clear all bits without deallocating.
-    pub fn clear(&mut self) {
-        // memset to zero — much faster than per-element clear for large bitsets.
-        // For small bitsets (< L1) this is a single cache line write.
-        unsafe {
-            std::ptr::write_bytes(self.bits.as_mut_ptr(), 0, self.num_words);
-        }
-    }
-}
+use crate::model::Neighbor as DNeighbor;
+use crate::model::NeighborPriorityQueue;
+use crate::model::neighbor::neighbor_priority_queue::pad16;
+use crate::model::visited_set::HashsetSeen;
 
 /// Pre-allocated scratch for in-memory greedy search.
 pub struct InMemSearchScratch {
     /// Sorted candidate queue; no internal dedup — dedup is handled by `seen`.
-    pub pq: DiskANNPQ,
-    /// Bitset-based visited tracker. O(1) insert + test, L1-friendly.
-    pub seen: BitVecSeen,
+    /// Inserts go through `insert_unchecked` (no HashSet probe) since the
+    /// external `seen` set already filters duplicates at neighbor-expansion
+    /// time.
+    pub pq: NeighborPriorityQueue,
+    /// L1-resident approximate hash-set visited tracker (ParlayANN-style).
+    pub seen: HashsetSeen,
     /// Staging buffer: unseen neighbor IDs collected before distance computation.
     pub id_scratch: Vec<u32>,
+    /// Distance-computed candidates buffered per hop so they can be sorted
+    /// once and batch-merged into `pq` in one pass (ParlayANN batching trick).
+    ///
+    /// **Capacity is sized once at scratch construction** to the
+    /// worst-case staged volume across `FLUSH_INTERVAL` hops:
+    /// `search_list_size + MAX_GRAPH_DEGREE × MAX_FLUSH_INTERVAL`.
+    /// Per-hop `reserve(pre_kept)` calls were removed because they
+    /// produced two pathologies: (1) the second-and-subsequent hops in
+    /// a post-converged flush window inherited a `dist_buffer.len()`
+    /// pinned by prior hops' admits, so each new hop's
+    /// `as_mut_ptr().add(hop_start)` aimed at a position whose backing
+    /// memory might have just moved (reserve realloc'd). (2) The
+    /// growing visible `len` made `pq_worst_local` stale relative to
+    /// the candidates already staged — `hop_admits` under-counted,
+    /// `early_exit` could fire on a streak of bookkeeping zeros.
+    /// With a fixed pre-allocated capacity, no reserve fires inside
+    /// the search loop and the raw-pointer cmov-compact writes hit
+    /// stable memory throughout the query.
+    pub dist_buffer: Vec<DNeighbor>,
+    /// Merge scratch for `NeighborPriorityQueue::batch_merge` — avoids
+    /// per-call alloc when doing the linear-time set-union update.
+    pub merge_scratch: Vec<DNeighbor>,
+
+    /// **f32 query padded to a 32-B chunk multiple** (`ceil(N/8)·8`
+    /// elements, trailing zero-pad). The Stage-2 truth-distance
+    /// streaming kernel reads `chunks_per_vert · 32` bytes from query
+    /// per vertex, so when `N % 8 != 0` the trailing partial chunk
+    /// would otherwise read past the `[f32; N]` query end. Allocated
+    /// once at scratch creation, refilled each query.
+    pub q_query_f32_padded: Vec<f32>,
+
+    /// Adaptive pre-filter threshold state (ParlayANN `beamSearch.h:136-145`):
+    /// running average of the frontier's u8-distance tail-mean, used to
+    /// tighten the quantized pre-filter cutoff as the search stabilizes.
+    pub filter_threshold_sum: f32,
+    pub filter_threshold_count: u32,
+    pub last_worst_id: u32,
+    pub filter_tail_mean: f32,
     /// Reusable convergence checker — avoids per-query allocation.
     pub dcc: SearchConvergenceChecker,
     /// Reusable early exit checker.
@@ -65,34 +70,52 @@ pub struct InMemSearchScratch {
 
 impl InMemSearchScratch {
     pub fn new(search_list_size: usize) -> Self {
-        // Default capacity for bitset — will be resized on first prepare_for_query
-        // if the actual num_nodes is larger.
         Self {
-            pq: DiskANNPQ::with_capacity(search_list_size),
-            seen: BitVecSeen::new(search_list_size * 20),
+            pq: NeighborPriorityQueue::with_capacity(search_list_size),
+            seen: HashsetSeen::new(search_list_size),
             id_scratch: Vec::with_capacity(64),
+            // Capacity = MAX_GRAPH_DEGREE × MAX_FLUSH_INTERVAL = 100 × 4
+            // = 400. Each hop stages up to `MAX_GRAPH_DEGREE` (= 100)
+            // candidate distances; converged-phase accumulates across
+            // up to FLUSH_INTERVAL[1] = 4 hops before flushing.
+            dist_buffer: Vec::with_capacity(400),
+            // Sized to match `pq.data` exactly via the same `pad8(L+1)`
+            // formula `NeighborPriorityQueue::with_capacity` uses. The
+            // two Vecs swap on every `batch_merge` / `batch_merge_gallop`
+            // call, so once steady state is reached neither side has to
+            // reallocate. The earlier `+128` slack was redundant — gallop
+            // can briefly push past `cap`, but the `min(cap)` truncation
+            // before swap restores the invariant.
+            merge_scratch: Vec::with_capacity(pad16(search_list_size + 1)),
+            // Sized to next multiple of 8 ≥ 1024 — covers up to
+            // N=1024 dim before any reallocation. For typical
+            // glove100 / SIFT (N ≤ 128) we use the first 16 elements
+            // and the rest are unused but pre-allocated.
+            q_query_f32_padded: Vec::with_capacity(1024),
+            filter_threshold_sum: 0.0,
+            filter_threshold_count: 0,
+            last_worst_id: u32::MAX,
+            filter_tail_mean: 0.0,
             dcc: SearchConvergenceChecker::new(5, 0.0),
             early_exit: crate::algorithm::search::early_exit::EarlyExitChecker::new(5),
         }
     }
 
-    /// Reset for reuse. `num_nodes` sets the bitset capacity.
+    /// Reset for reuse. Resizes the hashset if `search_list_size` grew vs
+    /// the previous query; clears it in place otherwise.
     pub fn prepare_for_query(&mut self, search_list_size: usize) {
         self.pq.clear();
         self.pq.reserve(search_list_size);
         self.pq.set_capacity(search_list_size);
-        self.seen.clear();
+        self.seen.resize_for(search_list_size);
         self.id_scratch.clear();
+        self.merge_scratch.clear();
+        self.filter_threshold_sum = 0.0;
+        self.filter_threshold_count = 0;
+        self.last_worst_id = u32::MAX;
+        self.filter_tail_mean = 0.0;
         self.dcc.reset();
         self.early_exit.reset();
-    }
-
-    /// Ensure the bitset covers `num_nodes` nodes.
-    pub fn ensure_capacity(&mut self, num_nodes: usize) {
-        let needed = (num_nodes + 63) / 64;
-        if needed > self.seen.num_words {
-            self.seen = BitVecSeen::new(num_nodes);
-        }
     }
 }
 

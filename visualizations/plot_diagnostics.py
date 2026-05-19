@@ -33,8 +33,9 @@ x = np.arange(n_L)
 w = 0.18
 gap = 0.03
 
-fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+fig, axes = plt.subplots(1, 4, figsize=(26, 6.5))
 style_fig(fig)
+axes = axes.reshape(1, 4)
 
 # Per-dataset color pair: lighter = no-ee baseline, solid = staged.
 color_pairs = {
@@ -43,7 +44,7 @@ color_pairs = {
 }
 
 # ── Chart 1: Avg steps per query ──
-ax = axes[0, 0]
+ax = axes[0, 0]  # Chart 1
 handles = []
 all_step_vals = []
 for di, (name, title) in enumerate(present):
@@ -64,7 +65,7 @@ for di, (name, title) in enumerate(present):
     for j in range(n_L):
         pct = (staged[j] / no_ee[j] - 1) * 100
         ax.annotate(f'{pct:+.0f}%', xy=(pos_st[j], staged[j]),
-                    ha='center', va='bottom', fontsize=8, color=c_st, fontweight='bold')
+                    ha='center', va='bottom', fontsize=12, color=c_st, fontweight='bold')
 
 ax.set_xticks(x); ax.set_xticklabels([f'L={l}' for l in L_values])
 ax.set_ylabel('Avg Steps per Query')
@@ -75,7 +76,7 @@ apply_ylim(ax, all_step_vals, headroom=1.25)
 ax.set_xlim(x[0] - 0.6, x[-1] + 0.6)
 
 # ── Chart 2: Avg distance computations per query ──
-ax = axes[0, 1]
+ax = axes[0, 1]  # Chart 2
 handles2 = []
 all_ndc_vals = []
 for di, (name, title) in enumerate(present):
@@ -96,7 +97,7 @@ for di, (name, title) in enumerate(present):
     for j in range(n_L):
         pct = (staged[j] / no_ee[j] - 1) * 100
         ax.annotate(f'{pct:+.0f}%', xy=(pos_st[j], staged[j]),
-                    ha='center', va='bottom', fontsize=8, color=c_st, fontweight='bold')
+                    ha='center', va='bottom', fontsize=12, color=c_st, fontweight='bold')
 
 ax.set_xticks(x); ax.set_xticklabels([f'L={l}' for l in L_values])
 ax.set_ylabel('Avg Distance Computations per Query')
@@ -107,7 +108,7 @@ apply_ylim(ax, all_ndc_vals, headroom=1.25)
 ax.set_xlim(x[0] - 0.6, x[-1] + 0.6)
 
 # ── Chart 3: PhasedGraph structure ──
-ax = axes[1, 0]
+ax = axes[0, 2]
 categories = ['Avg Degree', 'Avg Local', 'Avg Extra', 'Avg Rerank']
 x3 = np.arange(len(categories)) * 1.1
 w3 = 0.3
@@ -134,7 +135,7 @@ apply_ylim(ax, all_g_vals, headroom=1.2)
 ax.set_xlim(x3[0] - 0.6, x3[-1] + 0.6)
 
 # ── Chart 4: Steps saved vs recall loss ──
-ax = axes[1, 1]
+ax = axes[0, 3]
 for name, title in present:
     d = data[name]
     _, c_st = color_pairs.get(name, (PALETTE['grey'], PALETTE['blue']))
@@ -145,7 +146,7 @@ for name, title in present:
         ax.scatter(saved_pct, recall_loss_pp, s=110, color=c_st, marker=marker,
                    zorder=5, edgecolor='white', linewidth=1.5)
         ax.annotate(f'{title} L={l}', (saved_pct + 0.5, recall_loss_pp),
-                    fontsize=9, color=c_st)
+                    fontsize=12, color=c_st)
 
 ax.set_xlabel('Steps Saved (%)')
 ax.set_ylabel('Recall Loss (pp)')
@@ -155,5 +156,5 @@ style_ax(ax)
 
 plt.tight_layout()
 out = 'visualizations/diagnostics.png'
-fig.savefig(out, dpi=150, bbox_inches='tight', facecolor='white')
+save_png_and_pdf(fig, out)
 print(f'Saved {out}')

@@ -3,10 +3,12 @@
  * Licensed under the MIT License.
  */
 
+mod config;
 mod dataset;
 mod metrics;
 mod report;
 mod runner;
+mod utils;
 
 use clap::Parser;
 use dataset::Dataset;
@@ -16,72 +18,10 @@ use runner::common::AlgorithmRunner;
 use runner::{DiskANNRunner, SSDDiskANNRunner, StagedDiskANNRunner};
 use std::path::PathBuf;
 
-/// Resolved per-dataset staged config (defaults merged with dataset overrides).
-struct StagedConfig {
-    alpha: f32,
-    graph_degree: u32,
-    build_search_list_size: usize,
-    max_extra: usize,
-    window_size: usize,
-}
-
-fn load_staged_config(dimension: usize) -> StagedConfig {
-    #[derive(serde::Deserialize)]
-    struct Cfg {
-        defaults: Defaults,
-        #[serde(default)]
-        datasets: std::collections::HashMap<String, DsCfg>,
-    }
-    #[derive(serde::Deserialize)]
-    struct Defaults {
-        staged: StagedDef,
-    }
-    #[derive(serde::Deserialize)]
-    struct StagedDef {
-        alpha: f32,
-        graph_degree: u32,
-        build_search_list_size: usize,
-        max_extra: usize,
-        window_size: usize,
-    }
-    #[derive(serde::Deserialize, Default)]
-    struct DsCfg {
-        staged: Option<DsOverride>,
-    }
-    #[derive(serde::Deserialize, Default)]
-    struct DsOverride {
-        alpha: Option<f32>,
-        build_search_list_size: Option<usize>,
-    }
-
-    let path = "benchmark/configs/sweep.yaml";
-    let cfg: Cfg = serde_yaml::from_str(
-        &std::fs::read_to_string(path).unwrap_or_else(|_| panic!("Cannot read {path}")),
-    )
-    .expect("Invalid sweep config YAML");
-
-    let dim_name = match dimension {
-        32 => "glove25",
-        100 => "glove100",
-        128 => "sift",
-        960 => "gist",
-        _ => "unknown",
-    };
-    let ds = cfg.datasets.get(dim_name);
-    let ov = ds.and_then(|d| d.staged.as_ref());
-
-    StagedConfig {
-        alpha: ov
-            .and_then(|o| o.alpha)
-            .unwrap_or(cfg.defaults.staged.alpha),
-        graph_degree: cfg.defaults.staged.graph_degree,
-        build_search_list_size: ov
-            .and_then(|o| o.build_search_list_size)
-            .unwrap_or(cfg.defaults.staged.build_search_list_size),
-        max_extra: cfg.defaults.staged.max_extra,
-        window_size: cfg.defaults.staged.window_size,
-    }
-}
+// `StagedConfig` + `load_staged_config` used to live here; they have
+// been promoted to `benchmark/src/config.rs` as a proper module with
+// richer per-dataset resolution (paths, metric, base-graph source).
+// Use `config::load_dataset_config_by_dim(dim).staged` at call sites.
 
 #[global_allocator]
 static ALLOCATOR: metrics::TrackingAllocator = metrics::TrackingAllocator::new();
@@ -305,28 +245,7 @@ fn main() {
                     48,  // search_list_size
                     4,   // max_extra
                     5,   // window_size
-                );
-                run_benchmark(
-                    &mut runner,
-                    &dataset,
-                    args.k,
-                    args.mmap_search,
-                    args.drop_inmem,
-                    &args.graph_dir,
-                    args.warm_cache_hops,
-                    args.memory_limit_mb,
-                    &mut results,
-                );
-            }
-            "in_mem_staged_diskann" => {
-                // staged_diskann in_mem_search with auto-calibrated convergence.
-                let mut runner = StagedDiskANNRunner::new(
-                    "InMemStagedDiskANN",
-                    1.2, // alpha
-                    32,  // graph_degree
-                    48,  // search_list_size
-                    4,   // max_extra
-                    5,   // window_size
+                    crate::config::Metric::L2Q,
                 );
                 run_benchmark(
                     &mut runner,
@@ -553,7 +472,7 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let scfg = load_staged_config(dimension);
+    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
 
     let dim_name = match dimension {
         32 => "glove25",
@@ -735,27 +654,56 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let scfg = load_staged_config(dimension);
+    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
 
     let dim_name = match dimension {
-        32 => "glove25",
-        100 => "glove100",
         128 => "sift",
         960 => "gist",
-        _ => "unknown",
+        _ => "unknown/unsupported dataset(current version only support GIST & SIFT which use L2Q metric as default)",
     };
 
+    // DiskANN and Staged both build at the dataset's staged params
+    // (sweep.yaml `datasets.<name>.staged` block) so the comparison
+    // isolates the search algorithm, not the build hyperparams. The
+    // legacy hardcoded "α=2.0 R=32 L=48" label predated the
+    // DiskANN-matches-staged change in `run_qps_recall_sweep` and
+    // was lying about what got built.
     println!(
-        "Building DiskANN (α=2.0, R=32, L_build=48) for {} {}pts...",
-        dim_name, num_points
+        "Building DiskANN (α={:.2}, R={}, L_build={}) for {} {}pts...",
+        scfg.alpha, scfg.graph_degree, scfg.build_search_list_size, dim_name, num_points
     );
-    let mut diskann_runner = runner::DiskANNRunner::new(48, 32, 2.0);
+    let mut diskann_runner = runner::DiskANNRunner::new(scfg.build_search_list_size, scfg.graph_degree, scfg.alpha);
+
+    // Cache paths mirror `staged_sweep`'s naming so a single `staged_sweep`
+    // build populates both. Both algorithms here use the same R / L /
+    // α / max_extra triplet (the `scfg` block), so the same cache slot
+    // works for both. When the cache files exist, build() short-circuits
+    // straight to load — saves ~70s of Vamana construction per run and
+    // eliminates graph-topology jitter between thread-sweep runs.
+    let alpha_tag = format!("{:.2}", scfg.alpha).replace('.', "_");
+    let diskann_cache = std::path::PathBuf::from("cache/diskann").join(format!(
+        "{}_n{}_r{}_l{}_a{}.bin",
+        dim_name, num_points, scfg.graph_degree, scfg.build_search_list_size, alpha_tag,
+    ));
+    let staged_cache = std::path::PathBuf::from("cache/staged").join(format!(
+        "{}_n{}_r{}_l{}_a{}_ex{}.bin",
+        dim_name,
+        num_points,
+        scfg.graph_degree,
+        scfg.build_search_list_size,
+        alpha_tag,
+        scfg.max_extra,
+    ));
+    diskann_runner.set_cache_path(&diskann_cache);
     diskann_runner.build(&flat_base, num_points, dimension);
 
     println!(
         "Building StagedDiskANN (α={:.2}, R={}, L_build={}) for {} {}pts...",
         scfg.alpha, scfg.graph_degree, scfg.build_search_list_size, dim_name, num_points
     );
+    // thread-sweep uses L2-Q (single-stage u8 beam + post-hoc f32 rerank)
+    // — the production SIFT/GIST search path. Going through `search_batch`
+    // routes into `search_batch_l2_u8_q`'s L-adaptive rayon shape.
     let mut staged_runner = runner::StagedDiskANNRunner::new(
         "StagedDiskANN",
         scfg.alpha,
@@ -763,34 +711,69 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
         scfg.build_search_list_size,
         scfg.max_extra,
         scfg.window_size,
+        crate::config::Metric::L2Q,
     );
+    staged_runner.set_cache_path(&staged_cache);
     staged_runner.build(&flat_base, num_points, dimension);
 
-    // Fix search L so QPS scaling is comparable across thread counts.
+    // Fix search L on both runners so QPS scaling is comparable across
+    // thread counts AND the two algorithms operate at the same recall
+    // target. Staged's `new()` defaults `search_list_size` to the build
+    // L (scfg.build_search_list_size, 128 for SIFT) — without this
+    // override staged would search at L=128 while DiskANN searches at
+    // L=48, conflating algorithm gap with hyperparameter gap and
+    // making the staged numbers diverge from `staged_sweep`'s output.
     let search_l: usize = 48;
     diskann_runner.set_search_list_size(search_l);
+    staged_runner.set_search_list_size(search_l);
+
+    // Re-calibrate `threshold` + `early_exit_limit` at the **search L**
+    // (48) using **real test queries** — the build-time calibration ran
+    // at L=128 (the build L) over the first 500 base vectors as warmup,
+    // both of which diverge from how `staged_sweep` calibrates
+    // (CALIB_L=48, 200 real test queries). Different calibration →
+    // different convergence + early-exit behavior → ~10-20% QPS gap.
+    // Match `staged_sweep`'s recipe exactly.
+    staged_runner.recalibrate(&dataset.queries, 200);
+    let (thr, ee) = staged_runner.calibrated_params();
+    println!(
+        "Recalibrated at L={search_l}: threshold={thr:.2}, early_exit_limit={ee} (reference staged_sweep: threshold=0.15, early_exit_limit=15)",
+    );
 
     let queries = &dataset.queries;
     let thread_counts: [usize; 6] = [1, 2, 4, 6, 8, 16];
-    let trials: usize = 9;
+    let trials: usize = 5;
 
-    // Pre-warm scratch buffers on enough threads to cover the largest sweep.
+    // Pin the driver thread on P-cores; rayon workers get the same
+    // bump via `start_handler` below. Mirrors `staged_sweep`'s setup
+    // — without it the macOS scheduler may demote workers to E-cores
+    // (3-4× slower per op) under sustained pressure or thermal load.
+    utils::set_thread_qos_user_interactive();
+
+    // Pin the hot regions into RAM so warmup + timed trials see the
+    // same resident pages — no page-in cost on the timed-side critical
+    // path. Mirrors `staged_sweep`'s mlock setup.
+    //
+    // We pin: staged's f32 dataset, quantized sidecar (L2Q for SIFT/GIST),
+    // PhasedGraph slab, plus the query batch. DiskANN's internal graph
+    // sits behind `Box<dyn ANNInmemIndex>` and isn't directly addressable
+    // from here — its first-trial pages are still warmed by the per-pool
+    // warmup pass below, just not formally mlocked. If `RLIMIT_MEMLOCK`
+    // is too low the calls log a warning and fall back to ordinary
+    // paging without aborting.
+    staged_runner.pin_hot_regions();
     {
-        use rayon::prelude::*;
-        let max_threads = *thread_counts.iter().max().unwrap();
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(max_threads)
-            .build()
-            .unwrap();
-        let warmup: Vec<Vec<f32>> = (0..max_threads * 4 + 20)
-            .map(|_| vec![0.0f32; dimension])
-            .collect();
-        pool.install(|| {
-            warmup.par_iter().for_each(|q| {
-                let _ = diskann_runner.search(q, k);
-                let _ = staged_runner.search(q, k);
-            });
-        });
+        // Queries are a `Vec<Vec<f32>>`. The outer Vec's heap is small
+        // (one `Vec<f32>` header per query); the actual f32 payload
+        // lives in each inner Vec's heap allocation. Pinning the outer
+        // Vec's contiguous header array is cheap and mostly symbolic
+        // — the per-query payload pages are walked during search and
+        // brought in naturally by the warmup pass. For a future
+        // refactor that flattens `queries` to a single `Vec<f32>`,
+        // this single mlock would also cover the payload.
+        let q_ptr = queries.as_ptr() as *const u8;
+        let q_len = queries.len() * std::mem::size_of::<Vec<f32>>();
+        utils::mlock_bytes("queries (headers)", q_ptr, q_len);
     }
 
     println!(
@@ -805,13 +788,50 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
     );
     println!("  {}", "─".repeat(72));
 
-    // Collect per-trial QPS so downstream plots can show confidence bands.
-    let sample_qps = |runner: &dyn runner::common::AlgorithmRunner, nt: usize| -> (Vec<f64>, f64) {
+    // ── One-time scratch-pool sizing ──────────────────────────────────
+    // `StagedDiskANN::inmem_scratch_pool` is `get_or_init` — initialised
+    // ONCE on first search with size `current_num_threads() + 5`. If we
+    // let the T=1 pool's warmup initialise it (sized for 6 scratches),
+    // every later thread count (T=8, T=16) reuses that under-sized pool
+    // and threads block waiting for a free scratch. At T=16, 10 of 16
+    // workers stall on the scratch queue → most of the QPS gap vs
+    // `staged_sweep` came from this.
+    //
+    // Pre-warm at the max thread count so the scratch pool is sized for
+    // the worst-case (max_threads + 5). Subsequent per-thread-count
+    // pools all hit the cached pool with adequate scratch.
+    {
+        let max_threads = *thread_counts.iter().max().unwrap();
+        let init_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(max_threads)
+            .start_handler(|_| utils::set_thread_qos_user_interactive())
+            .build()
+            .expect("failed to build init pool");
+        let _ = init_pool.install(|| staged_runner.search_batch(queries, k));
+        let _ = init_pool.install(|| diskann_runner.search_batch(queries, k));
+    }
+
+    // Per-thread-count timed-region protocol — one pool built **once**
+    // per `nt`, kept alive for warmup + all trials. Old code routed
+    // through `search_batch_with_threads` which spawned a fresh
+    // `ThreadPool` on every trial; that triggered OS thread churn
+    // and fresh worker placement each call, costing ~5-10ms per trial
+    // and adding huge variance. The pool also installs the QoS bump
+    // on each worker so they all stay on P-cores.
+    let sample_qps = |runner: &dyn runner::common::AlgorithmRunner,
+                      pool: &rayon::ThreadPool|
+     -> (Vec<f64>, f64) {
         let mut samples = Vec::with_capacity(trials);
         let mut recall = 0.0f64;
+        // Real-query warmup inside the pool — primes prefetchers,
+        // drives DVFS to peak P-state, gets the rayon work-stealing
+        // queues into steady state. Single pass; trials are timed
+        // separately.
+        let _ = pool.install(|| runner.search_batch(queries, k));
         for _ in 0..trials {
+            utils::flush_cache();
             let t = Instant::now();
-            let results = runner.search_batch_with_threads(queries, k, nt);
+            let results = pool.install(|| runner.search_batch(queries, k));
             let wall = t.elapsed();
             let qps = queries.len() as f64 / wall.as_secs_f64();
             let ids: Vec<Vec<u32>> = results.into_iter().map(|r| r.neighbors).collect();
@@ -827,8 +847,17 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
     let mut staged_recall: Vec<f64> = Vec::new();
 
     for &nt in &thread_counts {
-        let (d_samples, d_r) = sample_qps(&diskann_runner, nt);
-        let (s_samples, s_r) = sample_qps(&staged_runner, nt);
+        // Build one pool for this thread count; both runners reuse it
+        // across warmup + all trials. `start_handler` runs on every
+        // worker thread when rayon spawns it, applying the QoS bump
+        // once per worker lifetime.
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(nt)
+            .start_handler(|_| utils::set_thread_qos_user_interactive())
+            .build()
+            .expect("failed to build thread-sweep pool");
+        let (d_samples, d_r) = sample_qps(&diskann_runner, &pool);
+        let (s_samples, s_r) = sample_qps(&staged_runner, &pool);
         let mut d_sorted = d_samples.clone();
         d_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mut s_sorted = s_samples.clone();
@@ -925,7 +954,7 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let scfg = load_staged_config(dimension);
+    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
 
     let dim_name = match dimension {
         32 => "glove25",
@@ -1073,7 +1102,7 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let scfg = load_staged_config(dimension);
+    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
 
     macro_rules! profile {
         ($N:literal) => {{
@@ -1120,9 +1149,10 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
                 .collect();
 
             println!("Warm-up (1000 queries)...");
+            let _ = staged.ensure_quantized_dataset();
             for q in &queries[..queries.len().min(1000)] {
                 staged
-                    .search(q, k, 48, 5, 0.15, DEFAULT_EARLY_EXIT_LIMIT)
+                    .search_l2_u8(q, k, 48, 5, 0.15, DEFAULT_EARLY_EXIT_LIMIT)
                     .ok();
             }
 
@@ -1249,7 +1279,7 @@ fn run_memory_profile(dataset: &Dataset) {
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let scfg = load_staged_config(dimension);
+    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
 
     let dim_name = match dimension {
         32 => "glove25",
@@ -1407,91 +1437,33 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
     // (which returns a fresh owned Vec) and explicitly dropped before the sweep
     // phase so only one dataset copy is resident at a time (critical for GIST full).
 
-    // Load config.
-    #[derive(serde::Deserialize)]
-    struct SweepConfig {
-        defaults: DefaultsConfig,
-        datasets: std::collections::HashMap<String, DatasetConfig>,
-    }
-    #[derive(serde::Deserialize)]
-    struct DefaultsConfig {
-        diskann: DiskANNDefaults,
-        staged: StagedDefaults,
-        sweep: SweepDefaults,
-    }
-    #[derive(serde::Deserialize)]
-    struct DiskANNDefaults {
-        alpha: f32,
-        graph_degree: u32,
-        build_search_list_size: usize,
-    }
-    #[derive(serde::Deserialize)]
-    struct StagedDefaults {
-        alpha: f32,
-        graph_degree: u32,
-        build_search_list_size: usize,
-        max_extra: usize,
-        window_size: usize,
-    }
-    #[derive(serde::Deserialize)]
-    struct SweepDefaults {
-        search_list_sizes: Vec<usize>,
-        threads: usize,
-        trials: usize,
-    }
-    #[derive(serde::Deserialize, Default, Clone)]
-    struct DatasetConfig {
-        #[allow(dead_code)]
-        dimension: Option<usize>,
-        staged: Option<DatasetStagedOverride>,
-    }
-    #[derive(serde::Deserialize, Default, Clone)]
-    struct DatasetStagedOverride {
-        alpha: Option<f32>,
-        build_search_list_size: Option<usize>,
-    }
+    // Single source of truth: `benchmark/configs/sweep.yaml`. Resolver
+    // lives in `config::load_dataset_config_by_dim` — returns all per-
+    // dataset build params + metric + base-graph source in one call.
+    let cfg = crate::config::load_dataset_config_by_dim(dimension);
 
-    let config_path = "benchmark/configs/sweep.yaml";
-    let cfg: SweepConfig = serde_yaml::from_str(
-        &std::fs::read_to_string(config_path)
-            .unwrap_or_else(|_| panic!("Cannot read {config_path}")),
-    )
-    .expect("Invalid sweep config YAML");
-
-    let dim_name = match dimension {
-        32 => "glove25",
-        100 => "glove100",
-        128 => "sift",
-        960 => "gist",
-        _ => "unknown",
-    };
-    let ds_cfg = cfg.datasets.get(dim_name).cloned().unwrap_or_default();
-    let staged_alpha = ds_cfg
-        .staged
-        .as_ref()
-        .and_then(|s| s.alpha)
-        .unwrap_or(cfg.defaults.staged.alpha);
-    let staged_build_l = ds_cfg
-        .staged
-        .as_ref()
-        .and_then(|s| s.build_search_list_size)
-        .unwrap_or(cfg.defaults.staged.build_search_list_size);
-    let num_threads = cfg.defaults.sweep.threads;
-    let trials = cfg.defaults.sweep.trials;
+    let staged_alpha = cfg.staged.alpha;
+    let staged_build_l = cfg.staged.build_search_list_size;
+    let num_threads = cfg.sweep.threads;
+    let trials = cfg.sweep.trials;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
         .build()
         .unwrap();
 
-    let search_list_sizes = &cfg.defaults.sweep.search_list_sizes;
-    let staged_ws = cfg.defaults.staged.window_size;
-    let da_alpha = cfg.defaults.diskann.alpha;
-    let da_degree = cfg.defaults.diskann.graph_degree;
-    let da_build_l = cfg.defaults.diskann.build_search_list_size;
-    let st_degree = cfg.defaults.staged.graph_degree;
-    let st_max_extra = cfg.defaults.staged.max_extra;
+    let search_list_sizes: &[usize] = &cfg.sweep.search_list_sizes;
+    let staged_ws = cfg.staged.window_size;
+    // Per-dataset DiskANN baseline params (sweep.yaml `datasets.<name>.diskann`
+    // override → falls back to staged's params). Apples-to-apples by default;
+    // a dataset can opt into a different DiskANN config via a `diskann:` block.
+    let da_alpha = cfg.diskann.alpha;
+    let da_degree = cfg.diskann.graph_degree;
+    let da_build_l = cfg.diskann.build_search_list_size;
+    let st_degree = cfg.staged.graph_degree;
+    let st_max_extra = cfg.staged.max_extra;
+    let staged_metric = cfg.staged.metric;
 
-    println!("Config: DiskANN(R={da_degree}, α={da_alpha}) vs StagedDiskANN(R={st_degree}, α={staged_alpha})");
+    println!("Config: DiskANN(R={da_degree}, α={da_alpha}, L={da_build_l}) vs StagedDiskANN(R={st_degree}, α={staged_alpha}, L={staged_build_l})");
 
     // Generic sweep: DiskANN via native runner, StagedDiskANN independently.
     macro_rules! run_sweep {
@@ -1505,14 +1477,27 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
             let max_l = *search_list_sizes.last().unwrap();
 
             // Helper: sweep a DiskANN runner across all search_list_sizes.
+            // Mirrors `staged_sweep`'s timed-region protocol — single
+            // warmup pass at L=16 to drive DVFS to peak P-state, prime
+            // prefetchers, and stabilise rayon worker placement; then
+            // per-trial `flush_cache()` (PA-style 40 MB SLC eviction)
+            // so every timed iteration starts from a cold L1/L2/SLC,
+            // matching the "first query" conditions PA reports.
             let sweep_diskann = |runner: &mut crate::runner::DiskANNRunner, label: &str| -> Vec<(f64, f64)> {
                 println!("\n{label}:");
+                let warmup_l = 16usize;
+                runner.set_search_list_size(warmup_l);
+                pool.install(|| {
+                    let _ = dataset.queries.par_iter().map(|q| runner.search(q, k))
+                        .collect::<Vec<_>>();
+                });
                 let mut data = Vec::new();
                 for &sls in search_list_sizes {
                     runner.set_search_list_size(sls);
                     let mut qps_samples = Vec::with_capacity(trials);
                     let mut recall = 0.0f64;
                     for _ in 0..trials {
+                        utils::flush_cache();
                         let t = Instant::now();
                         let results: Vec<crate::runner::common::SearchResult> = pool.install(|| {
                             dataset.queries.par_iter().map(|q| runner.search(q, k)).collect()
@@ -1532,7 +1517,11 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
 
             println!("\n═══ QPS vs Recall@10: {} ({num_points} pts, {num_threads} threads, k={k}) ═══", $dim_name);
 
-            // ── DiskANN(α=2.0): build → sweep → drop ──
+            // ── DiskANN baseline: build → sweep → drop ──
+            // Params come from `cfg.diskann` (per-dataset yaml override
+            // → fall back to staged params). With no override the
+            // DiskANN run mirrors staged's R/L/α, so the QPS comparison
+            // is apples-to-apples — only the algorithm differs.
             let da_cache_path = crate::runner::cache::diskann_path(
                 $dim_name, num_points, da_degree, da_build_l, da_alpha,
             );
@@ -1554,39 +1543,11 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
                     });
                 });
             }
-            let diskann_data = sweep_diskann(&mut diskann_runner, "DiskANN (α=2.0)");
+            let diskann_data = sweep_diskann(
+                &mut diskann_runner,
+                &format!("DiskANN (α={}, R={}, L={})", da_alpha, da_degree, da_build_l),
+            );
             drop(diskann_runner);
-
-            // ── DiskANN-matched (same α as Staged): build → sweep → drop ──
-            let dam_cache_path = crate::runner::cache::diskann_path(
-                $dim_name, num_points, st_degree, staged_build_l, staged_alpha,
-            );
-            println!("\nBuilding DiskANN-matched ({}-dim, R={}, α={}, build_L={})...",
-                $N, st_degree, staged_alpha, staged_build_l);
-            let mut diskann_matched_runner = crate::runner::DiskANNRunner::new(
-                staged_build_l, st_degree, staged_alpha,
-            );
-            diskann_matched_runner.set_cache_path(&dam_cache_path);
-            {
-                let flat_base = dataset.base_flat();
-                diskann_matched_runner.build(&flat_base, num_points, dimension);
-            } // flat_base dropped.
-            if max_l > staged_build_l {
-                diskann_matched_runner.set_search_list_size(max_l);
-                let warmup_queries: Vec<Vec<f32>> = (0..num_threads * 4 + 20)
-                    .map(|_| vec![0.0f32; dimension])
-                    .collect();
-                pool.install(|| {
-                    warmup_queries.par_iter().for_each(|q| {
-                        let _ = diskann_matched_runner.search(q, k);
-                    });
-                });
-            }
-            let diskann_matched_data = sweep_diskann(
-                &mut diskann_matched_runner,
-                &format!("DiskANN (α={}, R={}) [α matches Staged]", staged_alpha, st_degree),
-            );
-            drop(diskann_matched_runner);
 
             // ── StagedDiskANN: build/load → calibrate → sweep → drop ──
             let cache_path = crate::runner::cache::staged_path(
@@ -1623,14 +1584,31 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
                 println!("Saved PhasedGraph cache to {:?}", pgraph_path);
                 idx
             };
-            // Eagerly build/load the u8 quantized dataset now (outside the
-            // measured sweep) and persist to `.qds` on first-build.
-            let _ = staged_idx.ensure_quantized_dataset();
+            // Eagerly build/load the metric-appropriate quantized sidecar
+            // outside the measured sweep:
+            //   L2    → `.qds`  (u8 linear)    used by stage-1 prefilter
+            //   MipsQ → `.qdm8` (i8 symmetric) used by i8 beam + f32 rerank
+            //   Mips  → no sidecar (single-phase f32 IP only)
+            use crate::config::Metric as CfgMetric;
+            match staged_metric {
+                CfgMetric::L2 => { let _ = staged_idx.ensure_quantized_dataset(); }
+                CfgMetric::L2Q => { let _ = staged_idx.ensure_quantized_dataset(); }
+                CfgMetric::MipsQ => { let _ = staged_idx.ensure_quantized_dataset_mips(); }
+                CfgMetric::Mips => {}
+            }
 
+            // Per-trial timed-region protocol — same shape as
+            // `staged_sweep`: `flush_cache()` (40 MB SLC eviction)
+            // before each `Instant::now()` so the trial starts cold,
+            // matching PA's "first query" condition. The pre-sweep
+            // warmup pass is run once per metric below, before the L
+            // schedule, to drive DVFS to peak P-state and prime the
+            // rayon worker pool.
             let measure_staged = |run: &(dyn Fn() -> Vec<Vec<u32>> + Sync)| -> (f64, f64) {
                 let mut qps_samples = Vec::with_capacity(trials);
                 let mut recall = 0.0f64;
                 for _ in 0..trials {
+                    utils::flush_cache();
                     let t = Instant::now();
                     let results = pool.install(|| run());
                     let wall = t.elapsed();
@@ -1641,20 +1619,119 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
                 (recall, qps_samples[trials / 2])
             };
 
-            // Auto-calibrate convergence params from warmup queries.
-            let calib_sample: Vec<[f32; $N]> = queries[..queries.len().min(500)].to_vec();
-            let calib = staged_idx.calibrate(&calib_sample, 48, staged_ws)
+            // Calibration is **metric-agnostic**: it derives `threshold`
+            // (dcc convergence ε) and `early_exit_limit` from graph
+            // topology alone — admit-rate inflection + P90 gap from last
+            // useful admission. On unit-normalized angular data L2 and
+            // neg-IP rank identically, so the calibrator's internal
+            // Metric::L2 compare produces valid params for MIPS/MIPS-Q
+            // too. All three search paths (`search_batch`,
+            // `search_batch_mips`, `search_batch_mips_quantized`) feed
+            // the threshold into `dcc.reconfigure(window_size, epsilon)`
+            // and the EE into `early_exit.reconfigure(limit)`.
+            let calib_sample: Vec<[f32; $N]> =
+                queries[..queries.len().min(500)].to_vec();
+            let calib = staged_idx
+                .calibrate(&calib_sample, 48, staged_ws)
                 .expect("calibrate failed");
             let cal_thr = calib.threshold;
             let cal_ee = calib.early_exit_limit;
-            println!("\nCalibrated: threshold={:.2}, early_exit_limit={}", cal_thr, cal_ee);
+            println!(
+                "\nCalibrated ({:?}): threshold={:.2}, early_exit_limit={}",
+                staged_metric, cal_thr, cal_ee
+            );
 
-            println!("\nStagedDiskANN (R={}, α={}, ws={staged_ws}, thr={cal_thr:.2}, ee={cal_ee}):",
-                st_degree, staged_alpha);
+            println!(
+                "\nStagedDiskANN (R={}, α={}, ws={staged_ws}, metric={:?}):",
+                st_degree, staged_alpha, staged_metric
+            );
             let mut staged_data: Vec<(f64, f64)> = Vec::new();
+            // Resolve quantized datasets once per metric.
+            let q_ds_l2 = if matches!(staged_metric, CfgMetric::L2) {
+                Some(staged_idx.ensure_quantized_dataset())
+            } else {
+                None
+            };
+            let q_ds_mips_i8 = if matches!(staged_metric, CfgMetric::Mips | CfgMetric::MipsQ) {
+                Some(staged_idx.ensure_quantized_dataset_mips())
+            } else {
+                None
+            };
+            // Single warmup pass at L=16 over the real query set —
+            // drives DVFS to peak P-state, primes prefetchers, and
+            // stabilises rayon worker pool placement before the timed
+            // sweep so the first L doesn't pay a cold-cache + DVFS-
+            // ramp tax. Mirrors `staged_sweep`'s warmup protocol.
+            {
+                let warmup_l = 16usize;
+                let _warm = pool.install(|| match staged_metric {
+                    CfgMetric::L2 => staged_idx
+                        .search_batch_l2_u8(
+                            &queries, k, warmup_l, staged_ws, cal_thr, cal_ee,
+                        ).unwrap(),
+                    CfgMetric::L2Q => staged_idx
+                        .search_batch_l2_u8_q(
+                            &queries, k, warmup_l, staged_ws, cal_thr, cal_ee,
+                        ).unwrap(),
+                    CfgMetric::Mips => staged_idx
+                        .search_batch_mips(
+                            &queries, k, warmup_l, staged_ws, cal_thr, cal_ee,
+                        ).unwrap(),
+                    CfgMetric::MipsQ => staged_idx
+                        .search_batch_mips_q::<staged_diskann::model::MipsI8>(
+                            &queries, q_ds_mips_i8.unwrap(), k, warmup_l, staged_ws, cal_thr, cal_ee,
+                        ).unwrap(),
+                });
+                drop(_warm);
+            }
+            // Suppress unused-warning on q_ds_l2 — it's resolved
+            // upfront so the `.qds` sidecar build cost is paid before
+            // the timed sweep, even when the L2 search-batch entry
+            // re-resolves it internally via `ensure_quantized_dataset`.
+            let _ = &q_ds_l2;
             for &sls in search_list_sizes {
-                let (recall, qps) = measure_staged(&|| {
-                    staged_idx.search_batch(&queries, k, sls, staged_ws, cal_thr, cal_ee).unwrap()
+                let (recall, qps) = measure_staged(&|| match staged_metric {
+                    CfgMetric::L2 => staged_idx
+                        .search_batch_l2_u8(
+                            &queries,
+                            k,
+                            sls,
+                            staged_ws,
+                            cal_thr,
+                            cal_ee,
+                        )
+                        .unwrap(),
+                    CfgMetric::L2Q => staged_idx
+                        .search_batch_l2_u8_q(
+                            &queries,
+                            k,
+                            sls,
+                            staged_ws,
+                            cal_thr,
+                            cal_ee,
+                        )
+                        .unwrap(),
+                    CfgMetric::Mips => staged_idx
+                        .search_batch_mips(
+                            &queries,
+                            k,
+                            sls,
+                            staged_ws,
+                            cal_thr,
+                            cal_ee,
+                        )
+                        .unwrap(),
+                    CfgMetric::MipsQ => staged_idx
+                        .search_batch_mips_q::<staged_diskann::model::MipsI8>(
+                            &queries,
+                            q_ds_mips_i8.unwrap(),
+                            k,
+                            sls,
+                            staged_ws,
+                            cal_thr,
+                            cal_ee,
+                        )
+                        .unwrap(),
                 });
                 staged_data.push((recall, qps));
                 println!("  L={sls:>4}  R@10={recall:.4}  QPS={qps:.0}");
@@ -1665,10 +1742,9 @@ fn run_qps_recall_sweep(dataset: &Dataset, k: usize) {
             let json_path = format!("visualizations/qps_recall_{}.json", $dim_name);
             std::fs::create_dir_all("visualizations").ok();
             let json = format!(
-                "{{\n  \"dataset\": \"{}\",\n  \"dimension\": {},\n  \"num_points\": {},\n  \"threads\": {},\n  \"staged_alpha\": {},\n  \"diskann\": [{}],\n  \"diskann_matched\": [{}],\n  \"staged\": [{}]\n}}",
+                "{{\n  \"dataset\": \"{}\",\n  \"dimension\": {},\n  \"num_points\": {},\n  \"threads\": {},\n  \"staged_alpha\": {},\n  \"diskann\": [{}],\n  \"staged\": [{}]\n}}",
                 $dim_name, $N, num_points, num_threads, staged_alpha,
                 diskann_data.iter().map(|(r, q)| format!("[{:.4}, {:.0}]", r, q)).collect::<Vec<_>>().join(", "),
-                diskann_matched_data.iter().map(|(r, q)| format!("[{:.4}, {:.0}]", r, q)).collect::<Vec<_>>().join(", "),
                 staged_data.iter().map(|(r, q)| format!("[{:.4}, {:.0}]", r, q)).collect::<Vec<_>>().join(", "),
             );
             std::fs::write(&json_path, &json).expect("write json");
@@ -1701,42 +1777,22 @@ fn run_staged_parlayann_sweep(dataset: &Dataset, k: usize) {
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
 
-    // Reuse the same sweep config as qps-recall-sweep for apples-to-apples.
-    #[derive(serde::Deserialize)]
-    struct SweepConfig { defaults: Defaults, datasets: std::collections::HashMap<String, DS> }
-    #[derive(serde::Deserialize)]
-    struct Defaults { staged: Staged, sweep: Sweep }
-    #[derive(serde::Deserialize)]
-    struct Staged { alpha: f32, graph_degree: u32, build_search_list_size: usize,
-                    max_extra: usize, window_size: usize }
-    #[derive(serde::Deserialize)]
-    struct Sweep { search_list_sizes: Vec<usize>, threads: usize, trials: usize }
-    #[derive(serde::Deserialize, Default, Clone)]
-    struct DS { staged: Option<Override> }
-    #[derive(serde::Deserialize, Default, Clone)]
-    struct Override { alpha: Option<f32>, build_search_list_size: Option<usize> }
-
-    let cfg: SweepConfig = serde_yaml::from_str(
-        &std::fs::read_to_string("benchmark/configs/sweep.yaml")
-            .expect("cannot read benchmark/configs/sweep.yaml"),
-    ).expect("invalid sweep.yaml");
-
-    let dim_name = match dimension {
-        32 => "glove25", 100 => "glove100", 128 => "sift", 960 => "gist",
-        _ => "unknown"
-    };
-    let ds_cfg = cfg.datasets.get(dim_name).cloned().unwrap_or_default();
-    let staged_alpha = ds_cfg.staged.as_ref().and_then(|s| s.alpha)
-        .unwrap_or(cfg.defaults.staged.alpha);
-    let staged_build_l = ds_cfg.staged.as_ref().and_then(|s| s.build_search_list_size)
-        .unwrap_or(cfg.defaults.staged.build_search_list_size);
-    let num_threads = cfg.defaults.sweep.threads;
-    let trials = cfg.defaults.sweep.trials;
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(num_threads).build().unwrap();
-    let search_list_sizes = &cfg.defaults.sweep.search_list_sizes;
-    let staged_ws = cfg.defaults.staged.window_size;
-    let st_degree = cfg.defaults.staged.graph_degree;
-    let st_max_extra = cfg.defaults.staged.max_extra;
+    // All per-dataset resolution lives in `benchmark/src/config.rs` —
+    // same single source of truth as run_qps_recall_sweep.
+    let cfg = crate::config::load_dataset_config_by_dim(dimension);
+    let staged_alpha = cfg.staged.alpha;
+    let staged_build_l = cfg.staged.build_search_list_size;
+    let st_degree = cfg.staged.graph_degree;
+    let st_max_extra = cfg.staged.max_extra;
+    let staged_ws = cfg.staged.window_size;
+    let staged_metric = cfg.staged.metric;
+    let num_threads = cfg.sweep.threads;
+    let trials = cfg.sweep.trials;
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .unwrap();
+    let search_list_sizes: &[usize] = &cfg.sweep.search_list_sizes;
 
     let flat_base = dataset.base_flat();
 
@@ -1782,29 +1838,111 @@ fn run_staged_parlayann_sweep(dataset: &Dataset, k: usize) {
                 println!("Saved cache to {:?}", pgraph_path);
                 idx
             };
-            // Eagerly build/load the u8 quantized dataset now (outside the
-            // measured sweep) and persist to `.qds` on first-build.
-            let _ = staged_idx.ensure_quantized_dataset();
+            // Metric-appropriate quantized sidecar (same dispatch as
+            // run_qps_recall_sweep) + calibration only on the L2 path.
+            use crate::config::Metric as CfgMetric;
+            match staged_metric {
+                CfgMetric::L2 => { let _ = staged_idx.ensure_quantized_dataset(); }
+                CfgMetric::L2Q => { let _ = staged_idx.ensure_quantized_dataset(); }
+                CfgMetric::MipsQ => { let _ = staged_idx.ensure_quantized_dataset_mips(); }
+                CfgMetric::Mips => {}
+            }
 
-            // Calibrate with warmup queries.
-            let calib_sample: Vec<[f32; $N]> = queries[..queries.len().min(500)].to_vec();
-            let calib = staged_idx.calibrate(&calib_sample, 48, staged_ws)
+            // Metric-agnostic calibration (see run_qps_recall_sweep for
+            // rationale — derives topology-driven params that apply to
+            // all three search paths).
+            let calib_sample: Vec<[f32; $N]> =
+                queries[..queries.len().min(500)].to_vec();
+            let calib = staged_idx
+                .calibrate(&calib_sample, 48, staged_ws)
                 .expect("calibrate failed");
             let cal_thr = calib.threshold;
             let cal_ee = calib.early_exit_limit;
-            println!("Calibrated: threshold={:.2}, early_exit_limit={}", cal_thr, cal_ee);
+            println!(
+                "Calibrated ({:?}): threshold={:.2}, early_exit_limit={}",
+                staged_metric, cal_thr, cal_ee
+            );
 
-            println!("\n═══ Staged on ParlayANN graph (unchecked) — {} ({num_points} pts, {num_threads}T, k={k}) ═══",
-                     $dim_name);
+            println!(
+                "\n═══ Staged on ParlayANN graph — {} ({num_points} pts, {num_threads}T, k={k}, metric={:?}) ═══",
+                $dim_name, staged_metric
+            );
             let mut staged_data: Vec<(f64, f64)> = Vec::new();
+            // Resolve quantized datasets once per metric.
+            let q_ds_l2 = if matches!(staged_metric, CfgMetric::L2 | CfgMetric::L2Q) {
+                Some(staged_idx.ensure_quantized_dataset())
+            } else {
+                None
+            };
+            let q_ds_mips_i8 = if matches!(staged_metric, CfgMetric::Mips | CfgMetric::MipsQ) {
+                Some(staged_idx.ensure_quantized_dataset_mips())
+            } else {
+                None
+            };
+            // Single warmup pass at L=16 over the real query set —
+            // mirrors `staged_sweep`'s warmup protocol: drive DVFS to
+            // peak P-state, prime prefetchers, stabilise the rayon
+            // worker pool before the timed sweep, so the first L
+            // doesn't pay a cold-cache + DVFS-ramp tax.
+            {
+                let warmup_l = 16usize;
+                let _warm = pool.install(|| match staged_metric {
+                    CfgMetric::L2 => staged_idx
+                        .search_batch_l2_u8(
+                            &queries, k, warmup_l, staged_ws, cal_thr, cal_ee,
+                        ).unwrap(),
+                    CfgMetric::L2Q => staged_idx
+                        .search_batch_l2_u8_q(
+                            &queries, k, warmup_l, staged_ws, cal_thr, cal_ee,
+                        ).unwrap(),
+                    CfgMetric::Mips => staged_idx
+                        .search_batch_mips(
+                            &queries, k, warmup_l, staged_ws, cal_thr, cal_ee,
+                        ).unwrap(),
+                    CfgMetric::MipsQ => staged_idx
+                        .search_batch_mips_q::<staged_diskann::model::MipsI8>(
+                            &queries, q_ds_mips_i8.unwrap(), k, warmup_l, staged_ws, cal_thr, cal_ee,
+                        ).unwrap(),
+                });
+                drop(_warm);
+            }
+            let _ = &q_ds_l2;
             for &sls in search_list_sizes {
                 let mut qps_samples = Vec::with_capacity(trials);
                 let mut recall = 0.0f64;
                 for _ in 0..trials {
+                    // PA-style 40 MB cache flush per timed trial — every
+                    // iteration starts cold, matching PA's "first query"
+                    // baseline so the comparison is apples-to-apples.
+                    utils::flush_cache();
                     let t = Instant::now();
-                    let results = pool.install(|| {
-                        staged_idx.search_batch(&queries, k, sls, staged_ws, cal_thr, cal_ee)
-                            .unwrap()
+                    let results = pool.install(|| match staged_metric {
+                        CfgMetric::L2 => staged_idx
+                            .search_batch_l2_u8(
+                                &queries, k, sls, staged_ws, cal_thr, cal_ee,
+                            )
+                            .unwrap(),
+                        CfgMetric::L2Q => staged_idx
+                            .search_batch_l2_u8_q(
+                                &queries, k, sls, staged_ws, cal_thr, cal_ee,
+                            )
+                            .unwrap(),
+                        CfgMetric::Mips => staged_idx
+                            .search_batch_mips(
+                                &queries, k, sls, staged_ws, cal_thr, cal_ee,
+                            )
+                            .unwrap(),
+                        CfgMetric::MipsQ => staged_idx
+                            .search_batch_mips_q::<staged_diskann::model::MipsI8>(
+                                &queries,
+                                q_ds_mips_i8.unwrap(),
+                                k,
+                                sls,
+                                staged_ws,
+                                cal_thr,
+                                cal_ee,
+                            )
+                            .unwrap(),
                     });
                     let wall = t.elapsed();
                     qps_samples.push(queries.len() as f64 / wall.as_secs_f64());
@@ -1876,11 +2014,7 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
     let staged_ws = defaults["staged"]["window_size"].as_u64().unwrap_or(5) as usize;
     let search_list_sizes: Vec<usize> = defaults["sweep"]["search_list_sizes"]
         .as_sequence()
-        .map(|s| {
-            s.iter()
-                .map(|v| v.as_u64().unwrap() as usize)
-                .collect()
-        })
+        .map(|s| s.iter().map(|v| v.as_u64().unwrap() as usize).collect())
         .unwrap_or_else(|| vec![16, 24, 32, 48, 64, 96, 128, 192, 256]);
     let num_threads = defaults["sweep"]["threads"].as_u64().unwrap_or(8) as usize;
     let trials = defaults["sweep"]["trials"].as_u64().unwrap_or(3) as usize;
@@ -1927,6 +2061,7 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
         staged_build_l,
         st_max_extra,
         staged_ws,
+        crate::config::Metric::L2,
     );
     st_runner.build(&flat_base, num_points, dimension);
 
@@ -2254,7 +2389,7 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
     let _k = 10;
-    let scfg = load_staged_config(dimension);
+    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
 
     macro_rules! run_profile {
         ($N:literal) => {{
@@ -2527,7 +2662,7 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
 
 fn run_extra_profile(dataset: &Dataset, k: usize) {
     use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
-    let scfg = load_staged_config(dataset.dimension);
+    let scfg = crate::config::load_dataset_config_by_dim(dataset.dimension).staged;
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
@@ -2749,7 +2884,7 @@ fn run_calibration_diag(dataset: &Dataset) {
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let scfg = load_staged_config(dimension);
+    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
 
     let dim_name = match dimension {
         32 => "glove25",
@@ -2848,7 +2983,7 @@ fn run_ablation(dataset: &Dataset, k: usize) {
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let scfg = load_staged_config(dimension);
+    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
     let num_threads = 8;
 
     let dim_name = match dimension {
@@ -2981,20 +3116,34 @@ fn run_ablation(dataset: &Dataset, k: usize) {
 
             // 1. Full StagedDiskANN
             println!("  [full] convergence + early_exit + extra");
+            let _ = staged.ensure_quantized_dataset();
             let full_data = measure(&|q, sls| {
-                staged.search(q, k, sls, 5, thr, ee).unwrap_or_default()
+                staged
+                    .search_l2_u8(q, k, sls, 5, thr, ee)
+                    .unwrap_or_default()
             });
 
             // 2. No early exit (convergence on, ee=MAX)
             println!("  [no-early-exit] convergence on, ee=MAX");
             let no_ee_data = measure(&|q, sls| {
-                staged.search(q, k, sls, 5, thr, usize::MAX).unwrap_or_default()
+                staged
+                    .search_l2_u8(q, k, sls, 5, thr, usize::MAX)
+                    .unwrap_or_default()
             });
 
             // 3. No extra candidates (max_extra=0, separate build)
             println!("  [no-extra] max_extra=0, convergence + ee on");
+            let _ = staged_ne.ensure_quantized_dataset();
             let no_extra_data = measure(&|q, sls| {
-                staged_ne.search(q, k, sls, 5, calib_ne.threshold, calib_ne.early_exit_limit)
+                staged_ne
+                    .search_l2_u8(
+                        q,
+                        k,
+                        sls,
+                        5,
+                        calib_ne.threshold,
+                        calib_ne.early_exit_limit,
+                    )
                     .unwrap_or_default()
             });
 

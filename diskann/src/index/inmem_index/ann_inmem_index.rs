@@ -47,6 +47,22 @@ where
         indices: &mut [u32],
     ) -> ANNResult<u32>;
 
+    /// ADSampling-enabled search. Caller must have rotated `query` with the
+    /// same orthogonal matrix used to rotate this index's stored vectors.
+    /// Default impl returns an error — override for concrete index types.
+    fn search_adsampling(
+        &self,
+        _query: &[T],
+        _k_value: usize,
+        _l_value: u32,
+        _ads_epsilon: f32,
+        _indices: &mut [u32],
+    ) -> ANNResult<u32> {
+        Err(ANNError::log_index_error(
+            "ADSampling search not implemented for this index type".into(),
+        ))
+    }
+
     /// Soft deletes the nodes with the ids in the given array.
     fn soft_delete(
         &mut self,
@@ -78,7 +94,7 @@ where
         Err(ANNError::log_index_error("not implemented".into()))
     }
 
-    /// Free the candidate anchor slab.
+    /// Free the candidate set slab.
     #[cfg(feature = "staged_diskann")]
     fn drop_candidate_slab(&mut self) {}
 

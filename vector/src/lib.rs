@@ -23,6 +23,32 @@ mod l2_float_distance;
 
 #[cfg(target_arch = "aarch64")]
 mod l2_neon_distance;
+pub use l2_neon_distance::distance_l2_vector_f32;
+
+mod l2_neon_distance_u8;
+pub use l2_neon_distance_u8::{distance_l2_vector_u8, distance_l2_vector_u8_batch4};
+
+mod ip_neon_distance;
+pub use ip_neon_distance::{
+    distance_ip_vector_f32, distance_ip_vector_f32_batch4, l2_normalize_f32_inplace,
+};
+
+mod ip_neon_distance_i8;
+pub use ip_neon_distance_i8::{distance_ip_vector_i8, distance_ip_vector_i8_batch4};
+
+mod ip_neon_distance_i16;
+pub use ip_neon_distance_i16::{distance_ip_vector_i16, distance_ip_vector_i16_batch4};
+
+mod distance_fn;
+pub use distance_fn::{
+    DistanceFn, IpF32Distance, IpI16Distance, IpI8Distance, L2F32Distance, L2U8Distance,
+};
+
+mod distance_buffer;
+pub use distance_buffer::CacheLineDistanceBuffer;
+
+mod distance_stream;
+pub use distance_stream::DistanceStream;
 
 // Scalar fallback for architectures without SIMD support
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -31,7 +57,7 @@ mod l2_scalar_distance;
 pub use crate::half::Half;
 pub use distance::FullPrecisionDistance;
 pub use metric::Metric;
-pub use utils::prefetch_vector;
+pub use utils::{prefetch_vector, CACHE_LINE_BYTES};
 pub use vector_storage::VectorStorage;
 
 #[cfg(test)]
@@ -76,6 +102,33 @@ mod distance_test {
             <[f32; 16] as FullPrecisionDistance<f32, 16>>::distance_compare(&a, &b, Metric::L2);
         let scalar_dist = no_vector_compare_f32(&a, &b);
         assert_abs_diff_eq!(simd_dist, scalar_dist, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_adsampling_matches_full_when_under_bound() {
+        let a: [f32; 128] = std::array::from_fn(|i| (i as f32).sin());
+        let b: [f32; 128] = std::array::from_fn(|i| (i as f32).cos());
+        let full =
+            <[f32; 128] as FullPrecisionDistance<f32, 128>>::distance_compare(&a, &b, Metric::L2);
+        // Large bound — no abandonment, should return full distance.
+        let ads = <[f32; 128] as FullPrecisionDistance<f32, 128>>::distance_compare_adsampling(
+            &a,
+            &b,
+            full * 10.0,
+            2.1,
+        );
+        assert!((ads - full).abs() < 1e-3, "ads={ads} full={full}");
+    }
+
+    #[test]
+    fn test_adsampling_abandons_when_distant() {
+        let a: [f32; 128] = std::array::from_fn(|i| i as f32);
+        let b: [f32; 128] = std::array::from_fn(|i| -(i as f32));
+        // Tiny bound — should abandon early and return -1.0.
+        let ads = <[f32; 128] as FullPrecisionDistance<f32, 128>>::distance_compare_adsampling(
+            &a, &b, 1.0, 2.1,
+        );
+        assert!(ads < 0.0, "expected abandonment, got {ads}");
     }
 
     #[test]

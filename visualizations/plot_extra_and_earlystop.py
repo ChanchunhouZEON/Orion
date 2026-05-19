@@ -59,7 +59,7 @@ make_legend(ax1, legend_handles, fontsize=10)
 style_ax(ax1); ax1.set_xlim(x[0] - 0.6, x[-1] + 0.6)
 
 plt.tight_layout()
-fig1.savefig('visualizations/extra_enrichment.png', dpi=150, bbox_inches='tight', facecolor='white')
+save_png_and_pdf(fig1, 'visualizations/extra_enrichment.png')
 print('Saved visualizations/extra_enrichment.png')
 plt.close(fig1)
 
@@ -104,6 +104,6 @@ ax2.legend(fontsize=10, facecolor='white', edgecolor='#E0E0E0', loc='lower right
 style_ax(ax2); ax2.set_ylim(0.5, 1.02)
 
 plt.tight_layout()
-fig2.savefig('visualizations/earlystop_coverage.png', dpi=150, bbox_inches='tight', facecolor='white')
+save_png_and_pdf(fig2, 'visualizations/earlystop_coverage.png')
 print('Saved visualizations/earlystop_coverage.png')
 plt.close(fig2)

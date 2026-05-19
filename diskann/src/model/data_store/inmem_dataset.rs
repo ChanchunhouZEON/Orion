@@ -32,9 +32,18 @@ where
 {
     pub fn new(num_points: usize, index_growth_factor: f32) -> ANNResult<Self> {
         let capacity = (((num_points * N) as f32) * index_growth_factor) as usize;
+        // Trailing pad: SIMD streaming kernels (`DistanceStream` over
+        // `IpF32Distance` / `L2F32Distance`) use `CHUNK_BYTES = 64`,
+        // rounding `chunks_per_vert` up to `ceil(N·sizeof(T) / 64)`,
+        // so the last chunk of the last vertex may read up to 63
+        // bytes past the vertex end. Allocate one extra 64-byte
+        // chunk's worth of zero-init slots so over-reads land on
+        // padded zeros instead of UB. Cost: 64 bytes total.
+        let pad_elems = 64 / mem::size_of::<T>().max(1);
+        let alloc_capacity = capacity + pad_elems;
 
         Ok(Self {
-            data: AlignedBoxWithSlice::new(capacity, mem::size_of::<T>() * 16)?,
+            data: AlignedBoxWithSlice::new(alloc_capacity, mem::size_of::<T>() * 16)?,
             num_points,
             num_active_pts: num_points,
             capacity,
@@ -99,6 +108,21 @@ where
                 id
             )))
         }
+    }
+
+    /// Direct raw-pointer access: no bounds check, no slice, no Result. For
+    /// the hot search loop where `id` is already known in-range. Mirrors
+    /// ParlayANN's `PointRange::operator[]` → `values + i * aligned_bytes`.
+    ///
+    /// Tiny function (2 ops) — safe to inline; the distance kernel below it
+    /// stays `#[inline(never)]` to protect icache.
+    ///
+    /// # Safety
+    /// Caller must ensure `id < num_active_pts`. Violation is UB.
+    #[inline]
+    pub unsafe fn get_vertex_unchecked(&self, id: u32) -> &[T; N] {
+        let ptr = unsafe { self.data.as_ptr().add(id as usize * N) as *const [T; N] };
+        unsafe { &*ptr }
     }
 
     pub fn get_distance(&self, id1: u32, id2: u32, metric: Metric) -> ANNResult<f32> {
