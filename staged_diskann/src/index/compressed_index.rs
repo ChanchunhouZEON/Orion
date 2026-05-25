@@ -5,6 +5,8 @@
 
 use crate::model::FixedChunkPQTable;
 use crate::model::PhasedGraph;
+use crate::model::dataset::rabitq_b4_dataset::{RABITQ_B4_MAGIC, RabitQ4Dataset};
+use crate::model::dataset::rabitq_dataset::{RABITQ_MAGIC, RabitQDataset};
 use crate::model::scratch::InMemScratchPool;
 use crate::model::{L2U8, MipsI8, MipsI16, QuantSpec, QuantizedDataset};
 use diskann::model::InmemDataset;
@@ -31,8 +33,13 @@ where
     pub graph: PhasedGraph,
     pub entry: u32,
     pub num_nodes: usize,
+    /// Base path for on-disk caches of this index. The metadata blob
+    /// is written here directly; every sidecar (PhasedGraph `.pgraph`,
+    /// quantized datasets `.qds` / `.qdm8` / `.qdm16` / `.qrbq`) is
+    /// derived by `path.with_extension(...)`. Empty `PathBuf` means
+    /// "in-memory only, do not persist."
     #[allow(dead_code)]
-    pub compressed_graph_save_path: PathBuf,
+    pub cache_base_path: PathBuf,
 
     #[allow(dead_code)]
     pub is_save: bool,
@@ -60,6 +67,20 @@ where
     /// recall on hard angular workloads. Built lazily on first
     /// `ensure_quantized_dataset_mips_i16`. Sidecar `.qdm16`.
     pub(crate) q_dataset_mips_i16: OnceLock<QuantizedDataset<MipsI16, N>>,
+
+    /// RaBitQ 1-bit-per-dim quantized base for the high-dim
+    /// bandwidth-bound L2 path (Gao & Long, SIGMOD 2024). Built lazily
+    /// on first `ensure_quantized_dataset_rabitq`. Sidecar `.qrbq`.
+    /// Targets GIST-class datasets where the entire quantized base
+    /// fits into L1 cache.
+    pub(crate) q_dataset_rabitq: OnceLock<RabitQDataset<N>>,
+
+    /// Extended RaBitQ at B=4 bits/dim (Gao & Long, SIGMOD 2025).
+    /// Same random-rotation front-end but a 4-bit signed scalar
+    /// quantizer on the rotated components. Sidecar `.qrb4`. Lifts
+    /// the recall ceiling at the cost of 4× more storage per vertex
+    /// vs B=1 (still ~2× compression vs u8 on GIST D=960).
+    pub(crate) q_dataset_rabitq_b4: OnceLock<RabitQ4Dataset<N>>,
 }
 
 impl<const N: usize> StagedDiskANN<N>
@@ -75,14 +96,14 @@ where
         max_extra: usize,
         pq: Option<Arc<FixedChunkPQTable>>,
         pq_codes: Option<Vec<u8>>,
-        compressed_graph_save_path: Option<PathBuf>,
+        cache_base_path: Option<PathBuf>,
         is_save: bool,
     ) -> Self {
         let num_nodes = partitions.len();
 
         let num_pq_chunks = pq.as_ref().map(|p| p.get_num_chunks());
 
-        let compressed_graph_save_path = compressed_graph_save_path.unwrap_or_else(|| {
+        let cache_base_path = cache_base_path.unwrap_or_else(|| {
             let dir = PathBuf::from("staged_diskann_graphs");
             fs::create_dir_all(&dir).unwrap();
             dir.join(format!("staged_diskann_n{}.bin", num_nodes))
@@ -105,16 +126,18 @@ where
             pq,
             pq_codes,
             num_pq_chunks,
-            compressed_graph_save_path,
+            cache_base_path,
             is_save,
             inmem_scratch_pool: OnceLock::new(),
             q_dataset: OnceLock::new(),
             q_dataset_mips: OnceLock::new(),
             q_dataset_mips_i16: OnceLock::new(),
+            q_dataset_rabitq: OnceLock::new(),
+            q_dataset_rabitq_b4: OnceLock::new(),
         };
 
         if is_save {
-            if let Err(e) = result.save(&result.compressed_graph_save_path.clone()) {
+            if let Err(e) = result.save(&result.cache_base_path.clone()) {
                 log::warn!("Failed to save graph: {}", e);
             }
         }
@@ -140,12 +163,14 @@ where
             pq,
             pq_codes,
             num_pq_chunks,
-            compressed_graph_save_path: PathBuf::from(""),
+            cache_base_path: PathBuf::from(""),
             is_save: false,
             inmem_scratch_pool: OnceLock::new(),
             q_dataset: OnceLock::new(),
             q_dataset_mips: OnceLock::new(),
             q_dataset_mips_i16: OnceLock::new(),
+            q_dataset_rabitq: OnceLock::new(),
+            q_dataset_rabitq_b4: OnceLock::new(),
         }
     }
 
@@ -154,20 +179,40 @@ where
     /// from the f32 dataset and writes back.
     pub fn ensure_quantized_dataset(&self) -> &QuantizedDataset<L2U8, N> {
         self.q_dataset
-            .get_or_init(|| build_quant::<L2U8, N>(&self.dataset, &self.compressed_graph_save_path))
+            .get_or_init(|| build_quant::<L2U8, N>(&self.dataset, &self.cache_base_path))
     }
 
     /// Lazily obtain the i8 MIPS quantized dataset. Sidecar `.qdm8`.
     pub fn ensure_quantized_dataset_mips(&self) -> &QuantizedDataset<MipsI8, N> {
         self.q_dataset_mips.get_or_init(|| {
-            build_quant::<MipsI8, N>(&self.dataset, &self.compressed_graph_save_path)
+            build_quant::<MipsI8, N>(&self.dataset, &self.cache_base_path)
         })
     }
 
     /// Lazily obtain the i16 MIPS quantized dataset. Sidecar `.qdm16`.
     pub fn ensure_quantized_dataset_mips_i16(&self) -> &QuantizedDataset<MipsI16, N> {
         self.q_dataset_mips_i16.get_or_init(|| {
-            build_quant::<MipsI16, N>(&self.dataset, &self.compressed_graph_save_path)
+            build_quant::<MipsI16, N>(&self.dataset, &self.cache_base_path)
+        })
+    }
+
+    /// Lazily obtain the RaBitQ 1-bit quantized dataset. Sidecar
+    /// `.qrbq`. On first access: try the sidecar (memcpy load); on
+    /// miss build from the f32 dataset (rotation gen + encode) and
+    /// write back. Build uses a fixed seed so every cache slot is
+    /// reproducible across runs.
+    pub fn ensure_quantized_dataset_rabitq(&self) -> &RabitQDataset<N> {
+        self.q_dataset_rabitq.get_or_init(|| {
+            build_rabitq::<N>(&self.dataset, &self.cache_base_path)
+        })
+    }
+
+    /// Lazily obtain the **B=4** RaBitQ quantized dataset. Sidecar
+    /// `.qrb4`. Distinct from the B=1 sidecar (`.qrbq`) so both can
+    /// coexist on disk and be A/B'd at search time.
+    pub fn ensure_quantized_dataset_rabitq_b4(&self) -> &RabitQ4Dataset<N> {
+        self.q_dataset_rabitq_b4.get_or_init(|| {
+            build_rabitq_b4::<N>(&self.dataset, &self.cache_base_path)
         })
     }
 
@@ -223,7 +268,7 @@ where
         let mut idx = Self::from_phased_graph(dataset, graph, meta.entry, None, None);
         // Preserve the cache path so `ensure_quantized_dataset` can locate
         // the `.qds` sidecar next to it (load fast path).
-        idx.compressed_graph_save_path = path.as_ref().to_path_buf();
+        idx.cache_base_path = path.as_ref().to_path_buf();
         Ok(idx)
     }
 }
@@ -271,6 +316,86 @@ where
             log::warn!("QuantizedDataset<{}> save failed: {e}", Q::LABEL);
         } else {
             log::info!("QuantizedDataset<{}> saved to {:?}", Q::LABEL, path);
+        }
+    }
+    q
+}
+
+/// RaBitQ-specific "load sidecar or build, then save" helper. Mirrors
+/// [`build_quant`] but uses [`RabitQDataset`] (which carries its own
+/// magic + rotation matrix and doesn't fit the [`QuantSpec`] trait).
+/// Sidecar extension is `.qrbq`. Build seed is fixed at the magic
+/// constant for reproducibility — same cache slot, same rotation,
+/// same codes across runs.
+fn build_rabitq<const N: usize>(
+    dataset: &InmemDataset<f32, N>,
+    cache_base: &Path,
+) -> RabitQDataset<N>
+where
+    [f32; N]: FullPrecisionDistance<f32, N>,
+{
+    let path = cache_base.with_extension("qrbq");
+    if path.exists() {
+        match RabitQDataset::<N>::load(&path) {
+            Ok(q) => {
+                log::info!("RabitQDataset loaded from {:?}", path);
+                return q;
+            }
+            Err(e) => log::warn!("RabitQDataset load failed ({e}), rebuilding"),
+        }
+    }
+    let t = Instant::now();
+    let q = RabitQDataset::<N>::build_from(dataset, RABITQ_MAGIC as u64);
+    log::info!(
+        "RabitQDataset built in {:.2}s (N={}, num={})",
+        t.elapsed().as_secs_f32(),
+        N,
+        q.num_vertices,
+    );
+    if !cache_base.as_os_str().is_empty() {
+        if let Err(e) = q.save(&path) {
+            log::warn!("RabitQDataset save failed: {e}");
+        } else {
+            log::info!("RabitQDataset saved to {:?}", path);
+        }
+    }
+    q
+}
+
+/// Twin of [`build_rabitq`] for the B=4 extended variant. Sidecar
+/// extension `.qrb4`. Seed pinned to `RABITQ_B4_MAGIC` (distinct from
+/// the B=1 seed so the two codecs get different rotation matrices,
+/// keeping their estimators independent).
+fn build_rabitq_b4<const N: usize>(
+    dataset: &InmemDataset<f32, N>,
+    cache_base: &Path,
+) -> RabitQ4Dataset<N>
+where
+    [f32; N]: FullPrecisionDistance<f32, N>,
+{
+    let path = cache_base.with_extension("qrb4");
+    if path.exists() {
+        match RabitQ4Dataset::<N>::load(&path) {
+            Ok(q) => {
+                log::info!("RabitQ4Dataset loaded from {:?}", path);
+                return q;
+            }
+            Err(e) => log::warn!("RabitQ4Dataset load failed ({e}), rebuilding"),
+        }
+    }
+    let t = Instant::now();
+    let q = RabitQ4Dataset::<N>::build_from(dataset, RABITQ_B4_MAGIC as u64);
+    log::info!(
+        "RabitQ4Dataset built in {:.2}s (N={}, num={})",
+        t.elapsed().as_secs_f32(),
+        N,
+        q.num_vertices,
+    );
+    if !cache_base.as_os_str().is_empty() {
+        if let Err(e) = q.save(&path) {
+            log::warn!("RabitQ4Dataset save failed: {e}");
+        } else {
+            log::info!("RabitQ4Dataset saved to {:?}", path);
         }
     }
     q

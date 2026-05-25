@@ -3,6 +3,8 @@ pub mod in_mem_search_l2;
 pub mod in_mem_search_l2_q;
 pub mod in_mem_search_mips;
 pub mod in_mem_search_mips_q;
+pub mod in_mem_search_rabitq;
+pub mod in_mem_search_rabitq_b4;
 
 pub mod async_beam_search;
 
