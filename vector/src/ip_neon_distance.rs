@@ -176,14 +176,3 @@ pub fn distance_ip_vector_f32_batch4<const N: usize>(
     ]
 }
 
-/// In-place L2-normalize a vector to unit length. No-op on the zero vector.
-#[inline]
-pub fn l2_normalize_f32_inplace(v: &mut [f32]) {
-    let n2: f32 = v.iter().map(|x| x * x).sum();
-    if n2 > 0.0 {
-        let inv = 1.0 / n2.sqrt();
-        for x in v.iter_mut() {
-            *x *= inv;
-        }
-    }
-}

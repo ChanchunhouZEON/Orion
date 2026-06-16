@@ -3,10 +3,13 @@
  * Licensed under the MIT License.
  */
 
-use crate::config::Metric;
+use crate::runner::cascade::{AdmissionChoice, PrefilterChoice, RerankChoice};
 use crate::report::table::BuildTiming;
 use crate::runner::common::{AlgorithmRunner, SearchResult};
-use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
+use staged_diskann::{
+    build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_784,
+    DIM_960,
+};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -24,9 +27,14 @@ pub struct StagedDiskANNRunner {
     search_list_size: usize,
     max_extra: usize,
     window_size: usize,
-    /// Search metric — chosen at construction time, drives both single-query
-    /// `search` and multi-query `search_batch` dispatch.
-    metric: Metric,
+    /// Cascade triple — drives both single-query `search` and
+    /// multi-query `search_batch` via the unified pipeline. Mirrors
+    /// the `Cascade::default_for_dataset` choice from
+    /// `staged_diskann.rs`. Loaded by callers from `sweep.yaml`'s
+    /// per-dataset `staged.{prefilter, admission, rerank}` fields.
+    prefilter: crate::runner::cascade::PrefilterChoice,
+    admission: crate::runner::cascade::AdmissionChoice,
+    rerank: crate::runner::cascade::RerankChoice,
     /// Auto-calibrated during build.
     epsilon: f32,
     /// Auto-calibrated during build.
@@ -44,7 +52,10 @@ enum StagedInner {
     Dim32 { staged: StagedDiskANN<32> },
     Dim100 { staged: StagedDiskANN<100> },
     Dim128 { staged: StagedDiskANN<128> },
+    Dim768 { staged: StagedDiskANN<768> },
+    Dim784 { staged: StagedDiskANN<784> },
     Dim960 { staged: StagedDiskANN<960> },
+    Dim1536 { staged: StagedDiskANN<1536> },
 }
 
 macro_rules! build_staged {
@@ -99,8 +110,7 @@ macro_rules! build_staged {
     }};
 }
 
-/// Single-query dispatch by metric. Mirrors `staged_sweep`'s metric arm
-/// without the warmup/cache-flush boilerplate — pure search call.
+/// Single-query dispatch via the unified cascade pipeline.
 macro_rules! search_staged {
     ($staged:ident, $query:ident, $k:ident, $self:ident, $N:literal) => {{
         let mut q = [0.0f32; $N];
@@ -109,25 +119,24 @@ macro_rules! search_staged {
         let ws = $self.window_size;
         let eps = $self.epsilon;
         let ee = $self.early_exit_limit;
-        match $self.metric {
-            Metric::L2 => $staged.search_l2_u8(&q, $k, sls, ws, eps, ee),
-            Metric::L2Q => $staged.search_l2_u8_q(&q, $k, sls, ws, eps, ee),
-            Metric::Mips => $staged.search_mips(&q, $k, sls, ws, eps, ee),
-            Metric::MipsQ => {
-                let q_ds = $staged.ensure_quantized_dataset_mips();
-                $staged.search_mips_q::<staged_diskann::model::MipsI8>(
-                    &q, q_ds, $k, sls, ws, eps, ee,
-                )
-            }
-        }
+        let pf = crate::runner::cascade::build_prefilter::<$N>($staged, $self.prefilter, $self.admission);
+        let ad = crate::runner::cascade::build_admission::<$N>($staged, $self.admission);
+        let rr = crate::runner::cascade::build_rerank::<$N>($staged, $self.rerank);
+        $staged.search_unified(
+            &q,
+            $k,
+            sls,
+            ws,
+            eps,
+            ee,
+            pf.as_deref(),
+            ad.as_ref(),
+            rr.as_ref(),
+        )
     }};
 }
 
-/// Batch dispatch by metric. Routes to the appropriate `search_batch_*`
-/// family method on `StagedDiskANN`, which carries the L-adaptive
-/// `par_chunks(BATCH)` rayon shape (kills low-L dispatch overhead).
-/// Returns `Vec<Vec<u32>>` (per-query neighbour lists); the wrapping
-/// `search_batch` impl below stuffs them into `SearchResult`.
+/// Batch dispatch via the unified cascade pipeline.
 macro_rules! search_batch_staged {
     ($staged:ident, $queries:ident, $k:ident, $self:ident, $N:literal) => {{
         let qs: Vec<[f32; $N]> = $queries
@@ -142,56 +151,30 @@ macro_rules! search_batch_staged {
         let ws = $self.window_size;
         let eps = $self.epsilon;
         let ee = $self.early_exit_limit;
-        match $self.metric {
-            Metric::L2 => $staged.search_batch_l2_u8(&qs, $k, sls, ws, eps, ee),
-            Metric::L2Q => $staged.search_batch_l2_u8_q(&qs, $k, sls, ws, eps, ee),
-            Metric::Mips => $staged.search_batch_mips(&qs, $k, sls, ws, eps, ee),
-            Metric::MipsQ => {
-                let q_ds = $staged.ensure_quantized_dataset_mips();
-                $staged.search_batch_mips_q::<staged_diskann::model::MipsI8>(
-                    &qs, q_ds, $k, sls, ws, eps, ee,
-                )
-            }
-        }
+        crate::runner::cascade::search_batch_compose::<$N>(
+            $staged, &qs, $k, sls, ws, eps, ee, $self.prefilter, $self.admission, $self.rerank,
+        )
     }};
 }
 
-/// Inner helper for the `pin_hot_regions!` macro — pins the dataset,
-/// the metric-appropriate quantized sidecar, and the `PhasedGraph`
-/// slab into RAM via `mlock(2)`. Mirrors the corresponding block in
-/// `staged_sweep.rs`. Best-effort: pin failures are logged inside
-/// `utils::mlock_bytes`, no abort.
+/// Pin the dataset, cascade-tier sidecars, and `PhasedGraph` slab
+/// into RAM via `mlock(2)`. Best-effort: pin failures are logged
+/// inside `utils::mlock_bytes`, no abort. Routes the per-tier pin
+/// through `cascade::pin_cascade` so the cascade builders and the
+/// pin policy stay in lockstep.
 macro_rules! pin_staged_hot {
-    ($staged:ident, $metric:expr) => {{
-        // f32 base dataset.
+    ($staged:ident, $self:ident) => {{
+        // f32 base dataset is always hot regardless of cascade choice.
         let ds_ptr = $staged.dataset.data.as_ptr() as *const u8;
         let ds_len = $staged.dataset.data.len() * std::mem::size_of::<f32>();
         crate::utils::mlock_bytes("staged dataset (f32)", ds_ptr, ds_len);
 
-        // Metric-appropriate quantized sidecar. Reading via the public
-        // `ensure_quantized_*` accessors guarantees the sidecar is
-        // built/loaded before we mlock its bytes.
-        match $metric {
-            crate::config::Metric::L2 | crate::config::Metric::L2Q => {
-                let q = $staged.ensure_quantized_dataset();
-                let len_bytes = q.data.len() * std::mem::size_of::<u8>();
-                crate::utils::mlock_bytes(
-                    "staged qdataset (u8)",
-                    q.data.as_ptr() as *const u8,
-                    len_bytes,
-                );
-            }
-            crate::config::Metric::Mips => { /* no quantized sidecar */ }
-            crate::config::Metric::MipsQ => {
-                let q = $staged.ensure_quantized_dataset_mips();
-                let len_bytes = q.data.len() * std::mem::size_of::<i8>();
-                crate::utils::mlock_bytes(
-                    "staged qdataset (i8)",
-                    q.data.as_ptr() as *const u8,
-                    len_bytes,
-                );
-            }
-        }
+        crate::runner::cascade::pin_cascade(
+            $staged,
+            $self.prefilter,
+            $self.admission,
+            $self.rerank,
+        );
 
         // PhasedGraph slot slab.
         let pg = $staged.graph.buffer_bytes();
@@ -210,12 +193,14 @@ impl StagedDiskANNRunner {
     /// `staged_sweep.rs`. Call once after `build()` and before the
     /// timing loop.
     pub fn pin_hot_regions(&self) {
-        let m = self.metric;
         match self.inner.as_ref().expect("Index not built") {
-            StagedInner::Dim32 { staged } => pin_staged_hot!(staged, m),
-            StagedInner::Dim100 { staged } => pin_staged_hot!(staged, m),
-            StagedInner::Dim128 { staged } => pin_staged_hot!(staged, m),
-            StagedInner::Dim960 { staged } => pin_staged_hot!(staged, m),
+            StagedInner::Dim32 { staged } => pin_staged_hot!(staged, self),
+            StagedInner::Dim100 { staged } => pin_staged_hot!(staged, self),
+            StagedInner::Dim128 { staged } => pin_staged_hot!(staged, self),
+            StagedInner::Dim768 { staged } => pin_staged_hot!(staged, self),
+            StagedInner::Dim784 { staged } => pin_staged_hot!(staged, self),
+            StagedInner::Dim960 { staged } => pin_staged_hot!(staged, self),
+            StagedInner::Dim1536 { staged } => pin_staged_hot!(staged, self),
         }
     }
 
@@ -248,7 +233,10 @@ impl StagedDiskANNRunner {
             StagedInner::Dim32 { staged } => recal!(staged, 32),
             StagedInner::Dim100 { staged } => recal!(staged, 100),
             StagedInner::Dim128 { staged } => recal!(staged, 128),
+            StagedInner::Dim768 { staged } => recal!(staged, 768),
+            StagedInner::Dim784 { staged } => recal!(staged, 784),
             StagedInner::Dim960 { staged } => recal!(staged, 960),
+            StagedInner::Dim1536 { staged } => recal!(staged, 1536),
         };
         if let Some(c) = calib {
             self.epsilon = c.threshold;
@@ -267,7 +255,9 @@ impl StagedDiskANNRunner {
         search_list_size: usize,
         max_extra: usize,
         window_size: usize,
-        metric: Metric,
+        prefilter: PrefilterChoice,
+        admission: AdmissionChoice,
+        rerank: RerankChoice,
     ) -> Self {
         Self {
             name,
@@ -276,7 +266,9 @@ impl StagedDiskANNRunner {
             search_list_size,
             max_extra,
             window_size,
-            metric,
+            prefilter,
+            admission,
+            rerank,
             epsilon: 0.0,
             early_exit_limit: 0,
             dimension: 0,
@@ -330,7 +322,10 @@ impl AlgorithmRunner for StagedDiskANNRunner {
                     DIM_32 => load_cached!(32, Dim32),
                     DIM_100 => load_cached!(100, Dim100),
                     DIM_128 => load_cached!(128, Dim128),
+                    DIM_768 => load_cached!(768, Dim768),
+                    DIM_784 => load_cached!(784, Dim784),
                     DIM_960 => load_cached!(960, Dim960),
+                    DIM_1536 => load_cached!(1536, Dim1536),
                     _ => panic!("Unsupported dimension: {dimension}"),
                 }
                 let elapsed = start.elapsed();
@@ -364,7 +359,10 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             DIM_32 => build_staged!(self, data, num_points, result, 32, Dim32),
             DIM_100 => build_staged!(self, data, num_points, result, 100, Dim100),
             DIM_128 => build_staged!(self, data, num_points, result, 128, Dim128),
+            DIM_768 => build_staged!(self, data, num_points, result, 768, Dim768),
+            DIM_784 => build_staged!(self, data, num_points, result, 784, Dim784),
             DIM_960 => build_staged!(self, data, num_points, result, 960, Dim960),
+            DIM_1536 => build_staged!(self, data, num_points, result, 1536, Dim1536),
             _ => panic!("Unsupported dimension: {dimension}"),
         }
 
@@ -381,7 +379,10 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             StagedInner::Dim32 { staged } => search_staged!(staged, query, k, self, 32),
             StagedInner::Dim100 { staged } => search_staged!(staged, query, k, self, 100),
             StagedInner::Dim128 { staged } => search_staged!(staged, query, k, self, 128),
+            StagedInner::Dim768 { staged } => search_staged!(staged, query, k, self, 768),
+            StagedInner::Dim784 { staged } => search_staged!(staged, query, k, self, 784),
             StagedInner::Dim960 { staged } => search_staged!(staged, query, k, self, 960),
+            StagedInner::Dim1536 { staged } => search_staged!(staged, query, k, self, 1536),
         }
         .expect("Searching process failed");
         SearchResult {
@@ -399,7 +400,10 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             StagedInner::Dim32 { staged } => search_batch_staged!(staged, queries, k, self, 32),
             StagedInner::Dim100 { staged } => search_batch_staged!(staged, queries, k, self, 100),
             StagedInner::Dim128 { staged } => search_batch_staged!(staged, queries, k, self, 128),
+            StagedInner::Dim768 { staged } => search_batch_staged!(staged, queries, k, self, 768),
+            StagedInner::Dim784 { staged } => search_batch_staged!(staged, queries, k, self, 784),
             StagedInner::Dim960 { staged } => search_batch_staged!(staged, queries, k, self, 960),
+            StagedInner::Dim1536 { staged } => search_batch_staged!(staged, queries, k, self, 1536),
         }
         .expect("Batch searching process failed");
         neighbors_vec
@@ -411,7 +415,4 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             .collect()
     }
 
-    fn memory_bytes(&self) -> usize {
-        0
-    }
 }

@@ -386,7 +386,7 @@ fn signed_dot_scalar<const N: usize>(code: &[u8], rotated_q: &[f32; N], start: u
 /// multiple of 8.
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 #[inline]
-unsafe fn signed_dot_neon(code: *const u8, rotated_q: *const f32, bytes: usize) -> f32 {
+unsafe fn signed_dot_neon(code: *const u8, rotated_q: *const f32, bytes: usize) -> f32 { unsafe {
     use std::arch::aarch64::*;
     let low_mask = vdup_n_u8(0x0f);
     let mut acc_a = vdupq_n_f32(0.0);
@@ -439,7 +439,7 @@ unsafe fn signed_dot_neon(code: *const u8, rotated_q: *const f32, bytes: usize) 
 
     let acc = vaddq_f32(acc_a, acc_b);
     vaddvq_f32(acc)
-}
+}}
 
 #[cfg(test)]
 mod tests {

@@ -76,13 +76,90 @@ case "$DATASET" in
         PA_DIST_FUNC="${PA_DIST_FUNC:-mips}"
         ;;
     gist)
+        # GIST 1M — ParlayANN-aligned recipe from
+        # `../ParlayANN/algorithms/vamana/scripts/gist`:
+        #   BUILD_ARGS="-R 100 -L 200 -alpha 1.1 -num_passes 2"
+        # the exported `.staged` and downstream PhasedGraph cache
+        # match the public PA reference for apples-to-apples.
         BASE_FVECS="data/gist/gist_base.fvecs"
         QUERY_FVECS="data/gist/gist_query.fvecs"
         GT_IVECS="data/gist/gist_groundtruth.ivecs"
-        MAX_POINTS=100000
-        PA_DIR_NAME="gist100k"
-        PA_R=32; PA_L=48; PA_ALPHA=1.5; MAX_EXTRA=4
+        MAX_POINTS=""           # full 1M
+        PA_DIR_NAME="gist"
+        PA_R=100; PA_L=200; PA_ALPHA=1.1; MAX_EXTRA="${MAX_EXTRA:-16}"
         PA_DIST_FUNC="${PA_DIST_FUNC:-Euclidian}"
+        ;;
+    deep10m)
+        # Yandex Deep10M (96-dim CNN features, L2 ground truth) — PA's
+        # `vamana/scripts/deep10M` recipe verbatim:
+        #   BUILD_ARGS="-R 64 -L 128 -alpha 1.05 -num_passes 2 -quantize_bits 8"
+        # The raw .fvecs must already be present at the paths below —
+        # download from Yandex Deep1B (first 10M) or BigANN benchmark.
+        # `convert.py` zero-pads D=96 → D=128 to match the rust-side
+        # monomorphisation.
+        BASE_FVECS="data/deep10m/deep10m_base.fvecs"
+        QUERY_FVECS="data/deep10m/deep10m_query.fvecs"
+        GT_IVECS="data/deep10m/deep10m_groundtruth.ivecs"
+        MAX_POINTS=""           # full 10M
+        PA_DIR_NAME="deep10M"
+        PA_R=64; PA_L=128; PA_ALPHA=1.05; MAX_EXTRA="${MAX_EXTRA:-16}"
+        PA_NUM_PASSES="${PA_NUM_PASSES:-2}"
+        PA_QUANTIZE_BITS="${PA_QUANTIZE_BITS:-8}"
+        PA_VERBOSE="${PA_VERBOSE:-1}"
+        PA_DIST_FUNC="${PA_DIST_FUNC:-Euclidian}"
+        ;;
+    fashion-mnist)
+        # Fashion-MNIST — 60K × 784-D image vectors (28×28 flattened),
+        # L2. PA's recipe (`vamana/scripts/fashion` verbatim):
+        #   BUILD_ARGS="-R 40 -L 80 -alpha 1.1 -num_passes 2 -quantize_bits 8"
+        #   QUERY_ARGS="-quantize_bits 8"
+        #   TYPE_ARGS="-data_type float -dist_func Euclidian -file_type bin"
+        BASE_FVECS="data/fashion-mnist/fashion-mnist-784-euclidean_base.fvecs"
+        QUERY_FVECS="data/fashion-mnist/fashion-mnist-784-euclidean_query.fvecs"
+        GT_IVECS="data/fashion-mnist/fashion-mnist-784-euclidean_groundtruth.ivecs"
+        MAX_POINTS=""           # full 60K
+        PA_DIR_NAME="fashion-mnist-784-euclidean"
+        PA_R=40; PA_L=80; PA_ALPHA=1.1; MAX_EXTRA="${MAX_EXTRA:-16}"
+        PA_NUM_PASSES="${PA_NUM_PASSES:-2}"
+        PA_QUANTIZE_BITS="${PA_QUANTIZE_BITS:-8}"
+        PA_VERBOSE="${PA_VERBOSE:-1}"
+        PA_DIST_FUNC="${PA_DIST_FUNC:-Euclidian}"
+        ;;
+    msmarco_bert_1M)
+        # MS-MARCO BERT 1M — 1M passages embedded with sentence-
+        # transformers/msmarco-bert-base-dot-v5 (D=768, dot-product).
+        # Vectors are emitted by `data/embed_msmarco_bert.py`. PA's
+        # recipe (`vamana/scripts/msmarco_websearch`):
+        #   BUILD_ARGS="-R 64 -L 128 -alpha 1 -num_passes 1 -quantize_bits 8"
+        #   TYPE_ARGS="-data_type float -dist_func mips -file_type bin"
+        BASE_FVECS="data/msmarco_bert_1M/msmarco_bert_1M_base.fvecs"
+        QUERY_FVECS="data/msmarco_bert_1M/msmarco_bert_1M_query.fvecs"
+        GT_IVECS="data/msmarco_bert_1M/msmarco_bert_1M_groundtruth.ivecs"
+        MAX_POINTS=""           # full 1M
+        PA_DIR_NAME="MSMarcoBert1M"
+        PA_R=64; PA_L=128; PA_ALPHA=1.0; MAX_EXTRA="${MAX_EXTRA:-16}"
+        PA_NUM_PASSES="${PA_NUM_PASSES:-1}"
+        PA_QUANTIZE_BITS="${PA_QUANTIZE_BITS:-8}"
+        PA_VERBOSE="${PA_VERBOSE:-1}"
+        PA_DIST_FUNC="${PA_DIST_FUNC:-mips}"
+        ;;
+    wiki_ada_1M)
+        # Wikipedia ada-002 1M — 1M passages × 1536-D OpenAI ada-002
+        # embeddings, sourced from nlpkevinl/wikipedia_openai_embeddings
+        # via `data/load_wiki_ada_1M.py`. ada-002 outputs are unit-norm
+        # so MIPS == cosine natively. Build recipe: high-D shape
+        # (R=100 L=200 α=1.05) with `-dist_func mips` since the metric
+        # is dot-product, not L2.
+        BASE_FVECS="data/wiki_ada_1M/wiki_ada_1M_base.fvecs"
+        QUERY_FVECS="data/wiki_ada_1M/wiki_ada_1M_query.fvecs"
+        GT_IVECS="data/wiki_ada_1M/wiki_ada_1M_groundtruth.ivecs"
+        MAX_POINTS=""           # full 1M
+        PA_DIR_NAME="WikiAda1M"
+        PA_R=100; PA_L=200; PA_ALPHA=1.05; MAX_EXTRA="${MAX_EXTRA:-16}"
+        PA_NUM_PASSES="${PA_NUM_PASSES:-2}"
+        PA_QUANTIZE_BITS="${PA_QUANTIZE_BITS:-}"
+        PA_VERBOSE="${PA_VERBOSE:-1}"
+        PA_DIST_FUNC="${PA_DIST_FUNC:-mips}"
         ;;
     *)
         echo "Unknown DATASET=$DATASET" >&2
@@ -95,6 +172,17 @@ if [ -z "${PA_ROOT:-}" ]; then
     echo "  e.g. PA_ROOT=/path/to/ParlayANN DATASET=glove100 bash $0" >&2
     exit 2
 fi
+# Resolve PA_ROOT to an absolute path. The PA build invokes its
+# `neighbors` binary via `cd "$PA_VAMANA" && ./neighbors ...`, so any
+# relative paths derived from PA_ROOT (`PA_OUT_DIR/base.fbin`,
+# `GRAPH_OUT`, ...) would break after the cd. Resolving once here
+# means the caller can hand in either `../ParlayANN` or
+# `/abs/path/to/ParlayANN` interchangeably.
+if [ ! -d "$PA_ROOT" ]; then
+    echo "ERROR: PA_ROOT='$PA_ROOT' is not a directory" >&2
+    exit 2
+fi
+PA_ROOT="$(cd "$PA_ROOT" && pwd)"
 PA_OUT_DIR="$PA_ROOT/data/$PA_DIR_NAME"
 PA_VAMANA="$PA_ROOT/algorithms/vamana"
 # `LOCAL_PCT` is the top-X% partition cutoff (% of per-node degree)
@@ -105,7 +193,17 @@ LOCAL_PCT="${LOCAL_PCT:-60}"
 STAGED_STUB="${PA_DIR_NAME}_ex${MAX_EXTRA}_pct${LOCAL_PCT}"
 STAGED_OUT="$PA_OUT_DIR/${STAGED_STUB}.staged"
 
-mkdir -p "$PA_OUT_DIR"
+# ParlayANN's per-dataset scripts (e.g. `algorithms/vamana/scripts/gist`)
+# save the built graph as `graphs/graph_<R>_<alpha>` and pass it to
+# downstream search via `-graph_path`. Match that naming so the same
+# artifact can be reused by PA's own query benchmark without rebuilding
+# (~9 min on GIST 1M). `%g` strips trailing zeros from alpha (1.10 →
+# "1.1", 1.0 → "1", 1.15 → "1.15") to match PA's filename convention.
+PA_ALPHA_TAG="$(printf '%g' "$PA_ALPHA")"
+GRAPH_OUT_DIR="$PA_OUT_DIR/graphs"
+GRAPH_OUT="$GRAPH_OUT_DIR/graph_${PA_R}_${PA_ALPHA_TAG}"
+
+mkdir -p "$PA_OUT_DIR" "$GRAPH_OUT_DIR"
 
 echo "═══ Step 1/3: convert fvecs → fbin ($DATASET) ═══"
 CONVERT_ARGS=(
@@ -154,6 +252,7 @@ if [ "${PA_VERBOSE:-0}" = "1" ]; then
 fi
 
 echo "═══ Step 3/3: ParlayANN build → $STAGED_OUT  (R=$PA_R L=$PA_L α=$PA_ALPHA passes=$PA_NUM_PASSES normalize=${PA_NORMALIZE:-0} qbits=${PA_QUANTIZE_BITS:-none} ex=$MAX_EXTRA pct=$LOCAL_PCT) ═══"
+echo "                                graph → $GRAPH_OUT (for PA's own search re-runs)"
 (cd "$PA_VAMANA" && PARLAY_NUM_THREADS=8 ./neighbors \
     -R "$PA_R" -L "$PA_L" -alpha "$PA_ALPHA" -num_passes "$PA_NUM_PASSES" \
     -data_type float -dist_func "$PA_DIST_FUNC" $PA_NORMALIZE_FLAG \
@@ -163,10 +262,11 @@ echo "═══ Step 3/3: ParlayANN build → $STAGED_OUT  (R=$PA_R L=$PA_L α=$
     -query_path "$PA_OUT_DIR/query.fbin" \
     -gt_path "$PA_OUT_DIR/gt.bin" \
     -res_path "/tmp/parlayann_${DATASET}_prep.csv" \
+    -graph_outfile "$GRAPH_OUT" \
     -staged_outfile "$STAGED_OUT" 2>&1 | tail -20)
 
 echo
 echo "Done. Artifacts in $PA_OUT_DIR:"
 ls -lh "$PA_OUT_DIR"
 echo
-echo "Next: DATASET=$DATASET bash benchmark/scripts/sweep_staged_vs_parlayann.sh"
+echo "Next: DATASET=$DATASET bash benchmark/scripts/sweep_staged_vs_diskann_vs_parlayann.sh"

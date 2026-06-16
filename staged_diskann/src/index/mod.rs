@@ -15,4 +15,7 @@ pub use naive_compressed_index::NaiveStagedDiskANN;
 pub const DIM_32: usize = 32;
 pub const DIM_100: usize = 100;
 pub const DIM_128: usize = 128;
+pub const DIM_768: usize = 768;
+pub const DIM_784: usize = 784;
 pub const DIM_960: usize = 960;
+pub const DIM_1536: usize = 1536;

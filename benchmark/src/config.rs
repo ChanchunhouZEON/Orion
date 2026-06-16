@@ -22,43 +22,19 @@
 //! resolved at load time. `${PA_ROOT}` must be set via env (no
 //! repo-baked default — keeps user paths out of committed config);
 //! `${max_extra}` resolves from the dataset's `staged.max_extra`.
+//!
+//! Many fields are deserialised by serde from YAML but consumed only
+//! in subsystems that aren't reached from every benchmark binary —
+//! suppress the `dead_code` warning at the module level rather than
+//! tagging every struct field.
+
+#![allow(dead_code)]
 
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 // ── User-facing enums ──────────────────────────────────────────────────────
-
-/// Search metric selected per-dataset. Drives both the distance kernel
-/// and (for MIPS-family) whether the base vectors are normalized at
-/// ingest.
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub enum Metric {
-    /// 2-phase u8 prefilter + f32 L2 rerank (production non-angular).
-    L2,
-    ///  PA-style i8 beam + f32 top-`k × 2` rerank.
-    L2Q,
-    /// Single-phase `-⟨q, v⟩` on unit-normalized data.
-    Mips,
-    /// PA-style i8 beam + f32 top-`k × 2` rerank (angular high-dim).
-    MipsQ,
-}
-
-impl Metric {
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "l2" | "L2" => Metric::L2,
-            "l2-q" | "l2_q" | "L2-Q" => Metric::L2Q,
-            "mips" | "MIPS" => Metric::Mips,
-            "mips-q" | "mips_q" | "MIPS-Q" => Metric::MipsQ,
-            _ => panic!("Unknown metric: {s} (expected l2|l2-q|mips|mips-q)"),
-        }
-    }
-
-    pub fn is_mips_family(self) -> bool {
-        matches!(self, Metric::Mips | Metric::MipsQ)
-    }
-}
 
 /// Where the base graph comes from.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -90,7 +66,13 @@ pub struct StagedConfig {
     pub build_search_list_size: usize,
     pub max_extra: usize,
     pub window_size: usize,
-    pub metric: Metric,
+    /// Cascade triple loaded directly from `sweep.yaml`. The unified
+    /// search pipeline reads these to build the prefilter / admission
+    /// / rerank stages. Mirrors the `Cascade::default_for_dataset`
+    /// mapping in `staged_diskann.rs`.
+    pub prefilter: crate::runner::cascade::PrefilterChoice,
+    pub admission: crate::runner::cascade::AdmissionChoice,
+    pub rerank: crate::runner::cascade::RerankChoice,
 }
 
 #[derive(Clone, Debug)]
@@ -145,7 +127,9 @@ struct RawStagedDefaults {
     build_search_list_size: usize,
     max_extra: usize,
     window_size: usize,
-    metric: String,
+    prefilter: String,
+    admission: String,
+    rerank: String,
 }
 
 #[derive(Deserialize)]
@@ -191,7 +175,9 @@ struct RawStagedOverride {
     build_search_list_size: Option<usize>,
     max_extra: Option<usize>,
     window_size: Option<usize>,
-    metric: Option<String>,
+    prefilter: Option<String>,
+    admission: Option<String>,
+    rerank: Option<String>,
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -266,9 +252,20 @@ fn resolve_dataset(root: &RawRoot, name: &str) -> DatasetConfig {
         window_size: ov
             .and_then(|o| o.window_size)
             .unwrap_or(staged_d.window_size),
-        metric: Metric::parse(
-            ov.and_then(|o| o.metric.as_deref())
-                .unwrap_or(staged_d.metric.as_str()),
+        prefilter: parse_cascade_str::<crate::runner::cascade::PrefilterChoice>(
+            ov.and_then(|o| o.prefilter.as_deref())
+                .unwrap_or(staged_d.prefilter.as_str()),
+            "prefilter",
+        ),
+        admission: parse_cascade_str::<crate::runner::cascade::AdmissionChoice>(
+            ov.and_then(|o| o.admission.as_deref())
+                .unwrap_or(staged_d.admission.as_str()),
+            "admission",
+        ),
+        rerank: parse_cascade_str::<crate::runner::cascade::RerankChoice>(
+            ov.and_then(|o| o.rerank.as_deref())
+                .unwrap_or(staged_d.rerank.as_str()),
+            "rerank",
         ),
     };
 
@@ -385,6 +382,14 @@ fn default_for(_var: &str) -> Option<String> {
     None
 }
 
+/// Parse a cascade-choice string into the corresponding enum, with a
+/// helpful error message keyed on which axis we're reading. Wraps the
+/// per-enum `FromStr` impls so the YAML loader can fail fast with a
+/// pointed message on a typo.
+fn parse_cascade_str<T: std::str::FromStr<Err = String>>(s: &str, axis: &str) -> T {
+    T::from_str(s).unwrap_or_else(|e| panic!("sweep.yaml staged.{axis} = {s:?} — {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,12 +415,5 @@ mod tests {
                 std::env::remove_var("PA_ROOT");
             },
         }
-    }
-
-    #[test]
-    fn metric_roundtrip() {
-        assert_eq!(Metric::parse("l2"), Metric::L2);
-        assert_eq!(Metric::parse("mips"), Metric::Mips);
-        assert_eq!(Metric::parse("mips-q"), Metric::MipsQ);
     }
 }

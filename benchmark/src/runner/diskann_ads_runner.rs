@@ -34,6 +34,12 @@ pub struct DiskANNAdsRunner {
     ads_epsilon: f32,
     rotator: RotatorKind,
     temp_data_file: Option<PathBuf>,
+    /// Optional cache path. When set and both `<cache>` and
+    /// `<cache>.data` exist, `build()` skips the Vamana construction
+    /// and loads from disk (mirrors [`DiskANNRunner::build`]). The
+    /// dataset rotation is still re-applied for every query since the
+    /// runner needs a live `rotator` handle.
+    cache_path: Option<PathBuf>,
 }
 
 /// Const-generic dispatch for the rotator. Each dataset dimension we support
@@ -57,11 +63,16 @@ impl DiskANNAdsRunner {
             ads_epsilon,
             rotator: RotatorKind::None,
             temp_data_file: None,
+            cache_path: None,
         }
     }
 
     pub fn set_search_list_size(&mut self, sls: usize) {
         self.search_list_size = sls as u32;
+    }
+
+    pub fn set_cache_path<P: Into<PathBuf>>(&mut self, p: P) {
+        self.cache_path = Some(p.into());
     }
 
     fn write_temp_data_file(data: &[f32], num_points: usize, dimension: usize) -> PathBuf {
@@ -144,9 +155,6 @@ impl AlgorithmRunner for DiskANNAdsRunner {
             d => panic!("Unsupported dimension for ADSampling: {d}"),
         }
 
-        let temp_path = Self::write_temp_data_file(&rotated, num_points, dimension);
-        self.temp_data_file = Some(temp_path.clone());
-
         let num_threads = rayon::current_num_threads() as u32;
         let write_params =
             IndexWriteParametersBuilder::new(self.search_list_size, self.graph_degree)
@@ -168,9 +176,42 @@ impl AlgorithmRunner for DiskANNAdsRunner {
 
         let mut index: Box<dyn ANNInmemIndex<f32>> =
             create_inmem_index(config).expect("Failed to create DiskANN index");
+
+        // Cache fast-path. When both `<cache>` and `<cache>.data`
+        // exist on disk, load the Vamana graph + rotated data file
+        // and skip the build entirely. The rotator handle was already
+        // (re-)populated above so query rotation still works on load.
+        if let Some(cp) = self.cache_path.as_ref() {
+            let graph_file = cp.as_path();
+            let data_file = cp.with_extension("bin.data");
+            if graph_file.exists() && data_file.exists() {
+                log::info!("Loading cached DiskANN+ADS index from {:?}", graph_file);
+                index
+                    .load(graph_file.to_str().unwrap(), num_points)
+                    .expect("DiskANN+ADS cache load failed");
+                self.index = Some(index);
+                return BuildTiming {
+                    graph_build: start.elapsed(),
+                    overhead: Duration::ZERO,
+                };
+            }
+        }
+
+        let temp_path = Self::write_temp_data_file(&rotated, num_points, dimension);
+        self.temp_data_file = Some(temp_path.clone());
         index
             .build(temp_path.to_str().unwrap(), num_points)
             .expect("DiskANN build failed");
+
+        if let Some(cp) = self.cache_path.as_ref() {
+            if let Some(parent) = cp.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            match index.save(cp.to_str().unwrap()) {
+                Ok(()) => log::info!("Saved DiskANN+ADS cache to {:?}", cp),
+                Err(e) => log::warn!("Failed to save DiskANN+ADS cache: {}", e),
+            }
+        }
 
         self.index = Some(index);
         BuildTiming {
@@ -200,9 +241,6 @@ impl AlgorithmRunner for DiskANNAdsRunner {
         }
     }
 
-    fn memory_bytes(&self) -> usize {
-        0
-    }
 }
 
 impl Drop for DiskANNAdsRunner {

@@ -21,10 +21,6 @@ impl Dataset {
         self.base.len()
     }
 
-    pub fn num_queries(&self) -> usize {
-        self.queries.len()
-    }
-
     /// Get base vectors as a flat f32 slice (row-major).
     pub fn base_flat(&self) -> Vec<f32> {
         self.base.iter().flatten().copied().collect()

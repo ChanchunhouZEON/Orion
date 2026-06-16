@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Peak memory comparison across datasets: DiskANN vs StagedDiskANN."""
+"""Peak memory comparison across datasets: α-matched DiskANN vs StagedDiskANN.
+Both engines build at the dataset's PA-aligned `scfg.alpha`; the only
+delta is the `compute_candidate_sets` flag plus the per-node 60/40
+partition that materialises the PhasedGraph. The figure isolates that
+delta on peak / final RSS."""
 
 import json, os, sys
 import numpy as np
@@ -42,13 +46,13 @@ diskann_mb = [data[k]['diskann_peak_b'] / MB for k, _ in present]
 staged_peak_mb = [data[k]['staged_peak_b'] / MB for k, _ in present]
 staged_final_mb = [data[k]['staged_final_b'] / MB for k, _ in present]
 
-h1 = rounded_bars(ax, x - (w + gap), diskann_mb, w, PALETTE['cyan'], label='DiskANN peak (α=2.0)')
+h1 = rounded_bars(ax, x - (w + gap), diskann_mb, w, PALETTE['cyan'], label='DiskANN peak (α=match, no candidates)')
 h2 = rounded_bars(ax, x, staged_peak_mb, w, PALETTE['blue'], label='Staged peak')
 h3 = rounded_bars(ax, x + (w + gap), staged_final_mb, w, PALETTE['green'], label='Staged final')
 
 ax.set_xticks(x); ax.set_xticklabels([t for _, t in present])
 ax.set_ylabel('Memory (MB)', fontsize=11)
-ax.set_title('Peak Memory: DiskANN vs StagedDiskANN', fontweight='bold')
+ax.set_title('Peak Memory: α-matched DiskANN vs StagedDiskANN', fontweight='bold')
 make_legend(ax, [h for h in [h1, h2, h3] if h], fontsize=10)
 style_ax(ax)
 apply_ylim(ax, diskann_mb + staged_peak_mb + staged_final_mb, headroom=1.25)
@@ -71,7 +75,7 @@ for i, r in enumerate(ratio_peak):
 
 ax.set_xticks(x); ax.set_xticklabels([t for _, t in present])
 ax.set_ylabel('Peak Memory Ratio (Staged / DiskANN)', fontsize=11)
-ax.set_title('Staged Memory Overhead (Lower is Better)', fontweight='bold')
+ax.set_title('Peak Memory Ratio at Matched α (Lower is Better)', fontweight='bold')
 make_legend(ax, handles, fontsize=10)
 style_ax(ax)
 apply_ylim(ax, ratio_peak, headroom=1.4)

@@ -119,11 +119,6 @@ pub trait QuantSpec: 'static {
     /// `smaller == closer`. L2: `Σ (q-v)²`. MIPS: `−Σ q·v`.
     fn truth_distance<const N: usize>(query: &[f32; N], vertex: &[f32; N]) -> f32;
 
-    /// Whether the query must be L2-normalized before search. Set on
-    /// MIPS specs (cosine search assumes both sides on the unit
-    /// sphere); off for L2.
-    const NORMALIZE_QUERY: bool;
-
     /// 32-byte-chunk distance kernel that drives the Stage-1
     /// prefilter loop in `search<Q>` via [`vector::DistanceStream`].
     /// Pairs with the storage / metric: `L2U8Distance` for [`L2U8`],
@@ -156,10 +151,29 @@ impl QuantParamsL2 {
         Self { slope, offset }
     }
 
+    /// Twin of [`from_range`] for u16 storage. Maps the input range
+    /// to `[0, 65535]` (256× finer per-dim resolution than u8). Used
+    /// by the [`L2U16`] codec as the precise PQ-admission tier of
+    /// the L2 cascade.
+    pub fn from_range_u16(min_val: f32, max_val: f32) -> Self {
+        let range = (max_val - min_val).max(1e-9);
+        let slope = 65535.0 / range;
+        let offset = (min_val * slope).round() as i32;
+        Self { slope, offset }
+    }
+
     #[inline]
     pub fn quantize_scalar(&self, v: f32) -> u8 {
         let x = (v * self.slope).round() as i32 - self.offset;
         x.clamp(0, 255) as u8
+    }
+
+    /// Quantize a single f32 into the u16 range. Mirrors
+    /// [`quantize_scalar`] but with the u16 clamp.
+    #[inline]
+    pub fn quantize_scalar_u16(&self, v: f32) -> u16 {
+        let x = (v * self.slope).round() as i32 - self.offset;
+        x.clamp(0, 65535) as u16
     }
 }
 
@@ -246,9 +260,99 @@ impl QuantSpec for L2U8 {
         vector::distance_l2_vector_f32::<N>(query, vertex)
     }
 
-    const NORMALIZE_QUERY: bool = false;
 
     type QuantDistanceFn = L2U8Distance;
+    type TruthDistanceFn = vector::L2F32Distance;
+}
+
+/// L2 squared-Euclidean on **u16** quantized base. Precise
+/// PQ-admission tier of the L2 cascade — 256× finer per-dim
+/// resolution than [`L2U8`] at the cost of 2× storage. Distance
+/// kernel goes through [`vector::L2U16Distance`] which has the
+/// same `DistanceStream` lookahead-prefetch pipeline as the u8 path.
+#[derive(Debug, Clone, Copy)]
+pub struct L2U16;
+
+impl QuantSpec for L2U16 {
+    type Storage = u16;
+    type Params = QuantParamsL2;
+    const MAGIC: u32 = 0x5144_5336; // "QDS6"
+    const FILE_EXT: &'static str = "qds6";
+    const LABEL: &'static str = "u16/L2";
+    const ALIGN_ELEMS: usize = 16; // 16 × 2 B = 32 B stride
+    const PF_BATCH_DEFAULT: usize = 8;
+    const METRIC: Metric = Metric::L2;
+
+    fn build_params(slice: &[f32]) -> Self::Params {
+        let mut min_val = f32::INFINITY;
+        let mut max_val = f32::NEG_INFINITY;
+        for &v in slice {
+            if v < min_val {
+                min_val = v;
+            }
+            if v > max_val {
+                max_val = v;
+            }
+        }
+        QuantParamsL2::from_range_u16(min_val, max_val)
+    }
+
+    #[inline]
+    fn quantize_scalar(p: &Self::Params, v: f32) -> Self::Storage {
+        p.quantize_scalar_u16(v)
+    }
+
+    /// Single-shot distance via the streaming kernel: iterate
+    /// `L2U16Distance::step` over 32-byte (16 u16-lane) chunks of the
+    /// full N-element vector, reduce once at the end. The streaming
+    /// kernel already inherits the lookahead-prefetch pipeline so
+    /// hot-path callers (entry distance, calibration) get the same
+    /// memory-pipelining as the batched DistanceStream loop.
+    #[inline]
+    unsafe fn distance<const N: usize>(a: *const u16, b: *const u16) -> f32 { unsafe {
+        use vector::DistanceFn;
+        let mut acc = vector::L2U16Distance::init();
+        let chunks = N / 16; // 16 u16 per 32-byte chunk
+        for i in 0..chunks {
+            let off = i * 16;
+            vector::L2U16Distance::step(&mut acc, a.add(off), b.add(off));
+        }
+        vector::L2U16Distance::reduce(acc)
+    }}
+
+    /// 4-way batched single-shot: four serial calls to
+    /// [`distance`](Self::distance). The hot path uses
+    /// `DistanceStream<L2U16Distance>` for true 4-way ILP — this
+    /// helper is only invoked from the cold paths (entry distance
+    /// batch, calibration warmup) so an unrolled 4-way kernel isn't
+    /// worth the duplication.
+    #[inline]
+    unsafe fn distance_batch4<const N: usize>(
+        a0: *const u16,
+        a1: *const u16,
+        a2: *const u16,
+        a3: *const u16,
+        q: *const u16,
+    ) -> [f32; 4] { unsafe {
+        [
+            Self::distance::<N>(a0, q),
+            Self::distance::<N>(a1, q),
+            Self::distance::<N>(a2, q),
+            Self::distance::<N>(a3, q),
+        ]
+    }}
+
+    #[inline]
+    fn distance_scale_sq(p: &Self::Params) -> f32 {
+        p.slope * p.slope
+    }
+
+    #[inline]
+    fn truth_distance<const N: usize>(query: &[f32; N], vertex: &[f32; N]) -> f32 {
+        vector::distance_l2_vector_f32::<N>(query, vertex)
+    }
+
+    type QuantDistanceFn = vector::L2U16Distance;
     type TruthDistanceFn = vector::L2F32Distance;
 }
 
@@ -316,8 +420,6 @@ impl QuantSpec for MipsI8 {
     fn truth_distance<const N: usize>(query: &[f32; N], vertex: &[f32; N]) -> f32 {
         vector::distance_ip_vector_f32::<N>(query, vertex)
     }
-
-    const NORMALIZE_QUERY: bool = true;
 
     type QuantDistanceFn = IpI8Distance;
     type TruthDistanceFn = vector::IpF32Distance;
@@ -388,8 +490,6 @@ impl QuantSpec for MipsI16 {
     fn truth_distance<const N: usize>(query: &[f32; N], vertex: &[f32; N]) -> f32 {
         vector::distance_ip_vector_f32::<N>(query, vertex)
     }
-
-    const NORMALIZE_QUERY: bool = true;
 
     type QuantDistanceFn = IpI16Distance;
     type TruthDistanceFn = vector::IpF32Distance;

@@ -5,7 +5,7 @@ from matplotlib.patches import FancyBboxPatch, PathPatch
 from matplotlib.path import Path
 from matplotlib.legend_handler import HandlerPatch
 
-# ── GLM-inspired palette ──
+# ── GLM-inspired palette (existing — kept for backward compat) ──
 PALETTE = {
     'blue':   '#5B8FF9',
     'green':  '#61DDAA',
@@ -17,6 +17,20 @@ PALETTE = {
     'grey':   '#A0A0A0',
     'text':   '#2C2C2C',
     'annot':  '#555555',
+}
+
+# ── GLM-vivid palette — higher-saturation hues for the 3-engine
+# QPS-vs-recall comparison plots so each curve is unmistakable on
+# log-scale axes. Tuned for white background + dense overlap zones.
+# References the brighter accent style used in the official GLM
+# documentation (zhipuai.cn / open.bigmodel.cn).
+PALETTE_VIVID = {
+    'staged':   '#0EA5E9',  # sky-bright cyan-blue — "ours" line
+    'parlay':   '#F43F5E',  # rose / bright magenta — high contrast accent
+    'diskann':  '#F59E0B',  # amber — distinct hue, separated from blue + rose
+    'staged_d': '#0284C7',  # 1-shade-darker variant for annotation arrow
+    'text':     '#1F2937',  # near-black for crisp labels on bright lines
+    'grid':     '#E5E7EB',  # very light grey for grid + spines
 }
 
 DATASET_COLORS = {

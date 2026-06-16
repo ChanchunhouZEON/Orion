@@ -13,6 +13,13 @@ datasets = [
     ("sift",    "SIFT"), ("gist",     "GIST"),
 ]
 
+# Apple M4 Max topology — 10 P-cores + 4 E-cores. The P-core
+# saturation knee (T=10) is the most informative annotation point;
+# after T=10 the next workers spill onto E-cores (~3× slower per op),
+# and after T=14 the scheduler over-subscribes physical cores.
+P_CORES = 10
+TOTAL_CORES = 14
+
 data = {}
 for name, _ in datasets:
     path = f"visualizations/thread_sweep_{name}.json"
@@ -54,15 +61,33 @@ for idx, (name, title) in enumerate(present):
     ax.plot(ts, s_med, marker='o', markersize=7, linewidth=2.2, color=C_STAGED,
             label='Staged', zorder=5)
 
-    # Annotate speedup at T=8 on Staged line.
-    if 8 in ts:
-        i8 = ts.index(8)
-        sp = d['staged']['speedup'][i8]
-        eff = d['staged']['efficiency'][i8] * 100
-        ax.annotate(f'{sp:.1f}× @8T ({eff:.0f}% eff.)',
-                    xy=(8, s_med[i8]), xytext=(6, s_med[i8] * 1.25),
-                    fontsize=9, fontweight='bold', color=C_STAGED,
-                    arrowprops=dict(arrowstyle='->', color=C_STAGED, lw=1, alpha=0.7))
+    # Mark the P-core saturation knee (T=10) and the all-physical-cores
+    # boundary (T=14) so the eye picks up the topology transitions
+    # without having to back-trace through tick labels.
+    for x_mark, color, label in [
+        (P_CORES,     '#7BC4A8', f'P-core knee (T={P_CORES})'),
+        (TOTAL_CORES, '#E0A24A', f'all cores (T={TOTAL_CORES})'),
+    ]:
+        if min(ts) <= x_mark <= max(ts):
+            ax.axvline(x=x_mark, color=color, linestyle=':', linewidth=1.4,
+                       alpha=0.65, zorder=1)
+
+    # Annotate Staged's speedup + efficiency at the P-core knee (T=10),
+    # which is the headline scaling number under M4 Max's topology.
+    if P_CORES in ts:
+        ik = ts.index(P_CORES)
+        sp = d['staged']['speedup'][ik]
+        eff = d['staged']['efficiency'][ik] * 100
+        # Fall back to T=8 anchor if P_CORES isn't on the axis (older
+        # sweep JSONs).
+        anchor_x = P_CORES
+        ax.annotate(
+            f'{sp:.1f}× @T={P_CORES}\n({eff:.0f}% eff)',
+            xy=(anchor_x, s_med[ik]),
+            xytext=(anchor_x * 0.55, s_med[ik] * 1.4),
+            fontsize=9, fontweight='bold', color=C_STAGED,
+            arrowprops=dict(arrowstyle='->', color=C_STAGED, lw=1, alpha=0.7),
+        )
 
     ax.set_xscale('log', base=2)
     ax.set_yscale('log')
@@ -82,11 +107,11 @@ out = 'visualizations/thread_scaling.png'
 save_png_and_pdf(fig, out)
 print(f'Saved {out}')
 
-print("\n─── Parallel Efficiency @ 8 threads ───")
+print(f"\n─── Parallel Efficiency @ P-core knee (T={P_CORES}) ───")
 for name, title in present:
     d = data[name]
-    if 8 not in d['thread_counts']:
+    if P_CORES not in d['thread_counts']:
         continue
-    idx = d['thread_counts'].index(8)
+    idx = d['thread_counts'].index(P_CORES)
     print(f"  {title:<10}  DiskANN: {d['diskann']['speedup'][idx]:.2f}× ({d['diskann']['efficiency'][idx]*100:.0f}%)  "
           f"Staged: {d['staged']['speedup'][idx]:.2f}× ({d['staged']['efficiency'][idx]*100:.0f}%)")

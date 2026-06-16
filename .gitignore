@@ -1,7 +1,14 @@
 /target
 
+*.hdf5
 *.fvecs
 *.ivecs
+# Bulk vector blobs (BigANN .fbin / .ibin + raw groundtruth) — kept
+# local-only so the repo doesn't ship multi-GB binaries. The Python
+# loaders that produce these (data/*.py) are still tracked.
+*.fbin
+*.ibin
+/data/**/*.bin
 
 /visualizations/staged_diskann/
 /visualizations/**/*.json

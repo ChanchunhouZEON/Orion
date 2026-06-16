@@ -3,74 +3,20 @@
  * Licensed under the MIT License.
  */
 
-use crate::metrics::{memory::format_bytes, LatencyStats};
-use comfy_table::{Cell, Table};
 use std::time::Duration;
 
-/// Timing breakdown returned by `AlgorithmRunner::build`.
+/// Timing breakdown returned by `AlgorithmRunner::build`. Pure
+/// data-shape struct, kept after the legacy `run_benchmark` harness
+/// was removed because every runner still reports its build time
+/// through this triple — the values are populated for parity with the
+/// other harnesses (`build-profile`, `memory-profile`) where the
+/// breakdown is consumed, even though `--algorithms ads-comparison`
+/// and the other in-process diagnostics in `main.rs` don't read the
+/// fields back today.
+#[allow(dead_code)]
 pub struct BuildTiming {
     /// Pure Vamana graph construction time.
     pub graph_build: Duration,
     /// Extra overhead (extract, clustering, compression, etc.). Zero for DiskANN.
     pub overhead: Duration,
-}
-
-impl BuildTiming {
-    pub fn total(&self) -> Duration {
-        self.graph_build + self.overhead
-    }
-}
-
-/// A single row of benchmark results.
-pub struct BenchmarkResult {
-    pub algorithm: String,
-    pub params: String,
-    pub build_timing: BuildTiming,
-    pub recall_at_1: f64,
-    pub recall_at_10: f64,
-    pub recall_at_100: f64,
-    pub qps: f64,
-    pub latency: LatencyStats,
-    pub peak_memory: usize,
-    pub index_memory: usize,
-}
-
-/// Print a formatted table of benchmark results.
-pub fn print_results_table(results: &[BenchmarkResult]) {
-    let mut table = Table::new();
-    table.set_header(vec![
-        Cell::new("Algorithm"),
-        Cell::new("Params"),
-        Cell::new("Graph (s)"),
-        Cell::new("Extra (s)"),
-        Cell::new("Total (s)"),
-        Cell::new("R@1"),
-        Cell::new("R@10"),
-        Cell::new("R@100"),
-        Cell::new("QPS"),
-        Cell::new("Mean Lat (ms)"),
-        Cell::new("P99 Lat (ms)"),
-        Cell::new("Peak Mem"),
-        Cell::new("Index Mem"),
-    ]);
-
-    for r in results {
-        table.add_row(vec![
-            Cell::new(&r.algorithm),
-            Cell::new(&r.params),
-            Cell::new(format!("{:.2}", r.build_timing.graph_build.as_secs_f64())),
-            Cell::new(format!("{:.2}", r.build_timing.overhead.as_secs_f64())),
-            Cell::new(format!("{:.2}", r.build_timing.total().as_secs_f64())),
-            Cell::new(format!("{:.4}", r.recall_at_1)),
-            Cell::new(format!("{:.4}", r.recall_at_10)),
-            Cell::new(format!("{:.4}", r.recall_at_100)),
-            Cell::new(format!("{:.1}", r.qps)),
-            Cell::new(format!("{:.2}", r.latency.mean.as_secs_f64() * 1000.0)),
-            Cell::new(format!("{:.2}", r.latency.p99.as_secs_f64() * 1000.0)),
-            Cell::new(format_bytes(r.peak_memory)),
-            Cell::new(format_bytes(r.index_memory)),
-        ]);
-    }
-
-    println!("{table}");
 }
