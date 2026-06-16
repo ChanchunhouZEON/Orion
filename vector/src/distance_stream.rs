@@ -49,12 +49,68 @@
 use crate::distance_fn::DistanceFn;
 use crate::CACHE_LINE_BYTES;
 
+/// Sink-time burst-prefetch depth — number of additional `prfm` calls
+/// issued in the sink callback per vertex, extending the prefetch
+/// runway beyond what the per-iter drip can sustain.
+///
+/// Each vertex's sink (`sink(id, dist)`) does ~5-8 ns of compute (cmp
+/// against cutoff + cmov-write into the staging buffer). That's a
+/// free window where additional `prfm` instructions overlap the
+/// sink's natural latency without competing with the main K::step
+/// pipe. The burst targets cache lines **`pf_long_front`** ahead of
+/// the main drip's `pf_front` — effectively running a second
+/// prefetch tier at a longer lookahead distance.
+///
+/// **Default `12`** — chosen via burst sweep on GIST L2-KT:
+///
+/// | burst | L=48 QPS | L=192 QPS |
+/// |-------|----------|-----------|
+/// |   0   |  54,125  |  20,651   |  ← baseline
+/// |   4   |  53,836  |  21,497   |  marginal — within DRAM latency cliff
+/// |   8   |  55,175  |  21,150   |  ditto
+/// |  12   |  65,762  |  25,384   |  ← **knee**: clears DRAM hiding threshold
+/// |  16   |  64,374  |  23,010   |  plateau
+/// |  32   |  66,270  |  25,298   |  plateau
+///
+/// At burst≤8 the long-range prefetches land just barely in time for
+/// the next vertex — DRAM latency (~80 ns) isn't fully hidden by
+/// per-vertex compute (~22 ns), so each demand-fault still stalls.
+/// At burst≥12, the lookahead exceeds the ~3.6-vertex DRAM latency
+/// wall and lines arrive ahead of need. Higher burst just queues
+/// more in MSHR (no extra gain, no measurable loss).
+///
+/// +20-27% QPS on GIST L2-KT vs burst=0, recall bit-identical.
+/// Override via `STAGED_DSTREAM_SINK_BURST`; set `0` to disable.
+#[inline]
+fn sink_burst() -> usize {
+    use std::sync::OnceLock;
+    static BURST: OnceLock<usize> = OnceLock::new();
+    *BURST.get_or_init(|| {
+        std::env::var("STAGED_DSTREAM_SINK_BURST")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&v| v <= 64)
+            .unwrap_or(12)
+    })
+}
+
 /// Iterator-shaped fetch + compute + sink pipeline. Generic over the
 /// kernel `K` (any [`DistanceFn`] impl) and the vector dim `N`. The
 /// streaming loop is monomorphised per (kernel, dim) so `K::step`
 /// and `K::reduce` get fully inlined into the hot path; the sink
 /// closure is also inlined so the OoO backend can reorder its
 /// instructions across the next iter's prefetch issue.
+///
+/// ## Auxiliary slab prefetch
+///
+/// Some search paths read a parallel scalar slab in the sink — e.g.
+/// the L2-kernel-trick path reads `‖x_i8‖²` from a per-vertex `i32`
+/// array to reconstruct `‖q-x‖² = ‖q‖² + ‖x‖² - 2·IP`. Without help,
+/// each sink call eats a cold random load. Set the auxiliary slab via
+/// [`with_aux`](Self::with_aux) and `run()` will issue a parallel
+/// `prfm` for `aux_ptr + ids[pf_front] × aux_elem_bytes` alongside the
+/// existing base prefetch — turning that cold load into a warm one
+/// without any new closure plumbing.
 pub struct DistanceStream<'a, K: DistanceFn, const N: usize> {
     /// Pointer to the start of the (quantized) base buffer.
     base_ptr: *const u8,
@@ -68,6 +124,12 @@ pub struct DistanceStream<'a, K: DistanceFn, const N: usize> {
     ids: &'a [u32],
     /// Lookahead in cache lines.
     lookahead_lines: usize,
+    /// Optional auxiliary slab prefetched in parallel with the base.
+    /// Null when unused; the run loop's null check is loop-invariant
+    /// and gets hoisted into a flat 2-way dispatch by LLVM.
+    aux_ptr: *const u8,
+    /// Bytes per aux element (e.g. 4 for `i32` per-vertex norms).
+    aux_elem_bytes: usize,
     _phantom: std::marker::PhantomData<&'a K>,
 }
 
@@ -99,8 +161,29 @@ impl<'a, K: DistanceFn, const N: usize> DistanceStream<'a, K, N> {
             query_ptr,
             ids,
             lookahead_lines: lookahead_lines.max(1),
+            aux_ptr: std::ptr::null(),
+            aux_elem_bytes: 0,
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    /// Attach an auxiliary slab to be prefetched alongside the base on
+    /// each outer iter. Address resolved as
+    /// `aux_ptr + ids[pf_front] × aux_elem_bytes`. Use for any
+    /// per-vertex scalar that the sink reads — e.g. the L2 kernel
+    /// trick's `‖x‖²` slab.
+    ///
+    /// # Safety
+    ///
+    /// `aux_ptr` must be a valid base for at least
+    /// `(max(ids) + 1) × aux_elem_bytes` bytes. The aux prefetch is
+    /// best-effort (`prfm pldl1strm`) — fetching a slightly out-of-
+    /// range line is benign as long as the page is mapped.
+    #[inline]
+    pub unsafe fn with_aux(mut self, aux_ptr: *const u8, aux_elem_bytes: usize) -> Self {
+        self.aux_ptr = aux_ptr;
+        self.aux_elem_bytes = aux_elem_bytes;
+        self
     }
 
     /// Drive the stream. **Not** `#[inline(always)]` — at each search
@@ -241,15 +324,60 @@ impl<'a, K: DistanceFn, const N: usize> DistanceStream<'a, K, N> {
             }
         };
 
-        // Prologue: prfm first `min(pf_batch, n_lines)` cache lines.
+        // Auxiliary slab — captured by the closures below for the
+        // parallel `prfm` walk. `aux_resolve` mirrors `resolve` but
+        // only needs the v_idx (vertex index) — the aux array is
+        // **one element per vertex** so the per-cache-line offset that
+        // applies to multi-line base verts is dropped.
+        let aux_base = self.aux_ptr;
+        let aux_elem = self.aux_elem_bytes;
+        let do_aux = !aux_base.is_null();
+        let aux_resolve = |idx: usize| -> *const u8 {
+            unsafe {
+                let v_idx = if lpv == 1 {
+                    idx
+                } else if lpv_is_pow2 {
+                    idx >> lpv_log2
+                } else {
+                    idx / lpv
+                };
+                let v_clamped = v_idx.min(last_v);
+                let id = self.ids.as_ptr().add(v_clamped).read() as usize;
+                aux_base.add(id * aux_elem)
+            }
+        };
+        // Only emit aux prfm at v_idx-transition lines so multi-line
+        // verts don't issue duplicate prefetches for the same scalar
+        // slot. For `lpv == 1` every line is a transition; for pow2
+        // lpv it's a low-bit mask test; non-pow2 falls back to mod.
+        let aux_at_idx = |idx: usize| -> bool {
+            if lpv == 1 {
+                true
+            } else if lpv_is_pow2 {
+                (idx & lpv_mask) == 0
+            } else {
+                idx % lpv == 0
+            }
+        };
+
+        // Prologue: prfm first `min(pf_batch, n_lines)` cache lines —
+        // base slab unconditionally, aux slab at v_idx-transitions.
         unsafe {
             let head = pf_batch.min(n_lines);
             for li in 0..head {
                 Self::prfm_l1(resolve(li));
+                if do_aux && aux_at_idx(li) {
+                    Self::prfm_l1(aux_resolve(li));
+                }
             }
         }
 
         let mut pf_front: usize = pf_batch.min(n_lines);
+        // Long-range burst front — initialised at the same point as
+        // `pf_front` but advanced ONLY by the sink-time burst, so it
+        // races ahead per vertex while pf_front matches consumption.
+        let mut pf_long_front: usize = pf_batch.min(n_lines);
+        let burst = sink_burst();
 
         let main_chunks_end = chunks_per_vert & !3;
         let mut vi = 0usize;
@@ -279,6 +407,9 @@ impl<'a, K: DistanceFn, const N: usize> DistanceStream<'a, K, N> {
                     );
                     pf_front += 1;
                     Self::prfm_l1(resolve(pf_front));
+                    if do_aux && aux_at_idx(pf_front) {
+                        Self::prfm_l1(aux_resolve(pf_front));
+                    }
                     K::step(
                         &mut acc2,
                         v_ptr.add(off2) as *const K::Storage,
@@ -293,9 +424,34 @@ impl<'a, K: DistanceFn, const N: usize> DistanceStream<'a, K, N> {
                     {
                         pf_front += 1;
                         Self::prfm_l1(resolve(pf_front));
+                        if do_aux && aux_at_idx(pf_front) {
+                            Self::prfm_l1(aux_resolve(pf_front));
+                        }
                     }
 
                     c += 4;
+                }
+
+                // ── Trailing-line prefetch ────────────────────────────
+                // Per-iter drip above fires one prfm per `4 chunks`
+                // = 128 B of compute = exactly one cache line. But
+                // when `compute_bytes % CACHE_LINE_BYTES != 0`, the
+                // tail loop below consumes a partial cache line that
+                // the drip never covered — the per-vertex prfm count
+                // is then `lpv - 1` instead of `lpv`, leaking one line
+                // of runway per vertex.
+                //
+                // GIST L2-KT (stride=960 → 30 chunks → 28+2 split,
+                // lpv=8 vs 7 drips) is the only production kernel that
+                // trips this today; for kernels with
+                // `chunks_per_vert % 4 == 0` this branch is provably
+                // false and LLVM hoists it away.
+                if chunks_per_vert > main_chunks_end {
+                    pf_front += 1;
+                    Self::prfm_l1(resolve(pf_front));
+                    if do_aux && aux_at_idx(pf_front) {
+                        Self::prfm_l1(aux_resolve(pf_front));
+                    }
                 }
 
                 K::merge(&mut acc, acc1);
@@ -314,6 +470,32 @@ impl<'a, K: DistanceFn, const N: usize> DistanceStream<'a, K, N> {
             }
 
             sink(self.ids[vi], K::reduce(acc));
+
+            // ── Sink-time burst prefetch ────────────────────────────
+            // Issue `burst` extra prfms targeting lines further ahead
+            // than `pf_front`. Overlaps the sink callback's ~5-8 ns
+            // of compute with prfm issuance, costing nothing in
+            // wall-time. `pf_long_front` advances by `burst` per
+            // vertex while `pf_front` only matches consumption, so
+            // the long-range queue grows linearly with vertex count
+            // — the asymptotic lookahead becomes `LA + burst × vi`.
+            //
+            // Branch on `burst > 0` so disabling via
+            // `STAGED_DSTREAM_SINK_BURST=0` is a zero-cost no-op
+            // (LLVM folds the OnceLock-derived constant after the
+            // first call).
+            if burst > 0 {
+                unsafe {
+                    for _ in 0..burst {
+                        pf_long_front += 1;
+                        if pf_long_front >= n_lines {
+                            break;
+                        }
+                        Self::prfm_l1(resolve(pf_long_front));
+                    }
+                }
+            }
+
             vi += 1;
         }
     }

@@ -14,6 +14,7 @@ use crate::report::table::BuildTiming;
 use crate::runner::common::{AlgorithmRunner, SearchResult};
 use adsampling::Rotator;
 use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
+use std::path::PathBuf;
 use std::time::Instant;
 
 pub struct StagedDiskANNAdsRunner {
@@ -23,12 +24,18 @@ pub struct StagedDiskANNAdsRunner {
     search_list_size: usize,
     max_extra: usize,
     window_size: usize,
-    ads_epsilon: f32,
     epsilon: f32,
     early_exit_limit: usize,
     dimension: usize,
     inner: Option<StagedInner>,
     rotator: RotatorKind,
+    /// Optional cache base path. When set and `<cache>.bin` +
+    /// `<cache>.pgraph` both exist on disk, `build()` skips the
+    /// Vamana construction entirely and rehydrates the rotated dataset
+    /// from `data` via the same in-memory rotation. The rotation seed
+    /// is fixed (see `ROTATION_SEED` below) so the rotated dataset is
+    /// reproducible from the same input bytes.
+    cache_path: Option<PathBuf>,
 }
 
 enum StagedInner {
@@ -51,6 +58,15 @@ macro_rules! build_staged_ads {
         drop($result.index);
         let t1 = Instant::now();
         let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+        // Pass `Some(cache_path)` + save=true on cache-enabled runs so
+        // the PhasedGraph slab is written next to the runner's bin
+        // path. The next invocation will land on the cache-hit
+        // `load_from_cache` arm in `build()` and skip the Vamana build
+        // entirely.
+        let (cache_arg, save_arg) = match &$self.cache_path {
+            Some(p) => (Some(p.clone()), true),
+            None => (None, false),
+        };
         let mut staged = StagedDiskANN::<$N>::new(
             empty_ds,
             &$result.partitions,
@@ -59,8 +75,8 @@ macro_rules! build_staged_ads {
             $self.max_extra,
             None,
             None,
-            None,
-            false,
+            cache_arg,
+            save_arg,
         );
         log::info!("Staged+ADS overhead: {:.2}s", t1.elapsed().as_secs_f32());
 
@@ -92,15 +108,36 @@ macro_rules! search_staged_ads {
     ($staged:ident, $rotated:ident, $k:ident, $self:ident, $N:literal) => {{
         let mut q = [0.0f32; $N];
         q.copy_from_slice(&$rotated[..$N]);
-        $staged.search_adsampling(
-            &q,
-            $k,
-            $self.search_list_size,
-            $self.window_size,
-            $self.epsilon,
-            $self.early_exit_limit,
-            $self.ads_epsilon,
-        )
+        // Cascade dispatch via the unified pipeline:
+        //   prefilter = none, admission = AdsF32, rerank = f32 truth.
+        // Replaces the standalone `search_adsampling` codepath — ADS
+        // is now a first-class admission tier and reuses every search-
+        // loop optimisation in `search_unified` (peeled hops, 3-way
+        // merge cadence, two-slice rerank, sharded counters, ...).
+        let ad = crate::runner::cascade::build_admission::<$N>(
+            $staged,
+            crate::runner::cascade::AdmissionChoice::AdsF32,
+        );
+        let rr = crate::runner::cascade::build_rerank::<$N>(
+            $staged,
+            crate::runner::cascade::RerankChoice::F32,
+        );
+        $staged
+            .search_unified::<
+                staged_diskann::algorithm::search::stage::NoPrefilter,
+                _,
+                _,
+            >(
+                &q,
+                $k,
+                $self.search_list_size,
+                $self.window_size,
+                $self.epsilon,
+                $self.early_exit_limit,
+                None,
+                ad.as_ref(),
+                rr.as_ref(),
+            )
     }};
 }
 
@@ -116,7 +153,6 @@ impl StagedDiskANNAdsRunner {
         search_list_size: usize,
         max_extra: usize,
         window_size: usize,
-        ads_epsilon: f32,
     ) -> Self {
         Self {
             name,
@@ -125,13 +161,17 @@ impl StagedDiskANNAdsRunner {
             search_list_size,
             max_extra,
             window_size,
-            ads_epsilon,
             epsilon: 0.0,
             early_exit_limit: 0,
             dimension: 0,
             inner: None,
             rotator: RotatorKind::None,
+            cache_path: None,
         }
+    }
+
+    pub fn set_cache_path<P: Into<PathBuf>>(&mut self, p: P) {
+        self.cache_path = Some(p.into());
     }
 
     fn rotate_query(&self, query: &[f32], out: &mut Vec<f32>) {
@@ -171,7 +211,11 @@ impl AlgorithmRunner for StagedDiskANNAdsRunner {
         self.dimension = dimension;
         let start = Instant::now();
 
-        // One-shot dataset rotation.
+        // One-shot dataset rotation — deterministic (fixed seed) so
+        // the same input bytes produce the same rotated vectors,
+        // independent of cache presence. Rotation is cheap (~1s on
+        // 1M D=128); we always run it so the rotator handle is
+        // populated for query-time rotation.
         let mut rotated: Vec<f32> = data.to_vec();
         const ROTATION_SEED: u64 = 0xA05A_A05A;
         match dimension {
@@ -196,6 +240,67 @@ impl AlgorithmRunner for StagedDiskANNAdsRunner {
                 self.rotator = RotatorKind::Dim960(r);
             }
             d => panic!("Unsupported dimension for Staged+ADS: {d}"),
+        }
+
+        // Cache fast-path. Mirrors `StagedDiskANNRunner::build`:
+        // if both `<cache>.bin` and `<cache>.pgraph` exist on disk,
+        // load the PhasedGraph from cache and skip the in-process
+        // Vamana build entirely. We still re-populate the rotated
+        // dataset on the fly from `rotated` since the cache only
+        // stores the graph topology.
+        if let Some(cache) = self.cache_path.clone() {
+            let pgraph_path = cache.with_extension("pgraph");
+            if cache.exists() && pgraph_path.exists() {
+                log::info!("Loading cached Staged+ADS from {:?}", cache);
+                macro_rules! load_cached_ads {
+                    ($N:literal, $variant:ident) => {{
+                        let empty_ds =
+                            diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                        let mut staged = StagedDiskANN::<$N>::load_from_cache(&cache, empty_ds)
+                            .expect("StagedDiskANN::load_from_cache failed");
+                        let mut ds = diskann::model::InmemDataset::<f32, $N>::new(num_points, 1.0)
+                            .unwrap();
+                        ds.data.memcpy(&rotated[..num_points * $N]).unwrap();
+                        staged.dataset = ds;
+
+                        // Re-calibrate from rotated warmup queries —
+                        // the cached PhasedGraph carries no calibration
+                        // state since (threshold, ee) depend on the
+                        // search-time L which `set_search_list_size`
+                        // can change later.
+                        let calib_n = num_points.min(200);
+                        let calib_queries: Vec<[f32; $N]> = (0..calib_n)
+                            .map(|i| {
+                                let mut q = [0.0f32; $N];
+                                q.copy_from_slice(&rotated[i * $N..(i + 1) * $N]);
+                                q
+                            })
+                            .collect();
+                        if let Ok(calib) = staged.calibrate(
+                            &calib_queries,
+                            self.search_list_size,
+                            self.window_size,
+                        ) {
+                            self.epsilon = calib.threshold;
+                            self.early_exit_limit = calib.early_exit_limit;
+                        }
+
+                        self.inner = Some(StagedInner::$variant { staged });
+                    }};
+                }
+                match dimension {
+                    DIM_32 => load_cached_ads!(32, Dim32),
+                    DIM_100 => load_cached_ads!(100, Dim100),
+                    DIM_128 => load_cached_ads!(128, Dim128),
+                    DIM_960 => load_cached_ads!(960, Dim960),
+                    _ => panic!("Unsupported dimension: {dimension}"),
+                }
+                let elapsed = start.elapsed();
+                return BuildTiming {
+                    graph_build: elapsed,
+                    overhead: std::time::Duration::ZERO,
+                };
+            }
         }
 
         let result = build_diskann_index(
@@ -246,7 +351,4 @@ impl AlgorithmRunner for StagedDiskANNAdsRunner {
         }
     }
 
-    fn memory_bytes(&self) -> usize {
-        0
-    }
 }

@@ -4,6 +4,13 @@
  */
 
 //! Shared benchmark-harness utilities.
+//!
+//! Consumed by several bins via `#[path = "../utils.rs"] mod utils`
+//! (e.g. `staged_diskann.rs`, `staged_sweep.rs`). The benchmark crate
+//! itself doesn't reach every export, so we silence the dead-code
+//! warnings at the module level rather than tagging each helper.
+
+#![allow(dead_code)]
 
 use std::hint::black_box;
 

@@ -15,7 +15,7 @@ use crate::common::{ANNError, ANNResult};
 use crate::model::vertex::{DIM_32, DIM_100};
 use crate::model::{
     IndexConfiguration,
-    vertex::{DIM_104, DIM_128, DIM_256, DIM_784, DIM_960},
+    vertex::{DIM_104, DIM_128, DIM_256, DIM_768, DIM_784, DIM_960, DIM_1536},
 };
 
 /// ANN inmem-index abstraction for custom <T, N>
@@ -140,8 +140,10 @@ where
     [T; DIM_104]: FullPrecisionDistance<T, DIM_104>,
     [T; DIM_128]: FullPrecisionDistance<T, DIM_128>,
     [T; DIM_256]: FullPrecisionDistance<T, DIM_256>,
+    [T; DIM_768]: FullPrecisionDistance<T, DIM_768>,
     [T; DIM_784]: FullPrecisionDistance<T, DIM_784>,
     [T; DIM_960]: FullPrecisionDistance<T, DIM_960>,
+    [T; DIM_1536]: FullPrecisionDistance<T, DIM_1536>,
 {
     match config.aligned_dim {
         DIM_32 => {
@@ -164,12 +166,20 @@ where
             let index = Box::new(InmemIndex::<T, DIM_256>::new(config)?);
             Ok(index as Box<dyn ANNInmemIndex<T>>)
         }
+        DIM_768 => {
+            let index = Box::new(InmemIndex::<T, DIM_768>::new(config)?);
+            Ok(index as Box<dyn ANNInmemIndex<T>>)
+        }
         DIM_784 => {
             let index = Box::new(InmemIndex::<T, DIM_784>::new(config)?);
             Ok(index as Box<dyn ANNInmemIndex<T>>)
         }
         DIM_960 => {
             let index = Box::new(InmemIndex::<T, DIM_960>::new(config)?);
+            Ok(index as Box<dyn ANNInmemIndex<T>>)
+        }
+        DIM_1536 => {
+            let index = Box::new(InmemIndex::<T, DIM_1536>::new(config)?);
             Ok(index as Box<dyn ANNInmemIndex<T>>)
         }
         _ => Err(ANNError::log_index_error(format!(

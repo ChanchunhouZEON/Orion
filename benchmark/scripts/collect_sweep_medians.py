@@ -1,27 +1,34 @@
 #!/usr/bin/env python3
-"""Parse ParlayANN `neighbors` stdout and StagedDiskANN sweep stdout from
-a back-to-back run, compute per-recall medians across NUM_RUNS, and emit
-a single JSON consumable by the comparison plot script.
+"""Parse ParlayANN `neighbors` stdout + StagedDiskANN sweep stdout +
+DiskANN sweep stdout from a back-to-back three-engine run, compute
+per-recall medians across NUM_RUNS, and emit a single JSON consumable
+by the comparison plot script.
 
 Input files (inside `--tmpdir`):
-  staged_{1..N}.out  — full stdout from `cargo run … staged-parlayann-sweep`
-                        (lines like `  L=  16  R@10=0.9095  QPS=100291`)
-  pa_{1..N}.out      — full stdout from `./neighbors …`
-                        (lines like `For 10@10 recall = 0.529, QPS = 1.969e+05, …`)
+  staged_{1..N}.out   — full stdout from `cargo run … staged_diskann`
+                          (lines like `  L=  16  R@10=0.9095  QPS=100291`)
+  diskann_{1..N}.out  — full stdout from `cargo run … diskann_sweep`
+                          (same headline format as staged)
+  pa_{1..N}.out       — full stdout from `./neighbors …`
+                          (lines like `For 10@10 recall = 0.529, QPS = 1.969e+05, …`)
 
 Output JSON:
   {
     "dataset": "sift",
     "num_points": 1000000,
     "num_runs": N,
-    "staged_runs": [[[recall, qps], …], …],   // raw per-run
-    "staged":       [[recall, qps], …],       // per-L median
-    "parlayann_runs": […],                    // raw per-run (recall, qps)
-    "parlayann":      […],                    // per-slot median
+    "staged_runs":    [[[recall, qps], …], …],
+    "staged":         [[recall, qps], …],
+    "diskann_runs":   [[[recall, qps], …], …],
+    "diskann":        [[recall, qps], …],
+    "parlayann_runs": […],
+    "parlayann":      […],
   }
 
-Median is taken per L index for staged (L values are fixed across runs)
-and per row index for ParlayANN (it sweeps a fixed Q schedule).
+Median is taken per L index for staged/diskann (fixed L schedule
+across runs) and per row index for ParlayANN (fixed Q schedule).
+DiskANN files are optional — if absent, the diskann series is omitted
+so the old two-engine consumers still work.
 """
 
 import argparse
@@ -89,8 +96,16 @@ def main():
     staged_runs = [parse_staged(tmpdir / f"staged_{i}.out") for i in range(1, args.num_runs + 1)]
     pa_runs = [parse_pa(tmpdir / f"pa_{i}.out") for i in range(1, args.num_runs + 1)]
 
+    # DiskANN files are optional — older two-engine sweeps don't write them.
+    diskann_paths = [tmpdir / f"diskann_{i}.out" for i in range(1, args.num_runs + 1)]
+    have_diskann = all(p.exists() for p in diskann_paths)
+    diskann_runs = (
+        [parse_staged(p) for p in diskann_paths] if have_diskann else []
+    )
+
     staged_med = median_by_slot(staged_runs)
     pa_med = median_by_slot(pa_runs)
+    diskann_med = median_by_slot(diskann_runs) if have_diskann else []
 
     out = {
         "dataset": args.dataset,
@@ -101,11 +116,16 @@ def main():
         "parlayann_runs": pa_runs,
         "parlayann": pa_med,
     }
+    if have_diskann:
+        out["diskann_runs"] = diskann_runs
+        out["diskann"] = diskann_med
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(out, indent=2))
     print(f"Saved {args.out}")
     print(f"  staged: {len(staged_med)} points, QPS range [{min(p[1] for p in staged_med):.0f}, {max(p[1] for p in staged_med):.0f}]")
+    if have_diskann:
+        print(f"  diskann: {len(diskann_med)} points, QPS range [{min(p[1] for p in diskann_med):.0f}, {max(p[1] for p in diskann_med):.0f}]")
     print(f"  parlay: {len(pa_med)} points, QPS range [{min(p[1] for p in pa_med):.0f}, {max(p[1] for p in pa_med):.0f}]")
 
 

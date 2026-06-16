@@ -26,37 +26,29 @@ import time
 import numpy as np
 
 def read_fvecs(path, max_n=0):
-    """Read .fvecs file, return (data, num_points, dim)."""
+    """Read .fvecs as (data, num_points, dim) — vectorised via np.fromfile.
+    Format: each record is `[dim:i32][data:f32 × dim]`; read the whole
+    file as f32, reshape to (n, 1 + dim), drop the leading dim-as-f32
+    placeholder column. Two orders of magnitude faster than a per-row
+    `struct.unpack` loop on million-point datasets."""
     with open(path, 'rb') as f:
         dim = struct.unpack('i', f.read(4))[0]
-        f.seek(0, 2)
-        file_size = f.tell()
-        record_bytes = 4 + dim * 4
-        total = file_size // record_bytes
-        n = min(total, max_n) if max_n > 0 else total
-        f.seek(0)
-        data = np.zeros((n, dim), dtype=np.float32)
-        for i in range(n):
-            d = struct.unpack('i', f.read(4))[0]
-            assert d == dim
-            data[i] = np.array(struct.unpack(f'{dim}f', f.read(dim * 4)))
+    record_floats = 1 + dim
+    raw = np.fromfile(path, dtype=np.float32)
+    total = raw.size // record_floats
+    n = min(total, max_n) if max_n > 0 else total
+    data = raw[: n * record_floats].reshape(n, record_floats)[:, 1:].copy()
     return data, n, dim
 
 def read_ivecs(path, max_n=0):
-    """Read .ivecs file."""
+    """Read .ivecs file — same vectorised pattern as `read_fvecs`."""
     with open(path, 'rb') as f:
         dim = struct.unpack('i', f.read(4))[0]
-        f.seek(0, 2)
-        file_size = f.tell()
-        record_bytes = 4 + dim * 4
-        total = file_size // record_bytes
-        n = min(total, max_n) if max_n > 0 else total
-        f.seek(0)
-        data = np.zeros((n, dim), dtype=np.int32)
-        for i in range(n):
-            d = struct.unpack('i', f.read(4))[0]
-            data[i] = np.array(struct.unpack(f'{dim}i', f.read(dim * 4)))
-    return data
+    record_ints = 1 + dim
+    raw = np.fromfile(path, dtype=np.int32)
+    total = raw.size // record_ints
+    n = min(total, max_n) if max_n > 0 else total
+    return raw[: n * record_ints].reshape(n, record_ints)[:, 1:].copy()
 
 def recall_at_k(results, ground_truth, k):
     """Compute mean recall@k."""
@@ -142,10 +134,19 @@ DATASET_PATHS = {
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="sift", choices=list(DATASET_PATHS.keys()))
-    parser.add_argument("--max-points", type=int, default=10000)
+    parser.add_argument("--max-points", type=int, default=10000,
+                        help="0 = use the full dataset (no GT recomputation).")
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--k", type=int, default=10)
+    parser.add_argument(
+        "--no-rust", action="store_true",
+        help=("Skip the embedded `qps-recall-sweep` call and read the "
+              "DiskANN / Staged series from "
+              "`visualizations/sweep_staged_vs_parlayann_<ds>.json` "
+              "(produced by `sweep_staged_vs_diskann_vs_parlayann.sh`). "
+              "Use this when the head-to-head sweep is already current."),
+    )
     args = parser.parse_args()
 
     paths = DATASET_PATHS[args.dataset]
@@ -183,14 +184,28 @@ def main():
     all_results["hnsw"] = hnsw_data
 
     # ── 2. DiskANN + StagedDiskANN (Rust sweep) ──
-    print("\n── DiskANN + StagedDiskANN (Rust) ──")
-    run_rust_sweep(paths["base"], paths["query"], paths["gt"], args.max_points)
-    # Read the generated JSON
-    json_path = f"visualizations/qps_recall_{args.dataset}.json"
-    with open(json_path) as f:
-        rust_data = json.load(f)
-    all_results["diskann"] = rust_data["diskann"]
-    all_results["staged"] = rust_data["staged"]
+    if args.no_rust:
+        # Pull from the head-to-head sweep produced by
+        # `sweep_staged_vs_diskann_vs_parlayann.sh`. That file is the
+        # source of truth for the 3-engine comparison and the Rust
+        # numbers there are α/R/L-aligned with PA across the full
+        # sweep.yaml `search_list_sizes`.
+        sv_path = f"visualizations/sweep_staged_vs_parlayann_{args.dataset}.json"
+        print(f"\n── DiskANN + StagedDiskANN — reading {sv_path} (--no-rust) ──")
+        with open(sv_path) as f:
+            sv = json.load(f)
+        all_results["diskann"] = sv["diskann"]
+        all_results["staged"] = sv["staged"]
+        if "parlayann" in sv:
+            all_results["parlayann"] = sv["parlayann"]
+    else:
+        print("\n── DiskANN + StagedDiskANN (Rust) ──")
+        run_rust_sweep(paths["base"], paths["query"], paths["gt"], args.max_points)
+        json_path = f"visualizations/qps_recall_{args.dataset}.json"
+        with open(json_path) as f:
+            rust_data = json.load(f)
+        all_results["diskann"] = rust_data["diskann"]
+        all_results["staged"] = rust_data["staged"]
 
     for name in ["diskann", "staged"]:
         print(f"\n  {name}:")
@@ -212,6 +227,8 @@ def main():
             "hnsw": round(hnsw_build, 3),
         },
     }
+    if "parlayann" in all_results:
+        output["parlayann"] = all_results["parlayann"]
     out_path = f"visualizations/baseline_{args.dataset}.json"
     os.makedirs("visualizations", exist_ok=True)
     with open(out_path, 'w') as f:

@@ -1,120 +1,259 @@
 #!/usr/bin/env python3
-"""Per-dataset QPS vs Recall@10 plot — 3 implementations on one figure:
-  - DiskANN (built at the dataset's staged params — apples-to-apples)
-  - StagedDiskANN (our current best)
-  - ParlayANN Vamana
+"""Per-dataset QPS-vs-Recall@10 plot — three engines on one figure:
 
-Data sources:
-  * visualizations/qps_recall_<dataset>.json
-      DiskANN baseline now uses the same R/L/α as StagedDiskANN
-      (see benchmark/configs/sweep.yaml `datasets.<name>.staged` block;
-      override with a per-dataset `diskann:` block to opt out).
-      The legacy `diskann_matched` JSON key is gone — there's only one
-      DiskANN line now since the baseline already matches staged params.
-  * visualizations/sweep_staged_vs_parlayann_<dataset>.json
-      (StagedDiskANN + ParlayANN 3-run medians, produced by
-      `benchmark/scripts/sweep_staged_vs_parlayann.sh`)
+  * **StagedDiskANN** (ours)
+  * **Microsoft DiskANN** (in-process via the `diskann` core crate)
+  * **ParlayANN Vamana** (PA's published per-dataset recipe)
 
-Usage:
-  python3 visualizations/plot_dataset_all.py                  # default: sift (L2)
-  DATASET=gist python3 visualizations/plot_dataset_all.py     # any dataset (L2)
-  DATASET=glove100 METRIC=mips python3 visualizations/plot_dataset_all.py
-      # — reads `sweep_staged_vs_parlayann_<ds>_mips.json` which holds the
-      #   angular-aligned (MIPS + normalized) numbers for both sides.
+All three are built on the same Vamana topology (identical R / L<sub>build</sub>
+/ α / num_passes, per the dataset's entry in
+`benchmark/scripts/prepare_parlayann_data.sh`).
+
+## Data source
+
+Three series are read from a single JSON per dataset, produced by
+`benchmark/scripts/sweep_staged_vs_diskann_vs_parlayann.sh` and parsed
+by `benchmark/scripts/collect_sweep_medians.py`:
+
+    visualizations/sweep_staged_vs_parlayann_<dataset>.json
+        {
+          "staged":    [[recall, qps], ...],
+          "diskann":   [[recall, qps], ...],
+          "parlayann": [[recall, qps], ...],
+        }
+
+The old separate `qps_recall_<ds>.json` (DiskANN-only baseline from the
+thread-sweep harness) is retired — the unified sweep script produces
+all three series at once, so this script reads only the unified file.
+
+## Usage
+
+    # Single dataset
+    python3 visualizations/plot_dataset_all.py                  # default: sift
+    DATASET=glove100 python3 visualizations/plot_dataset_all.py
+    DATASET=glove100 METRIC=mips python3 visualizations/plot_dataset_all.py
+        # — reads `sweep_staged_vs_parlayann_glove100_mips.json` if present
+
+    # Batch — every public dataset except fashion-mnist (where staged
+    # is dominated by PA at the dataset's tiny scale; figure suppressed
+    # so the headline curves communicate the production regime cleanly).
+    python3 visualizations/plot_dataset_all.py --all
+
+## Palette
+
+`chart_style.PALETTE_VIVID` — the GLM-vivid palette: sky-bright cyan for
+StagedDiskANN, rose-magenta for ParlayANN, amber for DiskANN. Tuned for
+white background + log-scale axes, where overlapping mid-recall regions
+need brighter hues to keep each line unambiguous.
 """
 
+import argparse
 import json
 import os
-import matplotlib.pyplot as plt
-from chart_style import PALETTE, style_ax
+import sys
+from pathlib import Path
+from typing import Optional
 
+import matplotlib.pyplot as plt
+from chart_style import PALETTE_VIVID, style_ax
+
+
+# Datasets the script knows how to render. `fashion-mnist` is
+# excluded from `--all` because at 60K vectors the staged cascade
+# overhead becomes proportionally significant — PA's tighter beam
+# wins, and a paper-grade comparison figure leads with the regime
+# where the headline result lives.
+HEADLINE_DATASETS = [
+    "sift",
+    "glove25",
+    "glove100",
+    "gist",
+    "deep10m",
+    "msmarco_bert_1M",
+    "wiki_ada_1M",
+]
 
 DATASET_LABELS = {
-    "sift": "SIFT1M",
-    "glove25": "GloVe-25-angular",
-    "glove100": "GloVe-100-angular",
-    "gist": "GIST-100k",
+    "sift":            "SIFT1M",
+    "glove25":         "GloVe-25-angular",
+    "glove100":        "GloVe-100-angular",
+    "gist":            "GIST1M",
+    "deep10m":         "Deep10M",
+    "fashion-mnist":   "Fashion-MNIST",
+    "msmarco_bert_1M": "MS-MARCO BERT 1M",
+    "wiki_ada_1M":     "Wikipedia ada-002 1M",
 }
 
 
-def main():
-    dataset = os.environ.get("DATASET", "sift")
-    metric = os.environ.get("METRIC", "l2").lower()
-    pretty = DATASET_LABELS.get(dataset, dataset)
+VIS_DIR = Path(__file__).resolve().parent
 
-    # ── DiskANN baseline (built at staged params per sweep.yaml) ──
-    d = json.load(open(f"visualizations/qps_recall_{dataset}.json"))
-    diskann = d["diskann"]
 
-    # ── StagedDiskANN + ParlayANN: 3-run medians from the sweep script ──
+def render_one(dataset: str, metric: str = "l2") -> Optional[str]:
+    """Render the three-engine QPS-vs-recall plot for one dataset.
+    Returns the output path on success, or `None` if the source JSON
+    is missing / lacks required keys. Paths resolve relative to this
+    script's directory so the entry point works from any cwd.
+    """
     suffix = "_mips" if metric == "mips" else ""
-    sweep = json.load(
-        # open(f"visualizations/sweep_staged_vs_parlayann_{dataset}{suffix}.json")
-        open(f"visualizations/sweep_staged_vs_parlayann_{dataset}.json")
-    )
+    src = VIS_DIR / f"sweep_staged_vs_parlayann_{dataset}{suffix}.json"
+    if not src.exists():
+        print(f"[skip] {dataset}: no source JSON ({src})", file=sys.stderr)
+        return None
+
+    sweep = json.loads(src.read_text())
+    required = {"staged", "parlayann"}
+    if not required.issubset(sweep.keys()):
+        print(
+            f"[skip] {dataset}: JSON missing required keys (have {list(sweep)})",
+            file=sys.stderr,
+        )
+        return None
+
     staged = sweep["staged"]
     parlay = sweep["parlayann"]
+    # `diskann` is optional — older two-engine sweeps don't write it.
+    # When absent, the plot degrades to 2 lines instead of failing.
+    diskann = sweep.get("diskann")
 
+    pretty = DATASET_LABELS.get(dataset, dataset)
     fig, ax = plt.subplots(figsize=(8.5, 5.5))
 
-    def plot(data, label, color, marker, lw=2.0):
+    def plot(data, label, color, marker, *, lw=2.2, msize=6.5, zorder=2):
         rs = [p[0] for p in data]
         qs = [p[1] for p in data]
-        ax.plot(rs, qs, marker=marker, linewidth=lw, markersize=6,
-                label=label, color=color)
+        ax.plot(
+            rs,
+            qs,
+            marker=marker,
+            linewidth=lw,
+            markersize=msize,
+            label=label,
+            color=color,
+            markeredgecolor="white",
+            markeredgewidth=0.6,
+            zorder=zorder,
+        )
 
-    # Staged line uses the canonical "ours" color + square marker used in
-    # `plot_qps_recall_bands.py` so this figure is visually consistent
-    # with the rest of the project's comparison plots.
-    OURS_COLOR = "#598392"
+    # Draw order: DiskANN first (lowest zorder), then ParlayANN, then
+    # Staged on top so the "ours" line never gets visually buried by
+    # the others in overlap regions.
+    if diskann:
+        # Label is "Microsoft Vamana" — not "Microsoft DiskANN" —
+        # because we run the in-memory Vamana index here (no SSD I/O
+        # path). The "DiskANN" name historically refers to the
+        # disk-resident variant; in-memory Vamana is the algorithm
+        # both Microsoft and ParlayANN actually share, so labelling
+        # the chart with the algorithm name keeps the apples-to-
+        # apples framing honest.
+        plot(
+            diskann,
+            "Microsoft Vamana",
+            PALETTE_VIVID["diskann"],
+            "^",
+            lw=2.0,
+            msize=6.0,
+            zorder=2,
+        )
+    plot(
+        parlay,
+        "ParlayANN Vamana",
+        PALETTE_VIVID["parlay"],
+        "D",
+        lw=2.0,
+        msize=6.0,
+        zorder=3,
+    )
+    plot(
+        staged,
+        "StagedDiskANN (ours)",
+        PALETTE_VIVID["staged"],
+        "s",
+        lw=2.8,
+        msize=7.0,
+        zorder=4,
+    )
 
-    # All three lines are now built at the same R/α/L (per sweep.yaml's
-    # `staged:` block per dataset), so the labels carry just the
-    # algorithm name — the only difference between the lines is the
-    # search-time algorithm itself.
-    plot(diskann, "DiskANN",                PALETTE['grey'], "^")
-    plot(parlay,  "ParlayANN Vamana",       PALETTE['red'],  "D")
-    plot(staged,  "StagedDiskANN (ours)",   OURS_COLOR,      "s", lw=2.6)
-
-    # Annotate "ours" with an arrow at a mid-recall point so the
-    # highlighted line is unambiguous even in B&W prints.
+    # Annotation arrow on the "ours" line — keeps the figure
+    # interpretable in monochrome / accessibility mode.
     if len(staged) >= 7:
-        ar_x, ar_y = staged[6]  # L≈56, R≈0.988 region
+        ar_x, ar_y = staged[6]
         ax.annotate(
             "ours",
             xy=(ar_x, ar_y),
             xytext=(ar_x - 0.035, ar_y * 2.1),
-            color=OURS_COLOR,
+            color=PALETTE_VIVID["staged_d"],
             fontsize=11,
             fontweight="bold",
-            arrowprops=dict(arrowstyle="->", color=OURS_COLOR, lw=1.5),
+            arrowprops=dict(
+                arrowstyle="->",
+                color=PALETTE_VIVID["staged_d"],
+                lw=1.6,
+            ),
         )
 
-    ax.set_xlabel("Recall@10")
-    ax.set_ylabel("QPS (queries / sec)")
+    ax.set_xlabel("Recall@10", fontsize=11)
+    ax.set_ylabel("QPS (queries / sec)", fontsize=11)
     ax.set_yscale("log")
-    # Auto-fit x-axis to the leftmost point across all three curves
-    # (ParlayANN typically starts at the lowest recall — Q=10 lands
-    # near R=0.43 on SIFT — so a hard-coded `xlim(0.88, 1.0)` would
-    # silently lop off its full low-recall sweep). Pad 0.01 on the
-    # left for breathing room; pin the right at 1.0 since that's
-    # the natural recall ceiling.
-    min_recall = min(
-        min(p[0] for p in diskann),
-        min(p[0] for p in parlay),
-        min(p[0] for p in staged),
-    )
+
+    # Auto-fit x to the leftmost recall point across all available series
+    # so PA's low-Q sweep (which can dip to R≈0.40) isn't clipped.
+    series_for_xlim = [staged, parlay]
+    if diskann:
+        series_for_xlim.append(diskann)
+    min_recall = min(min(p[0] for p in s) for s in series_for_xlim)
     ax.set_xlim(max(0.0, min_recall - 0.01), 1.0)
-    ax.set_title(f"{pretty} — QPS vs Recall@10 (8 threads)")
-    ax.grid(True, which="both", alpha=0.25)
-    ax.legend(loc="lower left")
+
+    ax.set_title(
+        f"{pretty} — QPS vs Recall@10 (8 threads)",
+        fontsize=12,
+        color=PALETTE_VIVID["text"],
+        pad=10,
+    )
+    ax.grid(True, which="both", alpha=0.35, color=PALETTE_VIVID["grid"])
+    ax.legend(loc="lower left", frameon=True, fontsize=10, framealpha=0.92)
     style_ax(ax)
 
     out_suffix = "_mips" if metric == "mips" else ""
-    out = f"visualizations/qps_recall_{dataset}{out_suffix}_all4.png"
+    out = VIS_DIR / f"qps_recall_{dataset}{out_suffix}_all3.png"
     plt.tight_layout()
-    plt.savefig(out, dpi=140)
+    plt.savefig(out, dpi=150, facecolor="white")
+    plt.close(fig)
     print(f"Saved: {out}")
+    return str(out)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "Render every dataset listed in HEADLINE_DATASETS "
+            "(excludes fashion-mnist by design — see module docstring)."
+        ),
+    )
+    ap.add_argument(
+        "--dataset",
+        default=os.environ.get("DATASET", "sift"),
+        help="Dataset name (default: $DATASET or 'sift').",
+    )
+    ap.add_argument(
+        "--metric",
+        default=os.environ.get("METRIC", "l2").lower(),
+        choices=["l2", "mips"],
+        help="Reads `_mips` JSON variant when set to 'mips'.",
+    )
+    args = ap.parse_args()
+
+    if args.all:
+        rendered = 0
+        for ds in HEADLINE_DATASETS:
+            out = render_one(ds, metric="l2")
+            if out:
+                rendered += 1
+        print(f"\nRendered {rendered}/{len(HEADLINE_DATASETS)} datasets")
+    else:
+        render_one(args.dataset, metric=args.metric)
 
 
 if __name__ == "__main__":

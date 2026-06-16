@@ -29,6 +29,7 @@ use std::path::Path;
 
 pub type Partition = (Vec<u32>, Vec<u32>, Vec<u32>);
 
+#[allow(dead_code)]
 pub struct StagedInput {
     pub partitions: Vec<Partition>,
     pub entry_point: u32,

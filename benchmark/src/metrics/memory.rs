@@ -39,10 +39,6 @@ impl TrackingAllocator {
             .store(self.current.load(Ordering::Relaxed), Ordering::Relaxed);
     }
 
-    /// Set allocation cap in bytes. 0 = unlimited.
-    pub fn set_limit(&self, bytes: usize) {
-        self.limit.store(bytes, Ordering::Relaxed);
-    }
 }
 
 unsafe impl GlobalAlloc for TrackingAllocator {

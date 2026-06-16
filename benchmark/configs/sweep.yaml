@@ -19,10 +19,16 @@ defaults:
     # locality. Per-dataset overrides may set a different value.
     max_extra: 16
     window_size: 5
-    # Default search metric used by StagedDiskANN — the 2-phase
-    # u8 prefilter + f32 L2 rerank production path. Angular datasets
-    # override this to `mips` (low-dim) or `mips-q` (≥100 dim).
-    metric: l2
+    # ── Cascade triple (search-time, replaces the legacy `metric`) ──
+    # The unified search pipeline reads these directly; per-dataset
+    # blocks below override what their workload needs. Mirrors the
+    # `Cascade::default_for_dataset` mapping in `staged_diskann.rs`.
+    #   prefilter: none | jl | jl-hadamard | rabitq
+    #   admission: l2-u8 | l2-u16 | l2-kt | mips-i8 | mips-i16 | ads-f32
+    #   rerank:    f32 | ip-f32 | u16
+    prefilter: none
+    admission: l2-u8
+    rerank: f32
   sweep:
     search_list_sizes: [16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256, 512, 768, 1024]
     threads: 8
@@ -66,7 +72,10 @@ datasets:
       alpha: 1.15
       graph_degree: 64
       build_search_list_size: 128
-      metric: l2-q
+      # SIFT: low/mid-D L2; direct u8 admission, no prefilter needed.
+      prefilter: none
+      admission: l2-u8
+      rerank: f32
   glove25:
     dimension: 32
     paths:
@@ -85,9 +94,10 @@ datasets:
       alpha: 1.0
       graph_degree: 100
       build_search_list_size: 200
-      # 32-dim angular data: compute-bound, no bandwidth win from
-      # i8 quantization — single-phase MIPS is the right call.
-      metric: mips
+      # GloVe-25: normalised angular, single-phase i8 sdot.
+      prefilter: none
+      admission: mips-i8
+      rerank: ip-f32
   glove100:
     dimension: 100
     paths:
@@ -104,9 +114,11 @@ datasets:
       alpha: 1.0
       graph_degree: 100
       build_search_list_size: 200
-      # 100-dim angular data: memory-bound — PA-style i8 beam +
-      # top-20 f32 rerank (matches `vamana/scripts/glove100`).
-      metric: mips-q
+      # GloVe-100: memory-bound — i8 beam + top-20 f32 rerank
+      # (matches `vamana/scripts/glove100`).
+      prefilter: none
+      admission: mips-i8
+      rerank: ip-f32
   gist:
     dimension: 960
     paths:
@@ -115,13 +127,123 @@ datasets:
       groundtruth: "data/gist/gist_groundtruth.ivecs"
     base_graph:
       source: parlayann
-      # GIST-100k subset — PA export with R=32 L=48 α=1.5. Produced by:
+      # GIST 1M — ParlayANN-aligned recipe (R=100 L=200 α=1.1 2-pass)
+      # matching `../ParlayANN/algorithms/vamana/scripts/gist`.
+      # Produced by:
       #   PA_NUM_PASSES=2 DATASET=gist bash benchmark/scripts/prepare_parlayann_data.sh
-      staged_file: "${PA_ROOT}/data/gist100k/gist100k_ex${max_extra}.staged"
+      staged_file: "${PA_ROOT}/data/gist/gist_ex${max_extra}.staged"
     staged:
-      alpha: 1.5
-      # GIST 100k — smaller graph than the 1M-scale default to keep
-      # build memory manageable.
-      graph_degree: 32
-      build_search_list_size: 48
-      metric: l2-q
+      # Aligned with ParlayANN `vamana/scripts/gist`:
+      #   BUILD_ARGS="-R 100 -L 200 -alpha 1.1 -num_passes 2"
+      # Replaces the prior local recipe (R=32 L=48 α=1.5) which built
+      # a much sparser graph and capped recall on the high band.
+      alpha: 1.1
+      graph_degree: 100
+      build_search_list_size: 200
+      # GIST: D=960 — JL prefilter at 1 line/vert gates the wider
+      # L2-kt slab; kernel-trick recovers exact L2 ranking via sdot.
+      prefilter: jl
+      admission: l2-kt
+      rerank: f32
+  deep10m:
+    dimension: 128
+    paths:
+      # Yandex Deep10M — first 10M of Deep1B, native D=96 zero-padded
+      # to D=128 by `convert_fbin.py --pad-to-dim 128` so the f32 rerank
+      # stride lands on a 32-byte SIMD boundary (D=100 would overrun).
+      base:        "data/deep10m/deep10m_base.fvecs"
+      query:       "data/deep10m/deep10m_query.fvecs"
+      groundtruth: "data/deep10m/deep10m_groundtruth.ivecs"
+    base_graph:
+      source: parlayann
+      # Mirrors `../ParlayANN/algorithms/vamana/scripts/deep10M`.
+      # Produced by:
+      #   PA_NUM_PASSES=2 DATASET=deep10m bash benchmark/scripts/prepare_parlayann_data.sh
+      staged_file: "${PA_ROOT}/data/deep10M/deep10M_ex${max_extra}.staged"
+    staged:
+      # Aligned with ParlayANN `vamana/scripts/deep10M`:
+      #   BUILD_ARGS="-R 64 -L 128 -alpha 1.05 -num_passes 2 -quantize_bits 8"
+      alpha: 1.05
+      graph_degree: 64
+      build_search_list_size: 128
+      # Deep10M: low/mid-D L2 like SIFT.
+      prefilter: none
+      admission: l2-u8
+      rerank: f32
+  fashion-mnist:
+    dimension: 784
+    paths:
+      base:        "data/fashion-mnist/fashion-mnist-784-euclidean_base.fvecs"
+      query:       "data/fashion-mnist/fashion-mnist-784-euclidean_query.fvecs"
+      groundtruth: "data/fashion-mnist/fashion-mnist-784-euclidean_groundtruth.ivecs"
+    base_graph:
+      source: parlayann
+      # Mirrors `../ParlayANN/algorithms/vamana/scripts/fashion`.
+      # Produced by:
+      #   PA_NUM_PASSES=2 DATASET=fashion-mnist bash benchmark/scripts/prepare_parlayann_data.sh
+      staged_file: "${PA_ROOT}/data/fashion-mnist-784-euclidean/fashion-mnist-784-euclidean_ex${max_extra}.staged"
+    staged:
+      # Aligned with ParlayANN `vamana/scripts/fashion`:
+      #   BUILD_ARGS="-R 40 -L 80 -alpha 1.1 -num_passes 2 -quantize_bits 8"
+      alpha: 1.1
+      graph_degree: 40
+      build_search_list_size: 80
+      # Fashion-MNIST: 60 K × 784 — too small for JL setup tax;
+      # L2-kt admission is the speed knob.
+      prefilter: none
+      admission: l2-kt
+      rerank: f32
+  msmarco_bert_1M:
+    dimension: 768
+    paths:
+      # 1M MS-MARCO passages embedded with
+      # sentence-transformers/msmarco-bert-base-dot-v5 (D=768, raw dot
+      # product). Vectors produced by `data/embed_msmarco_bert.py` —
+      # NOT pre-normalised; GT is brute-force MIPS on raw f32.
+      base:        "data/msmarco_bert_1M/msmarco_bert_1M_base.fvecs"
+      query:       "data/msmarco_bert_1M/msmarco_bert_1M_query.fvecs"
+      groundtruth: "data/msmarco_bert_1M/msmarco_bert_1M_groundtruth.ivecs"
+    base_graph:
+      source: parlayann
+      # Mirrors `../ParlayANN/algorithms/vamana/scripts/msmarco_websearch`.
+      # Produced by:
+      #   PA_NUM_PASSES=1 DATASET=msmarco_bert_1M bash benchmark/scripts/prepare_parlayann_data.sh
+      staged_file: "${PA_ROOT}/data/MSMarcoBert1M/MSMarcoBert1M_ex${max_extra}.staged"
+    staged:
+      # Aligned with ParlayANN `vamana/scripts/msmarco_websearch`:
+      #   BUILD_ARGS="-R 64 -L 128 -alpha 1 -num_passes 1 -quantize_bits 8"
+      alpha: 1.0
+      graph_degree: 64
+      build_search_list_size: 128
+      # MS-MARCO BERT 1M: raw MIPS; JL empirically hurts both QPS and
+      # recall on this dataset (setup tax + filters genuine top-K,
+      # see README "MS-MARCO BERT 1M" section).
+      prefilter: none
+      admission: mips-i8
+      rerank: ip-f32
+  wiki_ada_1M:
+    dimension: 1536
+    paths:
+      # 1M Wikipedia passages × 1536-D OpenAI ada-002 embeddings,
+      # sourced from `nlpkevinl/wikipedia_openai_embeddings` via
+      # `data/load_wiki_ada_1M.py`. ada-002 outputs are unit-norm so
+      # MIPS == cosine ranking natively.
+      base:        "data/wiki_ada_1M/wiki_ada_1M_base.fvecs"
+      query:       "data/wiki_ada_1M/wiki_ada_1M_query.fvecs"
+      groundtruth: "data/wiki_ada_1M/wiki_ada_1M_groundtruth.ivecs"
+    base_graph:
+      source: parlayann
+      # Built via `prepare_parlayann_data.sh` with the high-D MIPS
+      # shape (R=100 L=200 α=1.05 num_passes=2) — there's no direct
+      # PA `vamana/scripts/<wiki_ada>` recipe so we mirror the
+      # OpenAIArXiv shape (closest D + same dot-product metric).
+      staged_file: "${PA_ROOT}/data/WikiAda1M/WikiAda1M_ex${max_extra}.staged"
+    staged:
+      alpha: 1.05
+      graph_degree: 100
+      build_search_list_size: 200
+      # Wiki-ada-002 1M: high-D cosine; JL at 1 line/vert gates the
+      # 1536-D admission slab.
+      prefilter: jl
+      admission: mips-i8
+      rerank: ip-f32

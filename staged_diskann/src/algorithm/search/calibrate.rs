@@ -6,7 +6,7 @@
 //! Auto-calibration of convergence threshold and early exit limit.
 
 use crate::StagedDiskANN;
-use crate::algorithm::search::in_mem_search::AlignedQuery;
+use crate::algorithm::search::utils::AlignedQuery;
 use crate::model::Neighbor as DNeighbor;
 use crate::model::scratch::InMemSearchScratch;
 use diskann::common::ANNResult;

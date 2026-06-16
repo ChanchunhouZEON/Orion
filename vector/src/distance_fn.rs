@@ -143,6 +143,170 @@ impl DistanceFn for L2U8Distance {
     }
 }
 
+// ─── L2 squared-Euclidean over u16 ─────────────────────────────────────
+
+/// Squared-L2 over u16 storage. Used as the precise (per-dim ~256×
+/// finer than u8) tier of the L2 cascade — PA's `quantize_bits 16`
+/// pattern: u8 filter for cheap rejection, u16 distance for PQ
+/// admission, f32 truth only at end-of-beam rerank.
+///
+/// ## Accumulator
+///
+/// `Acc = (u64x2, u64x2, u64x2, u64x2)` — 4 independent u64x2 chains
+/// (same shape as [`IpI16Distance`]). Per-dim squared diff max is
+/// `65535² ≈ 4.29 GB`; sum over D=960 maxes at `~4.12 TB`, which
+/// overflows u32 (4.29 GB) by ~1000×. u64 is mandatory.
+///
+/// ## Chunk
+///
+/// 32 B per [`step`](DistanceFn::step) = 16 u16 lanes = two
+/// `vld1q_u16` loads + `vabdq_u16` + four `vmull_u16` widens to u32 +
+/// four `vpadalq_u32` widens to u64 across the four chains. Each
+/// chain runs in parallel through M2's 4 NEON pipes, hiding the
+/// `vpadal` latency.
+pub struct L2U16Distance;
+
+#[cfg(target_arch = "aarch64")]
+impl DistanceFn for L2U16Distance {
+    type Storage = u16;
+    type Acc = (uint64x2_t, uint64x2_t, uint64x2_t, uint64x2_t);
+
+    #[inline(always)]
+    fn init() -> Self::Acc {
+        unsafe {
+            (
+                vdupq_n_u64(0),
+                vdupq_n_u64(0),
+                vdupq_n_u64(0),
+                vdupq_n_u64(0),
+            )
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn step(acc: &mut Self::Acc, base_chunk: *const u16, query_chunk: *const u16) {
+        // 32 bytes = 16 u16 lanes = two paired loads of u16x8.
+        let a_lo = vld1q_u16(base_chunk);
+        let a_hi = vld1q_u16(base_chunk.add(8));
+        let q_lo = vld1q_u16(query_chunk);
+        let q_hi = vld1q_u16(query_chunk.add(8));
+
+        // `|a - b|` as u16 — `vabdq_u16` is one instruction.
+        let d_lo = vabdq_u16(a_lo, q_lo);
+        let d_hi = vabdq_u16(a_hi, q_hi);
+
+        // Squared diffs: `vmull_u16` widens u16x4 → u32x4. Four u32x4
+        // vectors per step (one per low/high half of d_lo and d_hi).
+        let p_ll = vmull_u16(vget_low_u16(d_lo), vget_low_u16(d_lo));
+        let p_lh = vmull_high_u16(d_lo, d_lo);
+        let p_hl = vmull_u16(vget_low_u16(d_hi), vget_low_u16(d_hi));
+        let p_hh = vmull_high_u16(d_hi, d_hi);
+
+        // Pairwise-add widen u32x4 → u64x2 into 4 independent chains.
+        // Splitting across chains breaks the `vpadalq_u32` dep chain so
+        // the M2 OoO engine can issue all four in parallel.
+        acc.0 = vpadalq_u32(acc.0, p_ll);
+        acc.1 = vpadalq_u32(acc.1, p_lh);
+        acc.2 = vpadalq_u32(acc.2, p_hl);
+        acc.3 = vpadalq_u32(acc.3, p_hh);
+    }
+
+    #[inline(always)]
+    fn reduce(acc: Self::Acc) -> f32 {
+        unsafe {
+            let s = vaddq_u64(vaddq_u64(acc.0, acc.1), vaddq_u64(acc.2, acc.3));
+            // u64 → f32: at D=960 / u16 max range the value can reach
+            // 4 TB which exceeds f32 mantissa (16.7 M). Distance
+            // ordering is preserved by the monotone cast, so PQ
+            // comparisons stay correct even at precision-loss scale.
+            vaddvq_u64(s) as f32
+        }
+    }
+
+    #[inline(always)]
+    fn merge(into: &mut Self::Acc, src: Self::Acc) {
+        unsafe {
+            into.0 = vaddq_u64(into.0, src.0);
+            into.1 = vaddq_u64(into.1, src.1);
+            into.2 = vaddq_u64(into.2, src.2);
+            into.3 = vaddq_u64(into.3, src.3);
+        }
+    }
+}
+
+// ─── JL Sparse Hamming popcount ───────────────────────────────────────
+
+/// Hamming distance over packed u8 signatures — the **cheapest tier**
+/// of the L2 search cascade (PA's `quantize_mode=3`). Used as a
+/// prefilter to drop candidates before the (much costlier) u8 PQ
+/// admission distance.
+///
+/// ## Accumulator
+///
+/// `Acc = uint32x4_t` — same shape as [`L2U8Distance`]. The 4-way
+/// `DistanceStream` unroll spawns 4 independent accs, each
+/// accumulating up to `chunks_per_vert / 4` chunks. For the
+/// production case (BITS=1024, STRIDE=128 → 4 chunks per vert), each
+/// chain takes exactly **one** chunk, so per-chain max value is
+/// `32 × 8 = 256` — comfortably within u32.
+///
+/// ## Chunk
+///
+/// 32 B per [`step`](DistanceFn::step) = two `vld1q_u8` loads per side
+/// + `veorq_u8 → vcntq_u8` per half + two pairwise widens (u8 → u16,
+/// u16 → u32) folded into the running u32x4 accumulator. The XOR-
+/// popcount path is what makes Hamming ~24× cheaper per cmp than u8
+/// squared-L2 at the same byte width (no widening multiplies).
+pub struct JLHammingDistance;
+
+#[cfg(target_arch = "aarch64")]
+impl DistanceFn for JLHammingDistance {
+    type Storage = u8;
+    type Acc = uint32x4_t;
+
+    #[inline(always)]
+    fn init() -> Self::Acc {
+        unsafe { vdupq_n_u32(0) }
+    }
+
+    #[inline(always)]
+    unsafe fn step(acc: &mut Self::Acc, base_chunk: *const u8, query_chunk: *const u8) {
+        let a_lo = vld1q_u8(base_chunk);
+        let a_hi = vld1q_u8(base_chunk.add(16));
+        let q_lo = vld1q_u8(query_chunk);
+        let q_hi = vld1q_u8(query_chunk.add(16));
+
+        // Per-byte popcount of XOR — `vcntq_u8` is one instruction that
+        // returns 16 bytes whose lanes each hold the popcount (0..=8)
+        // of the corresponding input byte.
+        let p_lo = vcntq_u8(veorq_u8(a_lo, q_lo));
+        let p_hi = vcntq_u8(veorq_u8(a_hi, q_hi));
+
+        // Pairwise-add widen u8 → u16 → u32, fold into running u32x4
+        // acc. Each `vpaddlq_u8` pair-sums 16 u8 lanes into 8 u16
+        // lanes; `vpaddlq_u16` then pair-sums 8 u16 lanes into 4 u32
+        // lanes. The two halves accumulate independently (no inter-
+        // half dep), keeping the M2 NEON pipes full.
+        let h16_lo = vpaddlq_u8(p_lo);
+        let h16_hi = vpaddlq_u8(p_hi);
+        let h32_lo = vpaddlq_u16(h16_lo);
+        let h32_hi = vpaddlq_u16(h16_hi);
+
+        *acc = vaddq_u32(*acc, h32_lo);
+        *acc = vaddq_u32(*acc, h32_hi);
+    }
+
+    #[inline(always)]
+    fn reduce(acc: Self::Acc) -> f32 {
+        unsafe { vaddvq_u32(acc) as f32 }
+    }
+
+    #[inline(always)]
+    fn merge(into: &mut Self::Acc, src: Self::Acc) {
+        unsafe { *into = vaddq_u32(*into, src) }
+    }
+}
+
 // ─── MIPS-IP over i8 — uses `sdot` (Apple Silicon dot-product) ────────
 
 /// Symmetric i8 inner product. Uses NEON `sdot` (one instruction =
@@ -373,6 +537,57 @@ impl DistanceFn for L2U8Distance {
             let b = *query_chunk.add(i) as i32;
             let d = (a - b) as u32;
             *acc = acc.wrapping_add(d * d);
+        }
+    }
+    #[inline(always)]
+    fn reduce(acc: Self::Acc) -> f32 {
+        acc as f32
+    }
+    #[inline(always)]
+    fn merge(into: &mut Self::Acc, src: Self::Acc) {
+        *into = into.wrapping_add(src);
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+impl DistanceFn for L2U16Distance {
+    type Storage = u16;
+    type Acc = u64;
+    #[inline(always)]
+    fn init() -> Self::Acc {
+        0
+    }
+    #[inline(always)]
+    unsafe fn step(acc: &mut Self::Acc, base_chunk: *const u16, query_chunk: *const u16) {
+        for i in 0..16 {
+            let a = *base_chunk.add(i) as i32;
+            let b = *query_chunk.add(i) as i32;
+            let d = (a - b).unsigned_abs() as u64;
+            *acc = acc.wrapping_add(d * d);
+        }
+    }
+    #[inline(always)]
+    fn reduce(acc: Self::Acc) -> f32 {
+        acc as f32
+    }
+    #[inline(always)]
+    fn merge(into: &mut Self::Acc, src: Self::Acc) {
+        *into = into.wrapping_add(src);
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+impl DistanceFn for JLHammingDistance {
+    type Storage = u8;
+    type Acc = u32;
+    #[inline(always)]
+    fn init() -> Self::Acc {
+        0
+    }
+    #[inline(always)]
+    unsafe fn step(acc: &mut Self::Acc, base_chunk: *const u8, query_chunk: *const u8) {
+        for i in 0..32 {
+            *acc = acc.wrapping_add(((*base_chunk.add(i)) ^ (*query_chunk.add(i))).count_ones());
         }
     }
     #[inline(always)]

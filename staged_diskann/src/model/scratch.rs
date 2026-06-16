@@ -62,6 +62,19 @@ pub struct InMemSearchScratch {
     pub filter_threshold_count: u32,
     pub last_worst_id: u32,
     pub filter_tail_mean: f32,
+    /// **JL Hamming pre-filter** threshold state — PA's reference
+    /// `filtered_beam_search` (`beamSearch.h:138-152`) shape. Mean
+    /// over the **whole frontier** is the higher-quality threshold
+    /// signal (an EMA over only admitted candidates produces a tighter
+    /// threshold that loses recall at iso-throughput; verified
+    /// empirically). The recompute cost on GIST is bounded by L2
+    /// hit-rate on the JL slab — the same ~L vertex IDs are
+    /// re-Hammed across consecutive recomputes so the signatures
+    /// stay implicitly cached at the hardware level.
+    pub jl_threshold_sum: f32,
+    pub jl_threshold_count: u32,
+    pub jl_last_worst_id: u32,
+    pub jl_tail_mean: f32,
     /// Reusable convergence checker — avoids per-query allocation.
     pub dcc: SearchConvergenceChecker,
     /// Reusable early exit checker.
@@ -96,6 +109,10 @@ impl InMemSearchScratch {
             filter_threshold_count: 0,
             last_worst_id: u32::MAX,
             filter_tail_mean: 0.0,
+            jl_threshold_sum: 0.0,
+            jl_threshold_count: 0,
+            jl_last_worst_id: u32::MAX,
+            jl_tail_mean: 0.0,
             dcc: SearchConvergenceChecker::new(5, 0.0),
             early_exit: crate::algorithm::search::early_exit::EarlyExitChecker::new(5),
         }
@@ -114,6 +131,10 @@ impl InMemSearchScratch {
         self.filter_threshold_count = 0;
         self.last_worst_id = u32::MAX;
         self.filter_tail_mean = 0.0;
+        self.jl_threshold_sum = 0.0;
+        self.jl_threshold_count = 0;
+        self.jl_last_worst_id = u32::MAX;
+        self.jl_tail_mean = 0.0;
         self.dcc.reset();
         self.early_exit.reset();
     }

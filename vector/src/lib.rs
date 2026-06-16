@@ -29,9 +29,7 @@ mod l2_neon_distance_u8;
 pub use l2_neon_distance_u8::{distance_l2_vector_u8, distance_l2_vector_u8_batch4};
 
 mod ip_neon_distance;
-pub use ip_neon_distance::{
-    distance_ip_vector_f32, distance_ip_vector_f32_batch4, l2_normalize_f32_inplace,
-};
+pub use ip_neon_distance::{distance_ip_vector_f32, distance_ip_vector_f32_batch4};
 
 mod ip_neon_distance_i8;
 pub use ip_neon_distance_i8::{distance_ip_vector_i8, distance_ip_vector_i8_batch4};
@@ -41,7 +39,8 @@ pub use ip_neon_distance_i16::{distance_ip_vector_i16, distance_ip_vector_i16_ba
 
 mod distance_fn;
 pub use distance_fn::{
-    DistanceFn, IpF32Distance, IpI16Distance, IpI8Distance, L2F32Distance, L2U8Distance,
+    DistanceFn, IpF32Distance, IpI16Distance, IpI8Distance, JLHammingDistance, L2F32Distance,
+    L2U16Distance, L2U8Distance,
 };
 
 mod distance_buffer;

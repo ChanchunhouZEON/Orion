@@ -11,7 +11,8 @@ pub use candidate_set::CandidateSetManager;
 pub use compressed_graph::CompressedGraph;
 pub use config::CompressedConfig;
 pub use dataset::{
-    L2U8, MipsI8, MipsI16, QuantParamsL2, QuantParamsMips, QuantSpec, QuantizedDataset,
+    JLSparseDataset, JLSparseDatasetMips, L2KTDataset, L2U8, L2U16, MipsI8, MipsI16, QuantParamsL2,
+    QuantParamsMips, QuantSpec, QuantizedDataset,
 };
 pub use diskann::model::{FixedChunkPQTable, NUM_PQ_CENTROIDS};
 pub use neighbor::{Neighbor, NeighborPriorityQueue};

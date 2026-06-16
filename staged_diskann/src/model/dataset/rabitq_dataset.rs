@@ -36,7 +36,6 @@
 
 use diskann::common::AlignedBoxWithSlice;
 use diskann::model::InmemDataset;
-use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -464,7 +463,7 @@ unsafe fn signed_sum_neon<const N: usize>(
     code: *const u8,
     rotated_q: *const f32,
     bytes: usize,
-) -> f32 {
+) -> f32 { unsafe {
     use std::arch::aarch64::*;
     // Per-lane bit masks: lane i tests bit i of the nibble.
     let lane_masks_arr = [1u32, 2, 4, 8];
@@ -506,7 +505,7 @@ unsafe fn signed_sum_neon<const N: usize>(
     // Horizontal sum: combine both accumulators and reduce.
     let acc = vaddq_f32(acc_lo, acc_hi);
     vaddvq_f32(acc)
-}
+}}
 
 // ── Public re-exports for sibling codecs (rabitq_b4_dataset) ──────────
 //
@@ -597,14 +596,27 @@ fn build_orthogonal_rotation<const N: usize>(seed: u64) -> AlignedBoxWithSlice<f
 }
 
 /// `y = M @ x`, row-major M (N×N), x and y length N. Reference scalar
-/// implementation. The NEON-vectorized variant will replace this in the
-/// hot path; this one is for tests and the build-side encoder where
-/// throughput matters less than correctness.
+/// implementation. Dispatches to NEON when the f32 inner-loop length
+/// is a multiple of 16 (= 4 lanes × 4 ILP); falls back to scalar
+/// otherwise (still triggers auto-vectorization on tight inputs).
 #[inline]
 fn apply_rotation(m: &[f32], x: &[f32], y: &mut [f32]) {
     let n = y.len();
     debug_assert_eq!(m.len(), n * n);
     debug_assert_eq!(x.len(), n);
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+    {
+        if n % 16 == 0 {
+            unsafe { apply_rotation_neon(m, x, y, n) };
+            return;
+        }
+    }
+    apply_rotation_scalar(m, x, y, n);
+}
+
+#[inline]
+fn apply_rotation_scalar(m: &[f32], x: &[f32], y: &mut [f32], n: usize) {
     for r in 0..n {
         let row = &m[r * n..(r + 1) * n];
         let mut acc = 0.0f32;
@@ -614,6 +626,44 @@ fn apply_rotation(m: &[f32], x: &[f32], y: &mut [f32]) {
         y[r] = acc;
     }
 }
+
+/// NEON `apply_rotation` — 4-lane × 4-way-ILP dot product per row.
+/// Requires `n % 16 == 0`. For D=960 (GIST) this is 60 iterations
+/// × 4 FMAs/iter = 240 FMAs/dot, ×960 rows = ~230k FMAs. With Apple
+/// M2's ~4 FMA-IPC at f32 this lands ~15-25µs vs the scalar 436µs.
+#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+#[inline]
+unsafe fn apply_rotation_neon(m: &[f32], x: &[f32], y: &mut [f32], n: usize) { unsafe {
+    use std::arch::aarch64::*;
+    let chunks = n / 16;
+    let x_ptr = x.as_ptr();
+    for r in 0..n {
+        let row_ptr = m.as_ptr().add(r * n);
+        let mut a0 = vdupq_n_f32(0.0);
+        let mut a1 = vdupq_n_f32(0.0);
+        let mut a2 = vdupq_n_f32(0.0);
+        let mut a3 = vdupq_n_f32(0.0);
+        for c in 0..chunks {
+            let off = c * 16;
+            let r0 = vld1q_f32(row_ptr.add(off));
+            let r1 = vld1q_f32(row_ptr.add(off + 4));
+            let r2 = vld1q_f32(row_ptr.add(off + 8));
+            let r3 = vld1q_f32(row_ptr.add(off + 12));
+            let x0 = vld1q_f32(x_ptr.add(off));
+            let x1 = vld1q_f32(x_ptr.add(off + 4));
+            let x2 = vld1q_f32(x_ptr.add(off + 8));
+            let x3 = vld1q_f32(x_ptr.add(off + 12));
+            a0 = vfmaq_f32(a0, r0, x0);
+            a1 = vfmaq_f32(a1, r1, x1);
+            a2 = vfmaq_f32(a2, r2, x2);
+            a3 = vfmaq_f32(a3, r3, x3);
+        }
+        let s01 = vaddq_f32(a0, a1);
+        let s23 = vaddq_f32(a2, a3);
+        let s = vaddq_f32(s01, s23);
+        *y.get_unchecked_mut(r) = vaddvq_f32(s);
+    }
+}}
 
 // ── Deterministic PRNG + Gaussian sampler ─────────────────────────────
 

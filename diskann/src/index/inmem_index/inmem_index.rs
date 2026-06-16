@@ -921,10 +921,16 @@ where
                     // else: past-cutoff non-G[i] candidates are discarded.
                 }
 
-                // Optional post-partition hard cap on extras zone (slab
-                // can carry many candidates; cap the array length even
-                // when the top-X% rule would admit more).
-                if max_extra > 0 && extra.len() > max_extra {
+                // Hard cap on extras zone (slab can carry many
+                // candidates; cap the array length even when the
+                // top-X% rule would admit more). `max_extra == 0`
+                // means "no extras allowed" — the previous guard
+                // `max_extra > 0` accidentally skipped truncation in
+                // that case and let the partition extras overflow
+                // the cache-line-aligned slab, corrupting the next
+                // node's header (ablation no-extra variant panicked
+                // in `extra_candidates` reading the corrupted count).
+                if extra.len() > max_extra {
                     extra.truncate(max_extra);
                 }
 

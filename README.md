@@ -26,72 +26,102 @@ By detecting convergence and switching to a reduced candidate set, StagedDiskANN
 ### Build
 
 ```sh
-cargo build --release --bin benchmark --bin staged_sweep
+cargo build --release --bin benchmark --bin staged_diskann
 ```
 
 ### Per-dataset quick sweep
 
-The `staged_sweep` binary is the fast path — loads the cached `PhasedGraph` (or builds it on first run), auto-calibrates, and prints a QPS/Recall curve across the standard 14-value `L` schedule. Per-dataset defaults (paths, `R`, `α`, metric) are aligned with the setting of `ParlayANN`.
+The `staged_diskann` binary is the production driver — loads the cached `PhasedGraph` (or builds it on first run), auto-calibrates, and prints a QPS/Recall curve across the standard 14-value `L` schedule. Search dispatch goes through the **composable cascade** (`--prefilter`, `--admission`, `--rerank`); per-dataset defaults pick the production triple automatically.
 
 ```sh
-# SIFT1M — L2 search on PA-built base graph (R=64 α=1.15 2-pass)
-{STAGED_GRAPH=pa} {STAGED_STAGED_FILE=/path/to/staged/staged/file} cargo run --release --bin staged_sweep -- sift
+# SIFT1M — defaults to (none, l2-u8, f32) — direct u8 L2, no prefilter
+{STAGED_GRAPH=pa} {STAGED_STAGED_FILE=/path/to/staged/staged/file} cargo run --release --bin staged_diskann -- sift
 
-# GloVe-25 — MIPS (single-phase f32 IP) on PA-built base graph (R=100 α=1)
-{STAGED_GRAPH=pa} {STAGED_STAGED_FILE=/path/to/staged/staged/file} cargo run --release --bin staged_sweep -- glove25
+# GloVe-25 — defaults to (none, mips-i8, ip-f32) — MIPS i8 sdot
+{STAGED_GRAPH=pa} {STAGED_STAGED_FILE=/path/to/staged/staged/file} cargo run --release --bin staged_diskann -- glove25
 
-# GloVe-100 — MIPS-Q (i8 beam + f32 top-20 rerank) on PA-built base graph
-{STAGED_GRAPH=pa} {STAGED_STAGED_FILE=/path/to/staged/staged/file} {STAGED_DSTREAM_LA_T=8} cargo run --release --bin staged_sweep -- glove100
+# GloVe-100 — defaults to (none, mips-i8, ip-f32)
+{STAGED_GRAPH=pa} {STAGED_STAGED_FILE=/path/to/staged/staged/file} cargo run --release --bin staged_diskann -- glove100
 
-# GIST — L2 search (R=32 α=1.5)
-{STAGED_GRAPH=pa} {STAGED_STAGED_FILE=/path/to/staged/staged/file} cargo run --release --bin staged_sweep -- gist
+# GIST — defaults to (jl, l2-kt, f32) — JL prefilter + i8 kernel-trick L2
+{STAGED_GRAPH=pa} {STAGED_STAGED_FILE=/path/to/staged/staged/file} cargo run --release --bin staged_diskann -- gist
 ```
 
-The metric is picked from `sweep.yaml` per dataset; override with `--metric {l2｜l2-q|mips|mips-q}` if needed. Prefetch runway is tunable: `STAGED_PF_BATCH=4` is the MSHR sweet spot for MIPS-Q on GloVe-100.
+**Cascade axes** (override any of the three independently):
+
+- `--prefilter <none|jl|jl-hadamard|rabitq>` — optional cheap rejection tier.
+- `--admission <l2-u8|l2-u16|l2-kt|mips-i8|mips-i16>` — the PQ-ranked admission distance.
+- `--rerank <f32|ip-f32|u16>` — final precision pass at end-of-beam.
+
+Prefetch tuning lives in three env vars: `STAGED_DSTREAM_LA_Q` (per-iter L1 lookahead, default 10), `STAGED_DSTREAM_LA_TRUTH` (rerank pass lookahead, default 6), `STAGED_DSTREAM_SINK_BURST` (sink-time long-range burst, default 12 — calibrated for GIST L2-KT, +20-27% QPS vs disabled).
 
 ### One-time PA base-graph prep
 
-The yaml points every dataset at `${PA_ROOT}/data/<ds>/<stub>.staged`. Generate these with the `prepare_parlayann_data.sh` helper (≈ 4–10 min depending on dataset):
+The yaml points every dataset at `${PA_ROOT}/data/<ds>/<stub>.staged`. Generate these with the `prepare_parlayann_data.sh` helper (≈ 4–10 min on the 1M-class sets, ~30 min on Deep10M):
 
 ```sh
 PA_NUM_PASSES=2 DATASET=sift     bash benchmark/scripts/prepare_parlayann_data.sh
 PA_NUM_PASSES=2 DATASET=glove25  bash benchmark/scripts/prepare_parlayann_data.sh
 PA_NUM_PASSES=2 DATASET=glove100 bash benchmark/scripts/prepare_parlayann_data.sh
 PA_NUM_PASSES=2 DATASET=gist     bash benchmark/scripts/prepare_parlayann_data.sh
+PA_NUM_PASSES=2 DATASET=deep10m  bash benchmark/scripts/prepare_parlayann_data.sh
 ```
 
-On first `staged_sweep` run per dataset, the `.staged` export is imported into `cache/staged_parlayann/*.pgraph` (≈ 3 s) and reused thereafter.
+#### Deep10M — sourcing the data
 
-### Full 3-run vs ParlayANN comparison (thermal-isolated)
-
-For paper-grade numbers with 180 s cooldowns + 3-run median, use the unified sweep driver. It runs both our MIPS-Q path and PA's native angular recipe (`-dist_func mips -normalize -quantize_bits 16 -quantize_mode 1 -rerank_factor 2 -num_passes 2`) and emits `visualizations/sweep_staged_vs_parlayann_<ds>_mips.json`:
+Yandex Deep10M (the first 10M of Deep1B, used for L2 ground truth) is published as `.fbin` files via the [BigANN benchmark](https://big-ann-benchmarks.com/) and the [Yandex Research Datasets](https://research.yandex.com/datasets/biganns) page. After downloading `base.10M.fbin`, `query.public.10K.fbin`, and the matching `gt.public.10K.bin`, convert to fvecs/ivecs with `data/convert_fbin.py`:
 
 ```sh
-DATASET=glove100 METRIC=mips-q NUM_RUNS=3 COOLDOWN_S=180 \
-    bash benchmark/scripts/sweep_staged_vs_parlayann.sh
+mkdir -p data/deep10m
+python3 data/convert_fbin.py --vec --pad-to-dim 128 /path/to/base.10M.fbin           data/deep10m/deep10m_base.fvecs
+python3 data/convert_fbin.py --vec --pad-to-dim 128 /path/to/query.public.10K.fbin   data/deep10m/deep10m_query.fvecs
+# The published groundtruth (groundtruth.public.10K.ibin) references the
+# **full 1B base**; for the 10M subset we must recompute brute-force GT
+# from the 10M base.
+/opt/anaconda3/envs/ray/bin/python benchmark/scripts/compute_gt_brute.py \
+    --base-fbin  /path/to/base.10M.fbin \
+    --query-fbin /path/to/query.public.10K.fbin \
+    --out        data/deep10m/gt.bin \
+    -k 100
+python3 -c "import struct, numpy as np
+nq, k = struct.unpack('<II', open('data/deep10m/gt.bin','rb').read(8))
+ids = np.fromfile('data/deep10m/gt.bin', dtype=np.uint32, count=nq*k, offset=8).reshape(nq, k)
+with open('data/deep10m/deep10m_groundtruth.ivecs','wb') as f:
+    for row in ids.astype(np.int32):
+        f.write(np.array([k], dtype=np.int32).tobytes() + row.tobytes())"
 ```
 
-Replace `METRIC=mips` with `METRIC=l2` for the Euclidean path (SIFT / GIST).
+Why `--pad-to-dim 128` rather than the next-supported 100: **the f32 rerank's `compute_bytes` is rounded up to a 32-byte multiple**, so on a D=100 base (stride 400 bytes) the kernel reads 416 bytes per vertex — crossing the vertex boundary by 16 bytes and corrupting every rerank distance. D=128 gives `stride == compute_bytes == 512` (16 × 32 B), no overrun. Zero padding contributes 0 to L2 — bit-identical ranking to the native D=96 path. The converter streams in 64K-vector chunks so the 3.8 GB base file doesn't have to fit in RAM. PA's build params (`-R 64 -L 128 -alpha 1.05 -num_passes 2 -dist_func Euclidian -quantize_bits 8`) are mirrored verbatim from `../ParlayANN/algorithms/vamana/scripts/deep10M`.
+
+On first `staged_diskann` run per dataset, the `.staged` export is imported into `cache/staged_parlayann/*.pgraph` (≈ 3 s on 1M class, ~30 s on Deep10M) and reused thereafter.
+
+### Full 3-engine head-to-head (thermal-isolated, 3-run median)
+
+For paper-grade numbers with thermal-isolated cooldowns + 3-run median, use the unified three-engine sweep driver. It runs **StagedDiskANN** (cascade auto-picked by dataset, via `target/release/staged_diskann`), **Microsoft DiskANN** (via the in-process `target/release/diskann_sweep` wrapping the `diskann` core crate), and **ParlayANN Vamana** (PA's published per-dataset recipe) back-to-back on the same Vamana graph topology (R / L<sub>build</sub> / α / num_passes verbatim from `../ParlayANN/algorithms/vamana/scripts/<ds>`). Results are written to `visualizations/sweep_staged_vs_parlayann_<ds>.json` with three series — `staged`, `diskann`, `parlayann` — consumed by `visualizations/plot_dataset_all.py`:
+
+```sh
+PA_ROOT=/path/to/ParlayANN DATASET=glove100 NUM_RUNS=3 COOLDOWN_S=180 \
+    bash benchmark/scripts/sweep_staged_vs_diskann_vs_parlayann.sh
+```
+
+`COOLDOWN_S=60` (or `1` on systems with negligible thermal drift) is fine for iteration; bump to 180 for paper plots.
+
+**Metric note for the DiskANN row**: the `diskann` core crate's f32 distance kernel only ships L2 (`Cosine` panics at runtime — see `vector/src/distance.rs:57`). For datasets whose intended ranking is cosine / MIPS (`glove*`, `msmarco_bert_1M`, `wiki_ada_1M`) `diskann_sweep` L2-normalises the input vectors before handing them to DiskANN — L2 on unit-norm vectors = cosine ranking. This is apples-to-apples on the pre-normalised GloVe datasets and on the L2-native ones (SIFT / GIST / Deep10M / Fashion-MNIST). On `msmarco_bert_1M` specifically, GT was brute-forced as **raw** MIPS (dot product on non-unit BERT vectors); DiskANN's cosine ranking diverges from raw MIPS, so the DiskANN row caps at R ≈ 0.52 on that dataset (a metric-mismatch artifact, not a DiskANN deficiency).
 
 ### Plot the comparison
 
 After the sweep JSON exists:
 
 ```sh
-DATASET=glove100 METRIC=mips-q python3 visualizations/plot_dataset_all.py
-# → visualizations/qps_recall_glove100_mips_all4.png
+# Single dataset (writes visualizations/qps_recall_<dataset>_all3.png)
+DATASET=glove100 /opt/anaconda3/envs/ray/bin/python visualizations/plot_dataset_all.py
+
+# Batch — every public dataset except fashion-mnist (where staged
+# is dominated by PA at 60K vectors). Six PNGs in one shot.
+/opt/anaconda3/envs/ray/bin/python visualizations/plot_dataset_all.py --all
 ```
 
-### Profile the hot search path
-
-`profile_mips_q.sh` launches `staged_sweep` with a single fixed `L`, waits for the prep-done marker, and attaches `xctrace record --template 'CPU Profile'` so the trace covers **only** the measured sweep (no load / calibrate / build noise):
-
-```sh
-bash benchmark/scripts/profile_mips_q.sh                    # glove100, L=[16], PF=4
-SEARCH_LIST_SIZES=16,64,256 bash benchmark/scripts/profile_mips_q.sh
-```
-
-Open the resulting `/tmp/staged_trace_<ds>_<stamp>.trace` bundle with `open <path>` — launches Instruments.app.
+Each PNG overlays three engines — **StagedDiskANN** (sky-blue, square markers, "ours"), **ParlayANN Vamana** (rose, diamonds), **Microsoft DiskANN** (amber, triangles) — on a shared log-scale QPS axis. Palette + linewidth are tuned for high contrast in dense overlap zones (see `visualizations/chart_style.py:PALETTE_VIVID`).
 
 ### Tuning knobs (env vars, most-used)
 
@@ -173,213 +203,181 @@ Under the `staged_diskann` feature, `VertexAndNeighbors` maintains a parallel `n
 | Single-pass PhasedGraph build with stack buffers | No intermediate `Vec<Vec<u32>>` allocation                                                 |
 | `AlignedBoxWithSlice<u32>` slab                  | Cache-line aligned, zero-copy reads                                                        |
 
-### Search Performance
+### Search-Phase Optimizations
 
-| Optimization                                                                  | Impact                                                                                                    |
-| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Distance-percentile local/remote split (top 60% of merged origin+extras pool) | Per-node, length-relative — predictable zone sizes, single sort + slice                                   |
-| Flatten graph storage and left/right side read                                | Phased graph is stored as a flatten `AlignedBoxWithSlice`, and using left/right side read for concurrency |
-| Reversible convergence                                                        | Prevents permanent recall loss from false convergence                                                     |
-| Early exit after convergence                                                  | Stops search when consecutive steps produce no PQ admissions                                              |
-| Two-slice reranking (`local + extra`)                                         | Smaller working set after convergence                                                                     |
-| Prefetch pipeline                                                             | Next node's graph slot and vector prefetched during current expansion                                     |
-| `total_cmp` comparison                                                        | Branchless integer comparison for `Neighbor::cmp`, eliminates `Option` overhead                           |
-| 4-way NEON unroll                                                             | L2/MIPS distance processes 16 floats/iteration, halving loop branch overhead for high-dim.                |
+Every search request runs through a **three-axis cascade** where each axis is selected independently. The same loop body, prefetch shape, convergence detector, and early-exit checker drive every combination — the axes only swap the per-hop distance kernel and the per-vertex sidecar.
 
-### Early Exit
+```
+ prepare scratch ──► peeled warm-up ──► [Prefilter? cheap reject] ──► [Admission: quantized PQ + cadence] ──► [Rerank: f32 top-k×RF]
+                       (hops 0..=2)      (every neighbour, optional)   (every visited, every hop)            (once, post-convergence)
+```
 
-After convergence, the priority queue often contains many unvisited candidates that will not improve the result. The `EarlyExitChecker` tracks consecutive expansion steps with zero admissions during the converged phase. When this count exceeds the configured limit, the search terminates immediately.
+CLI surface: `--prefilter <none|jl|jl-hadamard|rabitq> --admission <l2-u8|l2-u16|l2-kt|mips-i8|mips-i16> --rerank <f32|ip-f32|u16>`. Per-dataset defaults (`Cascade::default_for_dataset`, `benchmark/src/bin/staged_diskann.rs`) pick the production triple automatically. **None of the per-stage optimisations depend on the metric** — the same beam loop, prefetch shape, PQ machinery, and admission datasets run whether the cascade is `none → l2-u8 → f32` or `jl → mips-i16 → ip-f32`.
 
-This is especially effective for high-dimensional data (e.g., GIST-960) where distance computation dominates runtime — early exit directly reduces the number of expensive distance calls rather than just the number of neighbors per step.
+Sub-sections below walk the stages in execution order; the **shared kernels** (`DistanceStream`, NEON distance functions, `Neighbor` PQ) used by every stage are factored out at the end.
 
-### Quantized Dataset
+#### 1. Per-query preparation — scratch reuse
 
-`QuantizedDataset<Q, N>` stores a quantised view of the f32 base, parameterised by a `QuantSpec` marker type. Three concrete instantiations cover the search paths:
+A `InMemScratchPool` allocates `num_threads` `InMemSearchScratch` buffers up front, handed out through crossbeam's lock-free `ArrayQueue` (no mutex). Each query takes one, runs `prepare_for_query()` to clear PQ / seen-set / `dist_buffer` / `merge_scratch` **in place** (no realloc), and returns it. The four critical fields are sized once at construction so the steady-state hop never touches the allocator:
 
-| Spec | Storage | Scaling | Sidecar | Used by |
+- **`pad16` PQ buffer alignment.** `pq.data` and `merge_scratch` capacities both rounded up to a multiple of 16 `Neighbor`s (12 B/entry → 192-B boundary = 12 NEON regs = 1.5 M2 lines). `mem::swap` between the two on every `batch_merge` without resize; `copy_within` in `insert` uses full-vector loads. Killed the L-mod-8 jitter signal (L=18 / L=22 had 3–5× the CV of L=16 / L=24). [`staged_diskann/src/model/neighbor/neighbor_priority_queue.rs:27`]
+- **`dist_buffer` fixed at `MAX_GRAPH_DEGREE × MAX_FLUSH_INTERVAL = 100 × 4 = 400`.** Sized at construction; per-hop `reserve()` removed so cmov-compact's write pointer stays valid across `FLUSH_INTERVAL=4` post-converged hops. [`staged_diskann/src/model/scratch.rs:85–119`]
+- **Visited-set — linear-probe, PA-aligned sizing.** Initial table = `2 × (L + 1) × max_degree` rounded to next pow-2; SIFT L=64 → 16384 slots / 64 KB, fits L1 with load < 50 %. A bucketed SwissTable variant was reverted — probe-chain false-positives at >50 % load → recall regressions. [`staged_diskann/src/model/visited_set.rs`]
+- **`prepare_for_query` resets in place.** `pq.clear() + set_capacity`, `seen.resize_for` (only grows if `L` increased vs the last query), threshold-EMA fields zeroed, convergence + early-exit checkers reset. [`staged_diskann/src/model/scratch.rs:123–144`]
+
+#### 2. Warm-up — 3-hop loop peeling
+
+The first three hops run a dedicated **`expand_peeled_hop_l2`** (one variant per admission tier) that skips convergence / flush / 3-way merge bookkeeping. During hops 0..=2 the PQ transitions empty → partial → just-full, so none of that machinery can fire — but in the main loop it lives behind branches and pollutes the icache. Peeling them out strips ~10 instructions / vertex from the warm-up window and saves the branch-predictor's first warm-up misses. **+1.2 – 2.3× low-`L` QPS.** [`staged_diskann/src/algorithm/search/in_mem_search_l2.rs:65–261`]
+
+#### 3. Prefilter tier (`--prefilter`)
+
+After warm-up, every neighbour fetched off the graph hits the prefilter first (if any). The prefilter computes a **1-cache-line popcount** against a sketch of the base vector and rejects before the wider admission slab is touched.
+
+| Option | Per-vertex sidecar | Score | Best for | impl |
 |---|---|---|---|---|
-| `L2U8`  | u8  | per-dim `(x − min) / (max − min) · 255` | `.qds`  | L2 prefilter (`search_l2_u8`), L2-Q beam (`search_l2_u8_q`) |
-| `MipsI8` | i8 | symmetric global `127 / max\|x\|` (PA's `Quantized_Mips_Point<8,true,255>` scheme) | `.qdm8` | MIPS-Q beam (`search_mips_q`) |
-| `MipsI16` | i16 | symmetric global `32767 / max\|x\|` (PA's 16-bit angular recipe) | `.qdm16` | High-recall MIPS-Q (`search_mips_q::<MipsI16>`) |
+| `none` | — | — | low/mid-D, hop ≤ 4 lines | — |
+| `jl` | 1024-bit JL Sparse (NZ=9) + `‖v‖` (MIPS only) | popcount (L2) / popcount × `‖v‖` (MIPS) | high-D L2 / cosine (GIST, Wiki-ada) | `staged_diskann/src/model/dataset/jl_sparse_dataset.rs:115`, `:376` (MIPS) |
+| `jl-hadamard` | 1024-bit FWHT sign sketch | popcount | dense-D where JL Sparse plateaus | `staged_diskann/src/algorithm/search/stage/prefilter/jl_hadamard.rs` |
+| `rabitq` | RaBitQ B=1 / B=4 rotated sign-pack | popcount | sub-bit discrimination; GIST high-recall | `staged_diskann/src/algorithm/search/stage/prefilter/rabitq.rs` |
 
-Sidecars are built lazily on first `ensure_quantized_dataset[_mips[_i16]]()` and memcpy-loaded thereafter (~50 ms for 1.2 M points). Storage is an `AlignedBoxWithSlice<Q::Storage>` with per-vertex stride rounded up to 32 B, so every vertex begins at a SIMD-aligned address — this fixes the glove-100 unaligned-load tax (`id × 100` is not 16-byte-aligned in a packed `Vec<i8>`) and contributed the largest single jump (**0.70× → 0.96× PA**) in the angular stack. SIFT / GIST / GloVe-25 are incidentally dim-multiples-of-32 so they didn't pay the tax.
+L2 / MIPS split lives in the type — `JLSparseDataset` (no norms) vs `JLSparseDatasetMips` (norms slab cache-aligned next to codes), separate so L2 pays nothing for an unused norms slab. NZ tunables are per-dataset (L2=9, MIPS=9 in the GLM-vivid sweep). [`staged_diskann/src/algorithm/search/stage/prefilter/jl.rs:35–117`, `:119–200`]
 
-Per-cmp bandwidth vs the f32 base:
-- u8 / i8: 1× cache line per N=128 vertex (¼ of f32), 16-lane `vmull_s8 + vpadalq_s16` — ~4× bandwidth + 2× compute.
-- i16: 2× cache lines per N=128 vertex (½ of f32), 8-lane `vmull_s16 + vpadalq_s32` — ~2× bandwidth.
-- f32 truth: 4 cache lines per N=128 vertex; used only for entry distance + post-hoc top-`k × rerank_factor` rerank.
+A u8-as-L2-proxy prefilter was tried and discarded for angular: on unit-norm vectors the L2² range collapses to `[0, 4]`, so 256 quantisation levels coarsen to where everything passes — bit-sign sketches are what pays.
 
-A u8-as-L2-proxy prefilter for the angular path was evaluated and discarded: on normalized vectors the L2² range collapses to `[0, 4]`, so 256 quantisation levels coarsen to where everything passes the filter and the stage becomes pure overhead. The i8-end-to-end pattern with rerank is what PA does and what works on our side.
+#### 4. Admission tier (`--admission`)
 
-### Common Search Machinery
+Survivors of the prefilter enter the admission tier — the per-hop main work. Two pieces, both stage-uniform:
 
-The L2 and MIPS paths share the same beam-search backbone; only the per-hop distance kernel and the rerank policy differ. Components called out below are used by every search entry-point unless noted.
+**(a) Storage — `QuantizedDataset<Q, N>` + the `QuantSpec` trait.** Spec-trait machinery bundling storage element, scaling, NEON kernel, sidecar magic, and `ALIGN_ELEMS` (rounds `STRIDE × sizeof(Storage)` up to a 32-B SIMD-aligned vertex stride). The alignment knob fixed the glove-100 unaligned-load tax — `id × 100` is not 16-byte-aligned in a packed `Vec<i8>` — for the **0.70× → 0.96× PA** single biggest jump in the angular stack. Sidecars built lazily on first `ensure_quantized_dataset_*`, memcpy-loaded thereafter (~50 ms / 1.2 M points); storage is `AlignedBoxWithSlice<Q::Storage>` at 32 B. [`staged_diskann/src/model/dataset/quantized_dataset.rs:52–138` trait, `:503–512` struct + `STRIDE`, `:619–670` sidecar I/O]
 
-- **`DistanceStream` — fine-grained per-cache-line prefetch with inline address resolution.** `run()` resolves every prfm address inline from `(base_ptr, ids[v], stride, line_offset)` — one mul/shift per prfm — so there's no per-call queue setup and the prfm scheduler keeps `lookahead_lines` in-flight without interleaved address lookups. Each prfm targets **one cache line** of one vertex; multi-line vertices (SIFT f32 lpv=4, glove100 f32 lpv=4) issue 4 prfms per vertex spread across prologue + per-iter drip rather than one front-loaded burst. Lookahead is exposed as `STAGED_DSTREAM_LA_Q=<N>` (Stage-1 i8) and `STAGED_DSTREAM_LA_TRUTH=<N>` (Stage-2 f32 / rerank); SIFT defaults are `40` / `160`, glove100 i8 beam runs at `32` / `128`.
-- **Flat 4-way resolve dispatch + `pldl1strm` hint.** `run()` classifies the layout once (`(lpv, stride)`) and branches into one of four address-arithmetic specialisations: `lpv=1` + pow2-stride, `lpv` pow2 + stride pow2 (multi-line), `lpv=1` + non-pow2 stride (rare), and a div/mod fallback (GIST f32 lpv=30). The earlier nested shape kept the inner `stride_is_pow2` check as a `csel` in the main-loop drip — both `lsl` and `mul` were computed every iter and one was selected, wasting ~1 cycle per prfm. Flattening eliminates that. Companion: `prfm pldl1keep` → `prfm pldl1strm` (`_MM_HINT_NTA` on x86) — every prefetched line is read at most `lpv` times consecutively per query and never reused across queries, so `strm` matches the access pattern and frees cache slots faster.
-- **3-hop loop peeling.** The first three hops run with convergence / flush-interval / 3-way merge routing stripped out — the PQ transitions empty → partial → just-full during this window so none of that bookkeeping can fire. Single peeled-hop helper per metric (`expand_peeled_hop_l2`, `expand_peeled_hop_l2_q`, `expand_peeled_hop_mips_q`) keeps the warm-up branch shape uniform. Lifts low-`L` QPS by 1.2 – 2.3× across all paths.
-- **Branch-free admission via cmov-compact.** Per-hop the distance kernel writes every computed `(id, dist)` into `dist_buffer` and advances the write pointer conditionally (`w += (dist < pq_worst) as usize`). Eliminates the 50/50 branch-mispredict cost at mid-L where admission is a coin-flip.
-- **Unified flush cadence + 3-way merge routing.** A single counter drives `flush_interval = 1 + 3 · (converged as usize)`: flush every hop pre-convergence, every 4 hops post. At flush time the 3-way router (re-fit under the `pad16` PQ layout via the `pq_merge_bench` binary) picks one of:
-  - `K · 8 < L` (`K < L / 8`) → per-element `pq.insert` (cache-friendly at small K, no scratch swap)
-  - `L / 8 ≤ K ≤ L · 0.67` → `pq.batch_merge_gallop` (`partition_point` + bulk memcpy — wins this whole middle band by 10-30 ns)
-  - `K · 1.5 > L` (`K > L · 0.67`) → linear `pq.batch_merge` (two-way set-union beats gallop only when admits are near-capacity)
+| Spec | CLI | Storage | Kernel | Score | impl |
+|---|---|---|---|---|---|
+| `L2U8` | `l2-u8` | u8 (1 line / vert, ¼ f32) | `L2U8Distance` (`vabdq_u8 → vmull_u8 → vpadalq_u16`) | direct L2 | `quantized_dataset.rs:199–272` |
+| `L2U16` | `l2-u16` | u16 (2 lines / vert) | `L2U16Distance` | precise L2 | `quantized_dataset.rs:274–360` |
+| **`L2KTDataset`** (+`MipsI8`) | `l2-kt` | i8 + i32 `‖x_i8‖²` sidecar | `IpI8Distance` (`sdot`) + 1 scalar | `‖q‖² + ‖x‖² − 2⟨q, x⟩` — kernel-trick L2 | `l2_kt_dataset.rs:74–85` |
+| `MipsI8` | `mips-i8` | i8 (`127 / max\|x\|`) | `IpI8Distance` (`sdot`) | `−Σ q · x` | `quantized_dataset.rs:362–430` |
+| `MipsI16` | `mips-i16` | i16 (`32767 / max\|x\|`) | `IpI16Distance` (`vmull_s16 + vpadalq_s32`) | i16 raw MIPS — used when BERT long-tail caps i8 at R≈0.97 | `quantized_dataset.rs:432–501` |
 
-  Both comparisons lower to pure shifts (`K << 3`, `K + (K >> 1)`), no integer multiplies. Helpers at `staged_diskann/src/algorithm/search/in_mem_search.rs:97-110`.
-- **`pad16` PQ buffer alignment.** Every PQ allocation rounds the buffer length up to a multiple of 16 `Neighbor`s (`pad16(capacity + 1)` slots), so the underlying `Vec<Neighbor>` (12 B / entry) ends on a strict 192-byte boundary = 12 × 16-B NEON registers = 1.5 × M2 cache lines. `merge_scratch` (sized identically) and `pq.data` `mem::swap` without resize, and `copy_within` inside `insert` uses full-vector loads on the active prefix without tail splits at non-8-aligned L. Collapsed the L-mod-8 jitter signal where L=18 / L=22 had 3-5× higher CV than L=16 / L=24.
-- **`dist_buffer` capacity fixed at `max_degree × max_flush_interval` = 400.** Sized once at scratch construction; per-hop `reserve()` calls were removed so the cmov-compact write target is stable for the entire query (no realloc-induced pointer invalidation between post-converged hops in a `FLUSH_INTERVAL=4` window). Fixes the stale-`pq_worst_local` vs accumulated-buffer bookkeeping bug that was occasionally triggering early-exit on false-zero `hop_admits` streaks.
-- **Visited-set — exact linear-probe with PA-aligned sizing.** Initial table size = `2 × (L + 1) × max_degree` rounded to next pow-2 (the tighter form of PA's formula). At SIFT L=64 → 16384 slots / 64 KB, fits L1 cleanly with load < 50%. A bucketed SwissTable-shaped attempt was reverted because the saturation/probe-chain interaction at >50% load admitted false positives (recall regressions, visit-count drops); the legacy linear-probe + dynamic-grow design is what every path currently uses.
-- **PA 2-pass base graph default.** `sweep.yaml` points every dataset at `${PA_ROOT}/data/<ds>/<stub>.staged` (produced by `PA_NUM_PASSES=2 DATASET=<ds> bash benchmark/scripts/prepare_parlayann_data.sh`). PA's `-num_passes 2` refine gives ~10 % matched-recall lift over our own 1-pass build. Import cost: ~3 s per dataset, one-time.
-- **Metric-agnostic auto-calibration.** `calibrate()` derives `(threshold, early_exit_limit)` from admit-rate topology, not the distance function — on unit-normalized data L2 and neg-IP rank identically, so the same calibrator output drives MIPS / MIPS-Q / L2 / L2-Q.
+The **L2-kernel-trick** (`l2-kt`) is the headline admission optimisation on high-D L2: GIST D=960 `l2-u8` is bandwidth-bound on `vabdq_u8 → vmull_u8 → vpadalq_u16` (~14 SIMD ops / 32-B chunk); `l2-kt` collapses the kernel to `sdot` (~2 ops / 32-B chunk) and recovers L2 via the identity. `‖x‖²` is a per-vertex i32 lookup, `‖q‖²` a per-query constant. Default on `gist` + `fashion-mnist`.
 
-### L2 Search Paths
+**(b) Per-hop cadence — admit, flush, merge.** Each hop runs `admit → flush → merge` against the shared scratch:
 
-Two L2-family entry points share the machinery above and differ only in how the PQ scale is held:
+- **Branch-free admission via cmov-compact.** Per-hop kernel writes every `(id, dist)` into `dist_buffer` and advances the write pointer conditionally (`w += (dist < pq_worst) as usize`). Kills the 50/50 mispredict at mid-`L`. [`staged_diskann/src/algorithm/search/unified.rs:411–424`]
+- **Flush cadence: `FLUSH_INTERVAL = [1, 4]`.** Pre-convergence flush every hop, post-convergence every 4 — amortises the merge fixed cost when admissions thin out. [`staged_diskann/src/algorithm/search/in_mem_search.rs:266–270`]
+- **3-way merge routing** at flush time, picked by `K` (staged admits) vs `L` (PQ capacity):
+  - `K · 8 < L` → per-element `pq.insert` (cache-friendly small-K, no scratch swap)
+  - `L / 8 ≤ K ≤ L · 0.67` → `pq.batch_merge_gallop` (`partition_point` + bulk memcpy, +10–30 ns)
+  - `K · 1.5 > L` → linear `pq.batch_merge` (two-way set-union, near-capacity admits)
 
-- **`search_l2_u8` — u8 prefilter + per-hop f32 rerank.** PQ holds f32 truth distances. Each hop streams u8 quantized distances over unseen neighbours via `DistanceStream<L2U8Distance>`, cmov-compacts survivors (those whose `qd ≤ pq_worst · slope² · Q_SLACK`) back into `id_scratch` in place, then re-streams f32 truth over survivors via `DistanceStream<L2F32Distance>`. Tuned for SIFT-family workloads where `slope²` is small enough that the prefilter rejects most non-admits while letting the f32 rerank catch the few quantisation-noise misses.
-- **`search_l2_u8_q` — single-stage u8 L2 beam + post-hoc f32 rerank.** PQ holds u8 quantized distances throughout; the 3-hop peel uses the u8 stream too. Final stage reranks the top `k × RERANK_FACTOR = 20` via a single `DistanceStream<L2F32Distance>` batch. At each beam hop u8 reads 1 cache line per vertex vs f32's 4 — a 3-4× per-cmp bandwidth saving, with the constant 20-cmp f32 tail amortised over the whole query. Selectable via `--metric l2-q`. Recall matches `search_l2_u8` bit-for-bit on SIFT (the rerank closes any quantisation drift in the top-k); QPS is **+47-76 % at low L** and **+5-18 % at high L**.
+  Comparisons lower to pure shifts (`K << 3`, `K + (K >> 1)`). [`staged_diskann/src/algorithm/search/in_mem_search.rs:97–110`]
+- **Reversible convergence + early exit.** Single converged hop doesn't lock out navigation — protects against false-trigger recall loss. Once stably converged, `EarlyExitChecker` terminates on N consecutive zero-admission hops. GIST-960 L=200: cuts ~20 % of distance calls for < 0.4 pp recall loss. [`staged_diskann/src/algorithm/search/convergence.rs`, `early_exit.rs`]
 
-The combined SIFT-Q recipe (legacy hashset + flat dispatch + `pldl1strm` + LA=40/160 + L2-Q) reaches recall-aligned QPS of:
+#### 5. Rerank tier (`--rerank`)
 
-| Recall | Staged QPS | PA QPS | Δ |
-|--------|-----------|--------|---|
-| 0.93   | 181 k     | 155 k | **+17%** |
-| 0.97   | 134 k     | 121 k | **+11%** |
-| 0.99   | 84 k      | 72 k  | **+17%** |
-| 0.999  | 36 k      | 29 k  | **+24%** |
+Once the beam has converged (or early-exited), the top `k × RERANK_FACTOR = 20` PQ entries are re-scored with the highest-precision distance available. The rerank tier walks each survivor once — it never sees the rejection rate of the per-hop admission tier.
 
-NDC parity: at R=0.99 staged does 2040 cmps (i8=2020 + f32=20) vs PA's 1945 — within 5 %, but each i8 cmp is ~3-4× cheaper than PA's f32 cmp, so the NDC parity converts directly to wall-clock dominance.
+| Option | Cost / vert | Score | Used by |
+|---|---|---|---|
+| `f32` | 4 lines (D=128) | direct L2 | L2 cascades (SIFT, GIST, Deep10M, Fashion-MNIST) |
+| `ip-f32` | 4 lines | raw IP | MIPS cascades (GloVe, MS-MARCO, Wiki-ada) |
+| `u16` | 2 lines + i32 sidecar | precise quantized L2 | high-recall L2 variant |
 
-### MIPS Search Paths
+- **Flat walk over a fixed 20-entry list.** The rerank stage reads the top `k × RERANK_FACTOR = 20` IDs straight off `scratch.pq` and streams them through `DistanceStream<L2F32Distance>` / `DistanceStream<IpF32Distance>` (`LA_TRUTH = 6`, env `STAGED_DSTREAM_LA_TRUTH`). No graph traversal here — the beam loop's `rerank_candidates(id) = (local, extra)` two-slice walk is part of the **post-convergence expansion**, not this stage.
+- **Register-renaming-friendly single-point kernels** are the only kernel optimisation in flight: the `*_neon_distance.rs` kernels' 4 independent FMA accumulator chains (`s0..s3`) sustain ~1 FMA / cycle even though the 20 vertices arrive cold off DRAM. Detail in [Shared kernels → distance functions](#shared-kernels).
 
-Three MIPS-family entry points cover the angular workload, all sharing the common machinery above:
+#### 6. Shared kernels
 
-- **Normalize-once policy.** Pre-normalized fvecs live under `data/glove{25,100}_norm/`. On unit vectors `L2²(a, b) = 2(1 − ⟨a, b⟩)`, so L2-ranked Vamana graphs are structurally identical to cosine/MIPS-ranked — we reuse the L2 build pipeline and only swap the search-time distance.
-- **`search_mips` (single-phase f32 IP).** Mirror of `search_l2_u8` with `distance_ip_vector_f32` replacing the L2 kernel and the u8 prefilter stage removed — IP is half the instruction count of L2 (`fma` only, no `sub`), ≈ 1.3× faster on glove-25 where bandwidth isn't the bottleneck.
-- **`search_mips_q<Q>` (PA-style i8/i16 beam + f32 rerank).** PQ holds quantized IP distances throughout; final stage reranks the top `k × RERANK_FACTOR = 20` via `DistanceStream<IpF32Distance>`. Generic over `Q ∈ {MipsI8, MipsI16}` — i8 for the speed/recall sweet spot, i16 (`--metric mips-q-i16`) for the very-high-recall band where i8's 256 levels lose ordering precision.
+Three pieces used by every stage above:
 
-On glove100 the stack reaches **+38-66 % across R = 0.86 – 0.99** vs PA's official `-quantize_bits 16 -quantize_mode 1 -rerank_factor 2` recipe (PA reads 4 cache lines per f32 cmp at N=100, staged's u8 reads 1, multiplying the per-cmp savings).
+**`DistanceStream` — inline per-cache-line prefetch + flat 4-way resolve.** Drives every per-hop distance kernel (admission slab + rerank slab + JL prefilter slab). Resolves every prfm address inline from `(base_ptr, ids[v], stride, line_offset)`; the scheduler keeps `lookahead_lines` in flight without per-call queue setup. Layout `(lpv, stride)` is classified once into one of four address-arithmetic specialisations (`lpv=1`+pow2, `lpv` pow2 + stride pow2, `lpv=1`+non-pow2, div/mod fallback for GIST f32 lpv=30) — drops the per-iter `csel`-driven `lsl`/`mul` waste. `prfm pldl1strm` (= `_MM_HINT_NTA`) frees cache slots faster since lines are read at most `lpv` times per query and never reused across queries. Lookahead env-overridable via `STAGED_DSTREAM_LA_Q` / `STAGED_DSTREAM_LA_TRUTH` (defaults 10 / 6). [`vector/src/distance_stream.rs:114–540`, 4-way dispatch at `:503–540`]
+
+**Distance functions — `vector/src/*_neon_distance.rs`.** The NEON kernel set the admission + rerank tiers parameterise over. **Every kernel is 4× internally unrolled into independent accumulator chains** so the CPU's register-renamer dispatches four FMAs / SDOTs in flight per chunk — single-accumulator forces RAW on one phys reg (1 FMA / ~4 cy on the M2 FMA pipe), 4-chain saturates the pipeline (~1 FMA / cy). Reductions fold the chains as `vaddq_f32(s0, s1) + vaddq_f32(s2, s3)` then `vaddvq_f32`. [single-point `vector/src/ip_neon_distance.rs:38–82`] A speculative **batch-4 candidate variant** (`distance_ip_vector_f32_batch4`, `:111–148`) applies the same trick *across* candidates so 4 cold-DRAM reads could overlap through the M2 MSHR queue, but it's not currently wired into any callsite — the cold-cache rerank top-20 walk goes through plain `DistanceStream<IpF32Distance>` with the single-point kernel, which `LA_TRUTH = 6` prefetch hides the misses for.
+
+**`Neighbor` PQ — `total_cmp`.** Branchless integer-compare `Neighbor::cmp` — no `Option` overhead from default `f32::partial_cmp`. Combined with `pad16` alignment (above) this is what makes the 3-way merge cadence in §4(b) hold steady at low `L`. [`staged_diskann/src/model/neighbor/neighbor.rs:48`]
+
+#### Per-dataset default cascade
+
+| Dataset | Cascade | Rationale |
+|---|---|---|
+| SIFT, Deep10M | `none → l2-u8 → f32` | low/mid-D L2; direct u8 admission, no prefilter needed |
+| GloVe-25, GloVe-100 | `none → mips-i8 → ip-f32` | normalised angular; single-phase i8 sdot |
+| GIST | `jl → l2-kt → f32` | D=960 — JL prefilter at 1 line/vert gates the wider L2-kt slab; kernel-trick recovers exact L2 ranking via `sdot` |
+| Fashion-MNIST | `none → l2-kt → f32` | 60 K × 784 — too small for JL setup tax; L2-kt admission is the speed knob |
+| MS-MARCO BERT 1M | `none → mips-i8 → ip-f32` | raw MIPS; JL empirically hurts both QPS and recall on this dataset (setup tax + filters genuine top-K) |
+| Wiki-ada-002 1M | `jl → mips-i8 → ip-f32` | high-D cosine; JL at 1 line/vert gates the 1536-D admission slab |
+
+#### Cascade-wide invariants
+
+What makes the cascade compose:
+
+- **Metric-agnostic auto-calibration.** `calibrate()` derives `(threshold, early_exit_limit)` from admit-rate topology, not the distance function — same output drives every metric. [`staged_diskann/src/algorithm/search/calibrate.rs`]
+- **No normalize at load.** Earlier MIPS paths L2-normalised at load, silently converting raw MIPS → cosine and breaking `msmarco_bert_1M` against its raw-dot-product GT. The whole `normalize_all` infrastructure was removed; admission tiers either consume unit-norm-by-construction input (glove, wiki-ada) or raw vectors (msmarco_bert).
+- **PA 2-pass base graph default.** Every entry in `sweep.yaml` points at `${PA_ROOT}/data/<ds>/<stub>.staged` (PA `-num_passes 2` refine; ~10 % matched-recall lift over a 1-pass build; ~3 s one-time import). [`benchmark/src/runner/parlayann_bridge.rs`]
+- **Cascade-uniform machinery.** Adding a new admission tier means writing one `QuantSpec` impl — the preparation, peeled warm-up, per-hop cadence, rerank, and shared kernels are reused unchanged.
 
 ## Configuration
 
-StagedDiskANN uses a lower alpha than DiskANN to produce more diverse graph edges (more remote shortcuts for navigation, more pruned candidates for reranking):
+`benchmark/configs/sweep.yaml` is the **single source of truth** for every benchmark binary (`staged_diskann`, `benchmark`'s `--algorithms build-profile` / `memory-profile`). Per-dataset entries set the data paths, the base-graph source (`parlayann` import or `rust` in-process build), and the build params (`α / R / L_build / max_extra / window_size`). The CLI cascade (`--prefilter / --admission / --rerank`) is layered on top — see [Search-Phase Optimizations](#search-phase-optimizations) for how the three search-time axes are selected independently from the build-time params.
+
+### Per-dataset PA-aligned build params
+
+Every entry mirrors the recipe in `../ParlayANN/algorithms/vamana/scripts/<ds>` verbatim — the same `R / L_build / α / num_passes` PA's published results use. This keeps both engines on **bit-identical graph topology**, so the head-to-head numbers in the [Benchmark Results](#benchmark-results) section isolate search-side QPS differences from build-side graph-quality differences.
+
+| Dataset           | Dim      | R   | L_build | α    | num_passes | PA reference script                                             |
+| ----------------- | -------- | --- | ------- | ---- | ---------- | --------------------------------------------------------------- |
+| `sift`            | 128      | 64  | 128     | 1.15 | 2          | `vamana/scripts/sift`                                           |
+| `glove25`         | 32       | 100 | 200     | 1.0  | 2          | `vamana/scripts/glove25`                                        |
+| `glove100`        | 100      | 100 | 200     | 1.0  | 2          | `vamana/scripts/glove100`                                       |
+| `gist`            | 960      | 100 | 200     | 1.1  | 2          | `vamana/scripts/gist`                                           |
+| `deep10m`         | 96 → 128 | 64  | 128     | 1.05 | 2          | `vamana/scripts/deep10M`                                        |
+| `fashion-mnist`   | 784      | 40  | 80      | 1.1  | 2          | `vamana/scripts/fashion`                                        |
+| `msmarco_bert_1M` | 768      | 64  | 128     | 1.0  | 1          | `vamana/scripts/msmarco_websearch`                              |
+| `wiki_ada_1M`     | 1536     | 100 | 200     | 1.05 | 2          | high-D MIPS shape (no direct PA recipe — mirrors `OpenAIArXiv`) |
+
+`max_extra = 16` is the hard cap on per-node `extras` post-partition (PhasedGraph slot stride = `HEADER(4) + max_degree + max_extra`, cache-line aligned). `window_size = 5` for convergence detection. Both are dataset-uniform; per-dataset overrides exist but none of the 8 datasets currently override them.
+
+### File structure (abridged)
+
+The top of `sweep.yaml` defines defaults; per-dataset blocks override only what differs. The `base_graph.staged_file` path resolves `${PA_ROOT}` against the `PA_ROOT` env var at load time (default `../ParlayANN`) so user-specific absolute paths stay out of the committed file.
 
 ```yaml
-# QPS-Recall Sweep Configuration  
-#  
-# Per-dataset source of truth for the benchmark harness. `main.rs` and  
-# `staged_sweep.rs` both resolve dataset paths, build parameters, and  
-# the staged search metric through this file.  
-  
-defaults:  
-  diskann:  
-    alpha: 2.0  
-    graph_degree: 64  
-    build_search_list_size: 100  
-  staged:  
-    alpha: 1.2  
-    graph_degree: 64  
-    build_search_list_size: 100  
-    # Hard cap on per-node `extras` zone after the top-X% partition.  
-    # 16 chosen empirically (R=100 / 6.25) — the cap controls    # PhasedGraph slot stride directly so smaller = better cache    # locality. Per-dataset overrides may set a different value.    max_extra: 16  
-    window_size: 5  
-    # Default search metric used by StagedDiskANN — the 2-phase  
-    # u8 prefilter + f32 L2 rerank production path. Angular datasets    # override this to `mips` (low-dim) or `mips-q` (≥100 dim).    metric: l2  
-  sweep:  
-    search_list_sizes: [16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256, 512, 768, 1024]  
-    threads: 8  
-    trials: 1  
-  
-# ── Base-graph source policy ───────────────────────────────────────────────  
-# Each dataset may set `base_graph.source = rust|parlayann`:  
-#   rust       — build the graph in-process via `build_diskann_index`  
-#                using the `staged.{alpha,graph_degree,...}` params above.  
-#   parlayann  — import a `.staged v2` export produced by ParlayANN's  
-#                `./neighbors -staged_outfile`, so our PhasedGraph sits  
-#                on top of PA's RNG-pruned Vamana graph. Requires  
-#                `base_graph.staged_file`. The importer is  
-#                `benchmark/src/runner/parlayann_bridge.rs`; the resulting  
-#                PhasedGraph is cached under `cache/staged_parlayann/`  
-#                so subsequent runs hit the fast load path.  
-#  
-# When `source: parlayann`, the `staged.{graph_degree, alpha, build_l,  
-# max_extra}` params above are **advisory** (they feed the cache-filename  
-# convention and calibration) — the actual graph topology comes from PA.  
-#  
-# `staged_file` paths may contain the placeholder `${PA_ROOT}`, which is  
-# resolved against the `PA_ROOT` env var at load time (default  
-# `../ParlayANN`, relative to the repo root). Keep user-specific  
-# absolute paths out of this file so the config stays portable.  
-  
-datasets:  
-  sift:  
-    dimension: 128  
-    paths:  
-      base:        "data/sift/sift_base.fvecs"  
-      query:       "data/sift/sift_query.fvecs"  
-      groundtruth: "data/sift/sift_groundtruth.ivecs"  
-    base_graph:  
-      source: parlayann  
-      # PA's `-two_pass 1` vamana export (α=1.15 R=64) — the graph PA  
-      # publishes its SIFT1M recall-QPS numbers on. Produced by:      #   PA_NUM_PASSES=2 DATASET=sift bash benchmark/scripts/prepare_parlayann_data.sh      staged_file: "${PA_ROOT}/data/sift1m/sift1m_ex${max_extra}.staged"  
-    staged:  
-      alpha: 1.15  
-      graph_degree: 64  
-      build_search_list_size: 128  
-      metric: l2-q  
-  glove25:  
-    dimension: 32  
-    paths:  
-      # Pre-normalized fvecs — cosine on normalized ≡ L2 on unit  
-      # vectors, so the graph built under L2 is the same shape PA      # would build in angular mode.      base:        "data/glove25_norm/glove-25-angular_base.fvecs"  
-      query:       "data/glove25_norm/glove-25-angular_query.fvecs"  
-      groundtruth: "data/glove25_norm/glove-25-angular_groundtruth.ivecs"  
-    base_graph:  
-      source: parlayann  
-      # Produced by:  
-      #   PA_NUM_PASSES=2 DATASET=glove25 bash benchmark/scripts/prepare_parlayann_data.sh      staged_file: "${PA_ROOT}/data/glove25/glove25_ex${max_extra}.staged"  
-    staged:  
-      alpha: 1.0  
-      graph_degree: 100  
-      build_search_list_size: 200  
-      # 32-dim angular data: compute-bound, no bandwidth win from  
-      # i8 quantization — single-phase MIPS is the right call.      metric: mips  
-  glove100:  
-    dimension: 100  
-    paths:  
-      base:        "data/glove100_norm/glove-100-angular_base.fvecs"  
-      query:       "data/glove100_norm/glove-100-angular_query.fvecs"  
-      groundtruth: "data/glove100_norm/glove-100-angular_groundtruth.ivecs"  
-    base_graph:  
-      source: parlayann  
-      # 2-pass PA-built graph — our production config that wins ~10%  
-      # vs PA native angular in the main sweep. Produced by:      #   PA_NUM_PASSES=2 DATASET=glove100 bash benchmark/scripts/prepare_parlayann_data.sh      staged_file: "${PA_ROOT}/data/glove100/glove100_ex${max_extra}.staged"  
-    staged:  
-      alpha: 1.0  
-      graph_degree: 100  
-      build_search_list_size: 200  
-      # 100-dim angular data: memory-bound — PA-style i8 beam +  
-      # top-20 f32 rerank (matches `vamana/scripts/glove100`).      metric: mips-q  
-  gist:  
-    dimension: 960  
-    paths:  
-      base:        "data/gist/gist_base.fvecs"  
-      query:       "data/gist/gist_query.fvecs"  
-      groundtruth: "data/gist/gist_groundtruth.ivecs"  
-    base_graph:  
-      source: parlayann  
-      # GIST-100k subset — PA export with R=32 L=48 α=1.5. Produced by:  
-      #   PA_NUM_PASSES=2 DATASET=gist bash benchmark/scripts/prepare_parlayann_data.sh      staged_file: "${PA_ROOT}/data/gist100k/gist100k_ex${max_extra}.staged"  
-    staged:  
-      alpha: 1.5  
-      # GIST 100k — smaller graph than the 1M-scale default to keep  
-      # build memory manageable.      graph_degree: 32  
-      build_search_list_size: 48  
+defaults:
+  diskann:                              # vanilla DiskANN baseline (build-profile / memory-profile only)
+    alpha: 2.0
+    graph_degree: 64
+    build_search_list_size: 100
+  staged:                               # cross-dataset Staged defaults — overridden per dataset
+    alpha: 1.2
+    graph_degree: 64
+    build_search_list_size: 100
+    max_extra: 16
+    window_size: 5
+    metric: l2                          # legacy 4-way enum; see note below
+  sweep:
+    search_list_sizes: [16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256, 512, 768, 1024]
+    threads: 8
+    trials: 1
+
+datasets:
+  sift:                                 # PA's vamana/scripts/sift verbatim
+    dimension: 128
+    paths: { base: "data/sift/sift_base.fvecs", query: "...", groundtruth: "..." }
+    base_graph:
+      source: parlayann                 # imports PA's .staged export
+      staged_file: "${PA_ROOT}/data/sift1m/sift1m_ex${max_extra}.staged"
+    staged:
+      alpha: 1.15                       # PA's α for SIFT
+      graph_degree: 64                  # PA's R
+      build_search_list_size: 128       # PA's L_build
       metric: l2-q
+  # ... gist, glove25, glove100, deep10m, fashion-mnist, msmarco_bert_1M, wiki_ada_1M ...
 ```
 
-The `alpha` parameter controls the pruning aggressiveness and should be tuned per dataset:
-- **Low-to-medium dim (32-128)**: `alpha=1.2` works well, producing a sparse graph with clear local/remote separation.
-- **High dim (960+)**: `alpha=1.5` or higher to maintain graph connectivity.
+When `base_graph.source: parlayann`, the `staged.{R, α, L_build, max_extra}` params are **advisory** — they drive cache-filename conventions and the per-query calibrator, but the actual graph topology comes from PA's `.staged` export. The importer lives at `benchmark/src/runner/parlayann_bridge.rs`; first-run cost is ~3 s per dataset, cached to `cache/staged_parlayann/*.pgraph` thereafter. Set `source: rust` to build in-process via `build_diskann_index` using `staged.{α, R, L_build}` instead — used by the [Build Overhead](#build-overhead) + [Memory](#memory) profiles where we measure our own Vamana build time directly.
+
+### `metric` field vs the cascade
+
+The per-dataset `staged.metric` field carries the legacy 4-way enum (`l2 / l2-q / mips / mips-q`) consumed by the `build-profile` / `memory-profile` harnesses inside the `benchmark` binary. The production `staged_diskann` bin **does not read this field** — it picks the search-time triple from `Cascade::default_for_dataset` in `benchmark/src/bin/staged_diskann.rs`, which can be overridden per-invocation via `--prefilter / --admission / --rerank`. See [Per-dataset default cascade](#per-dataset-default-cascade) for the production mapping.
 
 ### Auto-Calibration
 
@@ -392,95 +390,184 @@ This eliminates manual tuning and adapts to dataset characteristics automaticall
 
 ## Benchmark Results
 
-Each dataset is evaluated as a 4-way curve — **DiskANN (α = 2.0)**, **DiskANN-matched (α = Staged's α)**, **ParlayANN Vamana (native per-dataset recipe)**, and **StagedDiskANN (ours)** — on the same base graph PA would use (imported via `parlayann_bridge` from a `-num_passes 2 -staged_outfile` export). 8 threads, 3-run median with 180 s thermal-isolated cooldowns, k = 10. Raw per-run data lives in `visualizations/sweep_staged_vs_parlayann_<dataset>[_mips].json`; curves are rendered with `visualizations/plot_dataset_all.py`.
+Three engines, six datasets, one Vamana graph per dataset. Each dataset is evaluated as a **3-engine curve** — **Microsoft Vamana** (in-memory, via the `diskann` core crate), **ParlayANN Vamana** (PA's published per-dataset recipe), and **StagedDiskANN (ours)** — on the same Vamana graph topology (identical `R / L_build / α / num_passes`, per `benchmark/scripts/prepare_parlayann_data.sh`). 8 threads, k = 10. Raw per-run data lives in `visualizations/sweep_staged_vs_parlayann_<dataset>.json`; curves are rendered with `visualizations/plot_dataset_all.py --all`. Fashion-MNIST (60 K × 784) is excluded from the headline figures — at that scale PA's tighter beam termination wins, and the figure suppresses the regime to keep the headline curves on the production-class workloads.
 
-**Cache-flush parity:** every timed trial — Staged and PA both — is preceded by a PA-style 40 MB SLC eviction (`flush_cache()` mirrors the routine in `ParlayANN/algorithms/utils/check_nn_recall.h`). Both sides therefore observe an identical cold-cache start condition per L; the comparison reports steady-state per-query work, not first-query warm-cache bias. Without the flush, hot-cache reuse across consecutive trials would inflate both sides' QPS by 30–60% at low L but in unequal proportions (Staged's PhasedGraph slab is smaller and re-warms faster), making the comparison non-representative.
+**Cache-flush parity:** every timed trial — all three engines — is preceded by a PA-style 40 MB SLC eviction (`flush_cache()` mirrors the routine in `ParlayANN/algorithms/utils/check_nn_recall.h`). All three observe an identical cold-cache start condition per L; the comparison reports steady-state per-query work, not first-query warm-cache bias.
 
-### SIFT1M — L2-Q, 1 M × 128-dim
+**Note on the "Microsoft Vamana" label.** We run the in-memory variant of Microsoft's Rust port. The "DiskANN" name historically refers to the SSD-resident pipeline; in-memory Vamana is the algorithm both Microsoft and ParlayANN actually share. The chart legend uses **Microsoft Vamana** rather than "Microsoft DiskANN" so the apples-to-apples framing stays honest.
 
-![SIFT1M 4-way comparison](visualizations/qps_recall_sift_all4.png)
+### SIFT1M — L2, 1 M × 128-dim
 
-Euclidean workload — reference dataset for the L2 pipeline (u8 prefilter + f32 rerank, 4-way NEON unroll, 3-way merge routing, `PF_BATCH = 8`). StagedDiskANN sits above all three baselines across the productive band. The DiskANN-matched (α = 1.2, R = 64) curve isolates what's attributable to our search pipeline versus the graph alone.
+![SIFT1M 3-engine comparison](visualizations/qps_recall_sift_all3.png)
 
-**vs ParlayANN Vamana on the same PA-built base graph** (3-run median, 180 s thermal-isolated, matched recall):
+The L2 reference workload: `none → l2-u8 → f32` cascade, 4-way NEON unroll, 3-way merge routing, `PF_BATCH = 8`. All three engines reach R = 0.999, with Staged out front across the entire mid-band.
 
-| | Ours / PA |
-|---|---|
-| R = 0.91 – 0.99 core band | **1.20× – 1.29×** |
-| R = 0.91 – 0.998 full productive range | **1.16× – 1.29×** |
-| R = 0.999+ tail (`L ≥ 1000`) | 0.86× – 1.00× |
-| All 14 points: **13 / 14 wins** | median **1.21×**, avg **1.19×** |
+| Recall | StagedDiskANN | ParlayANN Vamana | Microsoft Vamana | **Staged / PA** | **Staged / MV** |
+|---|---|---|---|---|---|
+| R ≥ 0.90 | 414 K | 360 K | 130 K | **1.15×** | **3.19×** |
+| R ≥ 0.95 | 341 K | 257 K | 91 K | **1.32×** | **3.75×** |
+| R ≥ 0.97 | 277 K | 219 K | 70 K | **1.26×** | **3.95×** |
+| R ≥ 0.99 | 176 K | 141 K | 41 K | **1.24×** | **4.26×** |
+| R ≥ 0.995 | 128 K | 115 K | 31 K | **1.12×** | **4.09×** |
+| R ≥ 0.999 | 59 K | 59 K | 15 K | 1.00× | **4.06×** |
 
-The mid-L region (`L` ≈ 40 – 80, R ≈ 0.98 – 0.99) is where StagedDiskANN's convergence + rerank architecture concentrates the win — PA's beam keeps doing work long past the point where our early_exit fires.
+Mid-band win range **1.12× – 1.32×** vs PA, **3.2× – 4.3×** vs Microsoft Vamana. The R = 0.999 tail ties PA — both engines bottleneck on the same f32 rerank step there, and our convergence advantage saturates.
+
+#### Wider baseline panel — Staged + Vamana family + IVF / tree indices
+
+![SIFT1M 7-algorithm panel](visualizations/baseline_panel_sift.png)
+
+To establish where Staged sits versus the broader ANN-Benchmarks lineup, the same SIFT 1M cascade is rerun at 8 threads alongside four off-the-shelf indices — **HNSW (hnswlib)**, **FAISS IVF-Flat**, **FAISS IVF-PQ (m=16)**, **Annoy (50 trees)** — plus the three Vamana engines from the head-to-head above. All seven series share the same query batch and recall metric.
+
+Reproduce with [`benchmark/scripts/run_sift_baseline_panel.sh`](benchmark/scripts/run_sift_baseline_panel.sh): drives `baseline_comparison.py` (HNSW + reads `sweep_staged_vs_parlayann_sift.json` for Staged / DiskANN / PA via `--no-rust`) and `additional_baselines.py` (FAISS x2 + Annoy), merging into `visualizations/baseline_sift.json`; `plot_baseline_comparison.py` renders the combined panel.
+
+| Algorithm | Peak QPS in usable recall band (R ≥ 0.85) | First QPS at R ≥ 0.97 | Build time |
+|---|---:|---:|---:|
+| **StagedDiskANN** (`none → l2-u8 → f32`) | **414 K @ R = 0.92** | **277 K** | (see [Build Overhead](#build-overhead)) |
+| ParlayANN Vamana (PA `vamana/scripts/sift`) | 391 K @ R = 0.87 | 219 K | — |
+| Microsoft Vamana (in-memory `diskann` crate, α-matched) | 188 K @ R = 0.84 | 70 K | — |
+| HNSW (hnswlib, M=16, efC=200) | 89 K @ R = 0.90 | 43 K | 44.6 s |
+| FAISS IVF-Flat (nlist=256) | n/a (peak QPS 129 K is at R = 0.48) | 8.8 K | 0.4 s |
+| FAISS IVF-PQ (nlist=256, m=16) | n/a (peak QPS 271 K is at R = 0.36) | **plateaus at R = 0.56** | 2.7 s |
+| Annoy (n_trees=50) | 1.9 K @ R = 0.90 | 607 | 9.8 s |
+
+- **Staged leads every other index across the entire usable recall band.** At R ≥ 0.97 the gap is **1.27× vs ParlayANN, 4.0× vs Microsoft Vamana, 6.4× vs HNSW, 31× vs FAISS IVF-Flat, 456× vs Annoy.** FAISS IVF-PQ at m=16 can't reach R ≥ 0.57 at all — its 16-byte product code throws away too much precision for SIFT's tight ground-truth clusters.
+- **HNSW is the strongest off-the-shelf baseline** but pays for it at high recall: its log-scale efC search runs into the same convergence-rate floor Vamana hits — at R ≈ 0.99 HNSW serves 24 K QPS vs Staged's 176 K (7.3× gap).
+- **The IVF / tree indices saturate fast.** FAISS IVF-Flat's peak QPS (129 K) lands at R = 0.48 — pushing recall higher requires linearly more `nprobe`, and by R = 0.98 nprobe = 16 already touches 6.25 % of the dataset on a flat L2 walk. Annoy's 50-tree forest peaks at 17.6 K QPS at R = 0.30 — competitive only at very low recall and slow above R = 0.9 because each `search_k` expansion linearly multiplies the per-tree traversal cost.
 
 ### GloVe-25 — MIPS, 1.18 M × 32-dim
 
-![GloVe-25 4-way comparison](visualizations/qps_recall_glove25_all4.png)
+![GloVe-25 3-engine comparison](visualizations/qps_recall_glove25_all3.png)
 
-Low-dim angular. At 32 dims the bandwidth advantage of u8/i8 quantization is small (vertex load fits comfortably in L1), so `StagedDiskANN` runs the **single-phase MIPS** path — negated-inner-product on normalized data, no i8 prefilter, no rerank. Calibrated `(threshold, early_exit_limit)` from `calibrate()` is metric-agnostic and plumbs through unchanged.
+Low-dim angular. At 32 dims the vertex fits in a single cache line, so the cascade defaults to `none → mips-i8 → ip-f32` (single-phase i8 sdot, no prefilter). The largest lead in the bench.
 
-**vs ParlayANN Vamana native (angular MIPS + u16 rerank)** — 3-run median, 180 s thermal-isolated, matched recall, read from `visualizations/sweep_staged_vs_parlayann_glove25_mips.json` (the MIPS-path data matching the figure above):
-
-| | Ours / PA |
-|---|---|
-| R = 0.89 – 0.95 productive band | **1.16× – 1.26×** |
-| R = 0.95 – 0.995 high-recall | **1.12× – 1.17×** |
-| R ≥ 0.997 tail | **1.39× – 3.05×** |
-| All 14 points: **14 / 14 wins** | median **1.18×**, avg **1.43×** |
-
-Uniform lead across the entire recall curve. The tail blow-out (up to 3×) at R ≈ 0.9995 is where PA's u16-quantized beam saturates and has to search huge Q values while our auto-calibrated `early_exit_limit` stops as soon as useful admissions dry up.
-
-### GloVe-100 — MIPS-Q, 1.18 M × 100-dim
-
-![GloVe-100 4-way comparison](visualizations/qps_recall_glove100_mips_all4.png)
-
-**The headline result for the v2 angular stack.** 100-dim normalized vectors push the pipeline into the memory-bound regime; every optimization listed in [Angular / MIPS Search Path](#angular--mips-search-path-v2) — i8 beam storage, `AlignedBoxWithSlice` 32-byte stride, loop peeling, scalar f32 rerank with prefetch-next, `pad16` PQ buffer, refit `K·8 / K·1.5` merge routing — contributes. Both sides run their production angular recipe (full 1.18 M points, 3-run × 180 s cooldown median per `sweep_staged_vs_parlayann.sh`):
-
-- **Ours**: `StagedDiskANN` MIPS-Q on the PA 2-pass base graph, calibrated `(threshold, early_exit_limit)`, `STAGED_PF_BATCH = 4`
-- **PA**: `./neighbors -R 100 -L 200 -alpha 1 -num_passes 2 -dist_func mips -normalize -quantize_bits 16 -quantize_mode 1 -rerank_factor 2` — the exact invocation from `ParlayANN/algorithms/vamana/scripts/glove100`
-
-CV across the 3 runs: PA 7 %, Staged 22 % (median; max-spread one outlier at 3.05× from a single bad row). 180 s cooldown is what shrinks Staged's spread from the 1.59× max we see at 20 s down to 1.22× median here — comparable in shape to PA's 1.06× median.
-
-| Recall | Ours (QPS) | PA native (QPS) | **Ours / PA** |
-|---|---|---|---|
-| 0.66 | 169 k | 183 k (R=0.66) | 0.93× |
-| 0.70 | 192 k | 149 k | **1.29×** ✓ |
-| 0.76 | 141 k | 116 k (R=0.76) | **1.22×** ✓ |
-| 0.80 | 108 k | 94 k | **1.16×** ✓ |
-| 0.86 | 66 k | 60 k (R=0.86) | **1.10×** ✓ |
-| 0.90 | 38 k | 38 k | **1.01×** ✓ |
-| 0.94 | 21 k | 25 k | 0.84× |
-| 0.95 | 19 k | 20 k | 0.97× |
-
-Ours beats PA on **6 / 8 matched-recall points** with stable wins in the core band (R = 0.70 – 0.92) — median **1.10×** PA, peak **1.29×**. Residual losses:
-
-- *R ≈ 0.66* (`L = 16`): start of curve, both sides similar — single-L cold-start tax + PA's lower per-call overhead at small beams (no rayon scaffolding).
-- *R ≈ 0.94* (`L = 200`): the only material loss — PA's u16-quantized beam scales better here than our i8-then-f32-rerank. Candidate for a v3 i4 quantization or a finer u16-stage.
-- *R ≥ 0.97*: not measured on our side (Staged tops out at L=256 / R≈0.95). PA continues to ~0.999 with progressively smaller gains.
-
-### GIST — L2, 100 K × 960-dim
-
-Benchmark setup and results unchanged since the v1 writeup — see the [Same-L QPS Comparison](#same-l-qps-comparison-median-of-3-runs) table below and the speedup summary.
-
-### Same-L QPS Comparison (Median of 3 Runs)
-
-Legacy DiskANN-baseline table, preserved so GIST and the L2-focused historical numbers stay visible. The vs-PA breakdown is the headline above per dataset.
-
-| Dataset | Dim | L | DiskANN R@10 / QPS | Staged R@10 / QPS | Speedup |
+| Recall | StagedDiskANN | ParlayANN Vamana | Microsoft Vamana | **Staged / PA** | **Staged / MV** |
 |---|---|---|---|---|---|
-| GIST | 960 | 32 | 0.844 / 14,149 | 0.847 / 15,076 | **1.07x** |
-| GIST | 960 | 128 | 0.970 / 4,800 | 0.968 / 5,127 | **1.07x** |
+| R ≥ 0.90 | 548 K | 362 K | 184 K | **1.52×** | **2.98×** |
+| R ≥ 0.95 | 383 K | 247 K | 151 K | **1.55×** | **2.53×** |
+| R ≥ 0.97 | 303 K | 196 K | 119 K | **1.55×** | **2.55×** |
+| R ≥ 0.99 | 182 K | 120 K | 73 K | **1.51×** | **2.50×** |
+| R ≥ 0.995 | 115 K | 87 K | 51 K | **1.32×** | **2.28×** |
+| R ≥ 0.999 | 51 K | 29 K | 31 K | **1.73×** | **1.66×** |
+
+**Uniform 1.3× – 1.7× lead** vs PA across the curve, peaking at R ≥ 0.999 where PA's u16-quantized beam saturates while our auto-calibrated `early_exit_limit` stops as soon as useful admissions dry up.
+
+### GloVe-100 — MIPS, 1.18 M × 100-dim
+
+![GloVe-100 3-engine comparison](visualizations/qps_recall_glove100_all3.png)
+
+The headline angular-stack result. 100-dim normalized vectors push the pipeline into the memory-bound regime; every optimization listed in the [Search-Phase Optimizations](#search-phase-optimizations) section — `mips-i8` admission (1 cache-line / vertex via `sdot`), `AlignedBoxWithSlice` 32-byte stride, loop peeling, `ip-f32` rerank with prefetch-next, `pad16` PQ buffer, refit `K·8 / K·1.5` merge routing — contributes. Cascade: `none → mips-i8 → ip-f32`.
+
+| Recall | StagedDiskANN | ParlayANN Vamana | Microsoft Vamana | **Staged / PA** | **Staged / MV** |
+|---|---|---|---|---|---|
+| R ≥ 0.85 | 156 K | 108 K | 39 K | **1.45×** | **4.00×** |
+| R ≥ 0.90 | 97 K | 68 K | 24 K | **1.44×** | **4.12×** |
+| R ≥ 0.93 | 69 K | 45 K | 16 K | **1.52×** | **4.30×** |
+| R ≥ 0.95 | 47 K | 37 K | 12 K | **1.29×** | **4.08×** |
+| R ≥ 0.97 | 29 K | 22 K | 7 K | **1.31×** | **4.23×** |
+| R ≥ 0.99 | 11 K | 10 K | 3 K | **1.16×** | **3.47×** |
+
+**1.16× – 1.52× over PA, 3.5× – 4.3× over Microsoft Vamana** in the productive band. Staged tops out at R ≈ 0.993; PA carries to R ≈ 0.995 with progressively smaller per-L gains.
+
+### GIST — L2, 1 M × 960-dim
+
+![GIST 3-engine comparison](visualizations/qps_recall_gist_all3.png)
+
+960-D image embeddings — bandwidth-bound, JL prefilter pays off. Cascade: `jl → l2-kt → f32` (kernel-trick L2: i8 base + per-vertex `‖x‖²` sidecar → recover `‖q-x‖²` via `sdot`).
+
+| Recall   | StagedDiskANN | ParlayANN Vamana | Microsoft Vamana | **Staged / PA** | **Staged / MV** |
+| -------- | ------------- | ---------------- | ---------------- | --------------- | --------------- |
+| R ≥ 0.85 | 99 K          | 76 K             | 16 K             | **1.31×**       | **6.37×**       |
+| R ≥ 0.90 | 76 K          | 56 K             | 11 K             | **1.34×**       | **6.95×**       |
+| R ≥ 0.93 | 60 K          | 47 K             | 8 K              | **1.27×**       | **7.23×**       |
+| R ≥ 0.95 | 48 K          | 29 K             | 7 K              | **1.68×**       | **7.13×**       |
+| R ≥ 0.97 | 34 K          | 20 K             | 5 K              | **1.72×**       | **7.26×**       |
+| R ≥ 0.99 | 12 K          | 7 K              | 2 K              | **1.76×**       | **4.85×**       |
+
+Strongest Vamana-vs-Vamana gap of the L2 sets: **6× – 7× over Microsoft Vamana**, **1.27× – 1.76× over PA**. The kernel-trick admission pulls roughly half of that.
+
+### Deep10M — L2, 10 M × 96 (padded to 128)-dim
+
+![Deep10M 3-engine comparison](visualizations/qps_recall_deep10m_all3.png)
+
+Yandex Deep10M (CNN image features), the 10×-larger L2 stress test. Native D = 96 zero-padded to D = 128 to land on the 32-byte SIMD chunk boundary (see [Deep10M sourcing](#deep10m--sourcing-the-data)). Cascade: `none → l2-u8 → f32`.
+
+| Recall | StagedDiskANN | ParlayANN Vamana | Microsoft Vamana | **Staged / PA** | **Staged / MV** |
+|---|---|---|---|---|---|
+| R ≥ 0.85 | 337 K | 261 K | 88 K | **1.29×** | **3.81×** |
+| R ≥ 0.90 | 247 K | 213 K | 68 K | **1.16×** | **3.62×** |
+| R ≥ 0.93 | 209 K | 167 K | 52 K | **1.25×** | **4.05×** |
+| R ≥ 0.95 | 170 K | 143 K | 39 K | **1.19×** | **4.40×** |
+| R ≥ 0.97 | 120 K | 107 K | 29 K | **1.12×** | **4.17×** |
+| R ≥ 0.99 | 68 K | 54 K | 14 K | **1.26×** | **4.67×** |
+| R ≥ 0.995 | 45 K | 36 K | 9 K | **1.25×** | **5.05×** |
+
+The 10× larger dataset doesn't erode the Staged win — **1.12× – 1.29× over PA across the entire productive band**, **3.6× – 5× over Microsoft Vamana**. PA continues to R = 0.999 at L = 1024; Staged tops out at R = 0.996.
+
+### MS-MARCO BERT 1M — raw MIPS, 1 M × 768-dim
+
+![MS-MARCO 3-engine comparison](visualizations/qps_recall_msmarco_bert_1M_all3.png)
+
+1 M MS-MARCO passages embedded with `sentence-transformers/msmarco-bert-base-dot-v5` (BERT-base, 768-D, **dot-product**). Cascade: `none → mips-i8 → ip-f32` — empirical sweep showed JL prefilter actively hurts on this dataset on both axes (setup tax dominates at high L; filter drops genuine top-K candidates). PA matches the recipe from `ParlayANN/algorithms/vamana/scripts/msmarco_websearch`. Microsoft Vamana row is informational only — DiskANN's f32 kernel only ships L2, so the bin L2-normalises input vectors and runs L2-on-unit-sphere (= cosine); the GT was brute-forced as raw dot product on **non-unit** BERT vectors, so the cosine ranking diverges and the curve caps at R ≈ 0.52 (documented metric-mismatch artifact, not a deficiency).
+
+| Recall | StagedDiskANN | ParlayANN Vamana | Microsoft Vamana | **Staged / PA** |
+|---|---|---|---|---|
+| R ≥ 0.85 | 168 K | 130 K | — (caps R ≈ 0.52) | **1.29×** |
+| R ≥ 0.90 | 119 K | 95 K | — | **1.26×** |
+| R ≥ 0.93 | 80 K | 64 K | — | **1.24×** |
+| R ≥ 0.95 | 52 K | 38 K | — | **1.35×** |
+| R ≥ 0.97 | 21 K | 16 K | — | **1.32×** |
+| R ≥ 0.99 | — (caps R = 0.977) | 7 K | — | — |
+
+**1.24× – 1.35× over PA across R = 0.85 – 0.97.** Staged hits a recall ceiling at R = 0.977 because the i8 admission tier saturates on the long-tailed BERT-norm distribution; PA reaches R = 0.991 at Q = 1000 via its query-side i16 quantization. That last percentile of recall is the remaining work item — switching the cascade to `none → mips-i16 → ip-f32` lifts the ceiling to R = 0.996 (validated in `benchmark/src/bin/staged_diskann.rs`'s cascade override), at roughly half the QPS.
+
+### ADSampling overlay — GIST 1 M, ε = 2.1
+
+![ADSampling 4-way on GIST](visualizations/ads_comparison.png)
+
+Composes [ADSampling](https://dl.acm.org/doi/10.1145/3589282) (Gao & Long, SIGMOD'23) — a query-side **bandit-style early-exit on the f32 distance kernel** — on top of both Vamana baselines. Four variants at PA-aligned GIST topology (R = 100, L_build = 200, α = 1.10, ε_ads = 2.1, 8 threads). The Staged variants now run through the **unified cascade** (`none → l2-u8 → f32`), not the legacy full-f32 rerank path, so this re-measures ADS on top of the current production search loop.
+
+| | DiskANN | DiskANN+ADS | **Staged** | Staged+ADS |
+|---|---:|---:|---:|---:|
+| QPS @ R ≥ 0.90 | 11,477 | 8,202 | **34,681** | 7,989 |
+| QPS @ R ≥ 0.93 | 7,861 | 6,469 | **24,475** | 6,635 |
+| QPS @ R ≥ 0.95 | 6,476 | 5,729 | **19,936** | 5,878 |
+| QPS @ R ≥ 0.97 | 3,043 | 3,162 | **9,039** | 3,986 |
+| QPS @ R ≥ 0.99 | 2,190 | 2,359 | **6,162** | — (caps R = 0.9883) |
+| Build topology | α=1.10 R=100 L=200 | + ADS rotator | α=1.10 R=100 L=200 | + ADS rotator |
+
+- **Staged (cascade) dominates every recall band — without ADS.** At R ≥ 0.95 the cascade serves **19,936 QPS, 3.1× DiskANN and 3.4× Staged+ADS**; at R ≥ 0.97 the lead is 3.0× / 2.3×. The i8 admission tier (1 cache line / vertex via `sdot`) is already cheaper than ADS's per-vertex f32 scaled-partial-sum, so ADS has no slack to recover on top of the cascade.
+- **Adding ADS to Staged loses ~2 – 4×** because the ADS path needs a **rotated f32 dataset** and can't share the cached i8 admission slab. It falls back to the per-vertex f32 walk plus the partial-sum confidence test on every chunk, which is strictly more work than the cascade's pure-i8 admission.
+- **ADS still helps DiskANN at the high-recall tail.** Above R = 0.97 the early-abort starts paying for itself on the bare Vamana f32 walk: **DiskANN+ADS 3,162 vs DiskANN 3,043 QPS at R ≥ 0.97; 2,359 vs 2,190 at R ≥ 0.99**. Below R = 0.95 the per-chunk confidence test is pure overhead — DiskANN+ADS underperforms DiskANN by 25 – 30 %.
+- **Sweep starts with a warmup pass at the smallest L** before timing begins, so the first measured L isn't biased by scratch-pool init, lazy quantized-sidecar build, or DVFS ramp. Without it, the L=16 row on the Staged variants used to dip 10-20× below the L=20 row (cold L1 + cold code cache for the first cascade dispatch); the warmup recovers the monotonic-in-L QPS curve.
+- **Reproduce.** `bash benchmark/scripts/run_ads_benchmark.sh` (set `DATASET=…` to override GIST). The script builds the binary, runs `--algorithms ads-comparison` with all 4 variants reusing the on-disk `cache/{diskann,staged}/*_ads.bin` artefacts, then re-renders `visualizations/ads_comparison.png` via `visualizations/plot_ads.py`.
 
 ### Ablation Study
 
 ![Ablation](visualizations/ablation_study.png)
 
-Grouped bar chart at representative L values. Grey bars show DiskANN (Vamana, alpha=2.0) as baseline; percentage labels show QPS change relative to DiskANN:
-- **Full StagedDiskANN**: all components active. +86% to +118% over DiskANN on SIFT/GloVe-100 at L=32; +42% to +88% at L=256.
-- **No Early Exit** (convergence on, ee=MAX): still provides large speedup over DiskANN through two-phase neighbor reduction, but early exit accounts for ~25-30% of the total gain at high L.
-- **No Extra Candidates** (max_extra=0): reranking uses only local neighbours. Similar to no-ee, confirming that extra candidates provide incremental reranking quality.
+Generated by [`benchmark/scripts/run_ablation_benchmark.sh`](benchmark/scripts/run_ablation_benchmark.sh) on the **current unified cascade pipeline** (`search_compose` → `search_unified` with `none → l2-u8 → f32` for both datasets), so the numbers here are directly comparable with the 3-engine head-to-head tables. Each bar shows median QPS of 5 trials; the percentage label is QPS change vs the DiskANN α=2.0 baseline at the same L.
 
-The jump from DiskANN (grey) to any Staged variant (colored) is the largest, showing that the core two-phase convergence mechanism is the primary contributor. Early exit and extra candidates each add further incremental improvements.
+**Three Staged variants probe the convergence-side machinery on top of the cascade:**
+- **Full** — convergence + early exit + extras enabled (the production path).
+- **No Early Exit** — `early_exit_limit = MAX`, so the beam runs until the PQ is exhausted.
+- **No Extras** — `max_extra = 0`, so the post-convergence reranker walks only `local`, never the per-node `extras` zone.
+
+| Dataset | L | DiskANN | **Full** | No EE | No Extras |
+|---|---:|---:|---:|---:|---:|
+| SIFT 1M | 16 | 186 K | **517 K (+278 %)** | 507 K | 560 K |
+| SIFT 1M | 64 | 70 K | **209 K (+199 %)** | 202 K | 218 K |
+| SIFT 1M | 256 | 21 K | **74 K (+248 %)** | 63 K | 78 K |
+| GloVe-100 | 16 | 195 K | **354 K (+81 %)** | 339 K | 358 K |
+| GloVe-100 | 64 | 66 K | **143 K (+117 %)** | 139 K | 140 K |
+| GloVe-100 | 256 | 20 K | **46 K (+129 %)** | 41 K | 43 K |
+
+- **The headline gain — 2 – 3.5× over a vanilla Vamana α=2.0 baseline — is the cascade backbone itself**, not one of the ablated tiers. Going from DiskANN's f32 walk to the cascade's `l2-u8` admission + cmov-compact + 3-hop peel + 3-way merge cadence is what moves the order of magnitude.
+- **Early-exit costs are modest** with the cascade in place. SIFT L=256 sees the largest swing: full 74 K vs no-EE 63 K = +18 % QPS for a 0.0009 recall drop (0.9960 → 0.9969). Below L=64 the gap collapses to single-digit %.
+- **Extras are a recall knob, not a speed knob.** Disabling them (`max_extra = 0`) is **slightly faster** (the rerank tier skips the `extras` slice) at the cost of 0.001 – 0.0007 recall. The figure's `No Extras` bars come out *higher* than `Full` for that reason — they're trading recall for QPS, the same direction the L knob runs in.
+- **GloVe-100 has a flatter ablation surface** than SIFT because angular data converges in fewer hops, so the components Full/No-EE/No-Extras isolate compress: the spread between them is ≤ 7 % at every L. SIFT's L=256 reaches deeper into the post-convergence phase where extras and early-exit show their teeth.
+
+The "what does the staged extras layer actually buy?" question — measured as 2 – 4 pp recall at iso-QPS on SIFT high-recall band — shows up clearly in the [Extra Candidate Enrichment](#extra-candidate-enrichment) panel below.
 
 ### Extra Candidate Enrichment
 
@@ -521,36 +608,76 @@ Same Staged graph, two search configurations: `no-ee` runs until L is full (no c
 
 ![Build](visualizations/build_analysis.png)
 
-- **Build Time** (left): StagedDiskANN's PhasedGraph construction overhead is < 1% of total build time across all datasets. The graph build itself is faster than DiskANN because lower alpha means less pruning work.
-- **Build Speed Ratio** (right): StagedDiskANN builds 1.0x-1.6x faster than DiskANN. The search acceleration comes at **zero additional build cost** — in fact, the total build is faster.
+Full-dataset build profile (3-trial median, in-process `--algorithms build-profile`). **Both engines build at the same PA-aligned `scfg.alpha`** — every build param (R / L_build / α / num_threads / metric) is identical, so the only delta is the `compute_candidate_sets` flag that drives the per-node 60/40 partition. The DiskANN α=2.0 recipe is never used in production, so an α-matched delta is the honest measurement of what the staged-extras layer costs.
+
+| Dataset | N | D | α | DiskANN baseline (no candidates) | Staged Vamana | PhasedGraph extras | Staged / DiskANN |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| SIFT | 1 M | 128 | 1.15 | 17.28 s ± 0.42 | 17.39 s ± 0.35 | 111 ms | **1.013× ± 0.030** |
+| GloVe-25 | 1.18 M | 32 | 1.0 | 24.92 s ± 0.98 | 25.50 s ± 0.35 | 77 ms | **1.027× ± 0.043** |
+| GloVe-100 | 1.18 M | 100 | 1.0 | 56.67 s ± 2.48 | 55.83 s ± 0.07 | 90 ms | **0.987× ± 0.043** |
+| GIST | 1 M | 960 | 1.10 | 111.02 s ± 2.04 | 109.81 s ± 0.28 | 151 ms | **0.990× ± 0.019** |
+
+- **Ratio sits at 1.00× ± 0.04 on every dataset.** Differences are well inside the propagated trial σ, so the honest claim is that adding the staged-extras layer is **free on the build side within measurement noise** — not "faster", not "slower".
+- **PhasedGraph extras is sub-1 % of the underlying Vamana build on every dataset** (sift 0.64 %, glove25 0.31 %, glove100 0.16 %, gist 0.14 %). The per-node sort + 60/40 partition completes in 77 – 151 ms even at 1 M points and the absolute cost shrinks as a fraction of the build as N · D grows — gist's 960-D Vamana build dwarfs its 151 ms partition pass.
+
+**Why does Staged appear marginally lower than DiskANN on GloVe-100 / GIST?** It doesn't, really — it's trial-ordering allocator noise. The harness runs `DiskANN_t1 → Staged_t1 → DiskANN_t2 → Staged_t2 → DiskANN_t3 → Staged_t3`, so every DiskANN-after-the-first runs against a `drop(staged_t{i-1})` that just released the candidate-set + partitions + StagedDiskANN object. That dealloc returns large pages to the OS, and DiskANN's next allocation pays a page-fault / fragmentation tax. Empirically the noise is asymmetric:
+
+| Dataset | DiskANN σ | Staged σ | Ratio |
+|---|---:|---:|---:|
+| SIFT | 0.42 s | 0.35 s | 1.2× |
+| GloVe-25 | 0.98 s | 0.35 s | 2.8× |
+| GloVe-100 | **2.48 s** | 0.07 s | **35×** |
+| GIST | 2.04 s | 0.28 s | 7× |
+
+GloVe-100 DiskANN trial 3 hit 60.17 s vs ~55 s elsewhere; GIST DiskANN trial 1 hit 113.91 s vs ~109.5 s elsewhere. These single outliers pull the DiskANN mean above the Staged mean — randomising trial order would erase the apparent gap. We left the loop as-is because the σ asymmetry itself is informative (it shows the steady-state cost is the lower envelope, and that's what the right-side ms figure reports).
 
 ### Memory
 
 ![Memory](visualizations/memory_analysis.png)
 
-Peak RSS measured via the `TrackingAllocator` at 100K points, comparing DiskANN (α=2.0) against StagedDiskANN at the per-dataset configured α.
+Peak RSS measured via the `TrackingAllocator` on the full datasets (1 M for SIFT / GIST, 1.18 M for both GloVe variants). Both engines build at the same PA-aligned α; the only delta is the `compute_candidate_sets` flag plus the per-node partition that materialises the PhasedGraph extras.
 
-| Dataset    | DiskANN peak | Staged peak | Staged final | Peak ratio |
-|------------|-------------:|------------:|-------------:|-----------:|
-| SIFT       | 94.6 MB      | 87.9 MB     | 89.3 MB      | 0.93× (-7.1%) |
-| GloVe-25   | 58.5 MB      | 58.1 MB     | 53.5 MB      | 0.99× (-0.6%) |
-| GloVe-100  | 84.6 MB      | 82.2 MB     | 81.0 MB      | 0.97× (-2.9%) |
-| GIST       | 410.4 MB     | 406.8 MB    | 407.0 MB     | 0.99× (-0.9%) |
+| Dataset | N | D | DiskANN peak | Staged peak | Staged final | Peak ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| SIFT | 1 M | 128 | 1130 MB | 1130 MB | 1128 MB | **1.00×** |
+| GloVe-25 | 1.18 M | 32 | 1274 MB | 1393 MB | 1186 MB | **1.09×** |
+| GloVe-100 | 1.18 M | 100 | 1581 MB | 1581 MB | 1570 MB | **1.00×** |
+| GIST | 1 M | 960 | 4617 MB | 4617 MB | 4358 MB | **1.00×** |
 
-StagedDiskANN's peak is **≤ DiskANN peak** on every dataset. The candidate-set machinery adds no peak overhead because the dataset is freed before the reranking partitions are materialized, and the lower α keeps the base graph sparser than DiskANN's α=2.0. Absolute footprint is dominated by the base vectors (e.g. GIST 960 × 4 B × 100K ≈ 384 MB), so dataset dimension — not index overhead — sets the memory budget.
+- **Peak parity on 3 of 4 datasets.** Where the base dataset dominates RSS — D ≥ 100, so SIFT / GloVe-100 / GIST — Staged peak matches DiskANN peak to within rounding. The candidate-set partition fires only after the Vamana build releases its scratch state, so it slots into the same peak window without raising it.
+- **GloVe-25 (+9.3 %) is the only outlier** because at D=32 the base dataset is just 152 MB (32 × 4 B × 1.18 M) — it doesn't dominate RSS, so the per-node candidate buffers actually show up. On every other dataset the dataset f32 footprint (≥ 480 MB for SIFT, ≥ 3.84 GB for GIST) hides the partition transient entirely.
+- **Staged final < DiskANN peak on every dataset.** Steady-state RSS after the build completes is 2 – 88 MB lower than DiskANN's peak, because the f32 base dataset is freed before the PhasedGraph extras materialise — once the partition is finalised the index doesn't need to hold both copies. The headline residual savings: SIFT −2 MB, GloVe-25 −88 MB, GloVe-100 −11 MB, GIST −259 MB.
 
-PhasedGraph itself uses a fixed stride of 48 u32 per node (cache-line aligned), totaling **18.3 MB** for 100K nodes.
+PhasedGraph slab cost is `(HEADER(4) + R + max_extra) × 4 B / node`: SIFT R=64 → 336 B/node × 1 M = **336 MB**; GIST R=100 → 480 B/node × 1 M = **480 MB**; both GloVe at R=100 → 480 B/node × 1.18 M = **566 MB**. These are baked into the Staged-final column above.
 
 ### Thread Scaling
 
 ![Thread Scaling](visualizations/thread_scaling.png)
 
-Per-dataset QPS vs thread count (`L=48`, k=10, 10k queries, median of 5 trials, between-trial 40 MB cache flush). DiskANN and StagedDiskANN both run on the same cached Vamana graph (`R=64 α=1.15` for SIFT, `R=32 α=1.5` for GIST) at identical `L`, so the curves isolate per-thread search efficiency rather than build-config differences.
+Per-dataset QPS across the full P/E topology of the Apple M4 Max (**10 P-cores + 4 E-cores**), `L=48`, k=10, median of 5 trials, 40 MB SLC eviction between trials. Both engines build on the **PA-aligned Vamana topology** (SIFT R=64 L=128 α=1.15, GIST R=100 L=200 α=1.10 — verbatim from [`benchmark/configs/sweep.yaml`](#per-dataset-pa-aligned-build-params)); the curves isolate per-thread search efficiency on identical graphs. Workers are QoS-bumped to user-interactive so the scheduler keeps them on P-cores; hot regions are mlock'd to remove first-trial page-in noise. The chart marks two topology boundaries: **P-core knee at T=10** (all P-cores saturated, peak per-thread throughput) and **all-cores at T=14** (first E-cores spilled in past T=10).
 
-- **SIFT (1M)** — Staged scales 4.4× to T=8 (54% efficiency); DiskANN scales 4.8× (61%). Staged's higher absolute QPS (104k vs 38k at T=8) comes from the two-phase convergence path, not from better thread efficiency. T=16 over-subscribes M2 Pro's 6P+4E cores and SMT contention plateaus both algorithms.
-- **GIST (1M)** — Higher dimension (960 vs 128) makes both algorithms more memory-bound; per-thread efficiency drops to 46% Staged / 25% DiskANN at T=8. The relative gap widens since DiskANN's heavier rerank pipeline saturates DRAM bandwidth earlier.
+| Dataset | T | DiskANN QPS | scale | eff | Staged QPS | scale | eff | algo gap |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| SIFT 1M | 1 | 12.20 K | 1.00× | 100 % | 34.77 K | 1.00× | 100 % | **2.85×** |
+| | 4 | 44.85 K | 3.68× | 92 % | 117.7 K | 3.38× | 85 % | 2.62× |
+| | 8 | 86.81 K | 7.12× | 89 % | 230.8 K | 6.64× | 83 % | 2.66× |
+| | **10** | **106.4 K** | **8.72×** | **87 %** | **283.1 K** | **8.14×** | **81 %** | **2.66×** |
+| | 12 | 116.6 K | 9.56× | 80 % | 318.7 K | 9.17× | 76 % | 2.73× |
+| | 14 | 125.2 K | 10.26× | 73 % | 320.2 K | 9.21× | 66 % | 2.56× |
+| | 16 | 126.0 K | 10.33× | 65 % | 337.6 K | 9.71× | 61 % | 2.68× |
+| GIST 1M | 1 | 2.97 K | 1.00× | 100 % | 8.75 K | 1.00× | 100 % | 2.94× |
+| | 4 | 10.59 K | 3.56× | 89 % | 35.27 K | 4.03× | **101 %** | 3.33× |
+| | 8 | 19.83 K | 6.67× | 83 % | 63.34 K | 7.24× | 91 % | 3.19× |
+| | **10** | **23.79 K** | **8.00×** | **80 %** | **75.19 K** | **8.60×** | **86 %** | **3.16×** |
+| | 12 | 24.86 K | 8.37× | 70 % | 79.09 K | 9.04× | 75 % | 3.18× |
+| | 14 | 24.20 K | 8.14× | 58 % | 75.37 K | 8.62× | 62 % | 3.11× |
+| | 16 | 25.46 K | 8.57× | 54 % | 79.44 K | 9.08× | 57 % | 3.12× |
 
-Numbers are reproduced one-to-one against `staged_sweep`'s reference (T=8 SIFT: 104k vs 101k @ R@10=0.9605) — thread-sweep uses the same cached PhasedGraph and the same real-query auto-calibration (`threshold=0.15`, `early_exit_limit=15`), so any remaining variance is OS-scheduler noise within ~3%.
+- **Linear-to-near-linear scaling all the way to the P-core knee.** SIFT efficiency stays ≥ 81 % through T=10 on both engines; GIST Staged stays ≥ 86 %. Past T=10 each additional worker spills onto an E-core (~3× slower per op), so the efficiency curve bends — by T=12 you've added 2 E-cores' worth of throughput at a 20 – 30 pp efficiency cost, by T=14 it's all 4 E-cores.
+- **Peak absolute QPS lands at T=12 – T=16 — not at the P-core knee** — because E-core throughput, while inefficient, is still net positive. SIFT Staged peaks at 337.6 K @ T=16; GIST Staged at 79.4 K @ T=16 (essentially tied with T=12's 79.1 K). Beyond T=14 the scheduler over-subscribes physical cores and the gains taper.
+- **GIST Staged shows super-linear scaling at T=2 → T=4** (115 % / 101 % efficiency). The T=1 baseline (8.75 K) is artificially low: one worker can't keep the M4 MSHR queue saturated on the 960-D f32 + 1-cache-line admission slab, so the per-hop chain stalls on memory. Adding a second worker provides an independent stream that overlaps cache misses, and the per-thread throughput jumps from "memory-stall-bound" to "compute-bound". The effect collapses past T=8 once the MSHR queue is fully covered. DiskANN doesn't show this because its f32-only walk is already saturated at T=1.
+- **GIST's algo gap (3.1 – 3.3×) is wider than SIFT's (2.6 – 2.7×).** Higher dimension (960 vs 128) makes both engines DRAM-bandwidth-bound; the JL prefilter + L2-kernel-trick cascade pre-rejects 9 of 10 neighbours at 1 cache-line / vertex before the wider f32 base is touched. DiskANN walks the full f32 graph every hop, so its bandwidth ceiling hits first. This is the regime where the [composable cascade](#search-phase-optimizations) earns its keep.
+- **Recall at the measurement point.** SIFT @ L=48: R@10 = 0.9603 (DiskANN) vs 0.9605 (Staged) — parity. GIST @ L=48: R@10 = 0.8124 vs 0.7990 — Staged trades 1.3 pp recall for the 3.3× QPS edge at its auto-calibrated `(threshold=0.23, early_exit_limit=16)` derived from real test queries; the headline [GIST QPS-recall curve](#gist--l2-1-m--960-dim) tracks this trade-off across the full L range.
 
 ## Code Structure
 
@@ -560,37 +687,72 @@ staged_diskann/
     model/
       phased_graph.rs               # PhasedGraph: AlignedBoxWithSlice slab + 60%-by-distance
                                     #   (origin + extras) partition + write queue
-      quantized_dataset.rs          # QuantizedDataset<Q,N> (L2U8 / MipsI8 / MipsI16) +
+      dataset/
+        quantized_dataset.rs        # QuantizedDataset<Q,N> (L2U8 / L2U16 / MipsI8 / MipsI16) +
                                     #   AlignedBoxWithSlice 32B-stride storage + sidecar load/build
+        l2_kt_dataset.rs            # L2 kernel-trick: i8 base + per-vert ‖x_i8‖² for
+                                    #   `‖q−x‖² = ‖q‖² + ‖x‖² − 2·⟨q,x⟩` (sdot-friendly)
+        jl_sparse_dataset.rs        # JL Sparse 1024-bit signature — NZ=9 sparse projection
+                                    #   with balanced per-dim coverage (Fisher-Yates over multiset)
+        jl_hadamard_dataset.rs      # JL Hadamard 1024-bit — HDHDHD sign-pack, dense per-bit
+        rabitq_dataset.rs           # RaBitQ B=1 sign-bit base (rotation + signs)
+        rabitq_b4_dataset.rs        # RaBitQ B=4 with per-vertex correction
       neighbor/neighbor_priority_queue.rs  # NeighborPriorityQueue + pad16 buffer alignment +
                                            #   batch_merge / batch_merge_gallop
       scratch.rs                    # InMemSearchScratch: HashsetSeen (linear-probe, exact)
                                     #   + dist_buffer (cap=400) + DCC + EarlyExitChecker
     algorithm/
       search/
-        in_mem_search.rs            # Common machinery: flush cadence, 3-way merge routing,
-                                    #   DistanceStream lookahead env knobs
-        in_mem_search_l2.rs         # search_l2_u8: u8 prefilter + per-hop f32 rerank (PQ in f32)
-        in_mem_search_l2_q.rs       # search_l2_u8_q: single-stage u8 beam + top-20 f32 rerank
-                                    #   (PQ in u8) — mirrors search_mips_q for SIFT family
-        in_mem_search_mips.rs       # search_mips: single-phase f32 IP (no quant)
-        in_mem_search_mips_q.rs     # search_mips_q<Q>: i8/i16 beam + top-20 f32 rerank
+        mod.rs                      # **Shared metric machinery** — PerThreadMetrics +
+                                    #   MetricsTable + define_metric! handles
+                                    #   (VISIT_COUNT, RAW_VISIT_COUNT, NDC_I8, NDC_F32, SETUP_NS, …)
+                                    #   used by every cascade stage + the unified loop
+        in_mem_search.rs            # **Unified cascade beam loop** — search_unified /
+                                    #   search_batch_unified, generic over (P, A, R) trait
+                                    #   triple; one body monomorphises per recipe
+        utils.rs                    # Search-loop tuning constants (FLUSH_INTERVAL,
+                                    #   insert_route_mul / linear_merge_mul, dstream_la_*),
+                                    #   AlignedQuery, SearchProfile{,Stats}, search_diag /
+                                    #   search_profile diagnostics, PQ helpers
+        stage/                      # **Composable cascade trait modules**
+          prefilter/                #
+            mod.rs                  #   PrefilterStage + PrefilterSession (object-safe)
+            jl.rs                   #   JlPrefilter — JL Sparse signature filter
+            jl_hadamard.rs          #   JlHadamardPrefilter — HDHDHD-encoded filter
+            rabitq.rs               #   RabitqPrefilter — rotation-based sign code
+          admission/                #
+            mod.rs                  #   AdmissionStage + AdmissionSession (object-safe)
+            l2u8.rs                 #   L2U8Admission — direct u8 squared-L2
+            l2u16.rs                #   L2U16Admission — u16 squared-L2 (PA-quantize_bits=16)
+            l2kt.rs                 #   L2KTAdmission — i8 sdot + kernel-trick reconstruction
+            mips_i8.rs              #   MipsI8Admission — i8 sdot for unit-normalised data
+            mips_i16.rs             #   MipsI16Admission — i16 IP for high-recall band
+            ads_f32.rs              #   AdsF32Admission — ADSampling scaled-partial-sum
+                                    #     early-abort L2 (requires rotated dataset)
+          rerank/                   #
+            mod.rs                  #   RerankStage trait
+            f32_truth.rs            #   F32Rerank — full f32 base, L2 distance
+            ip_f32_truth.rs         #   IpF32Rerank — full f32 base, IP distance, query unit-norm
+            u16_truth.rs            #   U16Rerank — u16 sidecar, L2 (PA-bit-exact recipe)
         convergence.rs              # Admission-rate sliding window (DCC)
         early_exit.rs               # Consecutive-zero-admit countdown
         calibrate.rs                # Auto-calibration of (threshold, early_exit_limit)
+        jl_hamming_cache.rs         # Per-query JL bitmap reuse across the beam loop
     index/
       builder.rs                    # build_diskann_index: Vamana build + partition extraction
-      compressed_index.rs           # StagedDiskANN: ensure_quantized_dataset[_mips[_i16]]() +
-                                    #   PhasedGraph construction + search entry points
+      compressed_index.rs           # StagedDiskANN: ensure_quantized_dataset_*() accessors,
+                                    #   PhasedGraph construction, OnceLock-cached sidecars
 
 vector/
   src/
     distance_stream.rs              # DistanceStream<K,N>: inline-prfm address resolve,
                                     #   flat 4-way (lpv, stride) dispatch, pldl1strm hint,
-                                    #   prologue + per-iter drip prefetch pipeline
-    l2_neon_distance.rs             # L2U8Distance, L2F32Distance kernels (NEON)
+                                    #   prologue + per-iter drip + **sink-time burst (LA=12)**
+                                    #   for long-range L1 lookahead — +20-27% QPS on GIST L2-KT
+    l2_neon_distance.rs             # L2U8Distance, L2F32Distance, L2U16Distance kernels (NEON)
     ip_neon_distance.rs             # IpI8Distance, IpI16Distance, IpF32Distance kernels (NEON)
-    distance_fn.rs                  # DistanceFn trait — kernel ABI for DistanceStream
+    distance_fn.rs                  # DistanceFn trait — kernel ABI for DistanceStream,
+                                    #   JLHammingDistance (XOR+popcount for bit-packed signatures)
 
 diskann/
   src/
@@ -605,10 +767,35 @@ diskann/
 benchmark/
   src/
     bin/
-      staged_sweep.rs               # Per-dataset QPS-recall sweep, --metric {l2|l2-q|mips|mips-q|mips-q-i16}
+      staged_diskann.rs             # **Production driver** — composable cascade: --prefilter --admission --rerank
+      diskann_sweep.rs              # Microsoft DiskANN L-sweep (in-process via the `diskann` core crate)
+                                    #   — third engine for the 3-engine head-to-head
     runner/
+      cascade.rs                    # **Cascade dispatch layer** — PrefilterChoice / AdmissionChoice
+                                    #   / RerankChoice enums + build_*() factories +
+                                    #   pin_cascade() mlock helper + search_compose /
+                                    #   search_batch_compose entry points
       parlayann_bridge.rs           # Load PA `.staged v3` exports → (local, remote, extra) per-node
+      staged_diskann_runner.rs      # Boxed AlgorithmRunner; reads cascade triple from
+                                    #   sweep.yaml's per-dataset `staged.{prefilter,admission,rerank}`
+      staged_diskann_ads_runner.rs  # ADSampling variant — rotates the dataset, dispatches through
+                                    #   the AdsF32Admission cascade
+      diskann_runner.rs / diskann_ads_runner.rs  # In-memory DiskANN baselines
+    config.rs                       # sweep.yaml parser — `cfg.datasets.<ds>.staged.{alpha, R,
+                                    #   L_build, max_extra, window_size, prefilter, admission,
+                                    #   rerank}` typed config
+  configs/
+    sweep.yaml                      # **Single source of truth** for per-dataset build params +
+                                    #   cascade triple (replaces the legacy 4-way `metric:` enum)
   scripts/
-    prepare_parlayann_data.sh       # Build PA `.staged` exports (one-time, per dataset)
-    sweep_staged_vs_parlayann.sh    # 3-run × 180s thermal-isolated comparison vs PA native
+    prepare_parlayann_data.sh                 # Build PA `.staged` exports (one-time, per dataset)
+    sweep_staged_vs_diskann_vs_parlayann.sh   # 3-engine head-to-head: Staged + MS Vamana + PA Vamana,
+                                              #   3-run × 180 s thermal-isolated
+    run_build_memory_profile.sh               # α-matched build + peak-memory profile across 4 datasets
+    run_thread_scaling.sh                     # QPS-vs-thread curves on SIFT 1M + GIST 1M
+                                              #   (M4 Max P-core knee at T=10)
+    run_sift_baseline_panel.sh                # SIFT 1M panel — HNSW + FAISS x2 + Annoy + the 3 Vamana engines
+    run_ads_benchmark.sh                      # ADSampling 4-way (DiskANN, +ADS, Staged, +ADS) on $DATASET
+    run_ablation_benchmark.sh                 # Ablation study (full / no-early-exit / no-extra)
+                                              #   on $DATASETS — feeds `plot_ablation.py`
 ```

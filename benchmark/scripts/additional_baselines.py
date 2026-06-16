@@ -15,30 +15,25 @@ import time
 import numpy as np
 
 def read_fvecs(path, max_n=0):
+    """Vectorised .fvecs reader (np.fromfile + reshape)."""
     with open(path, 'rb') as f:
         dim = struct.unpack('i', f.read(4))[0]
-        f.seek(0, 2)
-        total = f.tell() // (4 + dim * 4)
-        n = min(total, max_n) if max_n > 0 else total
-        f.seek(0)
-        data = np.zeros((n, dim), dtype=np.float32)
-        for i in range(n):
-            struct.unpack('i', f.read(4))
-            data[i] = np.array(struct.unpack(f'{dim}f', f.read(dim * 4)))
+    record_floats = 1 + dim
+    raw = np.fromfile(path, dtype=np.float32)
+    total = raw.size // record_floats
+    n = min(total, max_n) if max_n > 0 else total
+    data = raw[: n * record_floats].reshape(n, record_floats)[:, 1:].copy()
     return data, n, dim
 
 def read_ivecs(path, max_n=0):
+    """Vectorised .ivecs reader."""
     with open(path, 'rb') as f:
         dim = struct.unpack('i', f.read(4))[0]
-        f.seek(0, 2)
-        total = f.tell() // (4 + dim * 4)
-        n = min(total, max_n) if max_n > 0 else total
-        f.seek(0)
-        data = np.zeros((n, dim), dtype=np.int32)
-        for i in range(n):
-            struct.unpack('i', f.read(4))
-            data[i] = np.array(struct.unpack(f'{dim}i', f.read(dim * 4)))
-    return data
+    record_ints = 1 + dim
+    raw = np.fromfile(path, dtype=np.int32)
+    total = raw.size // record_ints
+    n = min(total, max_n) if max_n > 0 else total
+    return raw[: n * record_ints].reshape(n, record_ints)[:, 1:].copy()
 
 def recall_at_k(results, ground_truth, k):
     n = min(len(results), len(ground_truth))

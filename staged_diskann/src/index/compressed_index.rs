@@ -5,10 +5,15 @@
 
 use crate::model::FixedChunkPQTable;
 use crate::model::PhasedGraph;
+use crate::model::dataset::jl_hadamard_dataset::{JL_HADAMARD_MAGIC, JlHadamardDataset};
+use crate::model::dataset::jl_sparse_dataset::{
+    JL_SPARSE_MAGIC, JLSparseDataset, JLSparseDatasetMips,
+};
+use crate::model::dataset::l2_kt_dataset::L2KTDataset;
 use crate::model::dataset::rabitq_b4_dataset::{RABITQ_B4_MAGIC, RabitQ4Dataset};
 use crate::model::dataset::rabitq_dataset::{RABITQ_MAGIC, RabitQDataset};
 use crate::model::scratch::InMemScratchPool;
-use crate::model::{L2U8, MipsI8, MipsI16, QuantSpec, QuantizedDataset};
+use crate::model::{L2U8, L2U16, MipsI8, MipsI16, QuantSpec, QuantizedDataset};
 use diskann::model::InmemDataset;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -57,6 +62,13 @@ where
     /// lazily on first `ensure_quantized_dataset`. Sidecar `.qds`.
     pub(crate) q_dataset: OnceLock<QuantizedDataset<L2U8, N>>,
 
+    /// U16-quantized base — precise PQ-admission tier of the L2
+    /// cascade. 256× finer per-dim resolution than u8 at 2× storage,
+    /// pairs with the u8 sidecar via the PA `quantize_bits 16` recipe
+    /// (u8 = cheap filter, u16 = PQ admission distance). Built lazily
+    /// on first `ensure_quantized_dataset_l2_u16`. Sidecar `.qds6`.
+    pub(crate) q_dataset_l2_u16: OnceLock<QuantizedDataset<L2U16, N>>,
+
     /// I8-quantized base for the MIPS search path on unit-normalized
     /// data. Built lazily on first `ensure_quantized_dataset_mips`.
     /// Sidecar `.qdm8`.
@@ -81,6 +93,35 @@ where
     /// the recall ceiling at the cost of 4× more storage per vertex
     /// vs B=1 (still ~2× compression vs u8 on GIST D=960).
     pub(crate) q_dataset_rabitq_b4: OnceLock<RabitQ4Dataset<N>>,
+
+    /// Johnson-Lindenstrauss sparse-projection binary signature
+    /// (1024 bits per vertex) — used as the cheapest prefilter tier
+    /// in the L2 search cascade, mirroring ParlayANN's
+    /// `Euclidean_JL_Sparse_Point<1024>`. Sidecar `.jls`. Hamming
+    /// distance via NEON `vcntq_u8` is ~24× cheaper per cmp than the
+    /// u8 NEON L2 kernel on GIST D=960, but is only a rough L2
+    /// correlate — strictly a prefilter, never the final ranker.
+    pub(crate) q_dataset_jl: OnceLock<JLSparseDataset<N, 1024>>,
+
+
+    /// MIPS variant of the JL sparse signature — distinct type
+    /// ([`JLSparseDatasetMips`]) so the L2 path doesn't carry the
+    /// per-vertex `‖v‖` slab. Default NZ=9 per the current MIPS
+    /// sweep. Sidecar `.jls_mips`.
+    pub(crate) q_dataset_jl_mips: OnceLock<JLSparseDatasetMips<N, 1024, 9>>,
+
+
+    /// JL Hadamard 1024-bit signature dataset (HDHDHD-encoded). Lazy-
+    /// built on first `ensure_quantized_dataset_jl_hadamard`. Sidecar
+    /// `.jlh`.
+    pub(crate) q_dataset_jl_hadamard: OnceLock<JlHadamardDataset<N, 1024>>,
+
+    /// **L2 kernel-trick** sidecar — i8 base + per-vertex `‖x_i8‖²`
+    /// (i32). Pairs with `IpI8Distance` (sdot) to reconstruct
+    /// `‖q-x‖² = ‖q‖² + ‖x‖² - 2·⟨q,x⟩` per hop, giving MIPS-like
+    /// kernel speed but L2-rank-exact (modulo the same per-dim
+    /// quantization noise as the u8 sidecar). Sidecar `.qdsl2kt`.
+    pub(crate) q_dataset_l2_kt: OnceLock<L2KTDataset<N>>,
 }
 
 impl<const N: usize> StagedDiskANN<N>
@@ -130,10 +171,15 @@ where
             is_save,
             inmem_scratch_pool: OnceLock::new(),
             q_dataset: OnceLock::new(),
+            q_dataset_l2_u16: OnceLock::new(),
             q_dataset_mips: OnceLock::new(),
             q_dataset_mips_i16: OnceLock::new(),
             q_dataset_rabitq: OnceLock::new(),
             q_dataset_rabitq_b4: OnceLock::new(),
+            q_dataset_jl: OnceLock::new(),
+            q_dataset_jl_mips: OnceLock::new(),
+            q_dataset_jl_hadamard: OnceLock::new(),
+            q_dataset_l2_kt: OnceLock::new(),
         };
 
         if is_save {
@@ -167,10 +213,15 @@ where
             is_save: false,
             inmem_scratch_pool: OnceLock::new(),
             q_dataset: OnceLock::new(),
+            q_dataset_l2_u16: OnceLock::new(),
             q_dataset_mips: OnceLock::new(),
             q_dataset_mips_i16: OnceLock::new(),
             q_dataset_rabitq: OnceLock::new(),
             q_dataset_rabitq_b4: OnceLock::new(),
+            q_dataset_jl: OnceLock::new(),
+            q_dataset_jl_mips: OnceLock::new(),
+            q_dataset_jl_hadamard: OnceLock::new(),
+            q_dataset_l2_kt: OnceLock::new(),
         }
     }
 
@@ -180,6 +231,16 @@ where
     pub fn ensure_quantized_dataset(&self) -> &QuantizedDataset<L2U8, N> {
         self.q_dataset
             .get_or_init(|| build_quant::<L2U8, N>(&self.dataset, &self.cache_base_path))
+    }
+
+    /// Lazily obtain the **u16** quantized dataset (precise
+    /// PQ-admission tier of the L2 cascade). Sidecar `.qds6`. Goes
+    /// through the same `build_quant` plumbing as the u8 path; the
+    /// only differences are storage type + quantization scale (see
+    /// the `L2U16` spec).
+    pub fn ensure_quantized_dataset_l2_u16(&self) -> &QuantizedDataset<L2U16, N> {
+        self.q_dataset_l2_u16
+            .get_or_init(|| build_quant::<L2U16, N>(&self.dataset, &self.cache_base_path))
     }
 
     /// Lazily obtain the i8 MIPS quantized dataset. Sidecar `.qdm8`.
@@ -214,6 +275,47 @@ where
         self.q_dataset_rabitq_b4.get_or_init(|| {
             build_rabitq_b4::<N>(&self.dataset, &self.cache_base_path)
         })
+    }
+
+    /// Lazily obtain the JL Sparse 1024-bit signature dataset.
+    /// Sidecar `.jls`. Built fresh on first access — encoding is
+    /// `O(N · BITS · NZ)` random reads on the f32 base (~10s for
+    /// GIST 1M D=960 on M2). Used as the cheapest tier of the L2
+    /// search cascade; never the final ranker.
+    pub fn ensure_quantized_dataset_jl(&self) -> &JLSparseDataset<N, 1024> {
+        self.q_dataset_jl
+            .get_or_init(|| build_jl_sparse::<N>(&self.dataset, &self.cache_base_path))
+    }
+
+    /// MIPS twin of [`ensure_quantized_dataset_jl`] — builds (or
+    /// loads from the `.jls_mips` sidecar) the NZ=9
+    /// [`JLSparseDatasetMips`] designed for raw-MIPS data, per PA's
+    /// `Mips_JL_Sparse_Point_Normalized` recipe. The per-vertex
+    /// `‖x‖` norms used by the MIPS prefilter live inside the
+    /// returned dataset alongside the sign-bit codes.
+    pub fn ensure_quantized_dataset_jl_mips(&self) -> &JLSparseDatasetMips<N, 1024, 9> {
+        self.q_dataset_jl_mips
+            .get_or_init(|| build_jl_sparse_mips::<N>(&self.dataset, &self.cache_base_path))
+    }
+
+    /// Lazily obtain the **JL Hadamard** 1024-bit signature dataset
+    /// (HDHDHD-encoded). Sidecar `.jlh`. Same byte layout as the JL
+    /// Sparse signature so the search-time hot path reuses the
+    /// `JLHammingDistance` kernel; per-bit information content is
+    /// significantly higher (each bit sees all D dims via Hadamard
+    /// mixing, vs JL Sparse's NZ=9 dims).
+    pub fn ensure_quantized_dataset_jl_hadamard(&self) -> &JlHadamardDataset<N, 1024> {
+        self.q_dataset_jl_hadamard
+            .get_or_init(|| build_jl_hadamard::<N>(&self.dataset, &self.cache_base_path))
+    }
+
+    /// Lazily obtain the **L2 kernel-trick** sidecar (i8 base +
+    /// per-vert `‖x_i8‖²`). Sidecar `.qdsl2kt`. Tries the on-disk
+    /// cache first (memcpy load); on miss, builds via parallel
+    /// `L2KTDataset::build_from` and writes back.
+    pub fn ensure_quantized_dataset_l2_kt(&self) -> &L2KTDataset<N> {
+        self.q_dataset_l2_kt
+            .get_or_init(|| build_l2_kt::<N>(&self.dataset, &self.cache_base_path))
     }
 
     /// Return per-node (degree, local_count) from the PhasedGraph.
@@ -396,6 +498,177 @@ where
             log::warn!("RabitQ4Dataset save failed: {e}");
         } else {
             log::info!("RabitQ4Dataset saved to {:?}", path);
+        }
+    }
+    q
+}
+
+/// Twin of [`build_rabitq`] for the L2 JL Sparse 1024-bit signature.
+/// Sidecar extension `.jls`. Seed pinned to `JL_SPARSE_MAGIC` for
+/// reproducibility — same cache slot, same random index table, same
+/// signatures across runs.
+fn build_jl_sparse<const N: usize>(
+    dataset: &InmemDataset<f32, N>,
+    cache_base: &Path,
+) -> JLSparseDataset<N, 1024>
+where
+    [f32; N]: FullPrecisionDistance<f32, N>,
+{
+    let path = cache_base.with_extension("jls");
+    if path.exists() {
+        match JLSparseDataset::<N, 1024>::load(&path) {
+            Ok(q) => {
+                log::info!("JLSparseDataset (L2, NZ=9) loaded from {:?}", path);
+                return q;
+            }
+            Err(e) => log::warn!("JLSparseDataset (L2) load failed ({e}), rebuilding"),
+        }
+    }
+    let t = Instant::now();
+    let q = JLSparseDataset::<N, 1024>::build_from(dataset, JL_SPARSE_MAGIC as u64);
+    log::info!(
+        "JLSparseDataset (L2, NZ=9) built in {:.2}s (N={}, BITS=1024, num={})",
+        t.elapsed().as_secs_f32(),
+        N,
+        q.num_vertices,
+    );
+    if !cache_base.as_os_str().is_empty() {
+        if let Err(e) = q.save(&path) {
+            log::warn!("JLSparseDataset save failed: {e}");
+        } else {
+            log::info!("JLSparseDataset (L2) saved to {:?}", path);
+        }
+    }
+    q
+}
+
+/// MIPS twin of [`build_jl_sparse`]. Builds a
+/// [`JLSparseDatasetMips`] (with per-vertex `‖v‖` sidecar) at
+/// `NZ=9`. Sidecar extension `.jls_mips` so the L2 and MIPS caches
+/// don't alias — and a wrong-mode load would fail at the magic
+/// check anyway (`JL_SPARSE_MIPS_MAGIC`).
+fn build_jl_sparse_mips<const N: usize>(
+    dataset: &InmemDataset<f32, N>,
+    cache_base: &Path,
+) -> JLSparseDatasetMips<N, 1024, 9>
+where
+    [f32; N]: FullPrecisionDistance<f32, N>,
+{
+    let path = cache_base.with_extension("jls_mips");
+    if path.exists() {
+        match JLSparseDatasetMips::<N, 1024, 9>::load(&path) {
+            Ok(q) => {
+                log::info!("JLSparseDatasetMips (NZ=9) loaded from {:?}", path);
+                return q;
+            }
+            Err(e) => log::warn!("JLSparseDatasetMips load failed ({e}), rebuilding"),
+        }
+    }
+    let t = Instant::now();
+    let q = JLSparseDatasetMips::<N, 1024, 9>::build_from(dataset, JL_SPARSE_MAGIC as u64);
+    log::info!(
+        "JLSparseDatasetMips (NZ=9) built in {:.2}s (N={}, BITS=1024, num={})",
+        t.elapsed().as_secs_f32(),
+        N,
+        q.num_vertices,
+    );
+    if !cache_base.as_os_str().is_empty() {
+        if let Err(e) = q.save(&path) {
+            log::warn!("JLSparseDatasetMips save failed: {e}");
+        } else {
+            log::info!("JLSparseDatasetMips saved to {:?}", path);
+        }
+    }
+    q
+}
+
+fn build_jl_hadamard<const N: usize>(
+    dataset: &InmemDataset<f32, N>,
+    cache_base: &Path,
+) -> JlHadamardDataset<N, 1024>
+where
+    [f32; N]: FullPrecisionDistance<f32, N>,
+{
+    let path = cache_base.with_extension("jlh");
+    if path.exists() {
+        match JlHadamardDataset::<N, 1024>::load(&path) {
+            Ok(q) => {
+                log::info!("JlHadamardDataset loaded from {:?}", path);
+                return q;
+            }
+            Err(e) => log::warn!("JlHadamardDataset load failed ({e}), rebuilding"),
+        }
+    }
+    let t = Instant::now();
+    let q = JlHadamardDataset::<N, 1024>::build_from(dataset, JL_HADAMARD_MAGIC as u64);
+    log::info!(
+        "JlHadamardDataset built in {:.2}s (N={}, D_PAD=1024, num={})",
+        t.elapsed().as_secs_f32(),
+        N,
+        q.num_vertices,
+    );
+    if !cache_base.as_os_str().is_empty() {
+        if let Err(e) = q.save(&path) {
+            log::warn!("JlHadamardDataset save failed: {e}");
+        } else {
+            log::info!("JlHadamardDataset saved to {:?}", path);
+        }
+    }
+    q
+}
+
+/// Build-or-load the **L2 kernel-trick** sidecar (i8 base +
+/// per-vertex `‖x_i8‖²`) — the storage shape the search path uses
+/// to swap the direct L2 kernel for an `sdot` IP kernel via the
+/// identity `‖q-x‖² = ‖q‖² + ‖x‖² - 2·⟨q,x⟩`.
+///
+/// Pipeline:
+/// 1. Probe the on-disk cache at `<cache_base>.qdsl2kt`. On hit, the
+///    sidecar is `memcpy`-loaded into two aligned slabs (i8 base +
+///    i32 norms) with magic / dim / stride verification — same
+///    fast-path shape as every other quantized sidecar.
+/// 2. On miss (or load-error), build fresh from the f32 base via
+///    `L2KTDataset::build_from`. That routine derives the affine
+///    quantization params, quantizes every vertex into i8, and
+///    accumulates `‖x_i8‖²` in the **same parallel pass** so the
+///    second sweep is free. Cost is roughly the L2-u8 build cost
+///    plus one extra integer-multiply-accumulate per element.
+/// 3. Write back to disk (best-effort — a save error just warns).
+///
+/// Cache-key parity: shares the same `cache_base_path` stem as
+/// every other sidecar (`.qds`, `.qds6`, `.qdm8`, `.jls`, ...), so
+/// rebuilding the graph also implicitly invalidates this slab via
+/// the rest of the cache stem changing.
+fn build_l2_kt<const N: usize>(
+    dataset: &InmemDataset<f32, N>,
+    cache_base: &Path,
+) -> L2KTDataset<N>
+where
+    [f32; N]: FullPrecisionDistance<f32, N>,
+{
+    let path = cache_base.with_extension("qdsl2kt");
+    if path.exists() {
+        match L2KTDataset::<N>::load(&path) {
+            Ok(q) => {
+                log::info!("L2KTDataset loaded from {:?}", path);
+                return q;
+            }
+            Err(e) => log::warn!("L2KTDataset load failed ({e}), rebuilding"),
+        }
+    }
+    let t = Instant::now();
+    let q = L2KTDataset::<N>::build_from(dataset);
+    log::info!(
+        "L2KTDataset built in {:.2}s (N={}, num={})",
+        t.elapsed().as_secs_f32(),
+        N,
+        q.num_vertices,
+    );
+    if !cache_base.as_os_str().is_empty() {
+        if let Err(e) = q.save(&path) {
+            log::warn!("L2KTDataset save failed: {e}");
+        } else {
+            log::info!("L2KTDataset saved to {:?}", path);
         }
     }
     q
