@@ -40,6 +40,7 @@
 //! padding is reintroduced at load time.
 
 use diskann::common::AlignedBoxWithSlice;
+use diskann::common::ANNResult;
 use diskann::model::InmemDataset;
 use vector::{
     DistanceFn, FullPrecisionDistance, IpI8Distance, IpI16Distance, L2U8Distance, Metric,
@@ -623,7 +624,7 @@ impl<Q: QuantSpec, const N: usize> QuantizedDataset<Q, N> {
     ///   [u32 n][u32 dim = N]
     ///   [Q::Params packed into 8 B]   ← spec-specific
     /// Body: packed `n × N` storage elements (no STRIDE padding).
-    pub fn save<P: AsRef<std::path::Path>>(&self, path: P) -> std::io::Result<()> {
+    pub fn save<P: AsRef<std::path::Path>>(&self, path: P) -> ANNResult<()> {
         use std::io::Write;
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
         let mut hdr = [0u8; 24];
@@ -653,10 +654,11 @@ impl<Q: QuantSpec, const N: usize> QuantizedDataset<Q, N> {
             };
             w.write_all(vertex_bytes)?;
         }
-        w.flush()
+        w.flush()?;
+        Ok(())
     }
 
-    pub fn load<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<Self> {
+    pub fn load<P: AsRef<std::path::Path>>(path: P) -> ANNResult<Self> {
         use std::io::Read;
         let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
         let mut hdr = [0u8; 24];
@@ -670,7 +672,7 @@ impl<Q: QuantSpec, const N: usize> QuantizedDataset<Q, N> {
                     Q::MAGIC,
                     Q::LABEL
                 ),
-            ));
+            ).into());
         }
         let n = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let dim = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
@@ -678,7 +680,7 @@ impl<Q: QuantSpec, const N: usize> QuantizedDataset<Q, N> {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("dim mismatch: file={dim} expected={N}"),
-            ));
+            ).into());
         }
         // SAFETY: see save() — we re-read the same byte layout the
         // matching impl wrote.
@@ -715,5 +717,131 @@ impl<Q: QuantSpec, const N: usize> QuantizedDataset<Q, N> {
             }
         }
         Ok(Self { data, params, n })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use diskann::model::InmemDataset;
+
+    fn make_ds<const N: usize>(num_points: usize) -> InmemDataset<f32, N> {
+        let mut ds = InmemDataset::<f32, N>::new(num_points, 1.0).unwrap();
+        let s = ds.data.as_mut_slice();
+        for (i, v) in s.iter_mut().enumerate() {
+            *v = ((i % 23) as f32) * 0.1 - 0.5;
+        }
+        ds
+    }
+
+    // ─── QuantParamsL2 ────────────────────────────────────────────────
+
+    #[test]
+    fn l2_params_from_range_round_trip_u8() {
+        let p = QuantParamsL2::from_range(-1.0, 1.0);
+        assert_eq!(p.quantize_scalar(-1.0), 0);
+        assert_eq!(p.quantize_scalar(1.0), 255);
+        let mid = p.quantize_scalar(0.0);
+        assert!(mid > 120 && mid < 136);
+    }
+
+    #[test]
+    fn l2_params_from_range_zero_range_safe() {
+        let p = QuantParamsL2::from_range(0.5, 0.5);
+        let q = p.quantize_scalar(0.5);
+        assert!(q <= 255);
+    }
+
+    #[test]
+    fn l2_params_from_range_u16_endpoints() {
+        let p = QuantParamsL2::from_range_u16(-1.0, 1.0);
+        assert_eq!(p.quantize_scalar_u16(-1.0), 0);
+        assert_eq!(p.quantize_scalar_u16(1.0), 65535);
+    }
+
+    #[test]
+    fn l2_params_quantize_clamps() {
+        let p_u8 = QuantParamsL2::from_range(0.0, 1.0);
+        assert_eq!(p_u8.quantize_scalar(-10.0), 0);
+        assert_eq!(p_u8.quantize_scalar(100.0), 255);
+        let p_u16 = QuantParamsL2::from_range_u16(0.0, 1.0);
+        assert_eq!(p_u16.quantize_scalar_u16(-10.0), 0);
+        assert_eq!(p_u16.quantize_scalar_u16(100.0), 65535);
+    }
+
+    // ─── QuantParamsMips ──────────────────────────────────────────────
+
+    #[test]
+    fn mips_params_from_abs_max_basic() {
+        let p = QuantParamsMips::from_abs_max(1.0, 127.0);
+        assert!((p.scale - 127.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mips_params_from_abs_max_zero_safe() {
+        let p = QuantParamsMips::from_abs_max(0.0, 127.0);
+        assert!(p.scale.is_finite());
+    }
+
+    // ─── QuantizedDataset<L2U8> ──────────────────────────────────────
+
+    #[test]
+    fn build_l2u8_dataset() {
+        let ds = make_ds::<8>(16);
+        let qds = QuantizedDataset::<L2U8, 8>::from_f32_dataset(&ds);
+        assert_eq!(qds.n, 16);
+        let q = [0.0f32; 8];
+        let qq = qds.quantize_query(&q);
+        assert_eq!(qq.len(), 8);
+        let pad = qds.quantize_query_padded(&q);
+        assert_eq!(pad.len(), QuantizedDataset::<L2U8, 8>::STRIDE);
+    }
+
+    #[test]
+    fn pq_worst_to_quantized_scales_with_slope_sq() {
+        let ds = make_ds::<4>(4);
+        let qds = QuantizedDataset::<L2U8, 4>::from_f32_dataset(&ds);
+        let f32_w = 1.0f32;
+        let q_w = qds.pq_worst_to_quantized(f32_w);
+        let expected = qds.params.slope * qds.params.slope * f32_w;
+        assert!((q_w - expected).abs() < 1e-3);
+    }
+
+    // ─── Save / load round trips ─────────────────────────────────────
+
+    #[test]
+    fn l2u8_save_load_round_trip() {
+        let tmp = std::env::temp_dir().join("staged_qds_l2u8_test.bin");
+        let _ = std::fs::remove_file(&tmp);
+        let ds = make_ds::<4>(8);
+        let qds = QuantizedDataset::<L2U8, 4>::from_f32_dataset(&ds);
+        qds.save(&tmp).unwrap();
+        let loaded = QuantizedDataset::<L2U8, 4>::load(&tmp).unwrap();
+        assert_eq!(loaded.n, qds.n);
+        assert!((loaded.params.slope - qds.params.slope).abs() < 1e-6);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn build_mips_i8_dataset() {
+        let ds = make_ds::<8>(4);
+        let qds = QuantizedDataset::<MipsI8, 8>::from_f32_dataset(&ds);
+        assert_eq!(qds.n, 4);
+        assert_eq!((QuantizedDataset::<MipsI8, 8>::STRIDE) % 32, 0);
+    }
+
+    #[test]
+    fn build_mips_i16_dataset() {
+        let ds = make_ds::<8>(4);
+        let qds = QuantizedDataset::<MipsI16, 8>::from_f32_dataset(&ds);
+        assert_eq!(qds.n, 4);
+        assert_eq!((QuantizedDataset::<MipsI16, 8>::STRIDE * 2) % 32, 0);
+    }
+
+    #[test]
+    fn build_l2_u16_dataset() {
+        let ds = make_ds::<8>(8);
+        let qds = QuantizedDataset::<L2U16, 8>::from_f32_dataset(&ds);
+        assert_eq!(qds.n, 8);
     }
 }

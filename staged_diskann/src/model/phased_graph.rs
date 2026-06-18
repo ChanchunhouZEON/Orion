@@ -25,6 +25,7 @@ use std::collections::VecDeque;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use diskann::common::ANNResult;
 
 const CACHE_LINE_BYTES: usize = 64;
 const HEADER_U32: usize = 4;
@@ -356,7 +357,7 @@ impl PhasedGraph {
 
     // ── IO ──────────────────────────────────────────────────────────────
 
-    pub fn save<P: AsRef<std::path::Path>>(&self, path: P) -> std::io::Result<()> {
+    pub fn save<P: AsRef<std::path::Path>>(&self, path: P) -> ANNResult<()> {
         let f = std::fs::File::create(path)?;
         let mut w = BufWriter::new(f);
         // File header: [num_nodes, max_degree, stride, base_local_count]
@@ -373,10 +374,11 @@ impl PhasedGraph {
             std::slice::from_raw_parts(self.buffer.as_ptr() as *const u8, self.buffer.len() * 4)
         };
         w.write_all(data_bytes)?;
-        w.flush()
+        w.flush()?;
+        Ok(())
     }
 
-    pub fn load<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<Self> {
+    pub fn load<P: AsRef<std::path::Path>>(path: P) -> ANNResult<Self> {
         let f = std::fs::File::open(path)?;
         let mut r = BufReader::new(f);
         let mut hdr_bytes = [0u8; 16];

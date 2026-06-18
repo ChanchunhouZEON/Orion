@@ -38,6 +38,7 @@ use diskann::common::AlignedBoxWithSlice;
 use diskann::model::InmemDataset;
 use std::path::Path;
 use std::sync::OnceLock;
+use diskann::common::ANNResult;
 
 // Disk-format magic for the RaBitQ sidecar (`.qrbq`). Bumped on
 // breaking layout changes so older caches refuse to load instead of
@@ -251,7 +252,7 @@ impl<const N: usize> RabitQDataset<N> {
     ///   [num_vertices f32 norms]
     ///   [num_vertices f32 s_values]   ← v2 only
     ///   [num_vertices * STRIDE u8 codes]
-    pub fn save<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> ANNResult<()> {
         use std::io::Write;
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
         let mut hdr = [0u8; 32];
@@ -293,10 +294,11 @@ impl<const N: usize> RabitQDataset<N> {
 
         // Codes.
         w.write_all(self.codes.as_slice())?;
-        w.flush()
+        w.flush()?;
+        Ok(())
     }
 
-    pub fn load<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+    pub fn load<P: AsRef<Path>>(path: P) -> ANNResult<Self> {
         use std::io::Read;
         let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
         let mut hdr = [0u8; 32];
@@ -309,7 +311,7 @@ impl<const N: usize> RabitQDataset<N> {
                     "bad magic 0x{magic:08x} (expected 0x{:08x} = QRBQ)",
                     RABITQ_MAGIC
                 ),
-            ));
+            ).into());
         }
         let num_vertices = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let dim = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
@@ -317,14 +319,14 @@ impl<const N: usize> RabitQDataset<N> {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("dim mismatch: file={dim} expected={N}"),
-            ));
+            ).into());
         }
         let stride = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
         if stride != Self::STRIDE {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
-            ));
+            ).into());
         }
         let version = u32::from_le_bytes(hdr[4..8].try_into().unwrap());
         if version != 2 {
@@ -333,7 +335,7 @@ impl<const N: usize> RabitQDataset<N> {
                 format!(
                     "unsupported RaBitQ sidecar version {version} (only v2 with per-vertex s correction is supported; delete the `.qrbq` cache to force rebuild)",
                 ),
-            ));
+            ).into());
         }
         let scale = f32::from_le_bytes(hdr[20..24].try_into().unwrap());
 
@@ -404,6 +406,16 @@ fn signed_sum_dispatch<const N: usize>(code: &[u8], rotated_q: &[f32; N]) -> f32
         let scalar_tail = signed_sum_scalar_tail::<N>(code, rotated_q, bytes * 8);
         return neon_part + scalar_tail;
     }
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    {
+        // AVX-512: 16-bit mask per iter (= 2 code bytes = 16 dims).
+        // Per-pair tail catches the trailing 1 byte / 8 dims case
+        // (SIFT 128, GIST 960 both align, but D=100 trips this).
+        let pairs = N / 16;
+        let avx_part = unsafe { signed_sum_avx512::<N>(code.as_ptr(), rotated_q.as_ptr(), pairs) };
+        let scalar_tail = signed_sum_scalar_tail::<N>(code, rotated_q, pairs * 16);
+        return avx_part + scalar_tail;
+    }
     #[allow(unreachable_code)]
     signed_sum_scalar::<N>(code, rotated_q)
 }
@@ -420,9 +432,12 @@ fn signed_sum_scalar<const N: usize>(code: &[u8], rotated_q: &[f32; N]) -> f32 {
     acc
 }
 
-/// Scalar leftover for the (theoretical) `N % 8 != 0` case. Inlined
-/// out of the NEON path so the compiler can constant-fold to a no-op
-/// when N is known to be a multiple of 8 at the call site.
+/// Scalar leftover for the (theoretical) `N % 8 != 0` (NEON) or
+/// `N % 16 != 0` (AVX-512) case. Inlined out of the SIMD paths so
+/// the compiler can constant-fold to a no-op when N is known to
+/// be a clean multiple at the call site. `#[allow(dead_code)]`:
+/// it's unused on the scalar-only fallback build (no SIMD arm).
+#[allow(dead_code)]
 #[inline]
 fn signed_sum_scalar_tail<const N: usize>(code: &[u8], rotated_q: &[f32; N], start: usize) -> f32 {
     let mut acc = 0.0f32;
@@ -506,6 +521,76 @@ unsafe fn signed_sum_neon<const N: usize>(
     let acc = vaddq_f32(acc_lo, acc_hi);
     vaddvq_f32(acc)
 }}
+
+/// AVX-512 kernel for the signed dot product. 16 dims per outer
+/// iteration via a 16-bit mask built from two consecutive code
+/// bytes. `_mm512_mask_blend_ps` selects `+q` (mask bit 1) or
+/// `-q` (mask bit 0) lane-wise — same logical contract as the
+/// NEON `vbslq_f32` but at twice the width.
+///
+/// 2-way unroll across consecutive byte-pairs hides the load
+/// latency for `rotated_q`. Net throughput on Sapphire Rapids
+/// (~4 FMA-IPC at f32 / 16-wide) lands roughly on par with the
+/// NEON M2 path despite NEON's narrower SIMD width — AVX-512's
+/// mask-blend is a single uop where NEON needs the `vdupq_n_u32 +
+/// vandq + vceqq + vbslq` chain per nibble.
+///
+/// # Safety
+///
+/// Caller must ensure:
+/// - `code` points to at least `pairs * 2` valid bytes
+/// - `rotated_q` points to at least `pairs * 16` valid `f32`s
+/// - `pairs * 16 <= N`
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[inline]
+unsafe fn signed_sum_avx512<const N: usize>(
+    code: *const u8,
+    rotated_q: *const f32,
+    pairs: usize,
+) -> f32 {
+    use std::arch::x86_64::*;
+
+    // Two accumulators break the loop-carried dep — mirrors NEON
+    // `acc_lo` / `acc_hi`. With 16-wide we no longer split on
+    // nibble; we split on consecutive byte-pairs (= 32 dims per
+    // outer iter when both lanes contribute).
+    let mut acc0 = _mm512_setzero_ps();
+    let mut acc1 = _mm512_setzero_ps();
+
+    let pair_chunks = pairs / 2;
+    let mut p = 0usize;
+    while p < pair_chunks {
+        // Pair 0: bytes [2p..2p+2], dims [16p..16p+16].
+        let b0 = (*code.add(2 * p) as u16) | ((*code.add(2 * p + 1) as u16) << 8);
+        let q0 = _mm512_loadu_ps(rotated_q.add(16 * p));
+        // `_mm512_xor_ps` with sign-bit mask flips floats in-place
+        // (cheaper than `_mm512_sub_ps(zero, q)`).
+        let neg0 = _mm512_xor_ps(q0, _mm512_set1_ps(-0.0_f32));
+        let signed0 = _mm512_mask_blend_ps(b0 as __mmask16, neg0, q0);
+        acc0 = _mm512_add_ps(acc0, signed0);
+
+        // Pair 1: bytes [2p+2..2p+4], dims [16p+16..16p+32].
+        let b1 = (*code.add(2 * p + 2) as u16) | ((*code.add(2 * p + 3) as u16) << 8);
+        let q1 = _mm512_loadu_ps(rotated_q.add(16 * p + 16));
+        let neg1 = _mm512_xor_ps(q1, _mm512_set1_ps(-0.0_f32));
+        let signed1 = _mm512_mask_blend_ps(b1 as __mmask16, neg1, q1);
+        acc1 = _mm512_add_ps(acc1, signed1);
+
+        p += 2;
+    }
+    // Odd-pair tail.
+    let mut t = pair_chunks * 2;
+    while t < pairs {
+        let b = (*code.add(2 * t) as u16) | ((*code.add(2 * t + 1) as u16) << 8);
+        let q = _mm512_loadu_ps(rotated_q.add(16 * t));
+        let neg = _mm512_xor_ps(q, _mm512_set1_ps(-0.0_f32));
+        let signed = _mm512_mask_blend_ps(b as __mmask16, neg, q);
+        acc0 = _mm512_add_ps(acc0, signed);
+        t += 1;
+    }
+
+    _mm512_reduce_add_ps(_mm512_add_ps(acc0, acc1))
+}
 
 // ── Public re-exports for sibling codecs (rabitq_b4_dataset) ──────────
 //
@@ -612,6 +697,18 @@ fn apply_rotation(m: &[f32], x: &[f32], y: &mut [f32]) {
             return;
         }
     }
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    {
+        if n % 64 == 0 {
+            unsafe { apply_rotation_avx512(m, x, y, n) };
+            return;
+        }
+        // n % 16 == 0 but not % 64: use 16-wide single accumulator.
+        if n % 16 == 0 {
+            unsafe { apply_rotation_avx512_16(m, x, y, n) };
+            return;
+        }
+    }
     apply_rotation_scalar(m, x, y, n);
 }
 
@@ -664,6 +761,63 @@ unsafe fn apply_rotation_neon(m: &[f32], x: &[f32], y: &mut [f32], n: usize) { u
         *y.get_unchecked_mut(r) = vaddvq_f32(s);
     }
 }}
+
+/// AVX-512 `apply_rotation` — 16-lane × 4-way-ILP dot product per
+/// row. Requires `n % 64 == 0`. For SIFT D=128: 2 inner iters / row.
+/// For GIST D=960: 15 inner iters / row.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[inline]
+unsafe fn apply_rotation_avx512(m: &[f32], x: &[f32], y: &mut [f32], n: usize) {
+    use std::arch::x86_64::*;
+    let chunks = n / 64;
+    let x_ptr = x.as_ptr();
+    for r in 0..n {
+        let row_ptr = m.as_ptr().add(r * n);
+        let mut a0 = _mm512_setzero_ps();
+        let mut a1 = _mm512_setzero_ps();
+        let mut a2 = _mm512_setzero_ps();
+        let mut a3 = _mm512_setzero_ps();
+        for c in 0..chunks {
+            let off = c * 64;
+            let r0 = _mm512_loadu_ps(row_ptr.add(off));
+            let r1 = _mm512_loadu_ps(row_ptr.add(off + 16));
+            let r2 = _mm512_loadu_ps(row_ptr.add(off + 32));
+            let r3 = _mm512_loadu_ps(row_ptr.add(off + 48));
+            let x0 = _mm512_loadu_ps(x_ptr.add(off));
+            let x1 = _mm512_loadu_ps(x_ptr.add(off + 16));
+            let x2 = _mm512_loadu_ps(x_ptr.add(off + 32));
+            let x3 = _mm512_loadu_ps(x_ptr.add(off + 48));
+            a0 = _mm512_fmadd_ps(r0, x0, a0);
+            a1 = _mm512_fmadd_ps(r1, x1, a1);
+            a2 = _mm512_fmadd_ps(r2, x2, a2);
+            a3 = _mm512_fmadd_ps(r3, x3, a3);
+        }
+        let s01 = _mm512_add_ps(a0, a1);
+        let s23 = _mm512_add_ps(a2, a3);
+        *y.get_unchecked_mut(r) = _mm512_reduce_add_ps(_mm512_add_ps(s01, s23));
+    }
+}
+
+/// Fallback for `n % 16 == 0` but `n % 64 != 0` — single
+/// accumulator, no 4-way unroll. Catches dims like 80, 112, 144.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[inline]
+unsafe fn apply_rotation_avx512_16(m: &[f32], x: &[f32], y: &mut [f32], n: usize) {
+    use std::arch::x86_64::*;
+    let chunks = n / 16;
+    let x_ptr = x.as_ptr();
+    for r in 0..n {
+        let row_ptr = m.as_ptr().add(r * n);
+        let mut acc = _mm512_setzero_ps();
+        for c in 0..chunks {
+            let off = c * 16;
+            let rv = _mm512_loadu_ps(row_ptr.add(off));
+            let xv = _mm512_loadu_ps(x_ptr.add(off));
+            acc = _mm512_fmadd_ps(rv, xv, acc);
+        }
+        *y.get_unchecked_mut(r) = _mm512_reduce_add_ps(acc);
+    }
+}
 
 // ── Deterministic PRNG + Gaussian sampler ─────────────────────────────
 

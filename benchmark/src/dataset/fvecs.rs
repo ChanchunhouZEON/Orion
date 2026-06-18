@@ -7,10 +7,11 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::Path;
+use diskann::common::ANNResult;
 
 /// Read a .fvecs file (binary format: [dim: u32, f32 * dim] per vector).
 /// Reads at most `max_count` vectors (0 = read all).
-pub fn read_fvecs_n<P: AsRef<Path>>(path: P, max_count: usize) -> io::Result<Vec<Vec<f32>>> {
+pub fn read_fvecs_n<P: AsRef<Path>>(path: P, max_count: usize) -> ANNResult<Vec<Vec<f32>>> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     let mut vectors = Vec::new();
@@ -22,7 +23,7 @@ pub fn read_fvecs_n<P: AsRef<Path>>(path: P, max_count: usize) -> io::Result<Vec
         let dim = match reader.read_u32::<LittleEndian>() {
             Ok(d) => d as usize,
             Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         };
 
         let mut vec = vec![0.0f32; dim];
@@ -34,13 +35,13 @@ pub fn read_fvecs_n<P: AsRef<Path>>(path: P, max_count: usize) -> io::Result<Vec
 }
 
 /// Read all vectors from a .fvecs file.
-pub fn read_fvecs<P: AsRef<Path>>(path: P) -> io::Result<Vec<Vec<f32>>> {
+pub fn read_fvecs<P: AsRef<Path>>(path: P) -> ANNResult<Vec<Vec<f32>>> {
     read_fvecs_n(path, 0)
 }
 
 /// Read a .ivecs file (binary format: [dim: u32, i32 * dim] per vector).
 /// Returns as Vec<Vec<u32>> (neighbor indices are non-negative).
-pub fn read_ivecs<P: AsRef<Path>>(path: P) -> io::Result<Vec<Vec<u32>>> {
+pub fn read_ivecs<P: AsRef<Path>>(path: P) -> ANNResult<Vec<Vec<u32>>> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     let mut vectors = Vec::new();
@@ -49,7 +50,7 @@ pub fn read_ivecs<P: AsRef<Path>>(path: P) -> io::Result<Vec<Vec<u32>>> {
         let dim = match reader.read_u32::<LittleEndian>() {
             Ok(d) => d as usize,
             Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         };
 
         let mut vec = vec![0i32; dim];
@@ -64,7 +65,7 @@ pub fn read_ivecs<P: AsRef<Path>>(path: P) -> io::Result<Vec<Vec<u32>>> {
 
 /// Write vectors in .fvecs format for testing.
 #[cfg(test)]
-fn write_fvecs<P: AsRef<Path>>(path: P, vectors: &[Vec<f32>]) -> io::Result<()> {
+fn write_fvecs<P: AsRef<Path>>(path: P, vectors: &[Vec<f32>]) -> ANNResult<()> {
     use byteorder::WriteBytesExt;
     use std::io::BufWriter;
 
@@ -81,7 +82,7 @@ fn write_fvecs<P: AsRef<Path>>(path: P, vectors: &[Vec<f32>]) -> io::Result<()> 
 
 /// Write vectors in .ivecs format for testing.
 #[cfg(test)]
-fn write_ivecs<P: AsRef<Path>>(path: P, vectors: &[Vec<u32>]) -> io::Result<()> {
+fn write_ivecs<P: AsRef<Path>>(path: P, vectors: &[Vec<u32>]) -> ANNResult<()> {
     use byteorder::WriteBytesExt;
     use std::io::BufWriter;
 
@@ -99,7 +100,7 @@ fn write_ivecs<P: AsRef<Path>>(path: P, vectors: &[Vec<u32>]) -> io::Result<()> 
 /// Read a .bvecs file (binary format: [dim: u8*4 as u32, u8 * dim] per vector).
 /// Converts u8 to f32 for compatibility.
 #[allow(dead_code)]
-pub fn read_bvecs<P: AsRef<Path>>(path: P) -> io::Result<Vec<Vec<f32>>> {
+pub fn read_bvecs<P: AsRef<Path>>(path: P) -> ANNResult<Vec<Vec<f32>>> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     let mut vectors = Vec::new();
@@ -108,7 +109,7 @@ pub fn read_bvecs<P: AsRef<Path>>(path: P) -> io::Result<Vec<Vec<f32>>> {
         let dim = match reader.read_u32::<LittleEndian>() {
             Ok(d) => d as usize,
             Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         };
 
         let mut bytes = vec![0u8; dim];

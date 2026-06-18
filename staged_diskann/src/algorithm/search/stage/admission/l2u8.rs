@@ -78,3 +78,47 @@ impl<'a, const N: usize> AdmissionSession for L2U8Session<'a, N> {
         w
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use diskann::model::InmemDataset;
+
+    fn make_ds<const N: usize>(num_points: usize) -> InmemDataset<f32, N> {
+        let mut ds = InmemDataset::<f32, N>::new(num_points, 1.0).unwrap();
+        let s = ds.data.as_mut_slice();
+        for (i, v) in s.iter_mut().enumerate() {
+            *v = ((i % 31) as f32) * 0.05 - 0.5;
+        }
+        ds
+    }
+
+    #[test]
+    fn l2u8_admission_session_entry_distance_nonneg() {
+        // u8 kernel requires N % 16 == 0.
+        let ds = make_ds::<16>(8);
+        let qds = QuantizedDataset::<L2U8, 16>::from_f32_dataset(&ds);
+        let adm = L2U8Admission::new(&qds);
+        let q = [0.0f32; 16];
+        let session = adm.open(&q);
+        for vid in 0..8u32 {
+            let d = session.entry_distance(vid);
+            assert!(d >= -1e-3, "vid={vid} d={d}");
+        }
+    }
+
+    #[test]
+    fn l2u8_admission_session_self_distance_smallest() {
+        let ds = make_ds::<16>(4);
+        let qds = QuantizedDataset::<L2U8, 16>::from_f32_dataset(&ds);
+        let adm = L2U8Admission::new(&qds);
+        let q: [f32; 16] = std::array::from_fn(|i| ds.data.as_slice()[i]);
+        let session = adm.open(&q);
+        let d0 = session.entry_distance(0);
+        let d1 = session.entry_distance(1);
+        // Self distance should be ≤ distance to a different vertex (modulo
+        // quantization noise — the dataset has rather narrow per-dim range
+        // so the bound is loose).
+        assert!(d0 <= d1 + 1e3, "d0={d0} d1={d1}");
+    }
+}

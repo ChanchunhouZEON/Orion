@@ -5,7 +5,6 @@ edition = "2024"
 
 [features]
 default = []
-visualization = ["dep:plotters", "dep:ndarray-linalg", "diskann/visualization", "accelerate-src"]
 indicatif = ["dep:indicatif"]
 
 [dependencies]
@@ -27,14 +26,4 @@ env_logger = { workspace = true }
 anyhow = "1"
 tokio = { workspace = true }
 futures = { workspace = true }
-plotters = { workspace = true, optional = true }
-ndarray-linalg = { workspace = true, optional = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-accelerate-src = { version = "0.3", optional = true }
-
-[[bin]]
-name = "visualize"
-path = "src/bin/visualize.rs"
-required-features = ["visualization"]
 

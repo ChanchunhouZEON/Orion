@@ -60,7 +60,13 @@ short_labels = [
     for n, t in present
 ]
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
+# Paper figure: single panel — the left "Builds Match Within Trial
+# Noise" ratio plot. The right "Extras Pass Is Sub-1%" subplot was
+# useful in earlier iterations but the same conclusion is implicit
+# in the left panel's near-1.0 ratio (Staged/DiskANN build ≈ 1×),
+# so we drop it here to keep the paper figure dense.
+fig, ax_left = plt.subplots(1, 1, figsize=(7, 5.5))
+axes = [ax_left, None]
 style_fig(fig)
 
 x = np.arange(len(present))
@@ -201,32 +207,7 @@ hi = max(1.08, float(np.max(ratio + ratio_std) + 0.04))
 ax.set_ylim(lo, hi)
 ax.set_xlim(x[0] - 0.6, x[-1] + 0.95)
 
-# ── Right: extras pass as a fraction of the matched-α DiskANN build. ──
-ax = axes[1]
-overhead_pct = so_mean / da_mean * 100.0
-
-handles_right = []
-for xi, oh, c in zip(x, overhead_pct, ds_colors):
-    rounded_bar(ax, xi, oh, 0.5, c)
-for (_, t), c in zip(present, ds_colors):
-    handles_right.append(rounded_patch(c, alpha=0.9, label=t))
-
-for i, oh in enumerate(overhead_pct):
-    ax.annotate(f'{oh:.2f} %', xy=(x[i], oh),
-                ha='center', va='bottom', fontsize=12, fontweight='bold',
-                color=PALETTE['annot'])
-
-ax.axhline(y=1.0, color='#888', linestyle='--', alpha=0.7, linewidth=1.2)
-ax.annotate('1 %', xy=(x[-1] + 0.4, 1.0), va='center', fontsize=9,
-            color=PALETTE['annot'])
-
-ax.set_xticks(x); ax.set_xticklabels(short_labels)
-ax.set_ylabel('PhasedGraph extras / DiskANN build (%)', fontsize=11)
-ax.set_title('Extras Pass Is Sub-1 % of the Vamana Build', fontweight='bold')
-make_legend(ax, handles_right, fontsize=10)
-style_ax(ax)
-ax.set_ylim(0, max(1.2, float(overhead_pct.max() * 1.6)))
-ax.set_xlim(x[0] - 0.6, x[-1] + 0.95)
+# ── Right subplot dropped for the paper figure (see header comment). ──
 
 plt.tight_layout()
 out = 'visualizations/build_analysis.png'

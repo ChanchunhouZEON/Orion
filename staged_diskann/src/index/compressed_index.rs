@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock}; // Arc still needed for pq field
 use std::time::Instant;
 use vector::FullPrecisionDistance;
+use diskann::common::{ANNError, ANNResult};
 
 /// Staged DiskANN with PhasedGraph-based two-phase search.
 ///
@@ -328,7 +329,7 @@ where
 
     // --- IO ---
 
-    pub fn save<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> ANNResult<()> {
         let dir = path.as_ref().parent().unwrap_or(Path::new("."));
         fs::create_dir_all(dir)?;
 
@@ -354,10 +355,13 @@ where
     pub fn load_from_cache<P: AsRef<Path>>(
         path: P,
         dataset: InmemDataset<f32, N>,
-    ) -> anyhow::Result<Self> {
+    ) -> ANNResult<Self> {
         let graph_path = path.as_ref().with_extension("pgraph");
         if !graph_path.exists() {
-            anyhow::bail!("PhasedGraph file not found: {:?}", graph_path);
+            return Err(ANNError::log_index_error(format!(
+                "PhasedGraph file not found: {:?}",
+                graph_path
+            )));
         }
         let graph = PhasedGraph::load(&graph_path)?;
 

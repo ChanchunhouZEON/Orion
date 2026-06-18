@@ -1,0 +1,41 @@
+# Don't ship multi-GB host artifacts to the docker build context.
+# The bind-mount at run-time gives the container access to whatever
+# it needs without paying the daemon-context cost up front.
+
+# Rust artifacts (aarch64 darwin only; container builds into a
+# separate target-linux/ dir via CARGO_TARGET_DIR).
+target/
+target-*/
+**/*.rs.bk
+
+# Datasets — far too large to ship; bind-mount data/ at run-time.
+data/
+cache/
+
+# Visualization outputs (figures, PDFs).
+visualizations/*.png
+visualizations/*.pdf
+visualizations/*.json
+
+# Logs and intermediate dumps.
+*.log
+/tmp_*
+
+# Python/maturin scratch.
+staged_diskann_py/target/
+*.egg-info/
+__pycache__/
+
+# IDE / git / editor.
+.idea/
+.vscode/
+.git/
+*.swp
+.DS_Store
+
+# Memory / agent metadata.
+memory/
+
+# Existing workflows / CI artifacts (we ship the Dockerfile but
+# not the GH Actions config — it's mounted, not baked in).
+.github/

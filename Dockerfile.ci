@@ -1,0 +1,67 @@
+# CI / SIFT smoke-test image for x86_64 Linux. Built on top of the
+# pinned Rust 1.86.0 toolchain (matches `rust-toolchain.toml`).
+#
+# Designed for use under Colima on Apple Silicon (`colima start
+# --arch x86_64`), where the container runs under QEMU TCG
+# emulation — slow but functional. AVX-512 is NOT available under
+# QEMU; this image is for the AVX2 / scalar fallback paths.
+#
+# Usage:
+#   colima start --arch x86_64 --cpu 6 --memory 12 --disk 40
+#   docker buildx build --platform linux/amd64 -t staged-ci:latest -f Dockerfile.ci .
+#   docker run --platform linux/amd64 --rm \
+#     --ulimit core=0 \
+#     -v "$PWD":/work -w /work \
+#     -v staged-cargo-registry:/usr/local/cargo/registry \
+#     -v staged-cargo-target:/work/target-linux \
+#     -e CARGO_TARGET_DIR=/work/target-linux \
+#     staged-ci:latest bash benchmark/scripts/ci_smoke_sift.sh
+#
+# Notes:
+#   * `target-linux` is a separate target dir from the host's `target/`
+#     so the aarch64 (darwin) and x86_64 (linux) artifacts don't
+#     collide when the workspace is bind-mounted.
+#   * `--platform linux/amd64` forces QEMU emulation when the
+#     host is ARM (e.g. Apple Silicon). On a native x86 host the
+#     flag is a no-op.
+#   * `--ulimit core=0` suppresses kernel core dumps. Without this,
+#     QEMU's userspace emulator writes a 0-byte `core` marker to
+#     cwd (= the bind-mounted host workspace) every time it traps
+#     a SIGILL on the rustc-emitted AVX prelude. Belt-and-suspenders:
+#     `core` and `**/core` are also gitignored at the repo root.
+
+FROM rust:1.86-slim-bookworm
+
+# System deps for cargo build + benchmark runtime. `cmake` is for
+# any C/C++ build.rs (e.g. simsimd, faiss). `python3` is for the
+# benchmark scripts that read .fvecs and report recall.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        git \
+        ca-certificates \
+        pkg-config \
+        python3 \
+        python3-numpy \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pre-install rust components used by some workspace crates.
+RUN rustup component add rust-src
+
+# Speed-up: cargo with sparse registry index.
+# `RUSTUP_TOOLCHAIN` pins to the image's pre-installed 1.86.0 so
+# rustup skips the channel re-sync triggered by the workspace's
+# `rust-toolchain.toml` — that sync hits static.rust-lang.org
+# every cargo invocation and times out under QEMU.
+# `target-cpu=x86-64` forces the baseline x86-64-v1 ISA (SSE2 only)
+# so the compiled binaries run under QEMU TCG, which models a
+# `qemu64` CPU that lacks AVX / AVX2 / FMA. Without this, rustc /
+# many deps emit AVX-class ops and the test binaries SIGILL on
+# first execution under emulation. On real x86_64 hardware this
+# flag would be wasteful — but this image is QEMU-targeted.
+ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
+    CARGO_INCREMENTAL=0 \
+    RUSTFLAGS="-C target-cpu=x86-64" \
+    RUSTUP_TOOLCHAIN=1.86.0
+
+WORKDIR /work

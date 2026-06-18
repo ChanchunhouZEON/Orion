@@ -84,3 +84,25 @@ impl<'a, const N: usize> AdmissionSession for L2U16Session<'a, N> {
         w
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use diskann::model::InmemDataset;
+
+    #[test]
+    fn l2u16_session_smoke() {
+        let mut ds = InmemDataset::<f32, 16>::new(4, 1.0).unwrap();
+        for (i, v) in ds.data.as_mut_slice().iter_mut().enumerate() {
+            *v = ((i % 5) as f32) * 0.2 - 0.4;
+        }
+        let qds = QuantizedDataset::<L2U16, 16>::from_f32_dataset(&ds);
+        let adm = L2U16Admission::new(&qds);
+        let q = [0.0f32; 16];
+        let session = adm.open(&q);
+        for vid in 0..4u32 {
+            let d = session.entry_distance(vid);
+            assert!(d >= -1e-3 && d.is_finite(), "vid={vid} d={d}");
+        }
+    }
+}

@@ -426,4 +426,89 @@ mod neighbor_priority_queue_test {
         assert_eq!(queue.size(), 0);
         assert!(!queue.has_notvisited_node());
     }
+
+    #[test]
+    fn new_is_empty() {
+        let q = NeighborPriorityQueue::new();
+        assert_eq!(q.size(), 0);
+        assert!(!q.has_notvisited_node());
+        assert_eq!(q.neighbors().len(), 0);
+    }
+
+    #[test]
+    fn default_is_empty() {
+        let q = NeighborPriorityQueue::default();
+        assert_eq!(q.size(), 0);
+    }
+
+    #[test]
+    fn reserve_grows_buffer() {
+        let mut q = NeighborPriorityQueue::with_capacity(4);
+        let initial = q.data.len();
+        q.reserve(100);
+        assert!(q.data.len() >= initial);
+    }
+
+    #[test]
+    fn set_capacity_resizes() {
+        let mut q = NeighborPriorityQueue::with_capacity(8);
+        q.insert(Neighbor::new(1, 0.5));
+        q.insert(Neighbor::new(2, 0.6));
+        q.set_capacity(4);
+        assert_eq!(q.capacity(), 4);
+        assert!(q.size() <= 4);
+    }
+
+    #[test]
+    fn neighbors_returns_sorted_prefix() {
+        let mut q = NeighborPriorityQueue::with_capacity(4);
+        q.insert(Neighbor::new(10, 3.0));
+        q.insert(Neighbor::new(20, 1.0));
+        q.insert(Neighbor::new(30, 2.0));
+        let n = q.neighbors();
+        assert_eq!(n.len(), 3);
+        assert!(n[0].distance <= n[1].distance);
+        assert!(n[1].distance <= n[2].distance);
+    }
+
+    #[test]
+    fn batch_merge_dedups_and_sorts() {
+        let mut q = NeighborPriorityQueue::with_capacity(8);
+        q.insert(Neighbor::new(1, 1.0));
+        q.insert(Neighbor::new(2, 2.0));
+        // sorted by distance asc
+        let cands = [
+            Neighbor::new(3, 0.5),
+            Neighbor::new(4, 1.5),
+            Neighbor::new(5, 3.0),
+        ];
+        let mut scratch = Vec::with_capacity(16);
+        q.batch_merge(&cands, &mut scratch);
+        let out = q.neighbors();
+        assert!(out.windows(2).all(|w| w[0].distance <= w[1].distance));
+        // Should include the new lower-distance candidate.
+        assert!(out.iter().any(|n| n.id == 3));
+    }
+
+    #[test]
+    fn batch_merge_gallop_matches_linear_merge() {
+        let mut q1 = NeighborPriorityQueue::with_capacity(16);
+        let mut q2 = NeighborPriorityQueue::with_capacity(16);
+        for i in 0..8 {
+            let n = Neighbor::new(i as u32, (i * 2) as f32);
+            q1.insert(n);
+            q2.insert(n);
+        }
+        let cands: Vec<Neighbor> = (10..18).map(|i| Neighbor::new(i, i as f32 + 0.1)).collect();
+        let mut scratch1 = Vec::with_capacity(32);
+        let mut scratch2 = Vec::with_capacity(32);
+        q1.batch_merge(&cands, &mut scratch1);
+        q2.batch_merge_gallop(&cands, &mut scratch2);
+        // Both paths should produce the same ordered output.
+        assert_eq!(q1.size(), q2.size());
+        for i in 0..q1.size() {
+            assert_eq!(q1[i].id, q2[i].id);
+            assert_eq!(q1[i].distance, q2[i].distance);
+        }
+    }
 }

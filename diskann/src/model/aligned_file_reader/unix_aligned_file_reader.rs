@@ -71,7 +71,7 @@ impl UnixAlignedFileReader {
 
     /// Read data at the specified offset, returning a slice view into the mmap.
     /// Zero-copy access when alignment is not required.
-    pub fn read_slice(&self, offset: u64, len: usize) -> io::Result<&[u8]> {
+    pub fn read_slice(&self, offset: u64, len: usize) -> ANNResult<&[u8]> {
         let offset = offset as usize;
 
         if offset + len > self.file_size as usize {
@@ -81,7 +81,8 @@ impl UnixAlignedFileReader {
                     "Read past end of file: offset={}, len={}, file_size={}",
                     offset, len, self.file_size
                 ),
-            ));
+            )
+            .into());
         }
 
         Ok(&self.mmap[offset..offset + len])

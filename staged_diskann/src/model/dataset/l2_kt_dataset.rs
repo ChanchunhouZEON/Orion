@@ -69,6 +69,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 use super::quantized_dataset::QuantParamsL2;
+use diskann::common::ANNResult;
 
 /// Disk-format magic for the L2-kernel-trick sidecar (`.qdsl2kt`).
 pub const L2_KT_MAGIC: u32 = 0x5144_4B54; // "QDKT"
@@ -195,7 +196,7 @@ impl<const N: usize> L2KTDataset<N> {
     /// Body:
     ///   [num_vertices × STRIDE i8 base]
     ///   [num_vertices × 4 i32 norms_sq]
-    pub fn save<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> ANNResult<()> {
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
         let mut hdr = [0u8; 40];
         hdr[0..4].copy_from_slice(&L2_KT_MAGIC.to_le_bytes());
@@ -226,10 +227,11 @@ impl<const N: usize> L2KTDataset<N> {
             )
         };
         w.write_all(norms_bytes)?;
-        w.flush()
+        w.flush()?;
+        Ok(())
     }
 
-    pub fn load<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+    pub fn load<P: AsRef<Path>>(path: P) -> ANNResult<Self> {
         let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
         let mut hdr = [0u8; 40];
         r.read_exact(&mut hdr)?;
@@ -241,7 +243,7 @@ impl<const N: usize> L2KTDataset<N> {
                     "bad magic 0x{magic:08x} (expected 0x{:08x} = QDKT)",
                     L2_KT_MAGIC
                 ),
-            ));
+            ).into());
         }
         let num_vertices =
             u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
@@ -250,14 +252,14 @@ impl<const N: usize> L2KTDataset<N> {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
-            ));
+            ).into());
         }
         let dim = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
         if dim != N {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("dim mismatch: file={dim} expected={N}"),
-            ));
+            ).into());
         }
         let slope = f32::from_le_bytes(hdr[24..28].try_into().unwrap());
         let offset = i32::from_le_bytes(hdr[28..32].try_into().unwrap());

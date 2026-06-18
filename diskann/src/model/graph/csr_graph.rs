@@ -6,6 +6,7 @@
 use std::io::{BufReader, BufWriter, Read, Write};
 
 use super::node_slab_buffer::{BIDIR_OFFSET, HEADER_U32, NodeSlabBuffer};
+use crate::common::ANNResult;
 
 const CACHE_LINE_BYTES: usize = 64;
 
@@ -239,7 +240,7 @@ impl CsrGraph {
     // ── IO ───────────────────────────────────────────────────────────────────
 
     /// Save CsrGraph to a file: header + buffer data.
-    pub fn save<P: AsRef<std::path::Path>>(&self, path: P) -> std::io::Result<()> {
+    pub fn save<P: AsRef<std::path::Path>>(&self, path: P) -> ANNResult<()> {
         let f = std::fs::File::create(path)?;
         let mut w = BufWriter::new(f);
         // Header: [num_nodes, max_degree, stride_u32, reserved]
@@ -252,11 +253,12 @@ impl CsrGraph {
         let hdr_bytes = unsafe { std::slice::from_raw_parts(header.as_ptr() as *const u8, 16) };
         w.write_all(hdr_bytes)?;
         self.slab.save_to(&mut w)?;
-        w.flush()
+        w.flush()?;
+        Ok(())
     }
 
     /// Load CsrGraph from a file.
-    pub fn load<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<Self> {
+    pub fn load<P: AsRef<std::path::Path>>(path: P) -> ANNResult<Self> {
         let f = std::fs::File::open(path)?;
         let mut r = BufReader::new(f);
         let mut hdr_bytes = [0u8; 16];

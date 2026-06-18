@@ -1,6 +1,5 @@
 pub mod builder;
 pub mod compressed_index;
-pub mod diskann_base;
 pub mod naive_compressed_index;
 
 pub use crate::algorithm::search::async_beam_search::{
@@ -8,7 +7,6 @@ pub use crate::algorithm::search::async_beam_search::{
 };
 pub use builder::{DiskANNBuildResult, build_diskann_index};
 pub use compressed_index::StagedDiskANN;
-pub use diskann_base::DiskANN;
 pub use naive_compressed_index::NaiveStagedDiskANN;
 
 /// Supported dimension constants for dispatch.

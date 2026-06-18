@@ -520,9 +520,348 @@ impl DistanceFn for L2F32Distance {
     }
 }
 
-// ─── Scalar fallbacks for non-aarch64 ─────────────────────────────────
+// ─── AVX-512 streaming impls (x86_64 + target_feature = "avx512f") ────
+//
+// Same trait surface as the NEON impls — `init / step / reduce / merge`
+// — but at 64 bytes per chunk instead of 32, so each `step` does one
+// full 512-bit-wide pass per side. CHUNK_BYTES = 64 here ripples
+// through `DistanceStream` automatically via `K::CHUNK_BYTES`.
+//
+// Cfg: `cfg(all(target_arch = "x86_64", target_feature = "avx512f"))`.
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+use std::arch::x86_64::*;
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+impl DistanceFn for L2U8Distance {
+    type Storage = u8;
+    /// 16 i32 lanes — `_mm512_madd_epi16` produces these directly,
+    /// no further widen needed (Σ at D=960 maxes ≈ 6.2 M, within i32).
+    type Acc = __m512i;
+    const CHUNK_BYTES: usize = 64;
+
+    #[inline(always)]
+    fn init() -> Self::Acc {
+        unsafe { _mm512_setzero_si512() }
+    }
+    #[inline(always)]
+    unsafe fn step(acc: &mut Self::Acc, base_chunk: *const u8, query_chunk: *const u8) {
+        // Split 64 bytes into two 32-byte halves, widen each to
+        // 32× i16 via VPMOVZXBW (zero-extend u8 → i16). Difference
+        // fits in i16 (range ±255). Squared via VPMADDWD → 16 i32
+        // pair sums per half, two halves → 32 i32, summed into acc.
+        let a_lo = _mm256_loadu_si256(base_chunk as *const __m256i);
+        let a_hi = _mm256_loadu_si256(base_chunk.add(32) as *const __m256i);
+        let q_lo = _mm256_loadu_si256(query_chunk as *const __m256i);
+        let q_hi = _mm256_loadu_si256(query_chunk.add(32) as *const __m256i);
+
+        let aw_lo = _mm512_cvtepu8_epi16(a_lo);
+        let aw_hi = _mm512_cvtepu8_epi16(a_hi);
+        let qw_lo = _mm512_cvtepu8_epi16(q_lo);
+        let qw_hi = _mm512_cvtepu8_epi16(q_hi);
+
+        let d_lo = _mm512_sub_epi16(aw_lo, qw_lo);
+        let d_hi = _mm512_sub_epi16(aw_hi, qw_hi);
+
+        *acc = _mm512_add_epi32(*acc, _mm512_madd_epi16(d_lo, d_lo));
+        *acc = _mm512_add_epi32(*acc, _mm512_madd_epi16(d_hi, d_hi));
+    }
+    #[inline(always)]
+    fn reduce(acc: Self::Acc) -> f32 {
+        unsafe { _mm512_reduce_add_epi32(acc) as f32 }
+    }
+    #[inline(always)]
+    fn merge(into: &mut Self::Acc, src: Self::Acc) {
+        unsafe { *into = _mm512_add_epi32(*into, src) }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+impl DistanceFn for L2U16Distance {
+    type Storage = u16;
+    /// 4 independent i64 chains (same shape as the NEON path) —
+    /// VPMADDWD produces 16 i32 per half, widen to i64 via
+    /// `_mm512_cvtepi32_epi64` (two halves × 8 lanes each).
+    type Acc = (__m512i, __m512i, __m512i, __m512i);
+    const CHUNK_BYTES: usize = 64;
+
+    #[inline(always)]
+    fn init() -> Self::Acc {
+        unsafe {
+            (
+                _mm512_setzero_si512(),
+                _mm512_setzero_si512(),
+                _mm512_setzero_si512(),
+                _mm512_setzero_si512(),
+            )
+        }
+    }
+    #[inline(always)]
+    unsafe fn step(acc: &mut Self::Acc, base_chunk: *const u16, query_chunk: *const u16) {
+        // 64 B = 32 u16 = two 512-bit loads.
+        let a_lo = _mm512_loadu_si512(base_chunk as *const __m512i);
+        let a_hi = _mm512_loadu_si512(base_chunk.add(16) as *const __m512i);
+        let q_lo = _mm512_loadu_si512(query_chunk as *const __m512i);
+        let q_hi = _mm512_loadu_si512(query_chunk.add(16) as *const __m512i);
+
+        // Per-lane abs-diff via signed sub on widened i32. For u16
+        // |a-b| ≤ 65535 fits in i32 but the signed sub at i16 width
+        // could underflow — we widen to i32 first to keep the math
+        // straightforward.
+        let aw_lo_lo = _mm512_cvtepu16_epi32(_mm512_castsi512_si256(a_lo));
+        let aw_lo_hi = _mm512_cvtepu16_epi32(_mm512_extracti64x4_epi64(a_lo, 1));
+        let aw_hi_lo = _mm512_cvtepu16_epi32(_mm512_castsi512_si256(a_hi));
+        let aw_hi_hi = _mm512_cvtepu16_epi32(_mm512_extracti64x4_epi64(a_hi, 1));
+        let qw_lo_lo = _mm512_cvtepu16_epi32(_mm512_castsi512_si256(q_lo));
+        let qw_lo_hi = _mm512_cvtepu16_epi32(_mm512_extracti64x4_epi64(q_lo, 1));
+        let qw_hi_lo = _mm512_cvtepu16_epi32(_mm512_castsi512_si256(q_hi));
+        let qw_hi_hi = _mm512_cvtepu16_epi32(_mm512_extracti64x4_epi64(q_hi, 1));
+
+        let d0 = _mm512_sub_epi32(aw_lo_lo, qw_lo_lo);
+        let d1 = _mm512_sub_epi32(aw_lo_hi, qw_lo_hi);
+        let d2 = _mm512_sub_epi32(aw_hi_lo, qw_hi_lo);
+        let d3 = _mm512_sub_epi32(aw_hi_hi, qw_hi_hi);
+
+        // i32 * i32 → i64 element-wise. AVX-512 has `_mm512_mul_epi32`
+        // which multiplies even lanes; we use `_mm512_mullo_epi32` to
+        // produce 16 i32 lanes (low 32 of i64 product), then widen.
+        // For our range (|d| ≤ 65535) the i32 product (≤ 2^32) fits in
+        // i64 cleanly.
+        let p0 = _mm512_mullo_epi32(d0, d0);
+        let p1 = _mm512_mullo_epi32(d1, d1);
+        let p2 = _mm512_mullo_epi32(d2, d2);
+        let p3 = _mm512_mullo_epi32(d3, d3);
+
+        // Widen i32 → i64 for accumulation, splitting each 16-lane
+        // i32 vec into low + high halves (8 i64 each).
+        macro_rules! widen_add {
+            ($dst:expr, $p:expr) => {{
+                let lo = _mm512_cvtepi32_epi64(_mm512_castsi512_si256($p));
+                let hi = _mm512_cvtepi32_epi64(_mm512_extracti64x4_epi64($p, 1));
+                $dst = _mm512_add_epi64($dst, lo);
+                $dst = _mm512_add_epi64($dst, hi);
+            }};
+        }
+        widen_add!(acc.0, p0);
+        widen_add!(acc.1, p1);
+        widen_add!(acc.2, p2);
+        widen_add!(acc.3, p3);
+    }
+    #[inline(always)]
+    fn reduce(acc: Self::Acc) -> f32 {
+        unsafe {
+            let s01 = _mm512_add_epi64(acc.0, acc.1);
+            let s23 = _mm512_add_epi64(acc.2, acc.3);
+            _mm512_reduce_add_epi64(_mm512_add_epi64(s01, s23)) as f32
+        }
+    }
+    #[inline(always)]
+    fn merge(into: &mut Self::Acc, src: Self::Acc) {
+        unsafe {
+            into.0 = _mm512_add_epi64(into.0, src.0);
+            into.1 = _mm512_add_epi64(into.1, src.1);
+            into.2 = _mm512_add_epi64(into.2, src.2);
+            into.3 = _mm512_add_epi64(into.3, src.3);
+        }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+impl DistanceFn for JLHammingDistance {
+    type Storage = u8;
+    /// 8 i64 lanes — VPOPCNTQ output. Per-step max = 64 bytes ×
+    /// 8 bits = 512, so even i32 would suffice, but i64 matches
+    /// the natural VPOPCNTQ output width with no widening.
+    type Acc = __m512i;
+    const CHUNK_BYTES: usize = 64;
+
+    #[inline(always)]
+    fn init() -> Self::Acc {
+        unsafe { _mm512_setzero_si512() }
+    }
+    #[inline(always)]
+    unsafe fn step(acc: &mut Self::Acc, base_chunk: *const u8, query_chunk: *const u8) {
+        let a = _mm512_loadu_si512(base_chunk as *const __m512i);
+        let q = _mm512_loadu_si512(query_chunk as *const __m512i);
+        let x = _mm512_xor_si512(a, q);
+        // `_mm512_popcnt_epi64` requires `avx512vpopcntdq` (Ice Lake+,
+        // Sapphire Rapids, Zen 4+). Without it the kernel won't
+        // compile; the caller is expected to build with
+        // `target-feature=+avx512vpopcntdq` per `.cargo/config.toml.example`.
+        // Skylake-SP / Cascade Lake users should set
+        // `cfg(not(target_feature = "avx512vpopcntdq"))` to route
+        // back to the scalar fallback (TODO: bit-sliced popcount
+        // fallback like the standalone `hamming_avx512_harley_seal`).
+        let pc = _mm512_popcnt_epi64(x);
+        *acc = _mm512_add_epi64(*acc, pc);
+    }
+    #[inline(always)]
+    fn reduce(acc: Self::Acc) -> f32 {
+        unsafe { _mm512_reduce_add_epi64(acc) as f32 }
+    }
+    #[inline(always)]
+    fn merge(into: &mut Self::Acc, src: Self::Acc) {
+        unsafe { *into = _mm512_add_epi64(*into, src) }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+impl DistanceFn for IpI8Distance {
+    type Storage = i8;
+    /// 16 i32 lanes — VPMADDWD output. Σ at D=960 maxes ≈ 15.5 M,
+    /// well within i32.
+    type Acc = __m512i;
+    const CHUNK_BYTES: usize = 64;
+
+    #[inline(always)]
+    fn init() -> Self::Acc {
+        unsafe { _mm512_setzero_si512() }
+    }
+    #[inline(always)]
+    unsafe fn step(acc: &mut Self::Acc, base_chunk: *const i8, query_chunk: *const i8) {
+        // 64 i8 → split into two 32-element halves, sign-extend to
+        // i16 via VPMOVSXBW, multiply-add pairs via VPMADDWD.
+        let a_lo = _mm256_loadu_si256(base_chunk as *const __m256i);
+        let a_hi = _mm256_loadu_si256(base_chunk.add(32) as *const __m256i);
+        let q_lo = _mm256_loadu_si256(query_chunk as *const __m256i);
+        let q_hi = _mm256_loadu_si256(query_chunk.add(32) as *const __m256i);
+
+        let aw_lo = _mm512_cvtepi8_epi16(a_lo);
+        let aw_hi = _mm512_cvtepi8_epi16(a_hi);
+        let qw_lo = _mm512_cvtepi8_epi16(q_lo);
+        let qw_hi = _mm512_cvtepi8_epi16(q_hi);
+
+        *acc = _mm512_add_epi32(*acc, _mm512_madd_epi16(aw_lo, qw_lo));
+        *acc = _mm512_add_epi32(*acc, _mm512_madd_epi16(aw_hi, qw_hi));
+    }
+    #[inline(always)]
+    fn reduce(acc: Self::Acc) -> f32 {
+        unsafe { -(_mm512_reduce_add_epi32(acc) as f32) }
+    }
+    #[inline(always)]
+    fn merge(into: &mut Self::Acc, src: Self::Acc) {
+        unsafe { *into = _mm512_add_epi32(*into, src) }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+impl DistanceFn for IpI16Distance {
+    type Storage = i16;
+    /// 4 independent i64 chains, same shape as NEON. VPMADDWD →
+    /// 16 i32 lanes per pair, widen + accumulate into i64.
+    type Acc = (__m512i, __m512i, __m512i, __m512i);
+    const CHUNK_BYTES: usize = 64;
+
+    #[inline(always)]
+    fn init() -> Self::Acc {
+        unsafe {
+            (
+                _mm512_setzero_si512(),
+                _mm512_setzero_si512(),
+                _mm512_setzero_si512(),
+                _mm512_setzero_si512(),
+            )
+        }
+    }
+    #[inline(always)]
+    unsafe fn step(acc: &mut Self::Acc, base_chunk: *const i16, query_chunk: *const i16) {
+        let a_lo = _mm512_loadu_si512(base_chunk as *const __m512i);
+        let a_hi = _mm512_loadu_si512(base_chunk.add(16) as *const __m512i);
+        let q_lo = _mm512_loadu_si512(query_chunk as *const __m512i);
+        let q_hi = _mm512_loadu_si512(query_chunk.add(16) as *const __m512i);
+
+        let m0 = _mm512_madd_epi16(a_lo, q_lo);
+        let m1 = _mm512_madd_epi16(a_hi, q_hi);
+
+        // Widen i32 → i64 and dispatch across 4 acc chains.
+        let m0_lo = _mm512_cvtepi32_epi64(_mm512_castsi512_si256(m0));
+        let m0_hi = _mm512_cvtepi32_epi64(_mm512_extracti64x4_epi64(m0, 1));
+        let m1_lo = _mm512_cvtepi32_epi64(_mm512_castsi512_si256(m1));
+        let m1_hi = _mm512_cvtepi32_epi64(_mm512_extracti64x4_epi64(m1, 1));
+
+        acc.0 = _mm512_add_epi64(acc.0, m0_lo);
+        acc.1 = _mm512_add_epi64(acc.1, m0_hi);
+        acc.2 = _mm512_add_epi64(acc.2, m1_lo);
+        acc.3 = _mm512_add_epi64(acc.3, m1_hi);
+    }
+    #[inline(always)]
+    fn reduce(acc: Self::Acc) -> f32 {
+        unsafe {
+            let s01 = _mm512_add_epi64(acc.0, acc.1);
+            let s23 = _mm512_add_epi64(acc.2, acc.3);
+            -(_mm512_reduce_add_epi64(_mm512_add_epi64(s01, s23)) as f32)
+        }
+    }
+    #[inline(always)]
+    fn merge(into: &mut Self::Acc, src: Self::Acc) {
+        unsafe {
+            into.0 = _mm512_add_epi64(into.0, src.0);
+            into.1 = _mm512_add_epi64(into.1, src.1);
+            into.2 = _mm512_add_epi64(into.2, src.2);
+            into.3 = _mm512_add_epi64(into.3, src.3);
+        }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+impl DistanceFn for IpF32Distance {
+    type Storage = f32;
+    /// Single 16-wide FMA accumulator — at 16 floats/chunk the per-
+    /// step throughput is already 4 fmadds/cycle on Genoa, well-
+    /// saturated by one chain.
+    type Acc = __m512;
+    const CHUNK_BYTES: usize = 64;
+
+    #[inline(always)]
+    fn init() -> Self::Acc {
+        unsafe { _mm512_setzero_ps() }
+    }
+    #[inline(always)]
+    unsafe fn step(acc: &mut Self::Acc, base_chunk: *const f32, query_chunk: *const f32) {
+        let a = _mm512_loadu_ps(base_chunk);
+        let q = _mm512_loadu_ps(query_chunk);
+        *acc = _mm512_fmadd_ps(a, q, *acc);
+    }
+    #[inline(always)]
+    fn reduce(acc: Self::Acc) -> f32 {
+        unsafe { -_mm512_reduce_add_ps(acc) }
+    }
+    #[inline(always)]
+    fn merge(into: &mut Self::Acc, src: Self::Acc) {
+        unsafe { *into = _mm512_add_ps(*into, src) }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+impl DistanceFn for L2F32Distance {
+    type Storage = f32;
+    type Acc = __m512;
+    const CHUNK_BYTES: usize = 64;
+
+    #[inline(always)]
+    fn init() -> Self::Acc {
+        unsafe { _mm512_setzero_ps() }
+    }
+    #[inline(always)]
+    unsafe fn step(acc: &mut Self::Acc, base_chunk: *const f32, query_chunk: *const f32) {
+        let a = _mm512_loadu_ps(base_chunk);
+        let q = _mm512_loadu_ps(query_chunk);
+        let d = _mm512_sub_ps(a, q);
+        *acc = _mm512_fmadd_ps(d, d, *acc);
+    }
+    #[inline(always)]
+    fn reduce(acc: Self::Acc) -> f32 {
+        unsafe { _mm512_reduce_add_ps(acc) }
+    }
+    #[inline(always)]
+    fn merge(into: &mut Self::Acc, src: Self::Acc) {
+        unsafe { *into = _mm512_add_ps(*into, src) }
+    }
+}
+
+// ─── Scalar fallbacks for non-aarch64, non-AVX-512 targets ────────────
+
+#[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
 impl DistanceFn for L2U8Distance {
     type Storage = u8;
     type Acc = u32;
@@ -549,7 +888,7 @@ impl DistanceFn for L2U8Distance {
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
 impl DistanceFn for L2U16Distance {
     type Storage = u16;
     type Acc = u64;
@@ -576,7 +915,7 @@ impl DistanceFn for L2U16Distance {
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
 impl DistanceFn for JLHammingDistance {
     type Storage = u8;
     type Acc = u32;
@@ -600,7 +939,7 @@ impl DistanceFn for JLHammingDistance {
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
 impl DistanceFn for IpI8Distance {
     type Storage = i8;
     type Acc = i32;
@@ -624,7 +963,7 @@ impl DistanceFn for IpI8Distance {
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
 impl DistanceFn for IpI16Distance {
     type Storage = i16;
     type Acc = i64;
@@ -648,7 +987,7 @@ impl DistanceFn for IpI16Distance {
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
 impl DistanceFn for IpF32Distance {
     type Storage = f32;
     type Acc = f32;
@@ -672,7 +1011,7 @@ impl DistanceFn for IpF32Distance {
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
 impl DistanceFn for L2F32Distance {
     type Storage = f32;
     type Acc = f32;

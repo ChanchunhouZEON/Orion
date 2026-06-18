@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
+use diskann::common::ANNResult;
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct ProductQuantizer {
@@ -184,7 +185,7 @@ impl ProductQuantizer {
             .sum()
     }
 
-    pub fn save_model<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
+    pub fn save_model<P: AsRef<Path>>(&self, path: P) -> ANNResult<()> {
         let mut file = BufWriter::new(File::create(path)?);
         let config = bincode::config::standard()
             .with_fixed_int_encoding()
@@ -193,7 +194,7 @@ impl ProductQuantizer {
         Ok(())
     }
 
-    pub fn load_model<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
+    pub fn load_model<P: AsRef<Path>>(path: P) -> ANNResult<Self> {
         let mut file = BufReader::new(File::open(path)?);
         let config = bincode::config::standard()
             .with_fixed_int_encoding()
@@ -301,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn test_serialization_roundtrip() -> anyhow::Result<()> {
+    fn test_serialization_roundtrip() -> ANNResult<()> {
         let dim = 8;
         let m = 2;
         let n_samples = 300;

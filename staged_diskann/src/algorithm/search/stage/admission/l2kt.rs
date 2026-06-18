@@ -113,3 +113,25 @@ impl<'a, const N: usize> AdmissionSession for L2KTSession<'a, N> {
         w
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use diskann::model::InmemDataset;
+
+    #[test]
+    fn l2kt_session_smoke() {
+        let mut ds = InmemDataset::<f32, 16>::new(4, 1.0).unwrap();
+        for (i, v) in ds.data.as_mut_slice().iter_mut().enumerate() {
+            *v = ((i % 11) as f32) * 0.08 - 0.4;
+        }
+        let kt = L2KTDataset::<16>::build_from(&ds);
+        let adm = L2KTAdmission::new(&kt);
+        let q = [0.0f32; 16];
+        let session = adm.open(&q);
+        for vid in 0..4u32 {
+            let d = session.entry_distance(vid);
+            assert!(d.is_finite(), "vid={vid} d={d}");
+        }
+    }
+}

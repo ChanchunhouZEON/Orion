@@ -1,0 +1,227 @@
+# Cross-platform compile + test check for the AVX-512 distance kernels.
+#
+# Why: the kernels in `vector/src/{l2,ip}_avx512_distance*.rs` only
+# compile on x86_64 with `target-feature=+avx512f`. The primary dev
+# box (Apple Silicon) can only cross-compile-check them — it cannot
+# actually RUN AVX-512 code. This workflow runs them on real
+# AVX-512-capable hosts so the kernels stay correct.
+#
+# Runner choice
+# ─────────────
+# GitHub-hosted `ubuntu-latest` runners are still Intel-based and
+# typically advertise AVX-512F + BW + DQ + VL. They do NOT have
+# `avx512vpopcntdq` (Ice Lake+ only), so the RaBitQ popcount fast
+# path falls back to the Harley-Seal kernel. For full coverage
+# including VPOPCNTDQ, point `runs-on:` at a self-hosted Ice Lake
+# / Sapphire Rapids / Genoa runner.
+#
+# We DON'T silently skip if AVX-512 is missing — the `summary`
+# job at the end fails the entire run when `cpu-features` reports
+# `avx512f = false`. Otherwise the CI badge would stay green on
+# AMD-based runners where we never actually exercised AVX-512.
+name: avx512
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'vector/**'
+      - 'diskann/**'
+      - 'staged_diskann/**'
+      - 'benchmark/**'
+      - '.cargo/config.toml.example'
+      - 'Dockerfile.ci'
+      - '.github/workflows/avx512.yml'
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'vector/**'
+      - 'diskann/**'
+      - 'staged_diskann/**'
+      - 'benchmark/**'
+      - '.cargo/config.toml.example'
+      - 'Dockerfile.ci'
+      - '.github/workflows/avx512.yml'
+  workflow_dispatch:
+
+# Cancel in-flight CI runs when a newer commit arrives for the
+# same ref. Saves runner minutes on busy PRs.
+concurrency:
+  group: avx512-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned in `rust-toolchain.toml` too, but be explicit so the
+  # cache key changes when we bump the toolchain.
+  RUST_TOOLCHAIN: "1.86.0"
+  # AVX-512 features we compile against on every job that hits
+  # x86_64. `avx512vpopcntdq` is intentionally omitted — see top-
+  # of-file note about Skylake-SP / Cascade Lake fallback.
+  RUSTFLAGS_AVX512: "-C target-feature=+avx512f,+avx512bw,+avx512dq,+avx512vl"
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # 1. Detect what x86_64 SIMD features the runner advertises.
+  #    Outputs feed the gate condition for build-and-test below.
+  #    If AVX-512F is missing, the `summary` job at the end will
+  #    fail the run so the CI badge reflects reality.
+  cpu-features:
+    runs-on: ubuntu-latest
+    outputs:
+      has_avx512f: ${{ steps.check.outputs.has_avx512f }}
+      has_avx512bw: ${{ steps.check.outputs.has_avx512bw }}
+      has_avx512vpopcntdq: ${{ steps.check.outputs.has_avx512vpopcntdq }}
+    steps:
+      - id: check
+        shell: bash
+        run: |
+          echo "CPU model:"
+          grep -m1 "model name" /proc/cpuinfo || true
+          echo
+          echo "AVX-512 flags advertised:"
+          grep -m1 "^flags" /proc/cpuinfo | tr ' ' '\n' | grep -E '^avx512' | sort -u || true
+          for feat in avx512f avx512bw avx512vpopcntdq; do
+            if grep -q -m1 "$feat" /proc/cpuinfo; then
+              echo "has_${feat}=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "has_${feat}=false" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+  # ──────────────────────────────────────────────────────────────
+  # 2. Lint sweep — informational. Doesn't gate the build (the
+  #    tree has pre-existing `unused_import` warnings on
+  #    non-aarch64 cfg paths that this workflow shouldn't churn).
+  #    `cargo fmt --check` is deliberately omitted: the workspace
+  #    has drift unrelated to AVX-512 and a blanket reformat
+  #    belongs in its own PR.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.86.0
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: avx512-lint
+      - name: cargo clippy (vector only, informational)
+        run: cargo clippy -p vector --release || true
+
+  # ──────────────────────────────────────────────────────────────
+  # 3. Cross-arch compile-check from macOS ARM — catches cfg-gate
+  #    bugs that only surface when one of the two arches is the
+  #    target. Three sub-checks cover the dispatch matrix.
+  compile-check-cross:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.86.0
+          targets: x86_64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: avx512-cross-${{ runner.os }}
+      - name: Native compile-check (aarch64 — NEON path)
+        run: cargo check --workspace
+      - name: Cross compile-check (x86_64 + AVX-512)
+        env:
+          RUSTFLAGS: ${{ env.RUSTFLAGS_AVX512 }}
+        run: cargo check -p vector -p staged_diskann --target x86_64-unknown-linux-gnu
+      - name: Cross compile-check (x86_64 no AVX-512 — AVX2 fallback)
+        run: cargo check -p vector -p staged_diskann --target x86_64-unknown-linux-gnu
+      # The `cblas` feature is opt-in. Default x86_64 build must
+      # work without OpenBLAS — this catches accidental
+      # re-introduction of unconditional `extern crate cblas`.
+      - name: diskann default features (no cblas)
+        run: cargo check -p diskann --target x86_64-unknown-linux-gnu
+
+  # ──────────────────────────────────────────────────────────────
+  # 4. Compile + test on a real AVX-512 host. Gated on AVX-512F
+  #    detection; if the runner SKU regresses this job is skipped
+  #    and the `summary` job below fails the run.
+  build-and-test:
+    runs-on: ubuntu-latest
+    needs: cpu-features
+    if: needs.cpu-features.outputs.has_avx512f == 'true'
+    env:
+      RUSTFLAGS: ${{ needs.cpu-features.outputs.has_avx512vpopcntdq == 'true' && '-C target-feature=+avx512f,+avx512bw,+avx512dq,+avx512vl,+avx512vpopcntdq' || '-C target-feature=+avx512f,+avx512bw,+avx512dq,+avx512vl' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.86.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: avx512-test-${{ runner.os }}
+      - name: vector — build + test (numerical parity vs scalar reference)
+        # The `distance_test` module in `vector/src/lib.rs` compares
+        # each SIMD impl to a `no_vector_compare_*` reference at
+        # `epsilon ≤ 1e-4`. On real AVX-512 this enforces parity
+        # for the L2/IP kernels.
+        run: |
+          cargo build -p vector --release
+          cargo test -p vector --release -- --nocapture
+      - name: staged_diskann — quantized codec tests (RaBitQ, JL, L2-KT)
+        run: cargo test -p staged_diskann --release --lib model::dataset -- --nocapture
+      - name: diskann — default + cblas-gated check
+        run: |
+          cargo check -p diskann --release          # default: no cblas
+          # Skip --features cblas — installing OpenBLAS adds 60s
+          # without exercising AVX-512 distance code.
+      - name: benchmark — release build (linkage smoke)
+        # `cargo build --bin benchmark` would compile the entire
+        # workspace's transitive deps; that's the equivalent of
+        # the Colima Phase 5 check, but on real hardware.
+        run: cargo build -p benchmark --release --bin benchmark
+
+  # ──────────────────────────────────────────────────────────────
+  # 5. Summary gate — explicitly FAIL if AVX-512 was unavailable.
+  #    Without this, a runner-SKU change that drops AVX-512 would
+  #    silently skip `build-and-test` and the CI badge would stay
+  #    green even though no AVX-512 code was ever exercised. With
+  #    this job, the badge correctly turns red on any of:
+  #      • cpu-features couldn't detect avx512f
+  #      • build-and-test was skipped
+  #      • build-and-test failed
+  summary:
+    needs: [cpu-features, lint, compile-check-cross, build-and-test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report
+        shell: bash
+        run: |
+          echo "── Per-job results ──"
+          echo "  cpu-features:          ${{ needs.cpu-features.result }}"
+          echo "  lint:                  ${{ needs.lint.result }}"
+          echo "  compile-check-cross:   ${{ needs.compile-check-cross.result }}"
+          echo "  build-and-test:        ${{ needs.build-and-test.result }}"
+          echo
+          echo "── CPU features observed ──"
+          echo "  avx512f:         ${{ needs.cpu-features.outputs.has_avx512f }}"
+          echo "  avx512bw:        ${{ needs.cpu-features.outputs.has_avx512bw }}"
+          echo "  avx512vpopcntdq: ${{ needs.cpu-features.outputs.has_avx512vpopcntdq }}"
+          echo
+          if [[ "${{ needs.cpu-features.outputs.has_avx512f }}" != "true" ]]; then
+            echo "::error::Runner does not advertise avx512f — AVX-512 kernels were NOT exercised."
+            echo "::error::Move to a self-hosted Intel/AMD runner with AVX-512 to recover coverage."
+            exit 1
+          fi
+          if [[ "${{ needs.build-and-test.result }}" != "success" ]]; then
+            echo "::error::build-and-test job result was '${{ needs.build-and-test.result }}' (not success)."
+            exit 1
+          fi
+          if [[ "${{ needs.compile-check-cross.result }}" != "success" ]]; then
+            echo "::error::compile-check-cross failed — the cross-arch dispatch matrix is broken."
+            exit 1
+          fi
+          echo "✅ All checks passed against real AVX-512 hardware."

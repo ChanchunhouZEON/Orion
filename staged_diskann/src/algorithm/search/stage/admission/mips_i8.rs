@@ -77,3 +77,26 @@ impl<'a, const N: usize> AdmissionSession for MipsI8Session<'a, N> {
         w
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use diskann::model::InmemDataset;
+
+    #[test]
+    fn mips_i8_session_smoke() {
+        let mut ds = InmemDataset::<f32, 16>::new(4, 1.0).unwrap();
+        for (i, v) in ds.data.as_mut_slice().iter_mut().enumerate() {
+            *v = ((i % 7) as f32) * 0.1 - 0.3;
+        }
+        let qds = QuantizedDataset::<MipsI8, 16>::from_f32_dataset(&ds);
+        let adm = MipsI8Admission::new(&qds);
+        let q = [0.1f32; 16];
+        let session = adm.open(&q);
+        // entry_distance must return a finite value for every vertex.
+        for vid in 0..4u32 {
+            let d = session.entry_distance(vid);
+            assert!(d.is_finite(), "vid={vid} d={d}");
+        }
+    }
+}

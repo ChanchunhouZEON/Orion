@@ -8,13 +8,15 @@
 #![warn(missing_debug_implementations, missing_docs)]
 
 //! Aligned allocator
-#[cfg(target_arch = "x86_64")]
-extern crate cblas;
-#[cfg(target_arch = "x86_64")]
-extern crate openblas_src;
-
-#[cfg(target_arch = "x86_64")]
-use cblas::{Layout, Transpose, sgemm, snrm2};
+//
+// k-means clustering for pivot generation uses a pure-Rust ndarray
+// path on every target. The historical upstream-Microsoft x86_64
+// build pulled in OpenBLAS/cblas for `sgemm` + `snrm2`, but that
+// path was never wired into the StagedDiskANN search hot path,
+// added an optional dep that broke IDE builds via a transitive
+// `openblas-build` TLS-feature requirement, and only saved time on
+// the (unused) pivot-generation phase. We dropped the cblas knob
+// — the ndarray fallback is what every build now uses.
 use rayon::prelude::*;
 use std::{
     cmp::{Ordering, min},
@@ -70,20 +72,11 @@ pub fn compute_vecs_l2sq(vecs_l2sq: &mut [f32], data: &[f32], num_points: usize,
         .par_iter_mut()
         .enumerate()
         .for_each(|(n_iter, vec_l2sq)| {
-            #[cfg(target_arch = "x86_64")]
-            {
-                let slice = &data[n_iter * dim..(n_iter + 1) * dim];
-                let norm = unsafe { snrm2(dim as i32, slice, 1) };
-                *vec_l2sq = norm * norm;
+            let mut sum = 0.0f32;
+            for i in 0..dim {
+                sum += data[n_iter * dim + i] * data[n_iter * dim + i];
             }
-            #[cfg(not(target_arch = "x86_64"))]
-            {
-                let mut sum = 0.0f32;
-                for i in 0..dim {
-                    sum += data[n_iter * dim + i] * data[n_iter * dim + i];
-                }
-                *vec_l2sq = sum;
-            }
+            *vec_l2sq = sum;
         });
 }
 
@@ -115,121 +108,11 @@ pub fn compute_closest_centers_in_block(
         )));
     }
 
-    // Compute the value in dist_matrix
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        let ones_a: Vec<f32> = vec![1.0; num_centers];
-        let ones_b: Vec<f32> = vec![1.0; num_points];
-
-        unsafe {
-            sgemm(
-                Layout::RowMajor,
-                Transpose::None,
-                Transpose::Ordinary,
-                num_points as i32,
-                num_centers as i32,
-                1,
-                1.0,
-                docs_l2sq,
-                1,
-                &ones_a,
-                1,
-                0.0,
-                dist_matrix,
-                num_centers as i32,
-            );
-        }
-
-        unsafe {
-            sgemm(
-                Layout::RowMajor,
-                Transpose::None,
-                Transpose::Ordinary,
-                num_points as i32,
-                num_centers as i32,
-                1,
-                1.0,
-                &ones_b,
-                1,
-                centers_l2sq,
-                1,
-                1.0,
-                dist_matrix,
-                num_centers as i32,
-            );
-        }
-
-        unsafe {
-            sgemm(
-                Layout::RowMajor,
-                Transpose::None,
-                Transpose::Ordinary,
-                num_points as i32,
-                num_centers as i32,
-                dim as i32,
-                -2.0,
-                data,
-                dim as i32,
-                centers,
-                dim as i32,
-                1.0,
-                dist_matrix,
-                num_centers as i32,
-            );
-        }
-
-        if k == 1 {
-            center_index
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(i, center_idx)| {
-                    let mut min = f32::MAX;
-                    let current = &dist_matrix[i * num_centers..(i + 1) * num_centers];
-                    let mut min_idx = 0;
-                    for (j, &distance) in current.iter().enumerate() {
-                        if distance < min {
-                            min = distance;
-                            min_idx = j;
-                        }
-                    }
-                    *center_idx = min_idx as u32;
-                });
-        } else {
-            center_index
-                .par_chunks_mut(k)
-                .enumerate()
-                .for_each(|(i, center_chunk)| {
-                    let current = &dist_matrix[i * num_centers..(i + 1) * num_centers];
-                    let mut top_k_queue = BinaryHeap::new();
-                    for (j, &distance) in current.iter().enumerate() {
-                        let this_piv = PivotContainer {
-                            piv_id: j,
-                            piv_dist: distance,
-                        };
-                        if top_k_queue.len() < k {
-                            top_k_queue.push(this_piv);
-                        } else {
-                            // Safe unwrap, top_k_queue is not empty
-                            #[allow(clippy::unwrap_used)]
-                            let mut top = top_k_queue.peek_mut().unwrap();
-                            if this_piv.piv_dist < top.piv_dist {
-                                *top = this_piv;
-                            }
-                        }
-                    }
-                    for (_j, center_idx) in center_chunk.iter_mut().enumerate() {
-                        if let Some(this_piv) = top_k_queue.pop() {
-                            *center_idx = this_piv.piv_id as u32;
-                        } else {
-                            break;
-                        }
-                    }
-                });
-        }
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
+    // Compute the value in dist_matrix via the pure-Rust ndarray
+    // path. The historical BLAS-accelerated `sgemm` branch was
+    // dropped — it required system OpenBLAS, broke IDE builds via
+    // a transitive openblas-build TLS-feature requirement, and
+    // was never wired into the StagedDiskANN search hot path.
     {
         use ndarray::prelude::*;
 

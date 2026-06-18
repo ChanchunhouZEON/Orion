@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import Optional
 
 import matplotlib.pyplot as plt
-from chart_style import PALETTE_VIVID, style_ax
+from chart_style import PALETTE_VIVID, save_png_and_pdf, style_ax
 
 
 # Datasets the script knows how to render. `fashion-mnist` is
@@ -214,12 +214,13 @@ def render_one(dataset: str, metric: str = "l2") -> Optional[str]:
     style_ax(ax)
 
     out_suffix = "_mips" if metric == "mips" else ""
-    out = VIS_DIR / f"qps_recall_{dataset}{out_suffix}_all3.png"
+    out = str(VIS_DIR / f"qps_recall_{dataset}{out_suffix}_all3.png")
     plt.tight_layout()
-    plt.savefig(out, dpi=150, facecolor="white")
+    # Sibling PDF for paper use — fonts upscaled (see chart_style).
+    png_path, pdf_path = save_png_and_pdf(fig, out)
     plt.close(fig)
-    print(f"Saved: {out}")
-    return str(out)
+    print(f"Saved: {png_path}  +  {pdf_path}")
+    return png_path
 
 
 def main():
