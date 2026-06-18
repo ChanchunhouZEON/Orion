@@ -41,7 +41,15 @@ fn l2_sq_slice(a: &[f32], b: &[f32]) -> f32 {
         unsafe { l2_sq_neon(a, b) }
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    {
+        // Compile-time AVX-512 — chosen via `target-feature=+avx512f`
+        // in `.cargo/config.toml.example`. No runtime detect: the
+        // build target IS the runtime target.
+        unsafe { l2_sq_avx512(a, b) }
+    }
+
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
     {
         // Runtime check: AVX2 + FMA are common on modern x86 but not universal.
         if std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma") {
@@ -168,6 +176,57 @@ unsafe fn l2_sq_avx2(a: &[f32], b: &[f32]) -> f32 {
         result += d * d;
     }
 
+    result
+}
+
+// ─── x86_64 / AVX-512 ───────────────────────────────────────────────────────
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[target_feature(enable = "avx512f")]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn l2_sq_avx512(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+
+    let n = a.len();
+    let a_ptr = a.as_ptr();
+    let b_ptr = b.as_ptr();
+
+    let mut sum0 = _mm512_setzero_ps();
+    let mut sum1 = _mm512_setzero_ps();
+
+    // Main loop: 32 elements per iter (2 × __m512), 2-way unroll
+    // to match the AVX2 path's per-iter shape at 16-wide.
+    let chunks32 = n / 32;
+    for i in 0..chunks32 {
+        let off = i * 32;
+        let a0 = _mm512_loadu_ps(a_ptr.add(off));
+        let b0 = _mm512_loadu_ps(b_ptr.add(off));
+        let d0 = _mm512_sub_ps(a0, b0);
+        sum0 = _mm512_fmadd_ps(d0, d0, sum0);
+
+        let a1 = _mm512_loadu_ps(a_ptr.add(off + 16));
+        let b1 = _mm512_loadu_ps(b_ptr.add(off + 16));
+        let d1 = _mm512_sub_ps(a1, b1);
+        sum1 = _mm512_fmadd_ps(d1, d1, sum1);
+    }
+
+    // Remaining 16-element chunk (if any).
+    let rem16_start = chunks32 * 32;
+    if rem16_start + 16 <= n {
+        let av = _mm512_loadu_ps(a_ptr.add(rem16_start));
+        let bv = _mm512_loadu_ps(b_ptr.add(rem16_start));
+        let dv = _mm512_sub_ps(av, bv);
+        sum0 = _mm512_fmadd_ps(dv, dv, sum0);
+    }
+
+    let mut result = _mm512_reduce_add_ps(_mm512_add_ps(sum0, sum1));
+
+    // Scalar tail (< 16 remaining elements).
+    let tail_start = n & !15; // round down to multiple of 16
+    for i in tail_start..n {
+        let d = *a_ptr.add(i) - *b_ptr.add(i);
+        result += d * d;
+    }
     result
 }
 

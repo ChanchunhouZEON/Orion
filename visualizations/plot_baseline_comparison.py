@@ -24,7 +24,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(__file__))
-from chart_style import PALETTE, PALETTE_VIVID, style_ax
+from chart_style import PALETTE, PALETTE_VIVID, save_png_and_pdf, style_ax
 
 
 VIS_DIR = Path(__file__).resolve().parent
@@ -36,12 +36,26 @@ VIS_DIR = Path(__file__).resolve().parent
 # band and matter less for the headline narrative.
 SERIES = [
     ("annoy",          "Annoy",                "#94A3B8", "v", 1.7, 6.0, 2),
+    ("lancedb_hnsw",   "LanceDB (HNSW)",         "#EA580C", "h", 1.9, 6.5, 3),
     ("faiss_ivf_pq",   "FAISS IVF-PQ",         "#A78BFA", "P", 1.7, 6.5, 2),
     ("faiss_ivf_flat", "FAISS IVF-Flat",       "#FBBF24", "X", 1.8, 6.5, 2),
     ("hnsw",           "HNSW (hnswlib)",       "#10B981", "D", 1.9, 6.5, 3),
+    ("usearch_hnsw",   "USearch HNSW",         "#06B6D4", "p", 1.9, 6.5, 3),
     ("diskann",        "Microsoft Vamana",     PALETTE_VIVID["diskann"], "^", 1.9, 6.0, 3),
     ("parlayann",      "ParlayANN Vamana",     PALETTE_VIVID["parlay"],  "o", 2.0, 6.5, 3),
     ("staged",         "StagedDiskANN (ours)", PALETTE_VIVID["staged"],  "s", 2.8, 7.5, 5),
+]
+
+# Datasets the script renders. fashion-mnist excluded by design
+# (see `plot_dataset_all.py` for the same convention).
+HEADLINE_DATASETS = [
+    ("sift",            "SIFT 1M"),
+    ("glove25",         "GloVe-25 (cosine)"),
+    ("glove100",        "GloVe-100 (cosine)"),
+    ("gist",            "GIST 1M"),
+    ("deep10m",         "Deep10M"),
+    ("msmarco_bert_1M", "MS-MARCO BERT 1M (raw IP)"),
+    ("wiki_ada_1M",     "Wikipedia ada-002 1M (cosine)"),
 ]
 
 
@@ -57,6 +71,7 @@ def load(ds):
     if baseline_path.exists():
         baseline = json.loads(baseline_path.read_text())
         for key in ("hnsw", "faiss_ivf_flat", "faiss_ivf_pq", "annoy",
+                    "lancedb_hnsw", "usearch_hnsw",
                     "diskann", "staged", "parlayann"):
             if key in baseline:
                 merged[key] = baseline[key]
@@ -90,19 +105,13 @@ def subsample_series(points, target_count=14):
     return out
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", default="sift")
-    ap.add_argument("--out", default=None,
-                    help="Override output PNG path.")
-    args = ap.parse_args()
-
-    series_data = load(args.dataset)
+def render_one(dataset, title_label, *, out_path=None):
+    """Render a single dataset's panel. Returns the saved path or
+    `None` if the dataset has no source JSON."""
+    series_data = load(dataset)
     if not series_data:
-        print(f"No data for dataset '{args.dataset}' — looked for "
-              f"baseline_{args.dataset}.json and "
-              f"sweep_staged_vs_parlayann_{args.dataset}.json")
-        sys.exit(1)
+        print(f"[skip] {dataset}: no source JSON")
+        return None
 
     fig, ax = plt.subplots(figsize=(9, 5.8))
 
@@ -166,17 +175,42 @@ def main():
     if all_recalls:
         ax.set_xlim(max(0.0, min(all_recalls) - 0.02), 1.0)
 
-    title = f"SIFT 1M — QPS vs Recall@10 (8 threads, k=10)"
+    title = f"{title_label} — QPS vs Recall@10 (8 threads, k=10)"
     ax.set_title(title, fontsize=12, color=PALETTE_VIVID["text"], pad=10)
     ax.grid(True, which="both", alpha=0.35, color=PALETTE_VIVID["grid"])
     ax.legend(loc="lower left", frameon=True, fontsize=10, framealpha=0.92)
     style_ax(ax)
 
-    out = args.out or (VIS_DIR / f"baseline_panel_{args.dataset}.png")
+    out = str(out_path or (VIS_DIR / f"baseline_panel_{dataset}.png"))
     plt.tight_layout()
-    plt.savefig(out, dpi=150, facecolor="white")
+    # Sibling PDF for paper use — fonts upscaled (see chart_style).
+    png_path, pdf_path = save_png_and_pdf(fig, out)
     plt.close(fig)
-    print(f"Saved {out}")
+    print(f"Saved {png_path}  +  {pdf_path}")
+    return png_path
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dataset", default="sift")
+    ap.add_argument("--out", default=None, help="Override output PNG path.")
+    ap.add_argument(
+        "--all", action="store_true",
+        help="Render every dataset in HEADLINE_DATASETS (one PNG each).",
+    )
+    args = ap.parse_args()
+
+    if args.all:
+        rendered = 0
+        for ds, label in HEADLINE_DATASETS:
+            if render_one(ds, label):
+                rendered += 1
+        print(f"\nRendered {rendered}/{len(HEADLINE_DATASETS)} datasets.")
+        return
+
+    label = dict(HEADLINE_DATASETS).get(args.dataset, args.dataset)
+    if render_one(args.dataset, label, out_path=args.out) is None:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

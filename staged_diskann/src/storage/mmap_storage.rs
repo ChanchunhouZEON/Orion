@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
+use diskann::common::ANNResult;
 
 /// Memory-mapped storage for zero-copy access to per-node graph data.
 ///
@@ -48,7 +49,7 @@ impl MmapStorage {
     }
 
     /// Open an existing storage file for read-only access.
-    pub fn open<P: AsRef<Path>>(path: P, layout: SectorLayout) -> io::Result<Self> {
+    pub fn open<P: AsRef<Path>>(path: P, layout: SectorLayout) -> ANNResult<Self> {
         let file = File::open(path)?;
         let mmap = unsafe { MmapOptions::new().map(&file)? };
         Ok(Self {
@@ -226,7 +227,7 @@ impl MmapStorage {
         &self,
         path: P,
         node_data: &[(Vec<u32>, Vec<f32>, Vec<u8>)], // (neighbors, vector, cluster_page_bytes)
-    ) -> io::Result<()> {
+    ) -> ANNResult<()> {
         let mut file = OpenOptions::new()
             .create(true)
             .write(true)

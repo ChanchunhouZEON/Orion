@@ -679,7 +679,7 @@ where
     #[cfg(feature = "staged_diskann")]
     pub fn extract_candidate_sets(&mut self) -> ANNResult<Vec<StdHashSet<u32>>> {
         let slab = self.candidate_sets.as_mut().ok_or_else(|| {
-            ANNError::log_candidate_sets_error(
+            ANNError::log_index_error(
                 "Candidate sets have not been built".to_string(),
             )
         })?;

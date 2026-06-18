@@ -192,3 +192,75 @@ impl Drop for InMemScratchGuard {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_scratch_has_initial_state() {
+        let s = InMemSearchScratch::new(64);
+        assert_eq!(s.pq.size(), 0);
+        assert_eq!(s.id_scratch.len(), 0);
+        assert_eq!(s.filter_threshold_sum, 0.0);
+        assert_eq!(s.filter_threshold_count, 0);
+        assert_eq!(s.last_worst_id, u32::MAX);
+        assert_eq!(s.jl_threshold_sum, 0.0);
+        assert_eq!(s.jl_threshold_count, 0);
+        assert_eq!(s.jl_last_worst_id, u32::MAX);
+    }
+
+    #[test]
+    fn prepare_for_query_resets_state() {
+        let mut s = InMemSearchScratch::new(32);
+        s.filter_threshold_sum = 12.5;
+        s.filter_threshold_count = 8;
+        s.last_worst_id = 42;
+        s.filter_tail_mean = 99.0;
+        s.jl_threshold_sum = 3.3;
+        s.jl_threshold_count = 4;
+        s.jl_last_worst_id = 77;
+        s.id_scratch.extend_from_slice(&[1u32, 2, 3]);
+        s.prepare_for_query(32);
+        assert_eq!(s.filter_threshold_sum, 0.0);
+        assert_eq!(s.filter_threshold_count, 0);
+        assert_eq!(s.last_worst_id, u32::MAX);
+        assert_eq!(s.filter_tail_mean, 0.0);
+        assert_eq!(s.jl_threshold_sum, 0.0);
+        assert_eq!(s.jl_threshold_count, 0);
+        assert_eq!(s.jl_last_worst_id, u32::MAX);
+        assert_eq!(s.id_scratch.len(), 0);
+    }
+
+    #[test]
+    fn prepare_for_query_grows_capacity() {
+        let mut s = InMemSearchScratch::new(16);
+        // Bigger search list size on next query → must resize.
+        s.prepare_for_query(128);
+        // Subsequent operation should not panic / over-allocate.
+        s.prepare_for_query(64);
+    }
+
+    #[test]
+    fn pool_acquire_returns_guard() {
+        let pool = InMemScratchPool::new(2, 32);
+        let mut g = pool.acquire();
+        g.scratch().filter_threshold_count = 5;
+        // Drop returns to pool.
+        drop(g);
+        // Re-acquire — the same scratch is back (state retained for cheap reuse).
+        let _g2 = pool.acquire();
+    }
+
+    #[test]
+    fn pool_acquire_distinct_under_concurrency() {
+        let pool = InMemScratchPool::new(2, 16);
+        let g1 = pool.acquire();
+        let g2 = pool.acquire();
+        // Two outstanding guards — the pool is now empty.
+        drop(g1);
+        drop(g2);
+        // Both back; should acquire cleanly.
+        let _g3 = pool.acquire();
+    }
+}

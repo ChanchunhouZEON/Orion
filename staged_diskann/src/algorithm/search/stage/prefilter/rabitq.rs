@@ -136,3 +136,27 @@ impl<'a, const N: usize> PrefilterSession for RabitqSession<'a, N> {
         acc as f32
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::PrefilterStage;
+    use diskann::model::InmemDataset;
+
+    #[test]
+    fn rabitq_prefilter_session_smoke() {
+        let mut ds = InmemDataset::<f32, 32>::new(4, 1.0).unwrap();
+        for (i, v) in ds.data.as_mut_slice().iter_mut().enumerate() {
+            *v = ((i % 13) as f32) * 0.07 - 0.4;
+        }
+        let rds = RabitQDataset::<32>::build_from(&ds, 0x42);
+        let pf = RabitqPrefilter::new(&rds);
+        let q = [0.1f32; 32];
+        let session = pf.open(&q);
+        // Distance to each vertex should be a finite popcount sum.
+        for vid in 0..4u32 {
+            let d = session.distance(vid);
+            assert!(d >= 0.0 && d.is_finite());
+        }
+    }
+}

@@ -13,8 +13,9 @@ use std::path::Path;
 use std::{io, mem};
 
 use crate::model::data_store::DatasetDto;
+use crate::common::ANNResult;
 
-pub fn load_metadata_from_file(file_name: &str) -> std::io::Result<(usize, usize)> {
+pub fn load_metadata_from_file(file_name: &str) -> ANNResult<(usize, usize)> {
     let file = File::open(file_name)?;
     let mut reader = BufReader::new(file);
 
@@ -24,7 +25,7 @@ pub fn load_metadata_from_file(file_name: &str) -> std::io::Result<(usize, usize
     Ok((npoints, ndims))
 }
 
-pub fn load_ids_to_delete_from_file(file_name: &str) -> std::io::Result<(usize, Vec<u32>)> {
+pub fn load_ids_to_delete_from_file(file_name: &str) -> ANNResult<(usize, Vec<u32>)> {
     let mut file = File::open(file_name)?;
     let num_ids = file.read_u32::<LittleEndian>()? as usize;
 
@@ -41,7 +42,7 @@ pub fn copy_aligned_data_from_file<T: Default + Copy>(
     bin_file: &str,
     dataset_dto: DatasetDto<T>,
     pts_offset: usize,
-) -> std::io::Result<(usize, usize)> {
+) -> ANNResult<(usize, usize)> {
     let mut reader = File::open(bin_file)?;
 
     let npts = reader.read_i32::<LittleEndian>()? as usize;
@@ -68,14 +69,14 @@ pub fn copy_aligned_data_from_file<T: Default + Copy>(
 }
 
 #[inline]
-pub fn open_file_to_write(file_name: &str) -> std::io::Result<File> {
-    OpenOptions::new()
+pub fn open_file_to_write(file_name: &str) -> ANNResult<File> {
+    Ok(OpenOptions::new()
         .write(true)
         .create(true)
-        .open(Path::new(file_name))
+        .open(Path::new(file_name))?)
 }
 
-pub fn delete_file(file_name: &str) -> std::io::Result<()> {
+pub fn delete_file(file_name: &str) -> ANNResult<()> {
     if file_exists(file_name) {
         fs::remove_file(file_name)?;
     }
@@ -93,7 +94,7 @@ pub fn save_data_in_base_dimensions<T: Default + Copy>(
     ndims: usize,
     aligned_dim: usize,
     offset: usize,
-) -> std::io::Result<usize> {
+) -> ANNResult<usize> {
     let mut writer = open_file_to_write(filename)?;
     let npts_i32 = npts as i32;
     let ndims_i32 = ndims as i32;
@@ -120,7 +121,7 @@ pub fn save_data_in_base_dimensions<T: Default + Copy>(
 pub fn load_bin<T: Copy>(
     bin_file: &str,
     file_offset: usize,
-) -> std::io::Result<(Vec<T>, usize, usize)> {
+) -> ANNResult<(Vec<T>, usize, usize)> {
     let mut reader = File::open(bin_file)?;
     reader.seek(std::io::SeekFrom::Start(file_offset as u64))?;
     let npts = reader.read_i32::<LittleEndian>()? as usize;
@@ -136,7 +137,7 @@ pub fn load_bin<T: Copy>(
     Ok((data.to_vec(), npts, dim))
 }
 
-pub fn get_file_size(filename: &str) -> io::Result<u64> {
+pub fn get_file_size(filename: &str) -> ANNResult<u64> {
     let reader = File::open(filename)?;
     let metadata = reader.metadata()?;
     Ok(metadata.len())
@@ -150,7 +151,7 @@ macro_rules! save_bin {
             num_pts: usize,
             dims: usize,
             offset: usize,
-        ) -> std::io::Result<usize> {
+        ) -> ANNResult<usize> {
             let mut writer = open_file_to_write(filename)?;
             println!("Writing bin: {}", filename);
             writer.seek(SeekFrom::Start(offset as u64))?;

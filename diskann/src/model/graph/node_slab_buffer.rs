@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::common::AlignedBoxWithSlice;
+use crate::common::ANNResult;
 
 const CACHE_LINE_BYTES: usize = 64;
 const DEFAULT_WRITE_QUEUE_CAPACITY: usize = 64;
@@ -251,11 +252,12 @@ impl NodeSlabBuffer {
     // ── IO ───────────────────────────────────────────────────────────────────
 
     /// Save buffer contents to a writer.
-    pub fn save_to<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+    pub fn save_to<W: Write>(&self, writer: &mut W) -> ANNResult<()> {
         let slice = self.buffer.as_slice();
         let bytes =
             unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len() * 4) };
-        writer.write_all(bytes)
+        writer.write_all(bytes)?;
+        Ok(())
     }
 
     /// Load buffer contents from a reader.
@@ -263,7 +265,7 @@ impl NodeSlabBuffer {
         reader: &mut R,
         num_nodes: usize,
         stride_u32: usize,
-    ) -> std::io::Result<Self> {
+    ) -> ANNResult<Self> {
         let total = num_nodes * stride_u32;
         let slab = Self::new(num_nodes, stride_u32);
         let bytes =

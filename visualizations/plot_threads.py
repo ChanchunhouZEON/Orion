@@ -72,22 +72,10 @@ for idx, (name, title) in enumerate(present):
             ax.axvline(x=x_mark, color=color, linestyle=':', linewidth=1.4,
                        alpha=0.65, zorder=1)
 
-    # Annotate Staged's speedup + efficiency at the P-core knee (T=10),
-    # which is the headline scaling number under M4 Max's topology.
-    if P_CORES in ts:
-        ik = ts.index(P_CORES)
-        sp = d['staged']['speedup'][ik]
-        eff = d['staged']['efficiency'][ik] * 100
-        # Fall back to T=8 anchor if P_CORES isn't on the axis (older
-        # sweep JSONs).
-        anchor_x = P_CORES
-        ax.annotate(
-            f'{sp:.1f}× @T={P_CORES}\n({eff:.0f}% eff)',
-            xy=(anchor_x, s_med[ik]),
-            xytext=(anchor_x * 0.55, s_med[ik] * 1.4),
-            fontsize=9, fontweight='bold', color=C_STAGED,
-            arrowprops=dict(arrowstyle='->', color=C_STAGED, lw=1, alpha=0.7),
-        )
+    # (Per-panel speedup/efficiency annotation removed for the paper
+    # figure — it sat at `s_med[ik] * 1.4` which collided with the
+    # subplot title. The same numbers are printed to stdout at the
+    # bottom of this script for the caption text.)
 
     ax.set_xscale('log', base=2)
     ax.set_yscale('log')

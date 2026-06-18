@@ -7,6 +7,30 @@ members = [
     "logger",
     "platform",
     "staged_diskann",
+    "staged_diskann_py",
+    "vector",
+    "ssd_diskann",
+]
+# `staged_diskann_py` is a PyO3 cdylib — it expects Python symbols
+# (PyBytes_Size, PyErr_Clear, ...) to be resolved at *runtime* by
+# the Python interpreter that dlopen's the .so. `cargo build` from
+# the workspace root tries to link it as a normal cdylib and fails
+# on macOS (the linker is strict about unresolved symbols).
+#
+# Exclude it from `default-members` so plain `cargo build` /
+# `cargo check` from root skip it. It's still a full workspace
+# member — `cargo build -p staged_diskann_py` works (with the
+# right linker flags), and `maturin develop --release` from
+# inside `staged_diskann_py/` is the recommended build path
+# documented in `benchmark/scripts/staged_python_binding_bench.py`.
+default-members = [
+    "adsampling",
+    "benchmark",
+    "diskann",
+    "early_stop_baselines",
+    "logger",
+    "platform",
+    "staged_diskann",
     "vector",
     "ssd_diskann",
 ]
@@ -69,10 +93,6 @@ serde_json = "1"
 
 # Test need
 approx = "0.5"
-
-# Visualization
-plotters = "0.3"
-ndarray-linalg = "0.17"
 
 [profile.release]
 opt-level = 3

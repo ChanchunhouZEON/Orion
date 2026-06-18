@@ -1,15 +1,9 @@
-pub mod candidate_set;
-pub mod compressed_graph;
-pub mod config;
 pub mod dataset;
 pub mod neighbor;
 pub mod phased_graph;
 pub mod scratch;
 pub mod visited_set;
 
-pub use candidate_set::CandidateSetManager;
-pub use compressed_graph::CompressedGraph;
-pub use config::CompressedConfig;
 pub use dataset::{
     JLSparseDataset, JLSparseDatasetMips, L2KTDataset, L2U8, L2U16, MipsI8, MipsI16, QuantParamsL2,
     QuantParamsMips, QuantSpec, QuantizedDataset,

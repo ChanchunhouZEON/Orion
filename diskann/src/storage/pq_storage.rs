@@ -39,7 +39,7 @@ impl PQStorage {
         pivot_file: &str,
         compressed_pivot_file: &str,
         pq_data_file: &str,
-    ) -> std::io::Result<Self> {
+    ) -> ANNResult<Self> {
         let pq_data_file_reader = File::open(pq_data_file)?;
         Ok(Self {
             pivot_file: pivot_file.to_string(),
@@ -49,7 +49,7 @@ impl PQStorage {
         })
     }
 
-    pub fn write_compressed_pivot_metadata(&self, npts: i32, pq_chunk: i32) -> std::io::Result<()> {
+    pub fn write_compressed_pivot_metadata(&self, npts: i32, pq_chunk: i32) -> ANNResult<()> {
         let mut writer = open_file_to_write(&self.compressed_pivot_file)?;
         writer.write_all(&npts.to_le_bytes())?;
         writer.write_all(&pq_chunk.to_le_bytes())?;
@@ -62,7 +62,7 @@ impl PQStorage {
         num_centers: usize,
         block_size: usize,
         num_pq_chunks: usize,
-    ) -> std::io::Result<()> {
+    ) -> ANNResult<()> {
         let mut writer = open_file_to_write(&self.compressed_pivot_file)?;
         writer.seek(SeekFrom::Start((std::mem::size_of::<i32>() * 2) as u64))?;
         if num_centers > 256 {
@@ -87,7 +87,7 @@ impl PQStorage {
         chunk_offsets: &[usize],
         num_centers: usize,
         dim: usize,
-    ) -> std::io::Result<()> {
+    ) -> ANNResult<()> {
         let mut cumul_bytes: Vec<usize> = vec![0; 4];
         cumul_bytes[0] = METADATA_SIZE;
         cumul_bytes[1] = cumul_bytes[0]
@@ -122,7 +122,7 @@ impl PQStorage {
         file_exists(&self.pivot_file)
     }
 
-    pub fn read_pivot_metadata(&self) -> std::io::Result<(usize, usize)> {
+    pub fn read_pivot_metadata(&self) -> ANNResult<(usize, usize)> {
         let (_, file_num_centers, file_dim) = load_bin::<f32>(&self.pivot_file, METADATA_SIZE)?;
         Ok((file_num_centers, file_dim))
     }
@@ -180,7 +180,7 @@ impl PQStorage {
         Ok((full_pivot_data, centroid, chunk_offsets))
     }
 
-    pub fn read_pq_data_metadata(&mut self) -> std::io::Result<(usize, usize)> {
+    pub fn read_pq_data_metadata(&mut self) -> ANNResult<(usize, usize)> {
         let npts_i32 = self.pq_data_file_reader.read_i32::<LittleEndian>()?;
         let dim_i32 = self.pq_data_file_reader.read_i32::<LittleEndian>()?;
         let num_points = npts_i32 as usize;
@@ -192,7 +192,7 @@ impl PQStorage {
         &mut self,
         cur_block_size: usize,
         dim: usize,
-    ) -> std::io::Result<Vec<T>> {
+    ) -> ANNResult<Vec<T>> {
         let mut buf = vec![0u8; cur_block_size * dim * std::mem::size_of::<T>()];
         self.pq_data_file_reader.read_exact(&mut buf)?;
 

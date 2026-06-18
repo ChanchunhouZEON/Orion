@@ -9,8 +9,13 @@
 use crate::Half;
 use crate::Metric;
 
-// Architecture-specific distance imports
-#[cfg(target_arch = "x86_64")]
+// Architecture-specific distance imports — order matches the lib.rs
+// dispatch (AVX-512 > AVX2 > NEON > scalar, picking the first that
+// the target satisfies).
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+use crate::l2_avx512_distance::{distance_l2_vector_f16, distance_l2_vector_f32};
+
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 use crate::l2_float_distance::{distance_l2_vector_f16, distance_l2_vector_f32};
 
 #[cfg(target_arch = "aarch64")]
@@ -64,7 +69,11 @@ impl<const N: usize> FullPrecisionDistance<f32, N> for [f32; N] {
         {
             crate::l2_neon_distance::distance_l2_early_abandon_f32::<N>(a, b, upper_bound)
         }
-        #[cfg(not(target_arch = "aarch64"))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+        {
+            crate::l2_avx512_distance::distance_l2_early_abandon_f32::<N>(a, b, upper_bound)
+        }
+        #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
         {
             let d = distance_l2_vector_f32::<N>(a, b);
             if d < upper_bound {
@@ -86,7 +95,11 @@ impl<const N: usize> FullPrecisionDistance<f32, N> for [f32; N] {
         {
             crate::l2_neon_distance::distance_l2_adsampling_f32::<N>(a, b, upper_bound, epsilon)
         }
-        #[cfg(not(target_arch = "aarch64"))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+        {
+            crate::l2_avx512_distance::distance_l2_adsampling_f32::<N>(a, b, upper_bound, epsilon)
+        }
+        #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
         {
             // Scalar fallback: scaled-threshold early abort in chunks of 32 dims.
             let n_f = N as f32;
@@ -135,5 +148,73 @@ impl<const N: usize> FullPrecisionDistance<i8, N> for [i8; N] {
 impl<const N: usize> FullPrecisionDistance<u8, N> for [u8; N] {
     fn distance_compare(_a: &[u8; N], _b: &[u8; N], _metric: Metric) -> f32 {
         panic!("Not supported VectorType u8")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Half;
+
+    #[test]
+    fn distance_compare_with_bound_returns_distance_when_under() {
+        let a = [0.0f32; 8];
+        let b = [1.0f32; 8];
+        // True L2 = 8.0; bound > 8 → returns 8.0
+        let d = <[f32; 8] as FullPrecisionDistance<f32, 8>>::distance_compare_with_bound(
+            &a, &b, 100.0,
+        );
+        assert!(d > 0.0 && d < 100.0);
+    }
+
+    #[test]
+    fn distance_compare_with_bound_returns_negative_when_over() {
+        let a = [0.0f32; 8];
+        let b = [10.0f32; 8];
+        // True L2 = 800.0; bound = 1.0 → must signal abandon (< 0).
+        let d = <[f32; 8] as FullPrecisionDistance<f32, 8>>::distance_compare_with_bound(
+            &a, &b, 1.0,
+        );
+        assert!(d < 0.0);
+    }
+
+    #[test]
+    fn distance_compare_adsampling_full_value_when_unbound() {
+        let a: [f32; 64] = std::array::from_fn(|i| i as f32 * 0.1);
+        let b: [f32; 64] = std::array::from_fn(|i| (i as f32 * 0.1) + 0.5);
+        // Large upper bound → no abandon → returns the full distance.
+        let d = <[f32; 64] as FullPrecisionDistance<f32, 64>>::distance_compare_adsampling(
+            &a, &b, 1e9, 2.1,
+        );
+        assert!(d > 0.0);
+    }
+
+    #[test]
+    fn half_l2_metric_dispatch() {
+        let a: [Half; 4] = std::array::from_fn(|i| Half::from_f32(i as f32));
+        let b: [Half; 4] = std::array::from_fn(|i| Half::from_f32((i as f32) + 1.0));
+        let d = <[Half; 4] as FullPrecisionDistance<Half, 4>>::distance_compare(&a, &b, Metric::L2);
+        assert!((d - 4.0).abs() < 1e-3);
+    }
+
+    #[test]
+    #[should_panic(expected = "Not supported")]
+    fn half_cosine_metric_panics() {
+        let a: [Half; 4] = std::array::from_fn(|_| Half::from_f32(0.0));
+        <[Half; 4] as FullPrecisionDistance<Half, 4>>::distance_compare(&a, &a, Metric::Cosine);
+    }
+
+    #[test]
+    #[should_panic(expected = "VectorType i8")]
+    fn i8_storage_panics() {
+        let a = [0i8; 4];
+        <[i8; 4] as FullPrecisionDistance<i8, 4>>::distance_compare(&a, &a, Metric::L2);
+    }
+
+    #[test]
+    #[should_panic(expected = "VectorType u8")]
+    fn u8_storage_panics() {
+        let a = [0u8; 4];
+        <[u8; 4] as FullPrecisionDistance<u8, 4>>::distance_compare(&a, &a, Metric::L2);
     }
 }

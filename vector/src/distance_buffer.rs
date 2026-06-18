@@ -291,3 +291,58 @@ impl CacheLineDistanceBuffer {
         &self.dists
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::L2F32Distance;
+
+    #[test]
+    fn new_and_default_are_equivalent_shape() {
+        let b1 = CacheLineDistanceBuffer::new();
+        let b2 = CacheLineDistanceBuffer::default();
+        assert_eq!(b1.chunks_done, 0);
+        assert_eq!(b2.chunks_done, 0);
+        assert_eq!(b1.scratch_filled, 0);
+        assert_eq!(b2.scratch_filled, 0);
+    }
+
+    #[test]
+    fn with_capacity_at_least_default() {
+        let small = CacheLineDistanceBuffer::with_capacity(0);
+        assert!(small.scratch.len() >= DEFAULT_DISTANCE_BUFFER_SIZE);
+
+        let larger = CacheLineDistanceBuffer::with_capacity(8192);
+        assert!(larger.scratch.len() >= 8192);
+    }
+
+    #[test]
+    fn discard_resets_progress() {
+        let mut buf = CacheLineDistanceBuffer::new();
+        buf.chunks_done = 5;
+        buf.scratch_filled = 200;
+        buf.discard_buffer();
+        assert_eq!(buf.chunks_done, 0);
+        assert_eq!(buf.scratch_filled, 0);
+    }
+
+    #[test]
+    fn slots_mut_advances_scratch_filled() {
+        let mut buf = CacheLineDistanceBuffer::new();
+        let acc_size = std::mem::size_of::<<L2F32Distance as DistanceFn>::Acc>();
+        let slots = buf.slots_mut::<L2F32Distance>(4);
+        assert_eq!(slots.len(), 4);
+        assert_eq!(buf.scratch_filled, 4 * acc_size);
+        let slots2 = buf.slots_mut::<L2F32Distance>(2);
+        assert_eq!(slots2.len(), 2);
+        assert_eq!(buf.scratch_filled, 6 * acc_size);
+    }
+
+    #[test]
+    fn ensure_room_grows_past_default() {
+        let mut buf = CacheLineDistanceBuffer::with_capacity(64);
+        let initial_cap = buf.scratch.len();
+        buf.ensure_room(initial_cap * 10);
+        assert!(buf.scratch.len() >= initial_cap * 10);
+    }
+}

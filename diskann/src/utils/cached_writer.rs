@@ -9,6 +9,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
+use crate::common::ANNResult;
 
 pub struct CachedWriter {
     writer: File,
@@ -19,7 +20,7 @@ pub struct CachedWriter {
 }
 
 impl CachedWriter {
-    pub fn new(filename: &str, cache_size: u64) -> std::io::Result<Self> {
+    pub fn new(filename: &str, cache_size: u64) -> ANNResult<Self> {
         let writer = OpenOptions::new()
             .write(true)
             .create(true)
@@ -29,7 +30,8 @@ impl CachedWriter {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Cache size must be greater than 0",
-            ));
+            )
+            .into());
         }
 
         Ok(Self {
@@ -41,7 +43,7 @@ impl CachedWriter {
         })
     }
 
-    pub fn flush(&mut self) -> std::io::Result<()> {
+    pub fn flush(&mut self) -> ANNResult<()> {
         if self.cur_off > 0 {
             self.flush_cache()?;
         }
@@ -53,7 +55,7 @@ impl CachedWriter {
         self.fsize
     }
 
-    pub fn write(&mut self, write_buf: &[u8]) -> std::io::Result<()> {
+    pub fn write(&mut self, write_buf: &[u8]) -> ANNResult<()> {
         let n_bytes = write_buf.len() as u64;
         if n_bytes <= (self.cache_size - self.cur_off) {
             self.cache_buf[(self.cur_off as usize)..((self.cur_off + n_bytes) as usize)]
@@ -71,13 +73,13 @@ impl CachedWriter {
         Ok(())
     }
 
-    pub fn reset(&mut self) -> std::io::Result<()> {
+    pub fn reset(&mut self) -> ANNResult<()> {
         self.flush_cache()?;
         self.writer.seek(SeekFrom::Start(0))?;
         Ok(())
     }
 
-    fn flush_cache(&mut self) -> std::io::Result<()> {
+    fn flush_cache(&mut self) -> ANNResult<()> {
         self.writer
             .write_all(&self.cache_buf[..self.cur_off as usize])?;
         self.fsize += self.cur_off;

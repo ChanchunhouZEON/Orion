@@ -22,6 +22,7 @@
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use crate::common::ANNResult;
 
 const CACHE_LINE: usize = 64;
 const SLOT_HEADER: usize = 8; // count (u32) + reserved (u32)
@@ -52,7 +53,7 @@ impl MmapAnchorSlab {
     /// Create a new mmap-backed slab. The backing file is created at `path`
     /// and truncated to the required size. Pages are demand-paged (zero-filled
     /// on first access).
-    pub fn new(path: &Path, num_anchors: usize, max_pairs: usize) -> std::io::Result<Self> {
+    pub fn new(path: &Path, num_anchors: usize, max_pairs: usize) -> ANNResult<Self> {
         let slot_bytes = compute_slot_bytes(max_pairs);
         let total_bytes = num_anchors * slot_bytes;
 
@@ -232,8 +233,9 @@ impl MmapAnchorSlab {
     }
 
     /// Flush dirty pages to disk.
-    pub fn flush(&self) -> std::io::Result<()> {
-        self.mmap.flush()
+    pub fn flush(&self) -> ANNResult<()> {
+        self.mmap.flush()?;
+        Ok(())
     }
 
     /// Total virtual size in bytes.

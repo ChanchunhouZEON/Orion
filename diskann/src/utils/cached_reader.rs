@@ -20,7 +20,7 @@ pub struct CachedReader {
 }
 
 impl CachedReader {
-    pub fn new(filename: &str, cache_size: u64) -> std::io::Result<Self> {
+    pub fn new(filename: &str, cache_size: u64) -> ANNResult<Self> {
         let mut reader = File::open(filename)?;
         let metadata = reader.metadata()?;
         let fsize = metadata.len();

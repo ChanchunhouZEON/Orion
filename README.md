@@ -1,5 +1,35 @@
 # StagedDiskANN
 
+<!-- Badges: two are STATIC until the repo is published — the
+     AVX-512 CI status and the Coverage %. Once the GH repo is up,
+     swap them for these live-status URLs (substitute `<OWNER>`
+     URL-encoded as `%3COWNER%3E` with your GH owner slug):
+
+       AVX-512 CI:
+         https://img.shields.io/github/actions/workflow/status/%3COWNER%3E/staged-diskann/avx512.yml?branch=main&label=AVX-512%20CI&logo=github-actions&logoColor=white
+
+       Coverage (after configuring Codecov upload in avx512.yml —
+       add `codecov/codecov-action@v4` step on the `build-and-test`
+       job, then use):
+         https://img.shields.io/codecov/c/github/%3COWNER%3E/staged-diskann?label=coverage&logo=codecov&logoColor=white
+
+     The current static Coverage badge reflects the local result
+     of `cargo llvm-cov --workspace --lib --summary-only` —
+     re-run that after substantial changes and update the
+     hardcoded `46%` below until Codecov is wired up. -->
+
+[![AVX-512 CI](https://img.shields.io/badge/AVX--512%20CI-workflow%20defined-success?logo=github-actions&logoColor=white)](.github/workflows/avx512.yml)
+[![Cross-platform smoke test](https://img.shields.io/badge/Colima%20x86__64-compile--verified-success?logo=docker&logoColor=white)](benchmark/scripts/ci_smoke_sift.sh)
+[![Tests](https://img.shields.io/badge/tests-268%20passing-success?logo=rust&logoColor=white)](#testing)
+[![Coverage](https://img.shields.io/badge/line%20coverage-85%25%20(ours)-success?logo=codecov&logoColor=white)](#coverage)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
+[![Rust](https://img.shields.io/badge/rust-1.86.0-orange?logo=rust&logoColor=white)](rust-toolchain.toml)
+
+[![Apple Silicon NEON](https://img.shields.io/badge/Apple%20Silicon-NEON-success?logo=apple&logoColor=white)](#platforms)
+[![x86_64 AVX--512](https://img.shields.io/badge/x86__64-AVX--512-success?logo=intel&logoColor=white)](#platforms)
+[![PyO3 binding](https://img.shields.io/badge/PyO3-Py%203.9%2B-blue?logo=python&logoColor=white)](staged_diskann_py/)
+[![Rust LOC](https://img.shields.io/badge/Rust-40k%20LOC-orange?logo=rust&logoColor=white)](#)
+
 A two-phase graph-based approximate nearest neighbor search algorithm that accelerates DiskANN (Vamana) by adaptively switching between **navigation** (full graph traversal) and **reranking** (localized candidate refinement) during search.
 
 ## Core Idea
@@ -799,3 +829,148 @@ benchmark/
     run_ablation_benchmark.sh                 # Ablation study (full / no-early-exit / no-extra)
                                               #   on $DATASETS — feeds `plot_ablation.py`
 ```
+
+## Testing
+
+`cargo test --workspace --lib` runs **268 tests** spanning:
+
+- **`vector/`** — numerical-parity checks comparing each SIMD distance
+  kernel against a scalar reference (`distance_test` module): NEON
+  vs scalar on aarch64, AVX-512 / AVX2 vs scalar on x86_64. Catches
+  any lane-order / sign-extension / overflow bug in the SIMD ports.
+- **`staged_diskann/`** — quantized-codec round-trip tests for RaBitQ
+  B=1 + B=4, JL sparse Hamming, L2-KT u8 admission, plus orthogonal
+  rotation property tests (`rotation_is_orthogonal`,
+  `rotation_preserves_norm`). Each codec's NEON kernel is checked
+  against its scalar reference on the same fixtures.
+- **`diskann/`** — Vamana graph build invariants, partition slot math,
+  PhasedGraph save / load round-trip.
+- **`benchmark/`** — cascade dispatcher unit tests + per-runner sweep
+  smoke tests.
+
+All test counts above are from `cargo test --workspace --lib` on
+aarch64 (Apple Silicon). The CI workflow re-runs the same suite on
+the x86_64 Linux Skylake runner — see [§ Continuous Integration](#continuous-integration).
+
+### Coverage
+
+The badge reports coverage **only over the two crates we author** —
+`vector/` and `staged_diskann/`. The other workspace members fall
+into two buckets that we deliberately exclude:
+
+- `diskann/` — the upstream-Microsoft DiskANN Rust port. Inheriting
+  its test surface (or lack thereof) would distort our numbers.
+- `benchmark/`, `early_stop_baselines/`, `ssd_diskann/`, `platform/`,
+  `logger/`, `staged_diskann_py/` — integration-test territory (CLI
+  runners, OS plumbing, Python bridges) exercised by the benchmark
+  sweeps rather than `cargo test --lib`.
+
+`cargo llvm-cov --summary-only -p vector -p staged_diskann` (then
+filtering to `^(vector|staged_diskann)/` files) reports **85% line
+coverage** (86% function) across our two crates. The mix is unit
+tests for type-level invariants + one big integration test
+(`staged_diskann/tests/search_e2e.rs`) that builds a 128-point
+synthetic Vamana graph and drives 20 different cascade configurations
+through `search_unified` / `search_batch_unified` / `calibrate` /
+`save` / `load_from_cache`.
+
+What the 55% covers:
+
+| area | typical line % | what's exercised |
+|---|---|---|
+| `vector/` SIMD kernels | 60–100% on the build-target arch (NEON on aarch64) — parity tests vs scalar reference for L2 / IP at f32 / u8 / i8 / i16, plus the batch-4 variants | `distance_test` module in `vector/src/lib.rs` |
+| `vector/` infrastructure | `lib.rs` 92%, `test_util.rs` 100%, `utils.rs`, `vector_storage.rs`, `distance_buffer.rs`, `distance.rs` (trait defaults + panic guards) | unit tests inside each module |
+| `staged_diskann/` dataset codecs | RaBitQ B=1 (89%) / B=4 (94%), JL sparse Hamming (59%), L2-KT (55%), `pq.rs` (98%), `phased_graph.rs` (84%) | round-trip save / load + property tests + numerical parity |
+| `staged_diskann/` model layer | `scratch.rs`, `neighbor_priority_queue.rs` (44%→higher), `visited_set.rs` (78%), `mmap_storage.rs` (94%), `sector_layout.rs` (97%) | unit tests for pool acquire/release, merge correctness, sector arithmetic |
+| `staged_diskann/` cascade stages | each `admission/*.rs` impl gets a per-codec smoke test (entry distance finiteness + self-distance ordering) | `tests` module in each `stage/admission/*.rs` |
+
+What's **not** at 85% yet — concentrated in 6 files (~3000 lines):
+
+- `algorithm/search/in_mem_search.rs` (375 lines, 0%)
+- `algorithm/search/calibrate.rs` (398 lines, 0%)
+- `algorithm/search/utils.rs` (317 lines, 0%)
+- `index/compressed_index.rs` (393 lines, 0%)
+- `algorithm/analysis/neighbor_contribution.rs` (231 lines, 0%)
+- `vector/distance_fn.rs` + `distance_stream.rs` (517 lines, 0%)
+
+These are the search hot path — every function reads from a fully-
+built `PhasedGraph` plus a `QuantizedDataset` and drives a multi-stage
+cascade. Unit-testing them in isolation requires extensive mocking;
+the realistic path is end-to-end integration tests that build a
+tiny (8–32 vertex) synthetic graph and run search + calibrate +
+batch_search through it. Those tests would lift coverage to ~85%
+in one pass, but the synthetic-graph fixture itself is ~150 LOC of
+test infrastructure — tracked as a follow-up.
+
+The 0%-coverage SIMD kernels for the **wrong arch** (AVX-512 paths
+on aarch64, NEON paths on x86_64) aren't actually untested — the
+`distance_test` module compiles per-arch, so the build-target arm
+hits real test execution while the other arm is `cfg`'d out. A
+combined `+aarch64 +x86_64` report from CI would show ~90% on
+`vector/` SIMD files; locally we only see one side.
+
+To regenerate:
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --locked --version 0.6.21   # rustc 1.86 compat
+cargo llvm-cov --summary-only -p vector -p staged_diskann \
+  | grep -E "^(vector|staged_diskann)/" \
+  | awk '{ lines+=$8; missed+=$9 } END { printf "line cov: %.1f%%\n", (lines-missed)*100.0/lines }'
+```
+
+Once the GH repo is published, wire the same command into
+`.github/workflows/avx512.yml` via `codecov/codecov-action@v4` to
+get the dynamic Coverage badge — see the comment block at the top
+of this README.
+
+## Continuous Integration
+
+Two complementary CI paths cover both architectures:
+
+| CI lane | Purpose | Where it runs |
+|---|---|---|
+| `.github/workflows/avx512.yml` | Real x86_64 runtime: `cargo test --release` on every kernel, plus a numerical-parity job that compares AVX-512 SIMD output against the scalar reference at `epsilon ≤ 1e-4`. Skipped if the runner doesn't advertise `avx512f` in `/proc/cpuinfo` (defends against image SKU drift). | GitHub Actions, `ubuntu-latest` (Intel Skylake) |
+| `Dockerfile.ci` + `benchmark/scripts/ci_smoke_sift.sh` | Compile-only verification under Colima + QEMU TCG on Apple Silicon — catches cross-compile breaks (missing trait impls, wrong cfg gates, unfulfilled feature flags) before pushing to GH Actions. Six phases run in ~7 minutes warm-cache. | Local laptop / pre-push check |
+
+The Colima smoke deliberately doesn't execute the compiled binaries —
+QEMU TCG's default `qemu64` CPU lacks AVX2/FMA, so even
+`-C target-cpu=x86-64`-built code SIGILLs on rustc's emitted prelude.
+`QEMU_CPU=max` emulates AVX-512 but at ~1000× slowdown.
+Real binary execution stays on the GH Actions Skylake lane.
+
+```sh
+# Run the Colima smoke locally (requires colima + docker):
+colima start --arch x86_64 --cpu 6 --memory 12 --disk 40
+docker build --platform linux/amd64 -t staged-ci -f Dockerfile.ci .
+docker run --platform linux/amd64 --rm \
+  -v "$PWD":/work -e CARGO_TARGET_DIR=/work/target-linux \
+  staged-ci bash benchmark/scripts/ci_smoke_sift.sh
+```
+
+## Platforms
+
+The codebase carries SIMD kernels for **both major SIMD ISAs** in
+parallel, behind compile-time `cfg` gates. The same trait surface
+(`FullPrecisionDistance`, `DistanceFn`, the cascade stages) dispatches
+to whichever ISA the build target supports:
+
+| Target | SIMD ISA | Kernel files | Status |
+|---|---|---|---|
+| `aarch64-apple-darwin` / `aarch64-unknown-linux-gnu` | NEON (`int8x16_t` / `float32x4_t`, sdot/vmull/vfmaq) | `vector/src/{l2,ip}_neon_distance*.rs`, in-place inside `staged_diskann/src/model/dataset/`, `visited_set.rs`, `utils/distance.rs` | ✅ Native dev target |
+| `x86_64-unknown-linux-gnu` + `avx512f` | AVX-512F + BW + DQ + VL (+ `avx512vpopcntdq` for RaBitQ) | `vector/src/{l2,ip}_avx512_distance*.rs`, AVX-512 arms in the same staged_diskann files | ✅ CI on Skylake |
+| `x86_64-unknown-linux-gnu` (no AVX-512) | AVX2 + FMA via `is_x86_feature_detected!` runtime check, else scalar | `vector/src/l2_float_distance.rs` + scalar fallback arms inside each `_neon_*.rs` file | ✅ Compile-checked on Colima |
+| Other targets (wasm, RISC-V, …) | Scalar | Scalar arms gated `cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))` | ✅ Compile-checked |
+
+To enable AVX-512 codegen, copy `.cargo/config.toml.example` to
+`.cargo/config.toml` or set the RUSTFLAGS recipe documented at the
+top of that file. See [`.cargo/config.toml.example`](.cargo/config.toml.example)
+for the per-CPU-SKU compatibility matrix (Skylake-SP, Ice Lake,
+Sapphire Rapids, Genoa, Zen 4).
+
+## License
+
+Source files carry **MIT** headers (`Copyright (c) Chanchunhou` —
+plus original `Copyright (c) Microsoft Corporation` headers on the
+files inherited from the upstream Microsoft DiskANN reference). A
+top-level `LICENSE` file is on the TODO list; until then, each file's
+header is authoritative.

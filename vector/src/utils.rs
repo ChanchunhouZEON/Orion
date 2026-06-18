@@ -55,3 +55,35 @@ pub fn prefetch_vector<T>(vec: &[T]) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_line_bytes_is_power_of_two() {
+        assert!(CACHE_LINE_BYTES.is_power_of_two());
+        assert!(CACHE_LINE_BYTES >= 64);
+    }
+
+    #[test]
+    fn prefetch_empty_slice_is_noop() {
+        let empty: &[f32] = &[];
+        // Just verify it returns without panic / UB.
+        prefetch_vector(empty);
+    }
+
+    #[test]
+    fn prefetch_small_slice() {
+        let v = [1.0f32; 8];
+        prefetch_vector(&v);
+    }
+
+    #[test]
+    fn prefetch_partial_trailing_line() {
+        // 400 bytes (100 × f32) — covers a partial trailing line at
+        // both 64- and 128-byte cache line sizes.
+        let v: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        prefetch_vector(&v);
+    }
+}

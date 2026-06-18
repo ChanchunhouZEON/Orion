@@ -16,4 +16,34 @@
 /*_graphs/
 /cache/
 
-.idea/cache/
+.idea/
+
+# QEMU TCG core dumps — left behind when a binary SIGILLs under the
+# Colima x86_64 / QEMU smoke test (qemu64 CPU model lacks AVX-class
+# ops, so any rustc-emitted prelude with AVX2/FMA crashes on first
+# run). The core files are 20-30 MB each and offer no debug value
+# (the crash is by design — see Dockerfile.ci header).
+qemu_*.core
+**/qemu_*.core
+# Generic `core` files — QEMU's userspace emulator running inside the
+# bind-mounted docker container writes a 0-byte `core` to cwd when it
+# trips on an unsupported instruction. cwd at crash time = our
+# workspace root (bind mount), so the marker file leaks back to the
+# host filesystem. Prevented at run-time by `--ulimit core=0` on
+# docker run (see Dockerfile.ci usage block), gitignored here as
+# belt-and-suspenders.
+/core
+**/core
+core.*
+
+# Host bind-mount target for the Colima x86_64 cargo build. The
+# real target dir lives inside the docker volume `staged-cargo-target`;
+# the host-side directory is just an empty mount point that docker
+# auto-creates and we don't want it committed.
+/target-linux/
+
+# Default `StagedDiskANN::new` cache dir — kicks in when the e2e
+# integration test fixture doesn't override `cache_base_path`. The
+# dir auto-creates next to the test binary's cwd.
+/staged_diskann/staged_diskann_graphs/
+/staged_diskann_graphs/

@@ -319,7 +319,22 @@ impl VisitedSet for BucketedSet {
                         return false;
                     }
                 }
-                #[cfg(not(target_arch = "aarch64"))]
+                // AVX-512 path: `_mm_set1_epi32` broadcasts id into a
+                // 128-bit register, `_mm_loadu_si128` reads the 4 u32
+                // slots, `_mm_cmpeq_epi32` lanes them, `_mm_movemask_epi8`
+                // reduces to a single mask (non-zero iff any lane
+                // matched). Same logical shape as the NEON path —
+                // 128-bit is enough for a 4-slot bucket.
+                #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+                {
+                    use std::arch::x86_64::*;
+                    let id_v = _mm_set1_epi32(id as i32);
+                    let s = _mm_loadu_si128(base_ptr as *const __m128i);
+                    if _mm_movemask_epi8(_mm_cmpeq_epi32(s, id_v)) != 0 {
+                        return false;
+                    }
+                }
+                #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
                 {
                     for j in 0..BUCKET_SLOTS {
                         if *base_ptr.add(j) == id {
@@ -495,5 +510,42 @@ mod tests {
         for i in 0..100 {
             assert!(s.insert(i));
         }
+    }
+
+    #[test]
+    fn linear_resize_for_grows() {
+        let mut s = LinearProbeSet::new(16, 64);
+        s.insert(1);
+        s.insert(2);
+        s.resize_for(256);
+        // After resize, the previous entries are cleared.
+        assert_eq!(s.len(), 0);
+        // And it accepts new entries cleanly.
+        assert!(s.insert(1));
+        assert!(s.insert(2));
+    }
+
+    #[test]
+    fn bucketed_resize_for_grows() {
+        let mut s = BucketedSet::new(16, 64);
+        s.insert(1);
+        s.insert(2);
+        s.resize_for(256);
+        assert_eq!(s.len(), 0);
+        assert!(s.insert(1));
+        assert!(s.insert(2));
+    }
+
+    #[test]
+    fn hashset_seen_default_path_basic() {
+        // Default path (no STAGED_HASHSET env) — linear probe.
+        let mut s = HashsetSeen::new(32);
+        assert!(s.insert(7));
+        assert!(!s.insert(7));
+        assert!(s.insert(11));
+        assert_eq!(s.len(), 2);
+        s.clear();
+        assert_eq!(s.len(), 0);
+        s.resize_for(64);
     }
 }

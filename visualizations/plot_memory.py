@@ -30,36 +30,23 @@ if not present:
     print("No memory profile data. Run: cargo run ... --algorithms memory-profile")
     sys.exit(1)
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
+# Paper figure: single panel — the right "Peak Memory Ratio" plot.
+# The left absolute-bars panel was useful in earlier iterations but
+# the headline (Staged uses ~X× of DiskANN at matched α) reads more
+# cleanly off the ratio bars. We compute the absolute MBs only as
+# inputs to the ratio.
+fig, ax = plt.subplots(1, 1, figsize=(7, 5.5))
 style_fig(fig)
 
 MB = 1024 * 1024
 
-# ── Left: Absolute peak memory (DiskANN vs Staged peak vs Staged final) ──
-ax = axes[0]
 n = len(present)
 x = np.arange(n) * 1.15
-w = 0.25
-gap = 0.03
 
 diskann_mb = [data[k]['diskann_peak_b'] / MB for k, _ in present]
 staged_peak_mb = [data[k]['staged_peak_b'] / MB for k, _ in present]
-staged_final_mb = [data[k]['staged_final_b'] / MB for k, _ in present]
 
-h1 = rounded_bars(ax, x - (w + gap), diskann_mb, w, PALETTE['cyan'], label='DiskANN peak (α=match, no candidates)')
-h2 = rounded_bars(ax, x, staged_peak_mb, w, PALETTE['blue'], label='Staged peak')
-h3 = rounded_bars(ax, x + (w + gap), staged_final_mb, w, PALETTE['green'], label='Staged final')
-
-ax.set_xticks(x); ax.set_xticklabels([t for _, t in present])
-ax.set_ylabel('Memory (MB)', fontsize=11)
-ax.set_title('Peak Memory: α-matched DiskANN vs StagedDiskANN', fontweight='bold')
-make_legend(ax, [h for h in [h1, h2, h3] if h], fontsize=10)
-style_ax(ax)
-apply_ylim(ax, diskann_mb + staged_peak_mb + staged_final_mb, headroom=1.25)
-ax.set_xlim(x[0] - 0.6, x[-1] + 0.6)
-
-# ── Right: Ratio (Staged / DiskANN) ──
-ax = axes[1]
+# ── Ratio (Staged / DiskANN) ──
 ratio_peak = [sp / da if da > 0 else 1 for sp, da in zip(staged_peak_mb, diskann_mb)]
 
 ds_colors = [DATASET_COLORS.get(k, PALETTE['grey']) for k, _ in present]
@@ -76,7 +63,7 @@ for i, r in enumerate(ratio_peak):
 ax.set_xticks(x); ax.set_xticklabels([t for _, t in present])
 ax.set_ylabel('Peak Memory Ratio (Staged / DiskANN)', fontsize=11)
 ax.set_title('Peak Memory Ratio at Matched α (Lower is Better)', fontweight='bold')
-make_legend(ax, handles, fontsize=10)
+make_legend(ax, handles, fontsize=11)
 style_ax(ax)
 apply_ylim(ax, ratio_peak, headroom=1.4)
 ax.set_xlim(x[0] - 0.6, x[-1] + 0.6)

@@ -50,6 +50,7 @@ use diskann::common::AlignedBoxWithSlice;
 use diskann::model::InmemDataset;
 use std::io::{Read, Write};
 use std::path::Path;
+use diskann::common::ANNResult;
 
 /// Disk-format magic for the B=4 RaBitQ sidecar (`.qrb4`).
 pub const RABITQ_B4_MAGIC: u32 = 0x5152_4234; // "QRB4"
@@ -190,7 +191,7 @@ impl<const N: usize> RabitQ4Dataset<N> {
     ///   [num_vertices f32 norms]
     ///   [num_vertices f32 taus]
     ///   [num_vertices * STRIDE u8 codes]
-    pub fn save<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> ANNResult<()> {
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
         let mut hdr = [0u8; 32];
         hdr[0..4].copy_from_slice(&RABITQ_B4_MAGIC.to_le_bytes());
@@ -225,10 +226,11 @@ impl<const N: usize> RabitQ4Dataset<N> {
         w.write_all(tau_bytes)?;
 
         w.write_all(self.codes.as_slice())?;
-        w.flush()
+        w.flush()?;
+        Ok(())
     }
 
-    pub fn load<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+    pub fn load<P: AsRef<Path>>(path: P) -> ANNResult<Self> {
         let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
         let mut hdr = [0u8; 32];
         r.read_exact(&mut hdr)?;
@@ -240,7 +242,7 @@ impl<const N: usize> RabitQ4Dataset<N> {
                     "bad magic 0x{magic:08x} (expected 0x{:08x} = QRB4)",
                     RABITQ_B4_MAGIC
                 ),
-            ));
+            ).into());
         }
         let num_vertices = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let dim = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
@@ -248,14 +250,14 @@ impl<const N: usize> RabitQ4Dataset<N> {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("dim mismatch: file={dim} expected={N}"),
-            ));
+            ).into());
         }
         let stride = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
         if stride != Self::STRIDE {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
-            ));
+            ).into());
         }
 
         let mut rotation = AlignedBoxWithSlice::<f32>::new(N * N, 16)
@@ -349,6 +351,14 @@ fn signed_dot_dispatch<const N: usize>(code: &[u8], rotated_q: &[f32; N]) -> f32
         let tail = signed_dot_scalar::<N>(code, rotated_q, chunk_bytes * 2);
         return neon_part + tail;
     }
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    {
+        // AVX-512 path: 16 dims per iter = 8 packed bytes.
+        let chunk_bytes = (N / 2) & !7;
+        let avx_part = unsafe { signed_dot_avx512(code.as_ptr(), rotated_q.as_ptr(), chunk_bytes) };
+        let tail = signed_dot_scalar::<N>(code, rotated_q, chunk_bytes * 2);
+        return avx_part + tail;
+    }
     #[allow(unreachable_code)]
     signed_dot_scalar::<N>(code, rotated_q, 0)
 }
@@ -440,6 +450,99 @@ unsafe fn signed_dot_neon(code: *const u8, rotated_q: *const f32, bytes: usize) 
     let acc = vaddq_f32(acc_a, acc_b);
     vaddvq_f32(acc)
 }}
+
+/// AVX-512 kernel for the signed 4-bit dot product. Processes 16
+/// dims per loop iter (8 packed bytes) via the same low/high
+/// nibble unpack as NEON, just at the wider AVX-512 conversion
+/// path:
+///
+///   1. Load 8 packed bytes into a `__m128i`.
+///   2. Extract low / high nibbles by AND/SHIFT.
+///   3. Look up signed value via VPSHUFB against a per-nibble LUT
+///      `[0..7, -8..-1]` (treating each 4-bit value as signed
+///      two's-complement). One VPSHUFB per nibble.
+///   4. Interleave low/high signed nibbles to recover dim order
+///      `[d0=lo0, d1=hi0, d2=lo1, ...]` via PUNPCKLBW.
+///   5. Convert 16 i8 → 16 i32 → 16 f32, FMA with `rotated_q`.
+///
+/// 2-way unroll (two consecutive 16-dim windows per outer iter)
+/// hides the i8→i32→f32 conversion latency. The 16-wide FMA
+/// throughput at f32 lands roughly on par with the NEON path on
+/// per-cycle ops but processes 2× the dims, so wall-clock should
+/// halve vs NEON on the same query size.
+///
+/// # Safety
+///
+/// Caller must ensure `code` has at least `bytes` valid bytes,
+/// `rotated_q` has at least `bytes * 2` f32 lanes, and `bytes` is
+/// a multiple of 8.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[inline]
+unsafe fn signed_dot_avx512(code: *const u8, rotated_q: *const f32, bytes: usize) -> f32 {
+    use std::arch::x86_64::*;
+
+    // VPSHUFB lookup table: nibble [0..15] → signed i8 [-8..7]
+    // with the two's-complement convention. Replicated across
+    // both 64-bit halves of a __m128i so 8-byte VPSHUFB doesn't
+    // need any mask.
+    let lut = _mm_setr_epi8(
+        0, 1, 2, 3, 4, 5, 6, 7,
+        -8, -7, -6, -5, -4, -3, -2, -1,
+    );
+    let low_mask = _mm_set1_epi8(0x0F);
+
+    let mut acc_a = _mm512_setzero_ps();
+    let mut acc_b = _mm512_setzero_ps();
+
+    let mut b = 0usize;
+    while b < bytes {
+        // Load 8 packed bytes into the low 64 bits of a __m128i.
+        let packed = _mm_loadl_epi64(code.add(b) as *const __m128i);
+
+        // Split into low + high nibbles.
+        let lo_nibbles = _mm_and_si128(packed, low_mask);
+        // `_mm_srli_epi16` shifts at 16-bit width; mask the
+        // junk that the upper-byte bits leaked into the lower.
+        let hi_nibbles = _mm_and_si128(_mm_srli_epi16(packed, 4), low_mask);
+
+        // VPSHUFB lookup: nibble [0..15] → signed i8 [-8..7].
+        let lo_signed = _mm_shuffle_epi8(lut, lo_nibbles);
+        let hi_signed = _mm_shuffle_epi8(lut, hi_nibbles);
+
+        // Interleave to dim order: PUNPCKLBW produces
+        // [lo0, hi0, lo1, hi1, ..., lo7, hi7] in the low half of
+        // a __m128i.
+        let dims_i8 = _mm_unpacklo_epi8(lo_signed, hi_signed);
+
+        // 16 i8 → 16 i32 → 16 f32. `_mm512_cvtepi8_epi32` reads
+        // the low 16 bytes of its __m128i input.
+        let dims_i32 = _mm512_cvtepi8_epi32(dims_i8);
+        let dims_f32 = _mm512_cvtepi32_ps(dims_i32);
+
+        // FMA with 16 query lanes.
+        let q = _mm512_loadu_ps(rotated_q.add(b * 2));
+        acc_a = _mm512_fmadd_ps(q, dims_f32, acc_a);
+
+        // 2-way unroll: next 8 bytes if available.
+        if b + 8 < bytes {
+            let packed2 = _mm_loadl_epi64(code.add(b + 8) as *const __m128i);
+            let lo2 = _mm_and_si128(packed2, low_mask);
+            let hi2 = _mm_and_si128(_mm_srli_epi16(packed2, 4), low_mask);
+            let lo_s2 = _mm_shuffle_epi8(lut, lo2);
+            let hi_s2 = _mm_shuffle_epi8(lut, hi2);
+            let dims2 = _mm_unpacklo_epi8(lo_s2, hi_s2);
+            let i32_2 = _mm512_cvtepi8_epi32(dims2);
+            let f32_2 = _mm512_cvtepi32_ps(i32_2);
+            let q2 = _mm512_loadu_ps(rotated_q.add(b * 2 + 16));
+            acc_b = _mm512_fmadd_ps(q2, f32_2, acc_b);
+            b += 16;
+        } else {
+            b += 8;
+        }
+    }
+
+    _mm512_reduce_add_ps(_mm512_add_ps(acc_a, acc_b))
+}
 
 #[cfg(test)]
 mod tests {

@@ -60,16 +60,17 @@ def recall_at_k(results, ground_truth, k):
         total += hits / k
     return total / n
 
-def run_hnswlib(base, queries, k, search_list_sizes, num_threads=8, trials=5):
+def run_hnswlib(base, queries, k, search_list_sizes, num_threads=8, trials=5, space="l2"):
     """Run hnswlib benchmark, return list of (recall, qps) at each ef."""
     import hnswlib
     dim = base.shape[1]
     n = base.shape[0]
 
-    # Build index
-    print(f"  Building HNSW (M=16, ef_construction=200, {n} pts)...")
+    # Build index — `space` is the hnswlib distance: 'l2' / 'ip' /
+    # 'cosine'. Per-dataset choice from `DATASET_PATHS[<ds>]["space"]`.
+    print(f"  Building HNSW (M=16, ef_construction=200, {n} pts, space={space})...")
     t0 = time.time()
-    index = hnswlib.Index(space='l2', dim=dim)
+    index = hnswlib.Index(space=space, dim=dim)
     index.init_index(max_elements=n, ef_construction=200, M=16)
     index.set_num_threads(num_threads)
     index.add_items(base, np.arange(n))
@@ -113,21 +114,43 @@ DATASET_PATHS = {
         "base": "data/sift/sift_base.fvecs",
         "query": "data/sift/sift_query.fvecs",
         "gt": "data/sift/sift_groundtruth.ivecs",
+        "space": "l2",
     },
     "glove25": {
-        "base": "data/glove25/glove-25-angular_base.fvecs",
-        "query": "data/glove25/glove-25-angular_query.fvecs",
-        "gt": "data/glove25/glove-25-angular_groundtruth.ivecs",
+        "base": "data/glove25_norm/glove-25-angular_base.fvecs",
+        "query": "data/glove25_norm/glove-25-angular_query.fvecs",
+        "gt": "data/glove25_norm/glove-25-angular_groundtruth.ivecs",
+        "space": "l2",  # pre-normalised → L2 on unit-norm == cosine ranking
     },
     "glove100": {
-        "base": "data/glove100/glove-100-angular_base.fvecs",
-        "query": "data/glove100/glove-100-angular_query.fvecs",
-        "gt": "data/glove100/glove-100-angular_groundtruth.ivecs",
+        "base": "data/glove100_norm/glove-100-angular_base.fvecs",
+        "query": "data/glove100_norm/glove-100-angular_query.fvecs",
+        "gt": "data/glove100_norm/glove-100-angular_groundtruth.ivecs",
+        "space": "l2",
     },
     "gist": {
         "base": "data/gist/gist_base.fvecs",
         "query": "data/gist/gist_query.fvecs",
         "gt": "data/gist/gist_groundtruth.ivecs",
+        "space": "l2",
+    },
+    "deep10m": {
+        "base": "data/deep10m/deep10m_base.fvecs",
+        "query": "data/deep10m/deep10m_query.fvecs",
+        "gt": "data/deep10m/deep10m_groundtruth.ivecs",
+        "space": "l2",
+    },
+    "msmarco_bert_1M": {
+        "base": "data/msmarco_bert_1M/msmarco_bert_1M_base.fvecs",
+        "query": "data/msmarco_bert_1M/msmarco_bert_1M_query.fvecs",
+        "gt": "data/msmarco_bert_1M/msmarco_bert_1M_groundtruth.ivecs",
+        "space": "ip",   # raw dot product on non-unit-norm BERT vectors
+    },
+    "wiki_ada_1M": {
+        "base": "data/wiki_ada_1M/wiki_ada_1M_base.fvecs",
+        "query": "data/wiki_ada_1M/wiki_ada_1M_query.fvecs",
+        "gt": "data/wiki_ada_1M/wiki_ada_1M_groundtruth.ivecs",
+        "space": "l2",   # ada-002 vectors are unit-norm → L2 == cosine
     },
 }
 
@@ -148,6 +171,14 @@ def main():
               "Use this when the head-to-head sweep is already current."),
     )
     args = parser.parse_args()
+
+    # Cap every BLAS/OpenMP runtime to args.threads before lazy imports.
+    # hnswlib already obeys set_num_threads, but the loaded numpy /
+    # scipy stack may otherwise grab all cores during recall calc.
+    t = str(args.threads)
+    for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+              "RAYON_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[k] = t
 
     paths = DATASET_PATHS[args.dataset]
     search_list_sizes = [16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256]
@@ -174,7 +205,8 @@ def main():
     # ── 1. HNSW (hnswlib official) ──
     print("── HNSW (hnswlib) ──")
     hnsw_results, hnsw_build = run_hnswlib(
-        base, queries, args.k, search_list_sizes, args.threads, args.trials
+        base, queries, args.k, search_list_sizes, args.threads, args.trials,
+        space=paths.get("space", "l2"),
     )
     hnsw_data = []
     for (labels, qps), ef in zip(hnsw_results, search_list_sizes):
@@ -214,7 +246,17 @@ def main():
             print(f"    R@{args.k}={r:.4f}  QPS={qps:.0f}")
 
     # ── Save combined results ──
-    output = {
+    # Merge into the existing baseline JSON if present so that prior
+    # phases (e.g. dbms_baselines writing usearch_hnsw / lancedb_hnsw,
+    # additional_baselines writing faiss/annoy) are preserved.
+    out_path = f"visualizations/baseline_{args.dataset}.json"
+    os.makedirs("visualizations", exist_ok=True)
+    if os.path.exists(out_path):
+        with open(out_path) as f:
+            output = json.load(f)
+    else:
+        output = {}
+    output.update({
         "dataset": args.dataset,
         "dimension": dim,
         "num_points": n,
@@ -223,14 +265,12 @@ def main():
         "hnsw": all_results["hnsw"],
         "diskann": all_results["diskann"],
         "staged": all_results["staged"],
-        "build_time": {
-            "hnsw": round(hnsw_build, 3),
-        },
-    }
+    })
+    bt = output.get("build_time", {})
+    bt["hnsw"] = round(hnsw_build, 3)
+    output["build_time"] = bt
     if "parlayann" in all_results:
         output["parlayann"] = all_results["parlayann"]
-    out_path = f"visualizations/baseline_{args.dataset}.json"
-    os.makedirs("visualizations", exist_ok=True)
     with open(out_path, 'w') as f:
         json.dump(output, f, indent=2)
     print(f"\nSaved {out_path}")

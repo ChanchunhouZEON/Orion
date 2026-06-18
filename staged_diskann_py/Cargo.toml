@@ -1,0 +1,18 @@
+[package]
+name = "staged_diskann_py"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "staged_diskann_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+staged_diskann = { path = "../staged_diskann" }
+diskann = { path = "../diskann" }
+vector = { path = "../vector" }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
+numpy = "0.22"
+ndarray = { workspace = true }
+rayon = { workspace = true }
+anyhow = "1"

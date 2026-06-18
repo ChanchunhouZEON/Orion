@@ -108,17 +108,20 @@ def run_faiss_ivf_pq(base, queries, gt, k, nprobe_list, nlist=100, m_pq=16, num_
 
     return results, build_time
 
-def run_annoy(base, queries, gt, k, search_k_list, n_trees=50, num_threads=-1, trials=5):
+def run_annoy(base, queries, gt, k, search_k_list, n_trees=50, num_threads=8, trials=5):
     from annoy import AnnoyIndex
     dim = base.shape[1]
     n = base.shape[0]
 
-    print(f"  Building Annoy (n_trees={n_trees}, {n} pts)...")
+    print(f"  Building Annoy (n_trees={n_trees}, {n} pts, threads={num_threads})...")
     t0 = time.time()
     index = AnnoyIndex(dim, 'euclidean')
     for i in range(n):
         index.add_item(i, base[i])
-    index.build(n_trees)
+    # n_jobs=N caps the parallel tree-build to N threads. `-1` (the
+    # AnnoyIndex.build default) means "all cores", which was unfair
+    # vs the explicit 8-thread setting on every other baseline.
+    index.build(n_trees, n_jobs=num_threads)
     build_time = time.time() - t0
     print(f"  Built in {build_time:.2f}s")
 
@@ -149,19 +152,29 @@ DATASET_PATHS = {
         "gt": "data/sift/sift_groundtruth.ivecs",
     },
     "glove25": {
-        "base": "data/glove25/glove-25-angular_base.fvecs",
-        "query": "data/glove25/glove-25-angular_query.fvecs",
-        "gt": "data/glove25/glove-25-angular_groundtruth.ivecs",
+        "base": "data/glove25_norm/glove-25-angular_base.fvecs",
+        "query": "data/glove25_norm/glove-25-angular_query.fvecs",
+        "gt": "data/glove25_norm/glove-25-angular_groundtruth.ivecs",
     },
     "glove100": {
-        "base": "data/glove100/glove-100-angular_base.fvecs",
-        "query": "data/glove100/glove-100-angular_query.fvecs",
-        "gt": "data/glove100/glove-100-angular_groundtruth.ivecs",
+        "base": "data/glove100_norm/glove-100-angular_base.fvecs",
+        "query": "data/glove100_norm/glove-100-angular_query.fvecs",
+        "gt": "data/glove100_norm/glove-100-angular_groundtruth.ivecs",
     },
     "gist": {
         "base": "data/gist/gist_base.fvecs",
         "query": "data/gist/gist_query.fvecs",
         "gt": "data/gist/gist_groundtruth.ivecs",
+    },
+    "deep10m": {
+        "base": "data/deep10m/deep10m_base.fvecs",
+        "query": "data/deep10m/deep10m_query.fvecs",
+        "gt": "data/deep10m/deep10m_groundtruth.ivecs",
+    },
+    "msmarco_bert_1M": {
+        "base": "data/msmarco_bert_1M/msmarco_bert_1M_base.fvecs",
+        "query": "data/msmarco_bert_1M/msmarco_bert_1M_query.fvecs",
+        "gt": "data/msmarco_bert_1M/msmarco_bert_1M_groundtruth.ivecs",
     },
 }
 
@@ -173,6 +186,13 @@ def main():
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--k", type=int, default=10)
     args = parser.parse_args()
+
+    # Cap every BLAS/OpenMP runtime to args.threads before lazy imports.
+    # See dbms_baselines.py main() for rationale.
+    t = str(args.threads)
+    for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+              "RAYON_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[k] = t
 
     paths = DATASET_PATHS[args.dataset]
 

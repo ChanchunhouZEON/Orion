@@ -9,14 +9,11 @@ pub mod model;
 mod pq;
 pub mod storage;
 pub mod utils;
-#[cfg(feature = "visualization")]
-pub mod visualization;
 
 pub use algorithm::SearchProfile;
 pub use algorithm::search::calibrate::{CalibratedParams, CalibrationDiagnostics};
 pub use algorithm::search::convergence::SearchConvergenceChecker;
 pub use algorithm::search::utils::SearchProfileStats;
-pub use index::DiskANN;
 pub use index::NaiveStagedDiskANN;
 pub use index::StagedDiskANN;
 pub use index::{BeamSearchConfig, BeamSearchResult, IoLimiter, async_beam_search};

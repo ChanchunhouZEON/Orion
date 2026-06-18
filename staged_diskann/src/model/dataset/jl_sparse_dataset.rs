@@ -54,6 +54,7 @@ use diskann::model::InmemDataset;
 use rayon::prelude::*;
 use std::io::{Read, Write};
 use std::path::Path;
+use diskann::common::ANNResult;
 
 /// Disk-format magic for the JL Sparse sidecar (`.jls`). Bumped each
 /// time `NZ` changes so any cached sidecar from a previous projection
@@ -228,7 +229,7 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
     /// Body:
     ///   [BITS × NZ u32 indices]
     ///   [num_vertices × STRIDE u8 codes]
-    pub fn save<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> ANNResult<()> {
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
         let mut hdr = [0u8; 40];
         hdr[0..4].copy_from_slice(&JL_SPARSE_MAGIC.to_le_bytes());
@@ -253,10 +254,11 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
 
         // Codes.
         w.write_all(self.codes.as_slice())?;
-        w.flush()
+        w.flush()?;
+        Ok(())
     }
 
-    pub fn load<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+    pub fn load<P: AsRef<Path>>(path: P) -> ANNResult<Self> {
         let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
         let mut hdr = [0u8; 40];
         r.read_exact(&mut hdr)?;
@@ -268,7 +270,7 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
                     "bad magic 0x{magic:08x} (expected 0x{:08x} = JLSF)",
                     JL_SPARSE_MAGIC
                 ),
-            ));
+            ).into());
         }
         let num_vertices = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let bits = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
@@ -276,28 +278,28 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("bits mismatch: file={bits} expected={BITS}"),
-            ));
+            ).into());
         }
         let stride = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
         if stride != Self::STRIDE {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
-            ));
+            ).into());
         }
         let dim = u32::from_le_bytes(hdr[20..24].try_into().unwrap()) as usize;
         if dim != N {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("dim mismatch: file={dim} expected={N}"),
-            ));
+            ).into());
         }
         let file_nz = u32::from_le_bytes(hdr[24..28].try_into().unwrap()) as usize;
         if file_nz != NZ {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("nz mismatch: file={file_nz} expected={NZ}"),
-            ));
+            ).into());
         }
         let seed = u64::from_le_bytes(hdr[32..40].try_into().unwrap());
 
@@ -478,7 +480,7 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
     /// with [`JL_SPARSE_MIPS_MAGIC`] in the magic slot.
     /// Body: `BITS × NZ` u32 indices, then `num_vertices × STRIDE`
     /// u8 codes, then `num_vertices` × f32 norms.
-    pub fn save<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> ANNResult<()> {
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
         let mut hdr = [0u8; 40];
         hdr[0..4].copy_from_slice(&JL_SPARSE_MIPS_MAGIC.to_le_bytes());
@@ -506,10 +508,11 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
             )
         };
         w.write_all(norm_bytes)?;
-        w.flush()
+        w.flush()?;
+        Ok(())
     }
 
-    pub fn load<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+    pub fn load<P: AsRef<Path>>(path: P) -> ANNResult<Self> {
         let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
         let mut hdr = [0u8; 40];
         r.read_exact(&mut hdr)?;
@@ -521,7 +524,7 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
                     "bad magic 0x{magic:08x} (expected 0x{:08x} = JLM8)",
                     JL_SPARSE_MIPS_MAGIC
                 ),
-            ));
+            ).into());
         }
         let num_vertices = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let bits = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
@@ -529,28 +532,28 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("bits mismatch: file={bits} expected={BITS}"),
-            ));
+            ).into());
         }
         let stride = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
         if stride != Self::STRIDE {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
-            ));
+            ).into());
         }
         let dim = u32::from_le_bytes(hdr[20..24].try_into().unwrap()) as usize;
         if dim != N {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("dim mismatch: file={dim} expected={N}"),
-            ));
+            ).into());
         }
         let file_nz = u32::from_le_bytes(hdr[24..28].try_into().unwrap()) as usize;
         if file_nz != NZ {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("nz mismatch: file={file_nz} expected={NZ}"),
-            ));
+            ).into());
         }
         let seed = u64::from_le_bytes(hdr[32..40].try_into().unwrap());
 
@@ -600,6 +603,14 @@ pub fn hamming_dispatch(p: &[u8], q: &[u8]) -> u32 {
     {
         return unsafe { hamming_neon(p.as_ptr(), q.as_ptr(), p.len()) };
     }
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vpopcntdq"))]
+    {
+        return unsafe { hamming_avx512_vpopcnt(p.as_ptr(), q.as_ptr(), p.len()) };
+    }
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", not(target_feature = "avx512vpopcntdq")))]
+    {
+        return unsafe { hamming_avx512_harley_seal(p.as_ptr(), q.as_ptr(), p.len()) };
+    }
     #[allow(unreachable_code)]
     hamming_scalar(p, q)
 }
@@ -641,6 +652,103 @@ unsafe fn hamming_neon(p: *const u8, q: *const u8, len: usize) -> u32 { unsafe {
     }
     vaddvq_u32(acc)
 }}
+
+/// AVX-512 fast path using `_mm512_popcnt_epi64` (requires
+/// `avx512vpopcntdq`, available on Ice Lake-Server, Tiger Lake,
+/// Sapphire Rapids, Zen 4+). One VPOPCNTQ per 64-byte block vs
+/// the multi-stage Harley-Seal fallback below.
+///
+/// # Safety
+/// `p` and `q` must be valid for `len` bytes; `len` must be a
+/// 16-byte multiple to match the NEON contract.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vpopcntdq"))]
+#[inline]
+unsafe fn hamming_avx512_vpopcnt(p: *const u8, q: *const u8, len: usize) -> u32 {
+    use std::arch::x86_64::*;
+    debug_assert_eq!(len % 16, 0);
+    let mut acc = _mm512_setzero_si512();
+    let n_blocks = len / 64;
+    for i in 0..n_blocks {
+        let vp = _mm512_loadu_si512(p.add(i * 64) as *const __m512i);
+        let vq = _mm512_loadu_si512(q.add(i * 64) as *const __m512i);
+        let vx = _mm512_xor_si512(vp, vq);
+        // 8× i64 lanes each holding popcount of a 64-bit chunk.
+        let pc = _mm512_popcnt_epi64(vx);
+        acc = _mm512_add_epi64(acc, pc);
+    }
+    let mut total = _mm512_reduce_add_epi64(acc) as u32;
+
+    // Tail: 16-byte chunks (NEON's natural stride). Process via
+    // SSE2 + scalar popcount since AVX-512 wants 64-byte aligned
+    // ops at full width.
+    let mut i = n_blocks * 64;
+    while i + 16 <= len {
+        let lo = (p.add(i) as *const u64).read_unaligned()
+            ^ (q.add(i) as *const u64).read_unaligned();
+        let hi = (p.add(i + 8) as *const u64).read_unaligned()
+            ^ (q.add(i + 8) as *const u64).read_unaligned();
+        total += lo.count_ones() + hi.count_ones();
+        i += 16;
+    }
+    total
+}
+
+/// AVX-512 fallback when `avx512vpopcntdq` isn't available
+/// (Skylake-SP, Cascade Lake). Uses the Wojciech Mula bit-slicing
+/// popcount: bit-parallel half-adders that emulate per-byte
+/// popcount in ~6 vector ops over 64 bytes.
+///
+/// Slower than the dedicated VPOPCNTQ instruction (~3× more
+/// uops) but still 4-5× faster than Harley-Seal on AVX2.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", not(target_feature = "avx512vpopcntdq")))]
+#[inline]
+unsafe fn hamming_avx512_harley_seal(p: *const u8, q: *const u8, len: usize) -> u32 {
+    use std::arch::x86_64::*;
+    debug_assert_eq!(len % 16, 0);
+
+    // Per-nibble popcount LUT broadcast to all 64 lanes of a __m512i.
+    // _mm512_shuffle_epi8 selects per-byte; we shuffle low nibbles
+    // and shifted-high nibbles separately and add.
+    let lut = _mm512_set_epi8(
+        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
+        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
+        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
+        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
+    );
+    let low_mask = _mm512_set1_epi8(0x0F);
+
+    let mut acc = _mm512_setzero_si512();
+    let n_blocks = len / 64;
+    for i in 0..n_blocks {
+        let vp = _mm512_loadu_si512(p.add(i * 64) as *const __m512i);
+        let vq = _mm512_loadu_si512(q.add(i * 64) as *const __m512i);
+        let vx = _mm512_xor_si512(vp, vq);
+        // Low nibble lookup.
+        let lo = _mm512_and_si512(vx, low_mask);
+        // High nibble = (x >> 4) & 0x0F.
+        let hi = _mm512_and_si512(_mm512_srli_epi16(vx, 4), low_mask);
+        let pl = _mm512_shuffle_epi8(lut, lo);
+        let ph = _mm512_shuffle_epi8(lut, hi);
+        let per_byte = _mm512_add_epi8(pl, ph);
+        // Sum byte lanes into 8× i64 accumulators via VPSADBW
+        // (reduces 8 bytes → one i64 per dqword).
+        let widened = _mm512_sad_epu8(per_byte, _mm512_setzero_si512());
+        acc = _mm512_add_epi64(acc, widened);
+    }
+    let mut total = _mm512_reduce_add_epi64(acc) as u32;
+
+    // Tail (same shape as the vpopcnt path).
+    let mut i = n_blocks * 64;
+    while i + 16 <= len {
+        let lo = (p.add(i) as *const u64).read_unaligned()
+            ^ (q.add(i) as *const u64).read_unaligned();
+        let hi = (p.add(i + 8) as *const u64).read_unaligned()
+            ^ (q.add(i + 8) as *const u64).read_unaligned();
+        total += lo.count_ones() + hi.count_ones();
+        i += 16;
+    }
+    total
+}
 
 // ── Deterministic PRNG (shared shape with rabitq_dataset) ─────────────
 

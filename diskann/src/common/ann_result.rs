@@ -15,6 +15,17 @@ use std::num::TryFromIntError;
 
 pub type ANNResult<T> = Result<T, ANNError>;
 
+/// Unified error type for the workspace.
+///
+/// Every `From<T>` impl below routes through the matching
+/// `log_*_error` helper, so a plain `?` propagation **automatically
+/// logs at the point of conversion** — no `.map_err(...)` boilerplate
+/// at call sites. New error sources should:
+///   1. Add a variant here (no `#[from]` — we write the From manually).
+///   2. Add a `log_*_error` helper on the `impl ANNError` block.
+///   3. Add a `From<T> for ANNError` impl that calls the helper.
+///
+/// See `From<io::Error>` below for the canonical pattern.
 #[derive(thiserror::Error, Debug)]
 pub enum ANNError {
     #[error("IndexError: {err}")]
@@ -24,22 +35,13 @@ pub enum ANNError {
     IndexConfigError { parameter: String, err: String },
 
     #[error("TryFromIntError: {err}")]
-    TryFromIntError {
-        #[from]
-        err: TryFromIntError,
-    },
+    TryFromIntError { err: TryFromIntError },
 
     #[error("IOError: {err}")]
-    IOError {
-        #[from]
-        err: io::Error,
-    },
+    IOError { err: io::Error },
 
     #[error("MemoryAllocLayoutError: {err}")]
-    MemoryAllocLayoutError {
-        #[from]
-        err: LayoutError,
-    },
+    MemoryAllocLayoutError { err: LayoutError },
 
     #[error("LockPoisonError: {err}")]
     LockPoisonError { err: String },
@@ -48,41 +50,78 @@ pub enum ANNError {
     DiskIOAlignmentError { err: String },
 
     #[error("LogError: {err}")]
-    LogError {
-        #[from]
-        err: LogError,
-    },
+    LogError { err: LogError },
 
     #[error("PQError: {err}")]
     PQError { err: String },
 
     #[error("Error try creating array from slice: {err}")]
-    TryFromSliceError {
-        #[from]
-        err: TryFromSliceError,
-    },
-
-    #[error("CandidateSetsError: {err}")]
-    CandidateSetsError { err: String },
+    TryFromSliceError { err: TryFromSliceError },
 
     #[error("SerializeError: {err}")]
-    SerializeError {
-        #[from]
-        err: bincode::error::EncodeError,
-    },
+    SerializeError { err: bincode::error::EncodeError },
 
     #[error("DeserializeError: {err}")]
-    DeserializeError {
-        #[from]
-        err: bincode::error::DecodeError,
-    },
+    DeserializeError { err: bincode::error::DecodeError },
+}
 
-    #[error("ClusterError: {err}")]
-    ClusterError { err: String },
+// ── Auto-logging `From` impls ───────────────────────────────────────────
+//
+// `?` propagation calls `From::from(err)`. By routing each From through
+// the corresponding `log_*_error` helper, every conversion point emits
+// a log line — no need to sprinkle `.map_err(ANNError::log_*_error)` at
+// every call site. `thiserror`'s `#[from]` derive would skip the log
+// step, so we hand-roll these.
 
-    #[cfg(all(feature = "staged_diskann", feature = "visualization"))]
-    #[error("VisualizationError: {err}")]
-    VisualizationError { err: String },
+impl From<io::Error> for ANNError {
+    #[inline]
+    fn from(err: io::Error) -> Self {
+        Self::log_io_error(err)
+    }
+}
+
+impl From<TryFromIntError> for ANNError {
+    #[inline]
+    fn from(err: TryFromIntError) -> Self {
+        Self::log_try_from_int_error(err)
+    }
+}
+
+impl From<LayoutError> for ANNError {
+    #[inline]
+    fn from(err: LayoutError) -> Self {
+        Self::log_mem_alloc_layout_error(err)
+    }
+}
+
+impl From<TryFromSliceError> for ANNError {
+    #[inline]
+    fn from(err: TryFromSliceError) -> Self {
+        Self::log_try_from_slice_error(err)
+    }
+}
+
+impl From<bincode::error::EncodeError> for ANNError {
+    #[inline]
+    fn from(err: bincode::error::EncodeError) -> Self {
+        Self::log_serialize_error(err)
+    }
+}
+
+impl From<bincode::error::DecodeError> for ANNError {
+    #[inline]
+    fn from(err: bincode::error::DecodeError) -> Self {
+        Self::log_deserialize_error(err)
+    }
+}
+
+// `LogError`'s `From` is deliberately NOT auto-logging — recursing into
+// the logger on a logger failure would loop. Wrap manually if needed.
+impl From<LogError> for ANNError {
+    #[inline]
+    fn from(err: LogError) -> Self {
+        Self::LogError { err }
+    }
 }
 
 impl ANNError {
@@ -168,15 +207,6 @@ impl ANNError {
     }
 
     #[inline]
-    pub fn log_candidate_sets_error(err: String) -> Self {
-        let ann_err = ANNError::CandidateSetsError { err };
-        match log_error(ann_err.to_string()) {
-            Ok(()) => ann_err,
-            Err(log_err) => ANNError::LogError { err: log_err },
-        }
-    }
-
-    #[inline]
     pub fn log_serialize_error(err: bincode::error::EncodeError) -> Self {
         let ann_err = ANNError::SerializeError { err };
         match log_error(ann_err.to_string()) {
@@ -194,24 +224,6 @@ impl ANNError {
         }
     }
 
-    #[inline]
-    pub fn log_cluster_error(err: String) -> Self {
-        let ann_err = ANNError::ClusterError { err };
-        match log_error(ann_err.to_string()) {
-            Ok(()) => ann_err,
-            Err(log_err) => ANNError::LogError { err: log_err },
-        }
-    }
-
-    #[cfg(all(feature = "staged_diskann", feature = "visualization"))]
-    #[inline]
-    pub fn log_visualization_error(err: String) -> Self {
-        let ann_err = ANNError::VisualizationError { err };
-        match log_error(ann_err.to_string()) {
-            Ok(()) => ann_err,
-            Err(log_err) => ANNError::LogError { err: log_err },
-        }
-    }
 }
 
 #[cfg(test)]

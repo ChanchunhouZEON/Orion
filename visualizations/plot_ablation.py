@@ -9,9 +9,12 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, os.path.dirname(__file__))
 from chart_style import *
 
+# Paper figure is single-panel for clarity at half-page width.
+# `glove100` was used in earlier iterations as a high-D contrast;
+# the conclusion (no-early-exit / no-extra both regress) is
+# qualitatively identical on SIFT, so we keep only SIFT here.
 datasets = [
     ("sift",    "SIFT (128-dim)"),
-    ("glove100","GloVe-100 (100-dim)"),
 ]
 
 variants = [
@@ -64,7 +67,11 @@ for idx, (name, title) in enumerate(present):
     n_pts = data.get('num_points', 0)
     threads = data.get('threads', 0)
     ax.set_title(f'{title} ({n_pts//1000}K, {threads}T)', fontsize=12, fontweight='bold')
-    make_legend(ax, handles, loc='upper right', fontsize=8)
+    # fontsize=11 → 11 × 1.5 = 16.5 pt in the PDF (save_png_and_pdf
+    # scales every text element by pdf_font_scale=1.5). Matches the
+    # other in-axes labels (ylabel/title) so the legend reads at the
+    # same visual weight when embedded in a half-page paper figure.
+    make_legend(ax, handles, loc='upper right', fontsize=11)
     style_ax(ax)
     apply_ylim(ax, all_qps, headroom=1.25)
     ax.set_xlim(x[0] - 1.1, x[-1] + 1.1)
