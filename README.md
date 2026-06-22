@@ -905,10 +905,10 @@ into two buckets that we deliberately exclude:
 
 - `diskann/` — the upstream-Microsoft DiskANN Rust port. Inheriting
   its test surface (or lack thereof) would distort our numbers.
-- `benchmark/`, `early_stop_baselines/`, `ssd_diskann/`, `platform/`,
-  `logger/`, `staged_diskann_py/` — integration-test territory (CLI
-  runners, OS plumbing, Python bridges) exercised by the benchmark
-  sweeps rather than `cargo test --lib`.
+- `benchmark/`, `platform/`, `logger/`, `staged_diskann_py/` —
+  integration-test territory (CLI runners, OS plumbing, Python
+  bridges) exercised by the benchmark sweeps rather than
+  `cargo test --lib`.
 
 `cargo llvm-cov --summary-only -p vector -p staged_diskann` (then
 filtering to `^(vector|staged_diskann)/` files) reports **85% line
