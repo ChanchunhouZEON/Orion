@@ -309,9 +309,23 @@ where
                         scratch.id_scratch.push(nn);
                     }
                 }
-            } else {
+            } else if crate::algorithm::search::include_extras() {
                 let (local, extra) = graph.rerank_candidates(id);
                 for &nn in local.iter().chain(extra.iter()) {
+                    if scratch.seen.insert(nn) {
+                        scratch.id_scratch.push(nn);
+                    }
+                }
+            } else {
+                // Ablation toggle: with `INCLUDE_EXTRAS=false`, the
+                // post-convergence branch falls back to the same
+                // `local + remote` walk used pre-convergence — i.e.
+                // the rerank-mode "substitute remote with extras"
+                // never fires. Without this fallback, disabling
+                // extras would collapse the converged branch to
+                // `local` only, which drops the long-range remote
+                // shortcuts and degrades worse than just "no extras."
+                for &nn in graph.neighbors(id) {
                     if scratch.seen.insert(nn) {
                         scratch.id_scratch.push(nn);
                     }

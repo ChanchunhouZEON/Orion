@@ -2371,22 +2371,61 @@ fn run_calibration_diag(dataset: &Dataset) {
     }
 }
 
+/// Convergence-side ablation: isolates the contributions of the
+/// **early-exit** and **extras** machinery on top of the per-dataset
+/// default cascade. Emits a 4-series QPS-vs-Recall curve per dataset
+/// (companion panel to `run_cascade_ablation`, which slices the
+/// cascade *tiers* instead).
+///
+/// Variants — a clean 2×2 factorial on the convergence-side knobs,
+/// **all four sharing the same cascade backbone, base graph, and
+/// calibration**:
+///
+///   * `origin`        — cascade + convergence ON, **no extras + no
+///                       early-stop** (the bare-cascade reference).
+///                       This is NOT Microsoft Vamana — that headline
+///                       gain lives in the 3-engine sweep panel. Here
+///                       origin isolates "what does the cascade alone
+///                       achieve without either convergence-side
+///                       optimization?", so deltas vs `full`/`no_ee`/
+///                       `no_extra` cleanly attribute to each knob.
+///   * `no_extra`      — cascade + early-stop, **extras off**.
+///                       Isolates the marginal value of early-stop
+///                       on top of bare-cascade.
+///   * `no_early_stop` — cascade + extras, **`ee = MAX`**.
+///                       Isolates the marginal value of extras on top
+///                       of bare-cascade.
+///   * `full`          — cascade + early-stop + extras (production).
+///
+/// Earlier versions of this ablation used Microsoft Vamana as origin
+/// (which conflates "no cascade backbone" with "no convergence
+/// machinery" — the 4-10× gap was mostly the cascade kernels, not the
+/// convergence knobs being ablated) and built a separate `max_extra=0`
+/// graph for `no_extra` (which conflated build-time topology with the
+/// search-time extras contribution). This design eliminates both
+/// confounds: one graph, one calibration, all variants on the same
+/// search path with only the two convergence-side flags toggled.
 fn run_ablation(dataset: &Dataset, k: usize) {
     use rayon::prelude::*;
-    use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
+    use staged_diskann::{
+        build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_960,
+    };
     use std::time::Instant;
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
+    let dscfg = crate::config::load_dataset_config_by_dim(dimension);
+    let scfg = dscfg.staged;
     let num_threads = 8;
 
     let dim_name = match dimension {
         32 => "glove25",
         100 => "glove100",
         128 => "sift",
+        768 => "msmarco_bert_1M",
         960 => "gist",
+        1536 => "wiki_ada_1M",
         _ => "unknown",
     };
 
@@ -2395,70 +2434,193 @@ fn run_ablation(dataset: &Dataset, k: usize) {
         .build()
         .unwrap();
 
+    // Same L schedule as `run_cascade_ablation` for cross-panel comparability.
     let search_list_sizes: &[usize] =
         &[16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256];
     let trials = 5;
 
-    macro_rules! run_ablation {
+    macro_rules! run_ablation_inner {
         ($N:literal) => {{
-            let queries: Vec<[f32; $N]> = dataset.queries.iter().map(|q| {
-                let mut arr = [0f32; $N];
-                arr.copy_from_slice(&q[..$N]);
-                arr
-            }).collect();
+            use crate::runner::cascade::{search_compose, PrefilterChoice};
 
-            // ── Build full StagedDiskANN ──
-            println!("Building StagedDiskANN ({}-dim, alpha={})...", $N, scfg.alpha);
-            let result = build_diskann_index(
-                &flat_base, num_points, dimension, scfg.alpha,
-                scfg.graph_degree, scfg.build_search_list_size as u32,
-                false, None, None, true, scfg.max_extra,
-            ).expect("build failed");
-            drop(result.index);
-            let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut staged = StagedDiskANN::<$N>::new(
-                empty_ds, &result.partitions, result.entry_point,
-                scfg.graph_degree, scfg.max_extra, None, None, None, false,
+            let queries: Vec<[f32; $N]> = dataset
+                .queries
+                .iter()
+                .map(|q| {
+                    let mut arr = [0f32; $N];
+                    arr.copy_from_slice(&q[..$N]);
+                    arr
+                })
+                .collect();
+
+            // ── Resolve cache path (PA-mode naming, shared with cascade-ablation). ──
+            let local_pct: usize = std::env::var("STAGED_LOCAL_PCT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&v| (1..=100).contains(&v))
+                .unwrap_or(60);
+            let alpha_tag = format!("{:.2}", scfg.alpha).replace('.', "_");
+            let cache_dir = std::path::PathBuf::from("cache/staged_parlayann");
+            std::fs::create_dir_all(&cache_dir).ok();
+            // Build-or-load the production staged graph (default
+            // `max_extra`). All 4 ablation variants share this one
+            // graph — `no-extra` uses the same graph with the
+            // `INCLUDE_EXTRAS` toggle flipped off at search time
+            // (the post-convergence branch falls back to local+remote
+            // instead of walking local+extra). Sharing one graph
+            // eliminates the build-time topology confound of the
+            // earlier `max_extra=0` rebuild approach.
+            let cache_path = cache_dir.join(format!(
+                "{}_n{}_r{}_l{}_a{}_ex{}_pct{}.bin",
+                dim_name,
+                num_points,
+                scfg.graph_degree,
+                scfg.build_search_list_size,
+                alpha_tag,
+                scfg.max_extra,
+                local_pct,
+            ));
+            let pgraph_path = cache_path.with_extension("pgraph");
+            println!(
+                "Loading staged graph ({}-dim, max_extra={})...",
+                $N, scfg.max_extra
             );
-            staged.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+            let t_load = Instant::now();
+            // Wrap in `pool.install` so the Vamana builder (which
+            // queries `rayon::current_num_threads()`) sees the
+            // 8-thread pool, not the global all-cores pool.
+            let staged: StagedDiskANN<$N> = pool.install(|| {
+                if cache_path.exists() && pgraph_path.exists() {
+                    println!("  → cache hit: loading {:?}", pgraph_path);
+                    let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                    let mut idx = StagedDiskANN::<$N>::load_from_cache(&cache_path, empty_ds)
+                        .expect("load_from_cache failed");
+                    idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                    idx
+                } else if let Ok(staged_file_path) = std::env::var("STAGED_STAGED_FILE") {
+                    println!("  → import PA .staged from {}", staged_file_path);
+                    let input = crate::runner::parlayann_bridge::load_from_staged_file(
+                        &staged_file_path,
+                        &flat_base[..num_points * $N],
+                        $N,
+                    )
+                    .expect("parlayann_bridge::load_from_staged_file failed");
+                    let max_extra_from_file = input.max_extra as usize;
+                    let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                    let mut idx = StagedDiskANN::<$N>::new(
+                        empty_ds,
+                        &input.partitions,
+                        input.entry_point,
+                        scfg.graph_degree,
+                        max_extra_from_file,
+                        None,
+                        None,
+                        Some(cache_path.clone()),
+                        true,
+                    );
+                    idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                    idx
+                } else {
+                    println!(
+                        "  → build in-process, will cache to {:?}",
+                        pgraph_path
+                    );
+                    let result = build_diskann_index(
+                        &flat_base,
+                        num_points,
+                        dimension,
+                        scfg.alpha,
+                        scfg.graph_degree,
+                        scfg.build_search_list_size as u32,
+                        false,
+                        None,
+                        None,
+                        true,
+                        scfg.max_extra,
+                    )
+                    .expect("build failed");
+                    let entry = result.entry_point;
+                    drop(result.index);
+                    let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                    let mut idx = StagedDiskANN::<$N>::new(
+                        empty_ds,
+                        &result.partitions,
+                        entry,
+                        scfg.graph_degree,
+                        scfg.max_extra,
+                        None,
+                        None,
+                        Some(cache_path.clone()),
+                        true,
+                    );
+                    idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                    idx
+                }
+            });
+            println!("  → ready in {:.1}s", t_load.elapsed().as_secs_f64());
 
-            // Calibrate
-            let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
-            let calib = staged.calibrate(&calib_qs, 48, 5).expect("calibrate failed");
-            let thr = calib.threshold;
-            let ee = calib.early_exit_limit;
-            println!("Calibrated: threshold={:.2}, early_exit_limit={}\n", thr, ee);
-
-            // ── Build no-extra variant (max_extra=0) ──
-            println!("Building no-extra variant (max_extra=0)...");
-            let result_ne = build_diskann_index(
-                &flat_base, num_points, dimension, scfg.alpha,
-                scfg.graph_degree, scfg.build_search_list_size as u32,
-                false, None, None, true, 0,
-            ).expect("build failed");
-            drop(result_ne.index);
-            let empty_ds_ne = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut staged_ne = StagedDiskANN::<$N>::new(
-                empty_ds_ne, &result_ne.partitions, result_ne.entry_point,
-                scfg.graph_degree, 0, None, None, None, false,
+            // Single calibration shared across all 4 variants —
+            // they all run on the same graph topology, so threshold
+            // / early-exit derive identically.
+            let calib_qs: Vec<[f32; $N]> =
+                queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
+            let calib = staged
+                .calibrate(&calib_qs, 48, 5)
+                .expect("calibrate failed");
+            let (thr, ee) = (calib.threshold, calib.early_exit_limit);
+            println!(
+                "Calibrated (shared across all variants): threshold={:.2}, early_exit_limit={}\n",
+                thr, ee
             );
-            staged_ne.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
-            let calib_ne = staged_ne.calibrate(&calib_qs, 48, 5).expect("calibrate failed");
 
-            // Measure function
-            let measure = |search_fn: &(dyn Fn(&[f32; $N], usize) -> Vec<u32> + Sync)| -> Vec<(f64, f64)> {
+            // Pre-materialise sidecars for the chosen cascade so per-L
+            // QPS isn't biased by first-touch sidecar build. Sidecar
+            // build is rayon-parallel (KMeans / k-means++ inner loops);
+            // run it inside the 8-thread pool for consistency with the
+            // measurement phase.
+            pool.install(|| {
+                crate::runner::cascade::pin_admission(&staged, scfg.admission);
+                match scfg.prefilter {
+                    PrefilterChoice::None => {}
+                    PrefilterChoice::Jl => {
+                        let _ = staged.ensure_quantized_dataset_jl();
+                    }
+                    PrefilterChoice::JlHadamard => {
+                        let _ = staged.ensure_quantized_dataset_jl_hadamard();
+                    }
+                    PrefilterChoice::Rabitq => {
+                        let _ = staged.ensure_quantized_dataset_rabitq();
+                    }
+                }
+            });
+
+            // Generic measure closure: time a search fn over `queries`
+            // × `search_list_sizes` × `trials`, return median QPS per L.
+            // Each call does ONE warmup pass at warmup_l before timing.
+            let warmup_l = *search_list_sizes.first().unwrap_or(&16);
+            let measure = |label: &str,
+                           search_fn: &(dyn Fn(&[f32; $N], usize) -> Vec<u32> + Sync)|
+             -> Vec<(f64, f64)> {
+                println!("  [{label}]");
+                pool.install(|| {
+                    queries.par_iter().for_each(|q| {
+                        let _ = search_fn(q, warmup_l);
+                    });
+                });
                 let mut data = Vec::new();
                 for &sls in search_list_sizes {
                     let mut qps_samples = Vec::with_capacity(trials);
                     let mut recall = 0.0f64;
                     for _ in 0..trials {
+                        self::utils::flush_cache();
                         let t = Instant::now();
                         let results: Vec<Vec<u32>> = pool.install(|| {
                             queries.par_iter().map(|q| search_fn(q, sls)).collect()
                         });
                         let wall = t.elapsed();
                         qps_samples.push(queries.len() as f64 / wall.as_secs_f64());
-                        recall = metrics::recall::mean_recall(&results, &dataset.ground_truth, k);
+                        recall =
+                            metrics::recall::mean_recall(&results, &dataset.ground_truth, k);
                     }
                     qps_samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
                     data.push((recall, qps_samples[trials / 2]));
@@ -2466,104 +2628,120 @@ fn run_ablation(dataset: &Dataset, k: usize) {
                 data
             };
 
-            // ── DiskANN baseline (alpha=2.0, standard Vamana search) ──
-            println!("Building DiskANN baseline ({}-dim, alpha=2.0)...", $N);
-            let mut da_runner = crate::runner::DiskANNRunner::new(48, 32, 2.0);
-            da_runner.build(&flat_base, num_points, dimension);
-            // Pre-expand scratch for max L
-            let max_l = *search_list_sizes.last().unwrap();
-            da_runner.set_search_list_size(max_l);
-            let warmup_qs: Vec<Vec<f32>> = (0..num_threads * 4 + 20)
-                .map(|_| vec![0.0f32; dimension]).collect();
-            pool.install(|| {
-                use rayon::prelude::*;
-                warmup_qs.par_iter().for_each(|q| { let _ = da_runner.search(q, k); });
-            });
+            println!("\nRunning ablation sweep...\n");
 
-            // ── Ablation variants ──
-            println!("Running ablation sweep...\n");
-
-            // 0. DiskANN baseline
-            println!("  [diskann] Vamana (alpha=2.0)");
-            // DiskANN requires set_search_list_size before search, not thread-safe in closure.
-            // Measure each L separately.
-            let diskann_data = {
-                let mut data = Vec::new();
-                for &sls in search_list_sizes {
-                    da_runner.set_search_list_size(sls);
-                    let mut qps_samples = Vec::with_capacity(trials);
-                    let mut recall = 0.0f64;
-                    for _ in 0..trials {
-                        let t = Instant::now();
-                        let results: Vec<Vec<u32>> = pool.install(|| {
-                            queries.par_iter()
-                                .map(|q| da_runner.search(q.as_slice(), k).neighbors)
-                                .collect()
-                        });
-                        let wall = t.elapsed();
-                        qps_samples.push(queries.len() as f64 / wall.as_secs_f64());
-                        recall = metrics::recall::mean_recall(&results, &dataset.ground_truth, k);
-                    }
-                    qps_samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                    data.push((recall, qps_samples[trials / 2]));
-                }
-                data
-            };
-
-            // 1. Full StagedDiskANN
-            println!("  [full] convergence + early_exit + extra");
-            let _ = staged.ensure_quantized_dataset();
-            let full_data = measure(&|q, sls| {
-                crate::runner::cascade::search_compose::<$N>(
-                    &staged, q, k, sls, 5, thr, ee,
-                    crate::runner::cascade::PrefilterChoice::None,
-                    crate::runner::cascade::AdmissionChoice::L2U8,
-                    crate::runner::cascade::RerankChoice::F32,
+            // ── 0. Origin: cascade-only (no extras, no early-stop) ──
+            // Same cascade as the other three variants; both convergence-
+            // side knobs disabled (`INCLUDE_EXTRAS=false`, `ee=MAX`).
+            // This is the 2×2 factorial's bare reference point — deltas
+            // to the other three attribute cleanly to (a) extras alone,
+            // (b) early-stop alone, (c) the combined effect.
+            staged_diskann::algorithm::search::set_include_extras(false);
+            let origin_data = measure("origin (cascade-only)", &|q, sls| {
+                search_compose::<$N>(
+                    &staged,
+                    q,
+                    k,
+                    sls,
+                    5,
+                    thr,
+                    usize::MAX,
+                    scfg.prefilter,
+                    scfg.admission,
+                    scfg.rerank,
                 )
                 .unwrap_or_default()
             });
 
-            // 2. No early exit (convergence on, ee=MAX)
-            println!("  [no-early-exit] convergence on, ee=MAX");
-            let no_ee_data = measure(&|q, sls| {
-                crate::runner::cascade::search_compose::<$N>(
-                    &staged, q, k, sls, 5, thr, usize::MAX,
-                    crate::runner::cascade::PrefilterChoice::None,
-                    crate::runner::cascade::AdmissionChoice::L2U8,
-                    crate::runner::cascade::RerankChoice::F32,
+            // ── 1. Full ──
+            // Default INCLUDE_EXTRAS=true; convergence + early-exit on.
+            staged_diskann::algorithm::search::set_include_extras(true);
+            let full_data = measure("full", &|q, sls| {
+                search_compose::<$N>(
+                    &staged,
+                    q,
+                    k,
+                    sls,
+                    5,
+                    thr,
+                    ee,
+                    scfg.prefilter,
+                    scfg.admission,
+                    scfg.rerank,
                 )
                 .unwrap_or_default()
             });
 
-            // 3. No extra candidates (max_extra=0, separate build)
-            println!("  [no-extra] max_extra=0, convergence + ee on");
-            let _ = staged_ne.ensure_quantized_dataset();
-            let no_extra_data = measure(&|q, sls| {
-                crate::runner::cascade::search_compose::<$N>(
-                    &staged_ne, q, k, sls, 5,
-                    calib_ne.threshold, calib_ne.early_exit_limit,
-                    crate::runner::cascade::PrefilterChoice::None,
-                    crate::runner::cascade::AdmissionChoice::L2U8,
-                    crate::runner::cascade::RerankChoice::F32,
+            // ── 2. No early-stop (convergence on, ee = MAX) ──
+            // Convergence detection still fires; just doesn't terminate
+            // the beam early. Extras still walked post-convergence.
+            staged_diskann::algorithm::search::set_include_extras(true);
+            let no_ee_data = measure("no-early-stop", &|q, sls| {
+                search_compose::<$N>(
+                    &staged,
+                    q,
+                    k,
+                    sls,
+                    5,
+                    thr,
+                    usize::MAX,
+                    scfg.prefilter,
+                    scfg.admission,
+                    scfg.rerank,
                 )
                 .unwrap_or_default()
             });
 
-            // Print results
-            println!("\n{:<6} {:<22} {:<22} {:<22} {:<22}",
-                "L", "DiskANN (R/QPS)", "full (R/QPS)", "no-ee (R/QPS)", "no-extra (R/QPS)");
+            // ── 3. No extra — same graph, post-convergence branch
+            //     falls back to local+remote (see `INCLUDE_EXTRAS`
+            //     plumbing in `algorithm::search::mod`).
+            staged_diskann::algorithm::search::set_include_extras(false);
+            let no_extra_data = measure("no-extra", &|q, sls| {
+                search_compose::<$N>(
+                    &staged,
+                    q,
+                    k,
+                    sls,
+                    5,
+                    thr,
+                    ee,
+                    scfg.prefilter,
+                    scfg.admission,
+                    scfg.rerank,
+                )
+                .unwrap_or_default()
+            });
+            // Restore default so any subsequent code (other dataset
+            // dispatch arms, downstream tests in the same process)
+            // gets production semantics.
+            staged_diskann::algorithm::search::set_include_extras(true);
+
+            // ── Summary table ──
+            println!(
+                "\n{:<6} {:<22} {:<22} {:<22} {:<22}",
+                "L",
+                "origin (R/QPS)",
+                "full (R/QPS)",
+                "no-ee (R/QPS)",
+                "no-extra (R/QPS)"
+            );
             println!("{}", "─".repeat(96));
             for (i, &sls) in search_list_sizes.iter().enumerate() {
-                println!("L={:<4} {:.3}/{:<12.0}  {:.3}/{:<12.0}  {:.3}/{:<12.0}  {:.3}/{:<12.0}",
+                println!(
+                    "L={:<4} {:.3}/{:<12.0}  {:.3}/{:<12.0}  {:.3}/{:<12.0}  {:.3}/{:<12.0}",
                     sls,
-                    diskann_data[i].0, diskann_data[i].1,
-                    full_data[i].0, full_data[i].1,
-                    no_ee_data[i].0, no_ee_data[i].1,
-                    no_extra_data[i].0, no_extra_data[i].1,
+                    origin_data[i].0,
+                    origin_data[i].1,
+                    full_data[i].0,
+                    full_data[i].1,
+                    no_ee_data[i].0,
+                    no_ee_data[i].1,
+                    no_extra_data[i].0,
+                    no_extra_data[i].1,
                 );
             }
 
-            // Save JSON
+            // ── Save JSON ──
             let to_json = |data: &[(f64, f64)]| -> Vec<(f64, f64)> {
                 data.iter().map(|&(r, q)| (r, q)).collect::<Vec<_>>()
             };
@@ -2573,22 +2751,30 @@ fn run_ablation(dataset: &Dataset, k: usize) {
                 "num_points": num_points,
                 "threads": num_threads,
                 "search_list_sizes": search_list_sizes,
-                "diskann": to_json(&diskann_data),
-                "full": to_json(&full_data),
-                "no_early_exit": to_json(&no_ee_data),
-                "no_extra": to_json(&no_extra_data),
+                "default_cascade": {
+                    "prefilter":  format!("{:?}", scfg.prefilter),
+                    "admission":  format!("{:?}", scfg.admission),
+                    "rerank":     format!("{:?}", scfg.rerank),
+                },
+                "origin":         to_json(&origin_data),
+                "full":           to_json(&full_data),
+                "no_early_stop":  to_json(&no_ee_data),
+                "no_extra":       to_json(&no_extra_data),
             });
             let path = format!("visualizations/ablation_{}.json", dim_name);
-            std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).expect("write json");
+            std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap())
+                .expect("write json");
             println!("\nSaved {path}");
         }};
     }
 
     match dimension {
-        DIM_32 => run_ablation!(32),
-        DIM_100 => run_ablation!(100),
-        DIM_128 => run_ablation!(128),
-        DIM_960 => run_ablation!(960),
+        DIM_32 => run_ablation_inner!(32),
+        DIM_100 => run_ablation_inner!(100),
+        DIM_128 => run_ablation_inner!(128),
+        DIM_768 => run_ablation_inner!(768),
+        DIM_960 => run_ablation_inner!(960),
+        DIM_1536 => run_ablation_inner!(1536),
         _ => panic!("Unsupported dimension: {dimension}"),
     }
 }
@@ -2692,57 +2878,64 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
                 $N, scfg.alpha, scfg.prefilter, scfg.admission, scfg.rerank
             );
             let t_build = Instant::now();
-            let staged: StagedDiskANN<$N> = if cache_path.exists() && pgraph_path.exists() {
-                println!("  → cache hit: loading PhasedGraph from {:?}", pgraph_path);
-                let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                let mut idx = StagedDiskANN::<$N>::load_from_cache(&cache_path, empty_ds)
-                    .expect("load_from_cache failed");
-                idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
-                idx
-            } else if let Ok(staged_file_path) = std::env::var("STAGED_STAGED_FILE") {
-                println!(
-                    "  → importing ParlayANN .staged from {} (cache will be \
-                     written to {:?})",
-                    staged_file_path, pgraph_path,
-                );
-                let input = crate::runner::parlayann_bridge::load_from_staged_file(
-                    &staged_file_path, &flat_base[..num_points * $N], $N,
-                ).expect("parlayann_bridge::load_from_staged_file failed");
-                let entry = input.entry_point;
-                // Use header's max_extra (the variable per-node count cap
-                // from the C++ partition rule) rather than scfg's static
-                // value — keeps the imported graph faithful.
-                let max_extra_from_file = input.max_extra as usize;
-                let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                let mut idx = StagedDiskANN::<$N>::new(
-                    empty_ds, &input.partitions, entry,
-                    scfg.graph_degree, max_extra_from_file,
-                    None, None, Some(cache_path.clone()), true,
-                );
-                idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
-                idx
-            } else {
-                println!(
-                    "  → no PA cache / STAGED_STAGED_FILE — building Vamana \
-                     in-process. Will save to {:?} for subsequent runs.",
-                    pgraph_path,
-                );
-                let result = build_diskann_index(
-                    &flat_base, num_points, dimension, scfg.alpha,
-                    scfg.graph_degree, scfg.build_search_list_size as u32,
-                    false, None, None, true, scfg.max_extra,
-                ).expect("build failed");
-                let entry = result.entry_point;
-                drop(result.index);
-                let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                let mut idx = StagedDiskANN::<$N>::new(
-                    empty_ds, &result.partitions, entry,
-                    scfg.graph_degree, scfg.max_extra,
-                    None, None, Some(cache_path.clone()), true,
-                );
-                idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
-                idx
-            };
+            // All graph load/build wrapped in `pool.install` so the
+            // Vamana builder (which reads `rayon::current_num_threads()`)
+            // sees our 8-thread pool, not the global all-cores pool.
+            // Keeps build-phase thermal/contention profile consistent
+            // with the measurement phase.
+            let staged: StagedDiskANN<$N> = pool.install(|| {
+                if cache_path.exists() && pgraph_path.exists() {
+                    println!("  → cache hit: loading PhasedGraph from {:?}", pgraph_path);
+                    let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                    let mut idx = StagedDiskANN::<$N>::load_from_cache(&cache_path, empty_ds)
+                        .expect("load_from_cache failed");
+                    idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                    idx
+                } else if let Ok(staged_file_path) = std::env::var("STAGED_STAGED_FILE") {
+                    println!(
+                        "  → importing ParlayANN .staged from {} (cache will be \
+                         written to {:?})",
+                        staged_file_path, pgraph_path,
+                    );
+                    let input = crate::runner::parlayann_bridge::load_from_staged_file(
+                        &staged_file_path, &flat_base[..num_points * $N], $N,
+                    ).expect("parlayann_bridge::load_from_staged_file failed");
+                    let entry = input.entry_point;
+                    // Use header's max_extra (the variable per-node count cap
+                    // from the C++ partition rule) rather than scfg's static
+                    // value — keeps the imported graph faithful.
+                    let max_extra_from_file = input.max_extra as usize;
+                    let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                    let mut idx = StagedDiskANN::<$N>::new(
+                        empty_ds, &input.partitions, entry,
+                        scfg.graph_degree, max_extra_from_file,
+                        None, None, Some(cache_path.clone()), true,
+                    );
+                    idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                    idx
+                } else {
+                    println!(
+                        "  → no PA cache / STAGED_STAGED_FILE — building Vamana \
+                         in-process. Will save to {:?} for subsequent runs.",
+                        pgraph_path,
+                    );
+                    let result = build_diskann_index(
+                        &flat_base, num_points, dimension, scfg.alpha,
+                        scfg.graph_degree, scfg.build_search_list_size as u32,
+                        false, None, None, true, scfg.max_extra,
+                    ).expect("build failed");
+                    let entry = result.entry_point;
+                    drop(result.index);
+                    let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                    let mut idx = StagedDiskANN::<$N>::new(
+                        empty_ds, &result.partitions, entry,
+                        scfg.graph_degree, scfg.max_extra,
+                        None, None, Some(cache_path.clone()), true,
+                    );
+                    idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                    idx
+                }
+            });
             println!("  → graph ready in {:.1}s", t_build.elapsed().as_secs_f64());
 
             // Calibrate once with the default cascade settings.
@@ -2757,37 +2950,41 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
             // doesn't contaminate the first L's QPS reading. The
             // admission sidecar is the only sidecar that's always
             // needed; the prefilter sidecar is needed only when the
-            // default prefilter isn't None.
-            match scfg.admission {
-                crate::runner::cascade::AdmissionChoice::L2U8 => {
-                    let _ = staged.ensure_quantized_dataset();
+            // default prefilter isn't None. Wrapped in `pool.install`
+            // so the rayon-parallel KMeans/centroid kernels respect
+            // our 8-thread pool rather than the global all-cores pool.
+            pool.install(|| {
+                match scfg.admission {
+                    crate::runner::cascade::AdmissionChoice::L2U8 => {
+                        let _ = staged.ensure_quantized_dataset();
+                    }
+                    crate::runner::cascade::AdmissionChoice::L2U16 => {
+                        let _ = staged.ensure_quantized_dataset_l2_u16();
+                    }
+                    crate::runner::cascade::AdmissionChoice::L2Kt => {
+                        let _ = staged.ensure_quantized_dataset_l2_kt();
+                    }
+                    crate::runner::cascade::AdmissionChoice::MipsI8 => {
+                        let _ = staged.ensure_quantized_dataset_mips();
+                    }
+                    crate::runner::cascade::AdmissionChoice::MipsI16 => {
+                        let _ = staged.ensure_quantized_dataset_mips_i16();
+                    }
+                    crate::runner::cascade::AdmissionChoice::AdsF32 => {}
                 }
-                crate::runner::cascade::AdmissionChoice::L2U16 => {
-                    let _ = staged.ensure_quantized_dataset_l2_u16();
+                match scfg.prefilter {
+                    PrefilterChoice::None => {}
+                    PrefilterChoice::Jl => {
+                        let _ = staged.ensure_quantized_dataset_jl();
+                    }
+                    PrefilterChoice::JlHadamard => {
+                        let _ = staged.ensure_quantized_dataset_jl_hadamard();
+                    }
+                    PrefilterChoice::Rabitq => {
+                        let _ = staged.ensure_quantized_dataset_rabitq();
+                    }
                 }
-                crate::runner::cascade::AdmissionChoice::L2Kt => {
-                    let _ = staged.ensure_quantized_dataset_l2_kt();
-                }
-                crate::runner::cascade::AdmissionChoice::MipsI8 => {
-                    let _ = staged.ensure_quantized_dataset_mips();
-                }
-                crate::runner::cascade::AdmissionChoice::MipsI16 => {
-                    let _ = staged.ensure_quantized_dataset_mips_i16();
-                }
-                crate::runner::cascade::AdmissionChoice::AdsF32 => {}
-            }
-            match scfg.prefilter {
-                PrefilterChoice::None => {}
-                PrefilterChoice::Jl => {
-                    let _ = staged.ensure_quantized_dataset_jl();
-                }
-                PrefilterChoice::JlHadamard => {
-                    let _ = staged.ensure_quantized_dataset_jl_hadamard();
-                }
-                PrefilterChoice::Rabitq => {
-                    let _ = staged.ensure_quantized_dataset_rabitq();
-                }
-            }
+            });
 
 
             // Closure: time `search_compose` over `queries` × `search_list_sizes`

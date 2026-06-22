@@ -189,6 +189,35 @@ define_metric!(NDC_F32, NdcF32, ndc_f32);
 // setup cost.
 define_metric!(SETUP_NS, SetupNs, setup_ns);
 
+// ── Ablation toggle: include the per-node `extras` zone during the
+// post-convergence rerank pass? Defaults to `true` (production
+// behaviour: rerank walks `local + extra`). The ablation harness flips
+// this to `false` for the "no-extras" variant so the SAME built graph
+// (with its full extras zone stored) can serve both the full and the
+// no-extras variants — eliminating the build-time topology confound
+// of the earlier `max_extra = 0` rebuild approach. Process-global,
+// not per-query: ablation variants run sequentially.
+//
+// Only the search call sites in `in_mem_search.rs` and `utils.rs`
+// consult this — graph build, partition extraction, sidecar
+// materialisation are unaffected. Set via [`set_include_extras`].
+use std::sync::atomic::{AtomicBool, Ordering};
+static INCLUDE_EXTRAS: AtomicBool = AtomicBool::new(true);
+
+/// Override whether post-convergence rerank visits the extras zone.
+/// Pass `false` for the "no-extras" ablation variant; `true` (default)
+/// otherwise. Production code never calls this — leave the default.
+#[inline]
+pub fn set_include_extras(v: bool) {
+    INCLUDE_EXTRAS.store(v, Ordering::Relaxed);
+}
+
+/// Read the current "include extras during rerank" flag.
+#[inline]
+pub fn include_extras() -> bool {
+    INCLUDE_EXTRAS.load(Ordering::Relaxed)
+}
+
 pub mod in_mem_search;
 pub mod utils;
 
