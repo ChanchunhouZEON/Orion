@@ -38,7 +38,6 @@ impl TrackingAllocator {
         self.peak
             .store(self.current.load(Ordering::Relaxed), Ordering::Relaxed);
     }
-
 }
 
 unsafe impl GlobalAlloc for TrackingAllocator {

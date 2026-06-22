@@ -203,7 +203,9 @@ pub fn load_dataset_config_by_dim(dimension: usize) -> DatasetConfig {
         32 => "glove25",
         100 => "glove100",
         128 => "sift",
+        768 => "msmarco_bert_1M",
         960 => "gist",
+        1536 => "wiki_ada_1M",
         _ => panic!("Unsupported dimension: {dimension} (no dataset entry in sweep.yaml)"),
     };
     load_dataset_config(name)
@@ -404,8 +406,7 @@ mod tests {
         unsafe {
             std::env::set_var("PA_ROOT", "/tmp/pa-test-root");
         }
-        let resolved =
-            try_resolve_placeholders("${PA_ROOT}/data/glove100/x.staged").unwrap();
+        let resolved = try_resolve_placeholders("${PA_ROOT}/data/glove100/x.staged").unwrap();
         assert_eq!(resolved, "/tmp/pa-test-root/data/glove100/x.staged");
         match prev {
             Some(v) => unsafe {

@@ -41,27 +41,27 @@ mod l2_float_distance;
 
 // AVX-512 path: only loaded when both arch and target_feature match.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-mod l2_avx512_distance;
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-mod l2_avx512_distance_u8;
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 mod ip_avx512_distance;
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+mod ip_avx512_distance_i16;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 mod ip_avx512_distance_i8;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-mod ip_avx512_distance_i16;
+mod l2_avx512_distance;
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+mod l2_avx512_distance_u8;
 
 // NEON / scalar-fallback path: every target EXCEPT x86_64+AVX-512.
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
+mod ip_neon_distance;
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
+mod ip_neon_distance_i16;
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
+mod ip_neon_distance_i8;
 #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
 mod l2_neon_distance;
 #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
 mod l2_neon_distance_u8;
-#[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
-mod ip_neon_distance;
-#[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
-mod ip_neon_distance_i8;
-#[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
-mod ip_neon_distance_i16;
 
 // Top-level re-exports route to the right module per target.
 //
@@ -72,12 +72,12 @@ mod ip_neon_distance_i16;
 //   * `l2_avx512_distance.rs` for x86_64+AVX-512.
 //   * `l2_float_distance.rs` for x86_64 without AVX-512 (AVX2 path).
 //   * `l2_scalar_distance.rs` for everything else.
-#[cfg(target_arch = "aarch64")]
-pub use l2_neon_distance::distance_l2_vector_f32;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub use l2_avx512_distance::distance_l2_vector_f32;
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 pub use l2_float_distance::distance_l2_vector_f32;
+#[cfg(target_arch = "aarch64")]
+pub use l2_neon_distance::distance_l2_vector_f32;
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 pub use l2_scalar_distance::distance_l2_vector_f32;
 

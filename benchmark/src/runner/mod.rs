@@ -2,6 +2,7 @@ pub mod cascade;
 pub mod common;
 pub mod diskann_ads_runner;
 pub mod diskann_runner;
+pub mod parlayann_bridge;
 pub mod staged_diskann_ads_runner;
 pub mod staged_diskann_runner;
 

@@ -190,10 +190,7 @@ pub fn distance_l2_adsampling_f32<const N: usize>(
             // The reduce-add is one butterfly; horizontal-reduce
             // latency is hidden by FMA throughput at this cadence.
             let d_prime = ((i + 1) * 64) as f32;
-            let partial_total = _mm512_add_ps(
-                _mm512_add_ps(sum0, sum1),
-                _mm512_add_ps(sum2, sum3),
-            );
+            let partial_total = _mm512_add_ps(_mm512_add_ps(sum0, sum1), _mm512_add_ps(sum2, sum3));
             let partial = reduce_add_ps(partial_total);
             let scaled = partial * (n_f / d_prime);
             let margin = upper_bound * (1.0 + epsilon / d_prime.sqrt());
@@ -282,10 +279,8 @@ pub fn distance_l2_early_abandon_f32<const N: usize>(
             sum3 = _mm512_fmadd_ps(d3, d3, sum3);
 
             if (i + 1) % CHECK_INTERVAL == 0 {
-                let partial_total = _mm512_add_ps(
-                    _mm512_add_ps(sum0, sum1),
-                    _mm512_add_ps(sum2, sum3),
-                );
+                let partial_total =
+                    _mm512_add_ps(_mm512_add_ps(sum0, sum1), _mm512_add_ps(sum2, sum3));
                 if reduce_add_ps(partial_total) >= upper_bound {
                     return -1.0;
                 }

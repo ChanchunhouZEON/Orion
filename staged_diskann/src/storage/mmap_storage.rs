@@ -4,12 +4,12 @@
  */
 
 use crate::storage::sector_layout::SectorLayout;
+use diskann::common::ANNResult;
 use memmap2::{Mmap, MmapOptions};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::Path;
-use diskann::common::ANNResult;
 
 /// Memory-mapped storage for zero-copy access to per-node graph data.
 ///

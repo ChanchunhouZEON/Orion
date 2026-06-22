@@ -3,8 +3,8 @@
  * Licensed under the MIT License.
  */
 
-use crate::runner::cascade::{AdmissionChoice, PrefilterChoice, RerankChoice};
 use crate::report::table::BuildTiming;
+use crate::runner::cascade::{AdmissionChoice, PrefilterChoice, RerankChoice};
 use crate::runner::common::{AlgorithmRunner, SearchResult};
 use staged_diskann::{
     build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_784,
@@ -119,7 +119,11 @@ macro_rules! search_staged {
         let ws = $self.window_size;
         let eps = $self.epsilon;
         let ee = $self.early_exit_limit;
-        let pf = crate::runner::cascade::build_prefilter::<$N>($staged, $self.prefilter, $self.admission);
+        let pf = crate::runner::cascade::build_prefilter::<$N>(
+            $staged,
+            $self.prefilter,
+            $self.admission,
+        );
         let ad = crate::runner::cascade::build_admission::<$N>($staged, $self.admission);
         let rr = crate::runner::cascade::build_rerank::<$N>($staged, $self.rerank);
         $staged.search_unified(
@@ -152,7 +156,16 @@ macro_rules! search_batch_staged {
         let eps = $self.epsilon;
         let ee = $self.early_exit_limit;
         crate::runner::cascade::search_batch_compose::<$N>(
-            $staged, &qs, $k, sls, ws, eps, ee, $self.prefilter, $self.admission, $self.rerank,
+            $staged,
+            &qs,
+            $k,
+            sls,
+            ws,
+            eps,
+            ee,
+            $self.prefilter,
+            $self.admission,
+            $self.rerank,
         )
     }};
 }
@@ -305,15 +318,11 @@ impl AlgorithmRunner for StagedDiskANNRunner {
                     ($N:literal, $variant:ident) => {{
                         let empty_ds =
                             diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                        let mut staged =
-                            StagedDiskANN::<$N>::load_from_cache(&cache, empty_ds)
-                                .expect("StagedDiskANN::load_from_cache failed");
+                        let mut staged = StagedDiskANN::<$N>::load_from_cache(&cache, empty_ds)
+                            .expect("StagedDiskANN::load_from_cache failed");
                         let mut ds =
-                            diskann::model::InmemDataset::<f32, $N>::new(num_points, 1.0)
-                                .unwrap();
-                        ds.data
-                            .memcpy(&data[..num_points * $N])
-                            .unwrap();
+                            diskann::model::InmemDataset::<f32, $N>::new(num_points, 1.0).unwrap();
+                        ds.data.memcpy(&data[..num_points * $N]).unwrap();
                         staged.dataset = ds;
                         self.inner = Some(StagedInner::$variant { staged });
                     }};
@@ -414,5 +423,4 @@ impl AlgorithmRunner for StagedDiskANNRunner {
             })
             .collect()
     }
-
 }

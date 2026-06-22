@@ -223,7 +223,6 @@ impl ANNError {
             Err(log_err) => ANNError::LogError { err: log_err },
         }
     }
-
 }
 
 #[cfg(test)]

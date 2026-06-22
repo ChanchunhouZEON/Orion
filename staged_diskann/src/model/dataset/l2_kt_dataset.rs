@@ -129,8 +129,8 @@ impl<const N: usize> L2KTDataset<N> {
         // 2. Allocate the i8 base slab + norms_sq companion.
         let mut data = AlignedBoxWithSlice::<i8>::new(num_vertices * stride, 32)
             .expect("L2KTDataset data alloc");
-        let mut norms_sq = AlignedBoxWithSlice::<i32>::new(num_vertices, 32)
-            .expect("L2KTDataset norms_sq alloc");
+        let mut norms_sq =
+            AlignedBoxWithSlice::<i32>::new(num_vertices, 32).expect("L2KTDataset norms_sq alloc");
 
         // 3. Parallel quantize + per-vertex norm in a single pass.
         let data_slice = data.as_mut_slice();
@@ -212,10 +212,7 @@ impl<const N: usize> L2KTDataset<N> {
 
         // i8 base — reinterpret as u8 bytes for the byte writer.
         let data_bytes = unsafe {
-            std::slice::from_raw_parts(
-                self.data.as_slice().as_ptr() as *const u8,
-                self.data.len(),
-            )
+            std::slice::from_raw_parts(self.data.as_slice().as_ptr() as *const u8, self.data.len())
         };
         w.write_all(data_bytes)?;
 
@@ -243,23 +240,25 @@ impl<const N: usize> L2KTDataset<N> {
                     "bad magic 0x{magic:08x} (expected 0x{:08x} = QDKT)",
                     L2_KT_MAGIC
                 ),
-            ).into());
+            )
+            .into());
         }
-        let num_vertices =
-            u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
+        let num_vertices = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let stride = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
         if stride != Self::STRIDE {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
-            ).into());
+            )
+            .into());
         }
         let dim = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
         if dim != N {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("dim mismatch: file={dim} expected={N}"),
-            ).into());
+            )
+            .into());
         }
         let slope = f32::from_le_bytes(hdr[24..28].try_into().unwrap());
         let offset = i32::from_le_bytes(hdr[28..32].try_into().unwrap());
@@ -269,10 +268,7 @@ impl<const N: usize> L2KTDataset<N> {
         let mut data = AlignedBoxWithSlice::<i8>::new(num_vertices * stride, 32)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
         let data_bytes = unsafe {
-            std::slice::from_raw_parts_mut(
-                data.as_mut_slice().as_mut_ptr() as *mut u8,
-                data.len(),
-            )
+            std::slice::from_raw_parts_mut(data.as_mut_slice().as_mut_ptr() as *mut u8, data.len())
         };
         r.read_exact(data_bytes)?;
 
@@ -343,8 +339,16 @@ mod tests {
         let b_u8: Vec<i32> = b.iter().map(|&v| p.quantize_scalar(v) as i32).collect();
         let a_i8: Vec<i32> = a.iter().map(|&v| quantize_to_i8(&p, v) as i32).collect();
         let b_i8: Vec<i32> = b.iter().map(|&v| quantize_to_i8(&p, v) as i32).collect();
-        let l2_u8: i32 = a_u8.iter().zip(b_u8.iter()).map(|(a, b)| (a - b).pow(2)).sum();
-        let l2_i8: i32 = a_i8.iter().zip(b_i8.iter()).map(|(a, b)| (a - b).pow(2)).sum();
+        let l2_u8: i32 = a_u8
+            .iter()
+            .zip(b_u8.iter())
+            .map(|(a, b)| (a - b).pow(2))
+            .sum();
+        let l2_i8: i32 = a_i8
+            .iter()
+            .zip(b_i8.iter())
+            .map(|(a, b)| (a - b).pow(2))
+            .sum();
         assert_eq!(l2_u8, l2_i8);
     }
 

@@ -61,7 +61,7 @@ impl NeighborPriorityQueue {
         }
     }
 
-    pub fn insert(&mut self, nbr: Neighbor) -> bool{
+    pub fn insert(&mut self, nbr: Neighbor) -> bool {
         if self.size == self.capacity && self.get_at(self.size - 1) < &nbr {
             return false;
         }

@@ -99,10 +99,7 @@ pub fn distance_l2_vector_u8<const N: usize>(a: &[u8; N], b: &[u8; N]) -> f32 {
             acc0 = _mm512_add_epi32(acc0, _mm512_castsi256_si512(m));
         }
 
-        let acc = _mm512_add_epi32(
-            _mm512_add_epi32(acc0, acc1),
-            _mm512_add_epi32(acc2, acc3),
-        );
+        let acc = _mm512_add_epi32(_mm512_add_epi32(acc0, acc1), _mm512_add_epi32(acc2, acc3));
         reduce_add_epi32(acc) as f32
     }
 }

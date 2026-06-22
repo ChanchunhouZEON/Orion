@@ -9,7 +9,6 @@ use diskann::common::ANNResult;
 use diskann::model::Vertex;
 use vector::{FullPrecisionDistance, Metric};
 
-
 // ── Search-loop tuning constants ──────────────────────────────────────────
 /// Cache-line lookahead for the software-pipelined `DistanceStream`
 /// **Stage-1 quantized prefilter**. Stage-1 vert sizes:
@@ -72,7 +71,6 @@ pub(super) fn dstream_la_truth() -> usize {
 /// accumulates across 4 hops to amortize sort+merge over sparse admits
 /// without letting pq_worst drift enough to defeat `early_exit`.
 pub(super) const FLUSH_INTERVAL: [usize; 2] = [1, 4];
-
 
 /// 3-way merge routing divisors re-fit from `pq_merge_bench` under
 /// the pad16 PQ layout:
@@ -471,4 +469,3 @@ pub struct SearchProfile {
     pub cache_hits: u32,
     pub async_batches: u32,
 }
-

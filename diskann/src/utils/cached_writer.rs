@@ -6,10 +6,10 @@
  * Licensed under the MIT License.
  */
 
+use crate::common::ANNResult;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
-use crate::common::ANNResult;
 
 pub struct CachedWriter {
     writer: File,

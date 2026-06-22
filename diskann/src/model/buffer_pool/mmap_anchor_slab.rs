@@ -19,10 +19,10 @@
 //! mmap pages are NOT tracked by the Rust allocator, so heap peak stays low.
 //! RSS is bounded by the OS page cache; unused pages are demand-paged (zero-fill).
 
+use crate::common::ANNResult;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use crate::common::ANNResult;
 
 const CACHE_LINE: usize = 64;
 const SLOT_HEADER: usize = 8; // count (u32) + reserved (u32)

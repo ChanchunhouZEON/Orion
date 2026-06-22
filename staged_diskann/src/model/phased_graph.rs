@@ -20,12 +20,12 @@
 //! Backed by `AlignedBoxWithSlice<u32>` with per-node reader tracking
 //! and bounded write queue, mirroring `NodeSlabBuffer`'s concurrency model.
 
+use diskann::common::ANNResult;
 use diskann::common::AlignedBoxWithSlice;
 use std::collections::VecDeque;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use diskann::common::ANNResult;
 
 const CACHE_LINE_BYTES: usize = 64;
 const HEADER_U32: usize = 4;

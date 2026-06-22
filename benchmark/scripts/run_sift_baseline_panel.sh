@@ -11,9 +11,11 @@
 # Output: `visualizations/baseline_sift.json` with seven series.
 
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/../.."
 
-PY=/opt/anaconda3/envs/ray/bin/python
+source "$SCRIPT_DIR/_env.sh"
+setup_python_env || exit 1
 
 # --max-points 0 — full SIFT 1M (no subset, no GT recomputation).
 # --threads 8   — matches `sweep.yaml` defaults.sweep.threads, so the

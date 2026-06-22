@@ -31,7 +31,7 @@
 #[path = "../utils.rs"]
 mod utils;
 
-use diskann::index::{ANNInmemIndex, create_inmem_index};
+use diskann::index::{create_inmem_index, ANNInmemIndex};
 use diskann::model::{IndexConfiguration, IndexWriteParametersBuilder};
 use std::io::Write;
 use std::time::Instant;
@@ -168,7 +168,11 @@ fn parse_args() -> (String, usize, Option<Metric>, Vec<usize>) {
                 let raw = args.get(i).expect("--search-list-sizes needs a value");
                 let parsed: Vec<usize> = raw
                     .split(',')
-                    .map(|s| s.trim().parse().expect("L value must be a positive integer"))
+                    .map(|s| {
+                        s.trim()
+                            .parse()
+                            .expect("L value must be a positive integer")
+                    })
                     .collect();
                 search_list_sizes = Some(parsed);
             }
@@ -224,91 +228,90 @@ fn main() {
     let (dataset, max_points, metric_override, search_list_sizes) = parse_args();
 
     // (cache_key, base_path, query_path, gt_path, dim, alpha, R, L_build)
-    let (cache_key, base_path, query_path, gt_path, _dim, alpha, r, build_l) = match dataset
-        .as_str()
-    {
-        "sift" => (
-            "sift",
-            "data/sift/sift_base.fvecs",
-            "data/sift/sift_query.fvecs",
-            "data/sift/sift_groundtruth.ivecs",
-            128usize,
-            1.15f32,
-            64u32,
-            128usize,
-        ),
-        "glove25" => (
-            "glove25",
-            "data/glove25_norm/glove-25-angular_base.fvecs",
-            "data/glove25_norm/glove-25-angular_query.fvecs",
-            "data/glove25_norm/glove-25-angular_groundtruth.ivecs",
-            32usize,
-            1.0f32,
-            100u32,
-            200usize,
-        ),
-        "glove100" => (
-            "glove100",
-            "data/glove100_norm/glove-100-angular_base.fvecs",
-            "data/glove100_norm/glove-100-angular_query.fvecs",
-            "data/glove100_norm/glove-100-angular_groundtruth.ivecs",
-            100usize,
-            1.0f32,
-            100u32,
-            200usize,
-        ),
-        "gist" => (
-            "gist",
-            "data/gist/gist_base.fvecs",
-            "data/gist/gist_query.fvecs",
-            "data/gist/gist_groundtruth.ivecs",
-            960usize,
-            1.1f32,
-            100u32,
-            200usize,
-        ),
-        "deep10m" => (
-            "deep10m",
-            "data/deep10m/deep10m_base.fvecs",
-            "data/deep10m/deep10m_query.fvecs",
-            "data/deep10m/deep10m_groundtruth.ivecs",
-            128usize,
-            1.05f32,
-            64u32,
-            128usize,
-        ),
-        "fashion-mnist" => (
-            "fashion-mnist",
-            "data/fashion-mnist/fashion-mnist-784-euclidean_base.fvecs",
-            "data/fashion-mnist/fashion-mnist-784-euclidean_query.fvecs",
-            "data/fashion-mnist/fashion-mnist-784-euclidean_groundtruth.ivecs",
-            784usize,
-            1.1f32,
-            40u32,
-            80usize,
-        ),
-        "msmarco_bert_1M" => (
-            "msmarco_bert_1M",
-            "data/msmarco_bert_1M/msmarco_bert_1M_base.fvecs",
-            "data/msmarco_bert_1M/msmarco_bert_1M_query.fvecs",
-            "data/msmarco_bert_1M/msmarco_bert_1M_groundtruth.ivecs",
-            768usize,
-            1.0f32,
-            64u32,
-            128usize,
-        ),
-        "wiki_ada_1M" => (
-            "wiki_ada_1M",
-            "data/wiki_ada_1M/wiki_ada_1M_base.fvecs",
-            "data/wiki_ada_1M/wiki_ada_1M_query.fvecs",
-            "data/wiki_ada_1M/wiki_ada_1M_groundtruth.ivecs",
-            1536usize,
-            1.05f32,
-            100u32,
-            200usize,
-        ),
-        _ => panic!("Unknown dataset: {dataset}"),
-    };
+    let (cache_key, base_path, query_path, gt_path, _dim, alpha, r, build_l) =
+        match dataset.as_str() {
+            "sift" => (
+                "sift",
+                "data/sift/sift_base.fvecs",
+                "data/sift/sift_query.fvecs",
+                "data/sift/sift_groundtruth.ivecs",
+                128usize,
+                1.15f32,
+                64u32,
+                128usize,
+            ),
+            "glove25" => (
+                "glove25",
+                "data/glove25_norm/glove-25-angular_base.fvecs",
+                "data/glove25_norm/glove-25-angular_query.fvecs",
+                "data/glove25_norm/glove-25-angular_groundtruth.ivecs",
+                32usize,
+                1.0f32,
+                100u32,
+                200usize,
+            ),
+            "glove100" => (
+                "glove100",
+                "data/glove100_norm/glove-100-angular_base.fvecs",
+                "data/glove100_norm/glove-100-angular_query.fvecs",
+                "data/glove100_norm/glove-100-angular_groundtruth.ivecs",
+                100usize,
+                1.0f32,
+                100u32,
+                200usize,
+            ),
+            "gist" => (
+                "gist",
+                "data/gist/gist_base.fvecs",
+                "data/gist/gist_query.fvecs",
+                "data/gist/gist_groundtruth.ivecs",
+                960usize,
+                1.1f32,
+                100u32,
+                200usize,
+            ),
+            "deep10m" => (
+                "deep10m",
+                "data/deep10m/deep10m_base.fvecs",
+                "data/deep10m/deep10m_query.fvecs",
+                "data/deep10m/deep10m_groundtruth.ivecs",
+                128usize,
+                1.05f32,
+                64u32,
+                128usize,
+            ),
+            "fashion-mnist" => (
+                "fashion-mnist",
+                "data/fashion-mnist/fashion-mnist-784-euclidean_base.fvecs",
+                "data/fashion-mnist/fashion-mnist-784-euclidean_query.fvecs",
+                "data/fashion-mnist/fashion-mnist-784-euclidean_groundtruth.ivecs",
+                784usize,
+                1.1f32,
+                40u32,
+                80usize,
+            ),
+            "msmarco_bert_1M" => (
+                "msmarco_bert_1M",
+                "data/msmarco_bert_1M/msmarco_bert_1M_base.fvecs",
+                "data/msmarco_bert_1M/msmarco_bert_1M_query.fvecs",
+                "data/msmarco_bert_1M/msmarco_bert_1M_groundtruth.ivecs",
+                768usize,
+                1.0f32,
+                64u32,
+                128usize,
+            ),
+            "wiki_ada_1M" => (
+                "wiki_ada_1M",
+                "data/wiki_ada_1M/wiki_ada_1M_base.fvecs",
+                "data/wiki_ada_1M/wiki_ada_1M_query.fvecs",
+                "data/wiki_ada_1M/wiki_ada_1M_groundtruth.ivecs",
+                1536usize,
+                1.05f32,
+                100u32,
+                200usize,
+            ),
+            _ => panic!("Unknown dataset: {dataset}"),
+        };
 
     let metric = metric_override.unwrap_or_else(|| metric_default_for_dataset(&dataset));
     let metric_tag = match metric {
@@ -333,7 +336,9 @@ fn main() {
         l2_normalize_in_place(&mut qdata, dim);
     }
 
-    let queries: Vec<Vec<f32>> = (0..nq).map(|i| qdata[i * dim..(i + 1) * dim].to_vec()).collect();
+    let queries: Vec<Vec<f32>> = (0..nq)
+        .map(|i| qdata[i * dim..(i + 1) * dim].to_vec())
+        .collect();
     println!("Loaded {n} base, {nq} queries.");
 
     // Cache stub mirrors the staged paths so disk usage is comparable.
@@ -351,16 +356,13 @@ fn main() {
         .with_alpha(alpha)
         .with_num_threads(num_threads)
         .build();
-    let config = IndexConfiguration::new(
-        metric, dim, dim, n, false, 0, false, 0, 1.0, write_params,
-    );
+    let config =
+        IndexConfiguration::new(metric, dim, dim, n, false, 0, false, 0, 1.0, write_params);
 
     let mut index: Box<dyn ANNInmemIndex<f32>> =
         create_inmem_index(config).expect("create_inmem_index failed");
 
-    println!(
-        "DiskANN (R={r}, L_build={build_l}, α={alpha:.2}, metric={metric_tag})...",
-    );
+    println!("DiskANN (R={r}, L_build={build_l}, α={alpha:.2}, metric={metric_tag})...",);
     let t_build = Instant::now();
     if cache_path.exists() && cache_data_path.exists() {
         index
@@ -379,10 +381,7 @@ fn main() {
             .save(cache_path.to_str().unwrap())
             .expect("DiskANN cache save failed");
         std::fs::remove_file(&temp_data).ok();
-        println!(
-            "DiskANN built in {:.2}s",
-            t_build.elapsed().as_secs_f32()
-        );
+        println!("DiskANN built in {:.2}s", t_build.elapsed().as_secs_f32());
     }
 
     // Pin queries (consistency with staged_sweep's mlock setup).
@@ -417,9 +416,7 @@ fn main() {
         });
     }
 
-    println!(
-        "═══ DiskANN sweep (R={r}, α={alpha:.2}, metric={metric_tag}) ═══",
-    );
+    println!("═══ DiskANN sweep (R={r}, α={alpha:.2}, metric={metric_tag}) ═══",);
 
     for &l in &search_list_sizes {
         let mut samples = Vec::with_capacity(TRIALS);

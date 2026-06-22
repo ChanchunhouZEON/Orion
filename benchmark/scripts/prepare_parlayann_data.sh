@@ -15,12 +15,15 @@
 #   DATASET=sift     bash benchmark/scripts/prepare_parlayann_data.sh  # re-prep
 
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 DATASET="${DATASET:-sift}"
-PY="${PY:-/opt/anaconda3/envs/ray/bin/python}"
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
+
+source "$SCRIPT_DIR/_env.sh"
+setup_python_env numpy || exit 1
 
 LOCAL_PCT="${LOCAL_PCT:-60}"
 

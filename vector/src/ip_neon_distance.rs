@@ -175,4 +175,3 @@ pub fn distance_ip_vector_f32_batch4<const N: usize>(
         distance_ip_vector_f32::<N>(a3, q),
     ]
 }
-
