@@ -8,7 +8,6 @@ adsampling = { path = "../adsampling" }
 diskann = { path = "../diskann" }
 platform = { path = "../platform" }
 staged_diskann = { path = "../staged_diskann" }
-ssd_diskann = { path = "../ssd_diskann" }
 vector = { path = "../vector" }
 anyhow = "1"
 rayon = { workspace = true }

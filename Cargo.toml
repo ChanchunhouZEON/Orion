@@ -3,13 +3,11 @@ members = [
     "adsampling",
     "benchmark",
     "diskann",
-    "early_stop_baselines",
     "logger",
     "platform",
     "staged_diskann",
     "staged_diskann_py",
     "vector",
-    "ssd_diskann",
 ]
 # `staged_diskann_py` is a PyO3 cdylib — it expects Python symbols
 # (PyBytes_Size, PyErr_Clear, ...) to be resolved at *runtime* by
@@ -27,12 +25,10 @@ default-members = [
     "adsampling",
     "benchmark",
     "diskann",
-    "early_stop_baselines",
     "logger",
     "platform",
     "staged_diskann",
     "vector",
-    "ssd_diskann",
 ]
 resolver = "2"
 
