@@ -4,10 +4,10 @@
  */
 
 use byteorder::{LittleEndian, ReadBytesExt};
+use diskann::common::ANNResult;
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::Path;
-use diskann::common::ANNResult;
 
 /// Read a .fvecs file (binary format: [dim: u32, f32 * dim] per vector).
 /// Reads at most `max_count` vectors (0 = read all).

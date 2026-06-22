@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods};
-use pyo3::prelude::*;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 
 use diskann::model::InmemDataset;
@@ -50,11 +50,9 @@ impl StagedSift {
 
         let empty_ds = InmemDataset::<f32, DIM>::new(0, 1.0)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        let mut staged = StagedDiskANN::<DIM>::load_from_cache(
-            &PathBuf::from(&cache_path),
-            empty_ds,
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("load_from_cache: {e}")))?;
+        let mut staged =
+            StagedDiskANN::<DIM>::load_from_cache(&PathBuf::from(&cache_path), empty_ds)
+                .map_err(|e| PyRuntimeError::new_err(format!("load_from_cache: {e}")))?;
 
         let mut ds = InmemDataset::<f32, DIM>::new(n, 1.0)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;

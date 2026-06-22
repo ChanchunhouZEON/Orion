@@ -9,9 +9,11 @@
 # cost (~6 min); subsequent runs of the same config hit the cache.
 
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/../.."
 
-PY=/opt/anaconda3/envs/ray/bin/python
+source "$SCRIPT_DIR/_env.sh"
+setup_python_env || exit 1
 BIN=./target/release/benchmark
 
 DATASET="${DATASET:-gist}"

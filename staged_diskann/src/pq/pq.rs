@@ -3,6 +3,7 @@
  * Licensed under the MIT License.
  */
 
+use diskann::common::ANNResult;
 use ndarray::{ArcArray2, prelude::*};
 use rand::seq::SliceRandom;
 use rayon::prelude::*;
@@ -10,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
-use diskann::common::ANNResult;
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct ProductQuantizer {
@@ -24,6 +24,11 @@ pub struct ProductQuantizer {
     codes: ArcArray2<u8>,
 }
 
+// Prototype PQ implementation kept as reference; production search uses
+// the codec-specific quantizers in `model::dataset::*` (L2U8, MipsI8,
+// RaBitQ). Methods are exercised by the `mod tests` block at the bottom
+// of this file but otherwise have no in-tree callers.
+#[allow(dead_code)]
 impl ProductQuantizer {
     pub fn new(n_samples: usize, dim: usize, n_subquantizers: usize, n_bits: u32) -> Self {
         assert_eq!(dim % n_subquantizers, 0, "Dimension must be divisible by M");

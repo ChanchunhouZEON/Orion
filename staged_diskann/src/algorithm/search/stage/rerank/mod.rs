@@ -61,21 +61,31 @@ pub trait RerankStage<const N: usize>: Send + Sync {
 ///
 /// Use when the admission tier already ranks at sufficient precision
 /// (e.g. f32 admission, or when calibrated quality margins make
-/// rerank a no-op).
+/// rerank a no-op). Also useful as the **rerank-disabled** arm in a
+/// cascade-stage ablation — pair with the per-dataset prefilter /
+/// admission to measure how much QPS the rerank pass costs.
+///
+/// Reads from `scratch.pq` (NOT the `pq_entries` argument) — matches
+/// the read pattern of `F32Rerank` / `U16Rerank` / `IpF32Rerank`,
+/// which all bypass the slice in favour of the scratch buffer that
+/// the unified beam loop populated. The `pq_entries` slice is a
+/// historical artefact of the trait signature; the unified caller
+/// always passes `&[]`.
 pub struct NoRerank;
 
 impl<const N: usize> RerankStage<N> for NoRerank {
     fn rerank(
         &self,
         _query: &[f32; N],
-        pq_entries: &[Neighbor],
+        _pq_entries: &[Neighbor],
         k: usize,
         _rerank_factor: usize,
-        _scratch: &mut InMemSearchScratch,
+        scratch: &mut InMemSearchScratch,
     ) -> Vec<u32> {
-        let n_out = k.min(pq_entries.len());
+        let pq = scratch.pq.neighbors();
+        let n_out = k.min(pq.len());
         let mut out = Vec::with_capacity(n_out);
-        for e in pq_entries.iter().take(n_out) {
+        for e in pq.iter().take(n_out) {
             out.push(e.id);
         }
         out

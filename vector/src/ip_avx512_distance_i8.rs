@@ -79,10 +79,7 @@ pub fn distance_ip_vector_i8<const N: usize>(a: &[i8; N], b: &[i8; N]) -> i32 {
             i += 16;
         }
 
-        let acc = _mm512_add_epi32(
-            _mm512_add_epi32(acc0, acc1),
-            _mm512_add_epi32(acc2, acc3),
-        );
+        let acc = _mm512_add_epi32(_mm512_add_epi32(acc0, acc1), _mm512_add_epi32(acc2, acc3));
         let mut total = reduce_add_epi32(acc);
 
         // Scalar tail for the last < 16 elements.

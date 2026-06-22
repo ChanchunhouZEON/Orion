@@ -272,8 +272,7 @@ impl BucketedSet {
             if id == SENTINEL {
                 continue;
             }
-            let mut bucket =
-                ((Self::hash(id) >> BUCKET_SLOTS_LOG2) & new_mask) as usize;
+            let mut bucket = ((Self::hash(id) >> BUCKET_SLOTS_LOG2) & new_mask) as usize;
             'outer: loop {
                 let base = bucket * BUCKET_SLOTS;
                 for j in 0..BUCKET_SLOTS {
@@ -334,7 +333,10 @@ impl VisitedSet for BucketedSet {
                         return false;
                     }
                 }
-                #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
+                #[cfg(not(any(
+                    target_arch = "aarch64",
+                    all(target_arch = "x86_64", target_feature = "avx512f")
+                )))]
                 {
                     for j in 0..BUCKET_SLOTS {
                         if *base_ptr.add(j) == id {
@@ -490,10 +492,15 @@ mod tests {
         let mut bucketed = BucketedSet::new(48, 64);
         let mut seed = 0x9E3779B97F4A7C15u64;
         for _ in 0..50_000 {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let id = (seed >> 32) as u32 & 0x000F_FFFF; // 1M id space
-            assert_eq!(linear.insert(id), bucketed.insert(id),
-                "divergence at id={id}");
+            assert_eq!(
+                linear.insert(id),
+                bucketed.insert(id),
+                "divergence at id={id}"
+            );
         }
         assert_eq!(linear.len(), bucketed.len());
     }

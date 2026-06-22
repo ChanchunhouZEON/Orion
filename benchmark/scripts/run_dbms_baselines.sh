@@ -17,9 +17,11 @@
 #          dataset via plot_baseline_comparison.py --all.
 
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/../.."
 
-PY=/opt/anaconda3/envs/ray/bin/python
+source "$SCRIPT_DIR/_env.sh"
+setup_python_env numpy || exit 1
 
 # All 7 headline datasets (matches what plot_dataset_all.py considers
 # the public set; fashion-mnist is excluded from the panel by design).

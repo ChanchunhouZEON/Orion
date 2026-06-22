@@ -34,12 +34,12 @@
 //! JL Sparse: ~6k FLOPs / ~7µs setup. Hadamard pays 2-3× the setup
 //! for dense-per-bit signal — still <1% of total wall-time at L=192.
 
+use diskann::common::ANNResult;
 use diskann::common::AlignedBoxWithSlice;
 use diskann::model::InmemDataset;
 use rayon::prelude::*;
 use std::io::{Read, Write};
 use std::path::Path;
-use diskann::common::ANNResult;
 
 /// Disk-format magic for the JL Hadamard sidecar (`.jlh`). Bumped on
 /// any layout change so stale caches refuse to load instead of
@@ -213,7 +213,8 @@ impl<const N: usize, const D_PAD: usize> JlHadamardDataset<N, D_PAD> {
                     "bad magic 0x{magic:08x} (expected 0x{:08x} = JLHC)",
                     JL_HADAMARD_MAGIC
                 ),
-            ).into());
+            )
+            .into());
         }
         let num_vertices = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let dim = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
@@ -221,28 +222,33 @@ impl<const N: usize, const D_PAD: usize> JlHadamardDataset<N, D_PAD> {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("dim mismatch: file={dim} expected={N}"),
-            ).into());
+            )
+            .into());
         }
         let d_pad = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
         if d_pad != D_PAD {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("d_pad mismatch: file={d_pad} expected={D_PAD}"),
-            ).into());
+            )
+            .into());
         }
         let stride = u32::from_le_bytes(hdr[20..24].try_into().unwrap()) as usize;
         if stride != Self::STRIDE {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
-            ).into());
+            )
+            .into());
         }
         let seed = u64::from_le_bytes(hdr[24..32].try_into().unwrap());
 
         let mut signs1 = vec![0i8; D_PAD];
         let mut signs2 = vec![0i8; D_PAD];
         let mut signs3 = vec![0i8; D_PAD];
-        let read_signs = |r: &mut std::io::BufReader<std::fs::File>, s: &mut [i8]| -> ANNResult<()> {
+        let read_signs = |r: &mut std::io::BufReader<std::fs::File>,
+                          s: &mut [i8]|
+         -> ANNResult<()> {
             let buf = unsafe { std::slice::from_raw_parts_mut(s.as_mut_ptr() as *mut u8, s.len()) };
             r.read_exact(buf)?;
             Ok(())

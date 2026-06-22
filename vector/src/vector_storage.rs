@@ -58,7 +58,10 @@ mod tests {
     #[test]
     fn vec_impl_round_trip() {
         let data: Vec<[i32; 3]> = vec![[10, 20, 30], [40, 50, 60], [70, 80, 90]];
-        assert_eq!(<Vec<[i32; 3]> as VectorStorage<i32, 3>>::num_vectors(&data), 3);
+        assert_eq!(
+            <Vec<[i32; 3]> as VectorStorage<i32, 3>>::num_vectors(&data),
+            3
+        );
         assert_eq!(
             <Vec<[i32; 3]> as VectorStorage<i32, 3>>::get_vector(&data, 2),
             [70, 80, 90]

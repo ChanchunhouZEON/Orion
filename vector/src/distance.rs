@@ -73,7 +73,10 @@ impl<const N: usize> FullPrecisionDistance<f32, N> for [f32; N] {
         {
             crate::l2_avx512_distance::distance_l2_early_abandon_f32::<N>(a, b, upper_bound)
         }
-        #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
+        #[cfg(not(any(
+            target_arch = "aarch64",
+            all(target_arch = "x86_64", target_feature = "avx512f")
+        )))]
         {
             let d = distance_l2_vector_f32::<N>(a, b);
             if d < upper_bound {
@@ -99,7 +102,10 @@ impl<const N: usize> FullPrecisionDistance<f32, N> for [f32; N] {
         {
             crate::l2_avx512_distance::distance_l2_adsampling_f32::<N>(a, b, upper_bound, epsilon)
         }
-        #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
+        #[cfg(not(any(
+            target_arch = "aarch64",
+            all(target_arch = "x86_64", target_feature = "avx512f")
+        )))]
         {
             // Scalar fallback: scaled-threshold early abort in chunks of 32 dims.
             let n_f = N as f32;
@@ -161,9 +167,8 @@ mod tests {
         let a = [0.0f32; 8];
         let b = [1.0f32; 8];
         // True L2 = 8.0; bound > 8 → returns 8.0
-        let d = <[f32; 8] as FullPrecisionDistance<f32, 8>>::distance_compare_with_bound(
-            &a, &b, 100.0,
-        );
+        let d =
+            <[f32; 8] as FullPrecisionDistance<f32, 8>>::distance_compare_with_bound(&a, &b, 100.0);
         assert!(d > 0.0 && d < 100.0);
     }
 
@@ -172,9 +177,8 @@ mod tests {
         let a = [0.0f32; 8];
         let b = [10.0f32; 8];
         // True L2 = 800.0; bound = 1.0 → must signal abandon (< 0).
-        let d = <[f32; 8] as FullPrecisionDistance<f32, 8>>::distance_compare_with_bound(
-            &a, &b, 1.0,
-        );
+        let d =
+            <[f32; 8] as FullPrecisionDistance<f32, 8>>::distance_compare_with_bound(&a, &b, 1.0);
         assert!(d < 0.0);
     }
 

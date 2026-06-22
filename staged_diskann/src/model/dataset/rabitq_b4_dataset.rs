@@ -46,11 +46,11 @@
 //! `1/49` of the 1-bit version's variance — the recall ceiling on
 //! SIFT/GIST that 1-bit hit at ~0.74/0.94 should clear comfortably.
 
+use diskann::common::ANNResult;
 use diskann::common::AlignedBoxWithSlice;
 use diskann::model::InmemDataset;
 use std::io::{Read, Write};
 use std::path::Path;
-use diskann::common::ANNResult;
 
 /// Disk-format magic for the B=4 RaBitQ sidecar (`.qrb4`).
 pub const RABITQ_B4_MAGIC: u32 = 0x5152_4234; // "QRB4"
@@ -242,7 +242,8 @@ impl<const N: usize> RabitQ4Dataset<N> {
                     "bad magic 0x{magic:08x} (expected 0x{:08x} = QRB4)",
                     RABITQ_B4_MAGIC
                 ),
-            ).into());
+            )
+            .into());
         }
         let num_vertices = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let dim = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
@@ -250,14 +251,16 @@ impl<const N: usize> RabitQ4Dataset<N> {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("dim mismatch: file={dim} expected={N}"),
-            ).into());
+            )
+            .into());
         }
         let stride = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
         if stride != Self::STRIDE {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
-            ).into());
+            )
+            .into());
         }
 
         let mut rotation = AlignedBoxWithSlice::<f32>::new(N * N, 16)
@@ -396,60 +399,62 @@ fn signed_dot_scalar<const N: usize>(code: &[u8], rotated_q: &[f32; N], start: u
 /// multiple of 8.
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 #[inline]
-unsafe fn signed_dot_neon(code: *const u8, rotated_q: *const f32, bytes: usize) -> f32 { unsafe {
-    use std::arch::aarch64::*;
-    let low_mask = vdup_n_u8(0x0f);
-    let mut acc_a = vdupq_n_f32(0.0);
-    let mut acc_b = vdupq_n_f32(0.0);
+unsafe fn signed_dot_neon(code: *const u8, rotated_q: *const f32, bytes: usize) -> f32 {
+    unsafe {
+        use std::arch::aarch64::*;
+        let low_mask = vdup_n_u8(0x0f);
+        let mut acc_a = vdupq_n_f32(0.0);
+        let mut acc_b = vdupq_n_f32(0.0);
 
-    let mut b = 0;
-    while b < bytes {
-        // Load 8 packed bytes = 16 nibble lanes = 16 dims.
-        let packed = vld1_u8(code.add(b));
+        let mut b = 0;
+        while b < bytes {
+            // Load 8 packed bytes = 16 nibble lanes = 16 dims.
+            let packed = vld1_u8(code.add(b));
 
-        // Unpack signed nibbles: arithmetic shift treats nibbles as
-        // signed 4-bit two's-complement.
-        let lo_u = vand_u8(packed, low_mask);
-        // (lo << 4) as i8, then >> 4 sign-extends.
-        let lo_i8 = vshr_n_s8::<4>(vshl_n_s8::<4>(vreinterpret_s8_u8(lo_u)));
-        let hi_i8 = vshr_n_s8::<4>(vreinterpret_s8_u8(packed));
+            // Unpack signed nibbles: arithmetic shift treats nibbles as
+            // signed 4-bit two's-complement.
+            let lo_u = vand_u8(packed, low_mask);
+            // (lo << 4) as i8, then >> 4 sign-extends.
+            let lo_i8 = vshr_n_s8::<4>(vshl_n_s8::<4>(vreinterpret_s8_u8(lo_u)));
+            let hi_i8 = vshr_n_s8::<4>(vreinterpret_s8_u8(packed));
 
-        // Interleave into 16 lanes in (d0, d1, d2, ..., d15) order.
-        // zip1/zip2 produces [lo0, hi0, lo1, hi1, ...].
-        let zip_lo = vzip1_s8(lo_i8, hi_i8);
-        let zip_hi = vzip2_s8(lo_i8, hi_i8);
-        // Combine two int8x8 into one int8x16: dims 0..16 for this byte chunk.
-        let dims_i8 = vcombine_s8(zip_lo, zip_hi);
+            // Interleave into 16 lanes in (d0, d1, d2, ..., d15) order.
+            // zip1/zip2 produces [lo0, hi0, lo1, hi1, ...].
+            let zip_lo = vzip1_s8(lo_i8, hi_i8);
+            let zip_hi = vzip2_s8(lo_i8, hi_i8);
+            // Combine two int8x8 into one int8x16: dims 0..16 for this byte chunk.
+            let dims_i8 = vcombine_s8(zip_lo, zip_hi);
 
-        // Widen i8 → i16 (two halves of 8 i16 each).
-        let i16_lo = vmovl_s8(vget_low_s8(dims_i8));
-        let i16_hi = vmovl_s8(vget_high_s8(dims_i8));
+            // Widen i8 → i16 (two halves of 8 i16 each).
+            let i16_lo = vmovl_s8(vget_low_s8(dims_i8));
+            let i16_hi = vmovl_s8(vget_high_s8(dims_i8));
 
-        // i16 → i32 → f32 in 4 chunks of 4 lanes.
-        let f32_0 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(i16_lo)));
-        let f32_1 = vcvtq_f32_s32(vmovl_high_s16(i16_lo));
-        let f32_2 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(i16_hi)));
-        let f32_3 = vcvtq_f32_s32(vmovl_high_s16(i16_hi));
+            // i16 → i32 → f32 in 4 chunks of 4 lanes.
+            let f32_0 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(i16_lo)));
+            let f32_1 = vcvtq_f32_s32(vmovl_high_s16(i16_lo));
+            let f32_2 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(i16_hi)));
+            let f32_3 = vcvtq_f32_s32(vmovl_high_s16(i16_hi));
 
-        // Load 16 query lanes in 4 chunks.
-        let q_base = rotated_q.add(b * 2);
-        let q0 = vld1q_f32(q_base);
-        let q1 = vld1q_f32(q_base.add(4));
-        let q2 = vld1q_f32(q_base.add(8));
-        let q3 = vld1q_f32(q_base.add(12));
+            // Load 16 query lanes in 4 chunks.
+            let q_base = rotated_q.add(b * 2);
+            let q0 = vld1q_f32(q_base);
+            let q1 = vld1q_f32(q_base.add(4));
+            let q2 = vld1q_f32(q_base.add(8));
+            let q3 = vld1q_f32(q_base.add(12));
 
-        // Fused multiply-add into two accumulators.
-        acc_a = vfmaq_f32(acc_a, q0, f32_0);
-        acc_b = vfmaq_f32(acc_b, q1, f32_1);
-        acc_a = vfmaq_f32(acc_a, q2, f32_2);
-        acc_b = vfmaq_f32(acc_b, q3, f32_3);
+            // Fused multiply-add into two accumulators.
+            acc_a = vfmaq_f32(acc_a, q0, f32_0);
+            acc_b = vfmaq_f32(acc_b, q1, f32_1);
+            acc_a = vfmaq_f32(acc_a, q2, f32_2);
+            acc_b = vfmaq_f32(acc_b, q3, f32_3);
 
-        b += 8;
+            b += 8;
+        }
+
+        let acc = vaddq_f32(acc_a, acc_b);
+        vaddvq_f32(acc)
     }
-
-    let acc = vaddq_f32(acc_a, acc_b);
-    vaddvq_f32(acc)
-}}
+}
 
 /// AVX-512 kernel for the signed 4-bit dot product. Processes 16
 /// dims per loop iter (8 packed bytes) via the same low/high
@@ -485,10 +490,7 @@ unsafe fn signed_dot_avx512(code: *const u8, rotated_q: *const f32, bytes: usize
     // with the two's-complement convention. Replicated across
     // both 64-bit halves of a __m128i so 8-byte VPSHUFB doesn't
     // need any mask.
-    let lut = _mm_setr_epi8(
-        0, 1, 2, 3, 4, 5, 6, 7,
-        -8, -7, -6, -5, -4, -3, -2, -1,
-    );
+    let lut = _mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, -8, -7, -6, -5, -4, -3, -2, -1);
     let low_mask = _mm_set1_epi8(0x0F);
 
     let mut acc_a = _mm512_setzero_ps();

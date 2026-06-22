@@ -47,7 +47,9 @@ use staged_diskann::algorithm::search::stage::admission::{
 use staged_diskann::algorithm::search::stage::prefilter::{
     JlHadamardPrefilter, JlMipsPrefilter, JlPrefilter, RabitqPrefilter,
 };
-use staged_diskann::algorithm::search::stage::rerank::{F32Rerank, IpF32Rerank, U16Rerank};
+use staged_diskann::algorithm::search::stage::rerank::{
+    F32Rerank, IpF32Rerank, NoRerank, U16Rerank,
+};
 use staged_diskann::StagedDiskANN;
 use std::str::FromStr;
 use vector::FullPrecisionDistance;
@@ -113,6 +115,12 @@ pub enum RerankChoice {
     F32,
     IpF32,
     U16,
+    /// Skip the rerank pass — emit the admission PQ's top-k directly.
+    /// Useful as the rerank-disabled arm in a cascade-stage ablation
+    /// (`cascade_ablation` bin), or when the admission tier already
+    /// ranks at sufficient precision (f32 admission, RaBitQ B=4 with
+    /// per-vertex correction).
+    None,
 }
 
 impl FromStr for PrefilterChoice {
@@ -155,7 +163,10 @@ impl FromStr for RerankChoice {
             "f32" => Ok(Self::F32),
             "ip-f32" | "ipf32" => Ok(Self::IpF32),
             "u16" => Ok(Self::U16),
-            other => Err(format!("unknown rerank '{other}' (expected f32|ip-f32|u16)")),
+            "none" | "no" | "off" => Ok(Self::None),
+            other => Err(format!(
+                "unknown rerank '{other}' (expected f32|ip-f32|u16|none)"
+            )),
         }
     }
 }
@@ -218,9 +229,9 @@ where
 {
     match choice {
         AdmissionChoice::L2U8 => Box::new(L2U8Admission::new(staged.ensure_quantized_dataset())),
-        AdmissionChoice::L2U16 => {
-            Box::new(L2U16Admission::new(staged.ensure_quantized_dataset_l2_u16()))
-        }
+        AdmissionChoice::L2U16 => Box::new(L2U16Admission::new(
+            staged.ensure_quantized_dataset_l2_u16(),
+        )),
         AdmissionChoice::L2Kt => {
             Box::new(L2KTAdmission::new(staged.ensure_quantized_dataset_l2_kt()))
         }
@@ -230,9 +241,7 @@ where
         AdmissionChoice::MipsI16 => Box::new(MipsI16Admission::new(
             staged.ensure_quantized_dataset_mips_i16(),
         )),
-        AdmissionChoice::AdsF32 => {
-            Box::new(AdsF32Admission::new(&staged.dataset, ads_epsilon()))
-        }
+        AdmissionChoice::AdsF32 => Box::new(AdsF32Admission::new(&staged.dataset, ads_epsilon())),
     }
 }
 
@@ -248,6 +257,7 @@ where
         RerankChoice::F32 => Box::new(F32Rerank::new(&staged.dataset)),
         RerankChoice::IpF32 => Box::new(IpF32Rerank::new(&staged.dataset)),
         RerankChoice::U16 => Box::new(U16Rerank::new(staged.ensure_quantized_dataset_l2_u16())),
+        RerankChoice::None => Box::new(NoRerank),
     }
 }
 
@@ -282,11 +292,7 @@ pub fn pin_prefilter<const N: usize>(
                 );
             } else {
                 let q = staged.ensure_quantized_dataset_jl();
-                crate::utils::mlock_bytes(
-                    "prefilter (JL codes)",
-                    q.codes.as_ptr(),
-                    q.codes.len(),
-                );
+                crate::utils::mlock_bytes("prefilter (JL codes)", q.codes.as_ptr(), q.codes.len());
                 crate::utils::mlock_bytes(
                     "prefilter (JL indices)",
                     q.indices.as_ptr() as *const u8,
@@ -397,10 +403,7 @@ where
             // `U16` rerank, the f32 base would go un-pinned; in that
             // (currently unused) combination, ADS still needs the f32
             // base resident, so pin it here as a safety net.
-            if !matches!(
-                staged.dataset.data.len(),
-                0
-            ) {
+            if !matches!(staged.dataset.data.len(), 0) {
                 let d = staged.dataset.data.as_slice();
                 crate::utils::mlock_bytes(
                     "admission (ADS f32 base)",
@@ -435,6 +438,8 @@ where
                 q.data.len() * std::mem::size_of::<u16>(),
             );
         }
+        // NoRerank reads from `scratch.pq` only — no sidecar to pin.
+        RerankChoice::None => {}
     }
 }
 

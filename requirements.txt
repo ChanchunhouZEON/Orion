@@ -1,0 +1,28 @@
+# Python dependencies for staged_diskann benchmark scripts +
+# visualization plots. Install with:
+#
+#   python3 -m pip install -r requirements.txt
+#
+# Then point the wrapper scripts at the resulting interpreter:
+#
+#   PY=/path/to/python3 bash benchmark/scripts/run_cascade_ablation.sh
+#
+# (Default `PY` is whatever `python3` resolves to on $PATH.)
+
+# ── Core: required by every visualization in visualizations/. ──
+matplotlib>=3.6
+numpy>=1.23
+
+# ── Used by a handful of plots (memory analysis, calibration diag). ──
+scipy>=1.10
+
+# ── Optional, only needed when reproducing third-party baseline curves
+#    in benchmark/scripts/baseline_comparison.py and additional_baselines.py.
+#    Skip unless you're regenerating the baseline panels. ──
+# annoy>=1.17
+# faiss-cpu>=1.7
+# hnswlib>=0.7
+# usearch>=2.10
+# pymilvus>=2.4
+# lancedb>=0.6
+# pyarrow>=14

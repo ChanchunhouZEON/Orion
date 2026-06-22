@@ -9,11 +9,11 @@
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::mem;
 use std::path::Path;
-use std::{io, mem};
 
-use crate::model::data_store::DatasetDto;
 use crate::common::ANNResult;
+use crate::model::data_store::DatasetDto;
 
 pub fn load_metadata_from_file(file_name: &str) -> ANNResult<(usize, usize)> {
     let file = File::open(file_name)?;
@@ -118,10 +118,7 @@ pub fn save_data_in_base_dimensions<T: Default + Copy>(
     Ok(bytes_written)
 }
 
-pub fn load_bin<T: Copy>(
-    bin_file: &str,
-    file_offset: usize,
-) -> ANNResult<(Vec<T>, usize, usize)> {
+pub fn load_bin<T: Copy>(bin_file: &str, file_offset: usize) -> ANNResult<(Vec<T>, usize, usize)> {
     let mut reader = File::open(bin_file)?;
     reader.seek(std::io::SeekFrom::Start(file_offset as u64))?;
     let npts = reader.read_i32::<LittleEndian>()? as usize;

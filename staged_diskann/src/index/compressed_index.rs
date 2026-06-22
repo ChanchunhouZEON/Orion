@@ -14,6 +14,7 @@ use crate::model::dataset::rabitq_b4_dataset::{RABITQ_B4_MAGIC, RabitQ4Dataset};
 use crate::model::dataset::rabitq_dataset::{RABITQ_MAGIC, RabitQDataset};
 use crate::model::scratch::InMemScratchPool;
 use crate::model::{L2U8, L2U16, MipsI8, MipsI16, QuantSpec, QuantizedDataset};
+use diskann::common::{ANNError, ANNResult};
 use diskann::model::InmemDataset;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -21,7 +22,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock}; // Arc still needed for pq field
 use std::time::Instant;
 use vector::FullPrecisionDistance;
-use diskann::common::{ANNError, ANNResult};
 
 /// Staged DiskANN with PhasedGraph-based two-phase search.
 ///
@@ -104,13 +104,11 @@ where
     /// correlate — strictly a prefilter, never the final ranker.
     pub(crate) q_dataset_jl: OnceLock<JLSparseDataset<N, 1024>>,
 
-
     /// MIPS variant of the JL sparse signature — distinct type
     /// ([`JLSparseDatasetMips`]) so the L2 path doesn't carry the
     /// per-vertex `‖v‖` slab. Default NZ=9 per the current MIPS
     /// sweep. Sidecar `.jls_mips`.
     pub(crate) q_dataset_jl_mips: OnceLock<JLSparseDatasetMips<N, 1024, 9>>,
-
 
     /// JL Hadamard 1024-bit signature dataset (HDHDHD-encoded). Lazy-
     /// built on first `ensure_quantized_dataset_jl_hadamard`. Sidecar
@@ -246,16 +244,14 @@ where
 
     /// Lazily obtain the i8 MIPS quantized dataset. Sidecar `.qdm8`.
     pub fn ensure_quantized_dataset_mips(&self) -> &QuantizedDataset<MipsI8, N> {
-        self.q_dataset_mips.get_or_init(|| {
-            build_quant::<MipsI8, N>(&self.dataset, &self.cache_base_path)
-        })
+        self.q_dataset_mips
+            .get_or_init(|| build_quant::<MipsI8, N>(&self.dataset, &self.cache_base_path))
     }
 
     /// Lazily obtain the i16 MIPS quantized dataset. Sidecar `.qdm16`.
     pub fn ensure_quantized_dataset_mips_i16(&self) -> &QuantizedDataset<MipsI16, N> {
-        self.q_dataset_mips_i16.get_or_init(|| {
-            build_quant::<MipsI16, N>(&self.dataset, &self.cache_base_path)
-        })
+        self.q_dataset_mips_i16
+            .get_or_init(|| build_quant::<MipsI16, N>(&self.dataset, &self.cache_base_path))
     }
 
     /// Lazily obtain the RaBitQ 1-bit quantized dataset. Sidecar
@@ -264,18 +260,16 @@ where
     /// write back. Build uses a fixed seed so every cache slot is
     /// reproducible across runs.
     pub fn ensure_quantized_dataset_rabitq(&self) -> &RabitQDataset<N> {
-        self.q_dataset_rabitq.get_or_init(|| {
-            build_rabitq::<N>(&self.dataset, &self.cache_base_path)
-        })
+        self.q_dataset_rabitq
+            .get_or_init(|| build_rabitq::<N>(&self.dataset, &self.cache_base_path))
     }
 
     /// Lazily obtain the **B=4** RaBitQ quantized dataset. Sidecar
     /// `.qrb4`. Distinct from the B=1 sidecar (`.qrbq`) so both can
     /// coexist on disk and be A/B'd at search time.
     pub fn ensure_quantized_dataset_rabitq_b4(&self) -> &RabitQ4Dataset<N> {
-        self.q_dataset_rabitq_b4.get_or_init(|| {
-            build_rabitq_b4::<N>(&self.dataset, &self.cache_base_path)
-        })
+        self.q_dataset_rabitq_b4
+            .get_or_init(|| build_rabitq_b4::<N>(&self.dataset, &self.cache_base_path))
     }
 
     /// Lazily obtain the JL Sparse 1024-bit signature dataset.
@@ -643,10 +637,7 @@ where
 /// every other sidecar (`.qds`, `.qds6`, `.qdm8`, `.jls`, ...), so
 /// rebuilding the graph also implicitly invalidates this slab via
 /// the rest of the cache stem changing.
-fn build_l2_kt<const N: usize>(
-    dataset: &InmemDataset<f32, N>,
-    cache_base: &Path,
-) -> L2KTDataset<N>
+fn build_l2_kt<const N: usize>(dataset: &InmemDataset<f32, N>, cache_base: &Path) -> L2KTDataset<N>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {

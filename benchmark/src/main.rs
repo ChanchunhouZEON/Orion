@@ -87,6 +87,13 @@ struct Args {
     drop_inmem: bool,
 }
 
+/// Number of warm-up queries fed into `staged.calibrate()` across every
+/// in-process benchmark in `main.rs`. Mirrors `CALIB_SAMPLE` in the
+/// `staged_diskann` bin. 200 converges well before diminishing returns
+/// on the reference datasets and keeps calibration cost ~constant
+/// across the various ablation entry points.
+const CALIB_SAMPLES: usize = 200;
+
 /// Rebuild an InmemDataset from flat base vectors.
 /// Used after extract_graph_and_candidates frees the dataset to reduce peak memory.
 fn rebuild_dataset<const N: usize>(
@@ -233,7 +240,8 @@ fn main() {
             }
             "memory-profile" => {
                 run_memory_profile(&dataset);
-            }"cliff-profile" => {
+            }
+            "cliff-profile" => {
                 run_cliff_profile(&dataset);
             }
             "neighbor-contribution" => {
@@ -248,6 +256,9 @@ fn main() {
             "ablation" => {
                 run_ablation(&dataset, args.k);
             }
+            "cascade-ablation" => {
+                run_cascade_ablation(&dataset, args.k);
+            }
             "ads-comparison" => {
                 run_ads_comparison(&dataset, args.k);
             }
@@ -257,7 +268,6 @@ fn main() {
         }
     }
 }
-
 
 fn run_convergence_diag(dataset: &Dataset, k: usize) {
     use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
@@ -305,7 +315,7 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
             staged.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
 
             // Calibrate once on the first 200 queries.
-            let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(200)].to_vec();
+            let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
             let calib = staged.calibrate(&calib_qs, 48, ws).expect("calibrate failed");
             let thr = calib.threshold;
             let ee = calib.early_exit_limit;
@@ -465,7 +475,8 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
         "Building DiskANN (α={:.2}, R={}, L_build={}) for {} {}pts...",
         scfg.alpha, scfg.graph_degree, scfg.build_search_list_size, dim_name, num_points
     );
-    let mut diskann_runner = runner::DiskANNRunner::new(scfg.build_search_list_size, scfg.graph_degree, scfg.alpha);
+    let mut diskann_runner =
+        runner::DiskANNRunner::new(scfg.build_search_list_size, scfg.graph_degree, scfg.alpha);
 
     // Cache paths mirror `staged_sweep`'s naming so a single `staged_sweep`
     // build populates both. Both algorithms here use the same R / L /
@@ -531,7 +542,7 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
     // (CALIB_L=48, 200 real test queries). Different calibration →
     // different convergence + early-exit behavior → ~10-20% QPS gap.
     // Match `staged_sweep`'s recipe exactly.
-    staged_runner.recalibrate(&dataset.queries, 200);
+    staged_runner.recalibrate(&dataset.queries, CALIB_SAMPLES);
     let (thr, ee) = staged_runner.calibrated_params();
     println!(
         "Recalibrated at L={search_l}: threshold={thr:.2}, early_exit_limit={ee} (reference staged_sweep: threshold=0.15, early_exit_limit=15)",
@@ -914,8 +925,14 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
         "  DiskANN (alpha={:.2}, no candidates): {:.3}s ± {:.3}s",
         scfg.alpha, d_mean, d_std,
     );
-    println!("  Staged graph:                        {:.3}s ± {:.3}s", g_mean, g_std);
-    println!("  Staged overhead:                     {:.3}s ± {:.3}s", o_mean, o_std);
+    println!(
+        "  Staged graph:                        {:.3}s ± {:.3}s",
+        g_mean, g_std
+    );
+    println!(
+        "  Staged overhead:                     {:.3}s ± {:.3}s",
+        o_mean, o_std
+    );
     println!(
         "  Staged / DiskANN:     {:.2}x   overhead: {:.1}% of staged total",
         (g_mean + o_mean) / d_mean,
@@ -924,10 +941,7 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
 }
 
 fn run_search_profile(dataset: &Dataset, k: usize) {
-    use staged_diskann::{
-        build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_32,
-        DIM_960,
-    };
+    use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
@@ -982,7 +996,13 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
             let _ = staged.ensure_quantized_dataset();
             for q in &queries[..queries.len().min(1000)] {
                 crate::runner::cascade::search_compose::<$N>(
-                    &staged, q, k, 48, 5, 0.15, 1000,
+                    &staged,
+                    q,
+                    k,
+                    48,
+                    5,
+                    0.15,
+                    1000,
                     crate::runner::cascade::PrefilterChoice::None,
                     crate::runner::cascade::AdmissionChoice::L2U8,
                     crate::runner::cascade::RerankChoice::F32,
@@ -1005,7 +1025,7 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
             let ws = 5usize;
 
             // Auto-calibrate.
-            let calib_sample: Vec<[f32; $N]> = queries[..queries.len().min(200)].to_vec();
+            let calib_sample: Vec<[f32; $N]> = queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
             let calib = staged
                 .calibrate(&calib_sample, 48, ws)
                 .expect("calibrate failed");
@@ -1326,11 +1346,14 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
             .expect("missing usize field") as usize
     };
 
-    let staged_alpha   = pick_f32(  &ds_st["alpha"],                  &def_st["alpha"]);
-    let st_degree      = pick_usize(&ds_st["graph_degree"],           &def_st["graph_degree"]);
-    let staged_build_l = pick_usize(&ds_st["build_search_list_size"], &def_st["build_search_list_size"]);
-    let st_max_extra   = pick_usize(&ds_st["max_extra"],              &def_st["max_extra"]);
-    let staged_ws      = pick_usize(&ds_st["window_size"],            &def_st["window_size"]);
+    let staged_alpha = pick_f32(&ds_st["alpha"], &def_st["alpha"]);
+    let st_degree = pick_usize(&ds_st["graph_degree"], &def_st["graph_degree"]);
+    let staged_build_l = pick_usize(
+        &ds_st["build_search_list_size"],
+        &def_st["build_search_list_size"],
+    );
+    let st_max_extra = pick_usize(&ds_st["max_extra"], &def_st["max_extra"]);
+    let staged_ws = pick_usize(&ds_st["window_size"], &def_st["window_size"]);
 
     // α-match DiskANN baselines to the per-dataset Staged topology.
     // The global `defaults.diskann` α=2.0 R=64 L=100 recipe is never
@@ -2102,7 +2125,7 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
 
                 // Calibrate and search.
                 let calib = staged
-                    .calibrate(&queries[..queries.len().min(200)], 48, 5)
+                    .calibrate(&queries[..queries.len().min(CALIB_SAMPLES)], 48, 5)
                     .expect("calibrate");
 
                 // Run search_diag for detailed stats.
@@ -2304,7 +2327,7 @@ fn run_calibration_diag(dataset: &Dataset) {
             let diskann_build_s = t_da.elapsed().as_secs_f64();
 
             // Calibrate with diagnostics
-            let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(500)].to_vec();
+            let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
             let diag = staged.calibrate_with_diagnostics(&calib_qs, 100, 5)
                 .expect("calibrate failed");
 
@@ -2400,7 +2423,7 @@ fn run_ablation(dataset: &Dataset, k: usize) {
             staged.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
 
             // Calibrate
-            let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(500)].to_vec();
+            let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
             let calib = staged.calibrate(&calib_qs, 48, 5).expect("calibrate failed");
             let thr = calib.threshold;
             let ee = calib.early_exit_limit;
@@ -2566,6 +2589,320 @@ fn run_ablation(dataset: &Dataset, k: usize) {
         DIM_100 => run_ablation!(100),
         DIM_128 => run_ablation!(128),
         DIM_960 => run_ablation!(960),
+        _ => panic!("Unsupported dimension: {dimension}"),
+    }
+}
+
+/// Cascade-stage ablation: measure per-stage QPS / recall contribution
+/// of the prefilter, admission, and rerank stages.
+#[allow(unused_imports)] // DIM_768 / DIM_1536 only used by the macro dispatch.
+///
+/// Holds the graph + admission tier fixed at the per-dataset defaults
+/// from `sweep.yaml`. Sweeps four cascade variants:
+///
+///   1. **full**            `(default_prefilter, default_admission, default_rerank)`
+///   2. **no-prefilter**    `(None, default_admission, default_rerank)`
+///   3. **no-rerank**       `(default_prefilter, default_admission, None)`
+///   4. **admission-only**  `(None, default_admission, None)`
+///
+/// Reading the panel:
+///   * **(full − no-prefilter) at iso-recall**  → prefilter's QPS contribution
+///   * **(no-rerank − full) at iso-L**          → rerank's QPS cost (and recall delta)
+///   * **(admission-only − full)**              → combined effect of both auxiliary stages
+///
+/// All four variants share one built `StagedDiskANN` and one
+/// `calibrate()` call so thermal / cache / build-jitter drift can't
+/// account for the QPS gaps.
+fn run_cascade_ablation(dataset: &Dataset, k: usize) {
+    use rayon::prelude::*;
+    use staged_diskann::{
+        build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_960,
+    };
+    use std::time::Instant;
+
+    let num_points = dataset.num_base();
+    let dimension = dataset.dimension;
+    let flat_base = dataset.base_flat();
+    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
+    let num_threads = 8;
+
+    let dim_name = match dimension {
+        32 => "glove25",
+        100 => "glove100",
+        128 => "sift",
+        768 => "msmarco_bert_1M",
+        960 => "gist",
+        1536 => "wiki_ada_1M",
+        _ => "unknown",
+    };
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .unwrap();
+
+    // Same L schedule as `run_ablation` for cross-figure comparability.
+    let search_list_sizes: &[usize] =
+        &[16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256];
+    let trials = 5;
+
+    macro_rules! run_cascade_ablation_inner {
+        ($N:literal) => {{
+            use crate::runner::cascade::{
+                search_compose, PrefilterChoice, RerankChoice,
+            };
+
+            let queries: Vec<[f32; $N]> = dataset.queries.iter().map(|q| {
+                let mut arr = [0f32; $N];
+                arr.copy_from_slice(&q[..$N]);
+                arr
+            }).collect();
+
+            // ── Build or load StagedDiskANN once (shared across all 4 variants). ──
+            //
+            // Cache resolution mirrors `staged_diskann.rs` bin's PA-mode
+            // naming so artifacts are interchangeable: once the bin has
+            // populated `cache/staged_parlayann/<ds>_n…_r…_l…_a…_ex…_pct60.{bin,pgraph}`,
+            // this benchmark loads the same graph in ~1–3s instead of
+            // rebuilding for 30–120s. Three paths, in priority order:
+            //   1. `.bin`+`.pgraph` on disk        → `load_from_cache` (fast)
+            //   2. `STAGED_STAGED_FILE` env set    → import PA `.staged`, save to cache
+            //   3. neither                          → in-process Vamana, save to cache
+            //
+            // This makes the measured QPS reflect the *steady-state*
+            // production setup (graph loaded once at startup, kept hot)
+            // rather than first-launch + cold build.
+            let local_pct: usize = std::env::var("STAGED_LOCAL_PCT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&v| (1..=100).contains(&v))
+                .unwrap_or(60);
+            let alpha_tag = format!("{:.2}", scfg.alpha).replace('.', "_");
+            let cache_dir = std::path::PathBuf::from("cache/staged_parlayann");
+            let cache_path = cache_dir.join(format!(
+                "{}_n{}_r{}_l{}_a{}_ex{}_pct{}.bin",
+                dim_name, num_points, scfg.graph_degree, scfg.build_search_list_size,
+                alpha_tag, scfg.max_extra, local_pct,
+            ));
+            std::fs::create_dir_all(&cache_dir).ok();
+            let pgraph_path = cache_path.with_extension("pgraph");
+
+            println!(
+                "StagedDiskANN ({}-dim, alpha={}, default cascade: {:?}/{:?}/{:?})...",
+                $N, scfg.alpha, scfg.prefilter, scfg.admission, scfg.rerank
+            );
+            let t_build = Instant::now();
+            let staged: StagedDiskANN<$N> = if cache_path.exists() && pgraph_path.exists() {
+                println!("  → cache hit: loading PhasedGraph from {:?}", pgraph_path);
+                let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                let mut idx = StagedDiskANN::<$N>::load_from_cache(&cache_path, empty_ds)
+                    .expect("load_from_cache failed");
+                idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                idx
+            } else if let Ok(staged_file_path) = std::env::var("STAGED_STAGED_FILE") {
+                println!(
+                    "  → importing ParlayANN .staged from {} (cache will be \
+                     written to {:?})",
+                    staged_file_path, pgraph_path,
+                );
+                let input = crate::runner::parlayann_bridge::load_from_staged_file(
+                    &staged_file_path, &flat_base[..num_points * $N], $N,
+                ).expect("parlayann_bridge::load_from_staged_file failed");
+                let entry = input.entry_point;
+                // Use header's max_extra (the variable per-node count cap
+                // from the C++ partition rule) rather than scfg's static
+                // value — keeps the imported graph faithful.
+                let max_extra_from_file = input.max_extra as usize;
+                let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                let mut idx = StagedDiskANN::<$N>::new(
+                    empty_ds, &input.partitions, entry,
+                    scfg.graph_degree, max_extra_from_file,
+                    None, None, Some(cache_path.clone()), true,
+                );
+                idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                idx
+            } else {
+                println!(
+                    "  → no PA cache / STAGED_STAGED_FILE — building Vamana \
+                     in-process. Will save to {:?} for subsequent runs.",
+                    pgraph_path,
+                );
+                let result = build_diskann_index(
+                    &flat_base, num_points, dimension, scfg.alpha,
+                    scfg.graph_degree, scfg.build_search_list_size as u32,
+                    false, None, None, true, scfg.max_extra,
+                ).expect("build failed");
+                let entry = result.entry_point;
+                drop(result.index);
+                let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                let mut idx = StagedDiskANN::<$N>::new(
+                    empty_ds, &result.partitions, entry,
+                    scfg.graph_degree, scfg.max_extra,
+                    None, None, Some(cache_path.clone()), true,
+                );
+                idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                idx
+            };
+            println!("  → graph ready in {:.1}s", t_build.elapsed().as_secs_f64());
+
+            // Calibrate once with the default cascade settings.
+            let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
+            let calib = staged.calibrate(&calib_qs, 48, 5).expect("calibrate failed");
+            let thr = calib.threshold;
+            let ee = calib.early_exit_limit;
+            println!("Calibrated: threshold={:.2}, early_exit_limit={}\n", thr, ee);
+
+            // Materialise every sidecar the four variants might touch
+            // BEFORE the timed sweep so per-variant build latency
+            // doesn't contaminate the first L's QPS reading. The
+            // admission sidecar is the only sidecar that's always
+            // needed; the prefilter sidecar is needed only when the
+            // default prefilter isn't None.
+            match scfg.admission {
+                crate::runner::cascade::AdmissionChoice::L2U8 => {
+                    let _ = staged.ensure_quantized_dataset();
+                }
+                crate::runner::cascade::AdmissionChoice::L2U16 => {
+                    let _ = staged.ensure_quantized_dataset_l2_u16();
+                }
+                crate::runner::cascade::AdmissionChoice::L2Kt => {
+                    let _ = staged.ensure_quantized_dataset_l2_kt();
+                }
+                crate::runner::cascade::AdmissionChoice::MipsI8 => {
+                    let _ = staged.ensure_quantized_dataset_mips();
+                }
+                crate::runner::cascade::AdmissionChoice::MipsI16 => {
+                    let _ = staged.ensure_quantized_dataset_mips_i16();
+                }
+                crate::runner::cascade::AdmissionChoice::AdsF32 => {}
+            }
+            match scfg.prefilter {
+                PrefilterChoice::None => {}
+                PrefilterChoice::Jl => {
+                    let _ = staged.ensure_quantized_dataset_jl();
+                }
+                PrefilterChoice::JlHadamard => {
+                    let _ = staged.ensure_quantized_dataset_jl_hadamard();
+                }
+                PrefilterChoice::Rabitq => {
+                    let _ = staged.ensure_quantized_dataset_rabitq();
+                }
+            }
+
+
+            // Closure: time `search_compose` over `queries` × `search_list_sizes`
+            // × `trials`, return median QPS per L plus the matching recall.
+            //
+            // Each variant gets its own warmup pass at the smallest sweep L
+            // before the timed loop. This drives DVFS to peak P-state, primes
+            // prefetchers + the rayon worker pool, and pages in the
+            // cascade-specific sidecars (different prefilter/rerank choices
+            // touch different byte regions). Mirrors the warmup pattern in
+            // `staged_diskann.rs::sweep_one_cascade` so cascade-ablation QPS
+            // is comparable with the published staged_sweep numbers.
+            let warmup_l = *search_list_sizes.first().unwrap_or(&16);
+            let measure = |label: &str, pre: PrefilterChoice, rerank: RerankChoice|
+                -> Vec<(f64, f64)>
+            {
+                println!("  [{label}] prefilter={:?}, admission={:?}, rerank={:?}",
+                    pre, scfg.admission, rerank);
+                // Single warmup pass at the smallest L — cheap enough that
+                // it doesn't materially extend the run, deep enough that
+                // every page the timed sweep will touch gets brought into
+                // RAM under the right cascade dispatch.
+                pool.install(|| {
+                    queries.par_iter().for_each(|q| {
+                        let _ = search_compose::<$N>(
+                            &staged, q, k, warmup_l, 5, thr, ee,
+                            pre, scfg.admission, rerank,
+                        );
+                    });
+                });
+                let mut out = Vec::with_capacity(search_list_sizes.len());
+                for &sls in search_list_sizes {
+                    let mut qps_samples = Vec::with_capacity(trials);
+                    let mut recall = 0.0f64;
+                    for _ in 0..trials {
+                        self::utils::flush_cache();
+                        let t = Instant::now();
+                        let results: Vec<Vec<u32>> = pool.install(|| {
+                            queries.par_iter().map(|q| {
+                                search_compose::<$N>(
+                                    &staged, q, k, sls, 5, thr, ee,
+                                    pre, scfg.admission, rerank,
+                                )
+                                .unwrap_or_default()
+                            }).collect()
+                        });
+                        let wall = t.elapsed();
+                        qps_samples.push(queries.len() as f64 / wall.as_secs_f64());
+                        recall = metrics::recall::mean_recall(
+                            &results, &dataset.ground_truth, k);
+                    }
+                    qps_samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    out.push((recall, qps_samples[trials / 2]));
+                }
+                out
+            };
+
+            // ── Four variants. ──
+            println!("\nRunning cascade-stage ablation sweep...\n");
+            let full_data           = measure("full",            scfg.prefilter,  scfg.rerank);
+            let no_pf_data          = measure("no-prefilter",    PrefilterChoice::None, scfg.rerank);
+            let no_rerank_data      = measure("no-rerank",       scfg.prefilter,  RerankChoice::None);
+            let admission_only_data = measure("admission-only",  PrefilterChoice::None, RerankChoice::None);
+
+            // ── Print summary table. ──
+            println!(
+                "\n{:<6} {:<22} {:<22} {:<22} {:<22}",
+                "L", "full (R/QPS)", "no-pre (R/QPS)", "no-rerank (R/QPS)", "adm-only (R/QPS)"
+            );
+            println!("{}", "─".repeat(96));
+            for (i, &sls) in search_list_sizes.iter().enumerate() {
+                println!(
+                    "L={:<4} {:.3}/{:<12.0}  {:.3}/{:<12.0}  {:.3}/{:<12.0}  {:.3}/{:<12.0}",
+                    sls,
+                    full_data[i].0,           full_data[i].1,
+                    no_pf_data[i].0,          no_pf_data[i].1,
+                    no_rerank_data[i].0,      no_rerank_data[i].1,
+                    admission_only_data[i].0, admission_only_data[i].1,
+                );
+            }
+
+            // ── Save JSON for the matplotlib renderer. ──
+            let to_json = |data: &[(f64, f64)]| -> Vec<(f64, f64)> {
+                data.iter().map(|&(r, q)| (r, q)).collect::<Vec<_>>()
+            };
+            let json = serde_json::json!({
+                "dataset": dim_name,
+                "dimension": $N,
+                "num_points": num_points,
+                "threads": num_threads,
+                "search_list_sizes": search_list_sizes,
+                "default_cascade": {
+                    "prefilter":  format!("{:?}", scfg.prefilter),
+                    "admission":  format!("{:?}", scfg.admission),
+                    "rerank":     format!("{:?}", scfg.rerank),
+                },
+                "full":            to_json(&full_data),
+                "no_prefilter":    to_json(&no_pf_data),
+                "no_rerank":       to_json(&no_rerank_data),
+                "admission_only":  to_json(&admission_only_data),
+            });
+            let path = format!("visualizations/cascade_ablation_{}.json", dim_name);
+            std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap())
+                .expect("write json");
+            println!("\nSaved {path}");
+        }};
+    }
+
+    match dimension {
+        DIM_32 => run_cascade_ablation_inner!(32),
+        DIM_100 => run_cascade_ablation_inner!(100),
+        DIM_128 => run_cascade_ablation_inner!(128),
+        DIM_768 => run_cascade_ablation_inner!(768),
+        DIM_960 => run_cascade_ablation_inner!(960),
+        DIM_1536 => run_cascade_ablation_inner!(1536),
         _ => panic!("Unsupported dimension: {dimension}"),
     }
 }

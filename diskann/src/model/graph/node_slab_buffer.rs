@@ -8,8 +8,8 @@ use std::io::{Read, Write};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use crate::common::AlignedBoxWithSlice;
 use crate::common::ANNResult;
+use crate::common::AlignedBoxWithSlice;
 
 const CACHE_LINE_BYTES: usize = 64;
 const DEFAULT_WRITE_QUEUE_CAPACITY: usize = 64;

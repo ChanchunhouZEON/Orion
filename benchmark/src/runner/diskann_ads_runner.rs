@@ -240,7 +240,6 @@ impl AlgorithmRunner for DiskANNAdsRunner {
             duration,
         }
     }
-
 }
 
 impl Drop for DiskANNAdsRunner {

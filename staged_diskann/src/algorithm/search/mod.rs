@@ -131,7 +131,9 @@ macro_rules! define_metric {
                     idx < MAX_WORKERS,
                     "rayon worker count exceeded MAX_WORKERS={MAX_WORKERS}"
                 );
-                unsafe { *METRICS.slots[idx].$field.get() += n; }
+                unsafe {
+                    *METRICS.slots[idx].$field.get() += n;
+                }
             }
 
             /// Sum all per-worker slots. Safe only after all writers
@@ -155,7 +157,9 @@ macro_rules! define_metric {
             /// Zero every per-worker slot for this metric.
             pub fn reset(&self) {
                 for slot in METRICS.slots.iter() {
-                    unsafe { *slot.$field.get() = 0; }
+                    unsafe {
+                        *slot.$field.get() = 0;
+                    }
                 }
             }
         }

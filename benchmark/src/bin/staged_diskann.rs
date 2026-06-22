@@ -49,7 +49,6 @@
 ///   ./target/release/staged_diskann gist --prefilter jl --admission l2-u16
 use std::time::Instant;
 
-
 // Pull parlayann_bridge in directly — it's a standalone module (only
 // std + rayon deps) so `#[path]` import keeps it accessible from this
 // bin without touching the crate's `runner` module graph.
@@ -285,6 +284,7 @@ impl Cascade {
             RerankChoice::F32 => "f32",
             RerankChoice::IpF32 => "ip-f32",
             RerankChoice::U16 => "u16",
+            RerankChoice::None => "none",
         };
         format!("{p}→{a}→{r}")
     }
@@ -565,7 +565,7 @@ macro_rules! run_sweep {
         // Reset the per-phase atomic counters so the warmup's stats
         // don't contaminate the first timed L's averages.
         {
-            
+
             use staged_diskann::algorithm::search::{NDC_F32, NDC_I8, POST_CONV_ADMITS, POST_CONV_HOPS, PRE_CONV_ADMITS, PRE_CONV_HOPS, QUERY_COUNT, RAW_VISIT_COUNT, SETUP_NS, VISIT_COUNT};
             VISIT_COUNT.reset();
             RAW_VISIT_COUNT.reset();
@@ -613,7 +613,7 @@ macro_rules! run_sweep {
             // drain global counters and print averages per query.
             // Compares directly against PA's `average visited` and
             // exposes pre/post-convergence yield for diagnosis.
-            
+
             use staged_diskann::algorithm::search::{NDC_F32, NDC_I8, POST_CONV_ADMITS, POST_CONV_HOPS, PRE_CONV_ADMITS, PRE_CONV_HOPS, QUERY_COUNT, RAW_VISIT_COUNT, SETUP_NS, VISIT_COUNT};
             let v = VISIT_COUNT.drain();
             let raw_v = RAW_VISIT_COUNT.drain();
@@ -746,26 +746,21 @@ fn parse_args() -> (String, usize, Cascade, Vec<usize>) {
                     .get(i)
                     .expect("--prefilter requires an argument (none|jl)");
                 prefilter_override = Some(
-                    PrefilterChoice::from_str(v)
-                        .unwrap_or_else(|e| panic!("--prefilter: {e}")),
+                    PrefilterChoice::from_str(v).unwrap_or_else(|e| panic!("--prefilter: {e}")),
                 );
             }
             "--admission" => {
                 i += 1;
-                let v = args
-                    .get(i)
-                    .expect("--admission requires an argument");
+                let v = args.get(i).expect("--admission requires an argument");
                 admission_override = Some(
-                    AdmissionChoice::from_str(v)
-                        .unwrap_or_else(|e| panic!("--admission: {e}")),
+                    AdmissionChoice::from_str(v).unwrap_or_else(|e| panic!("--admission: {e}")),
                 );
             }
             "--rerank" => {
                 i += 1;
                 let v = args.get(i).expect("--rerank requires an argument");
-                rerank_override = Some(
-                    RerankChoice::from_str(v).unwrap_or_else(|e| panic!("--rerank: {e}")),
-                );
+                rerank_override =
+                    Some(RerankChoice::from_str(v).unwrap_or_else(|e| panic!("--rerank: {e}")));
             }
             "--max-points" => {
                 i += 1;

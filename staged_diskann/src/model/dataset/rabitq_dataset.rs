@@ -34,11 +34,11 @@
 //! integration into `compressed_index.rs` /
 //! `ensure_quantized_dataset_rabitq()` land in a follow-up pass.
 
+use diskann::common::ANNResult;
 use diskann::common::AlignedBoxWithSlice;
 use diskann::model::InmemDataset;
 use std::path::Path;
 use std::sync::OnceLock;
-use diskann::common::ANNResult;
 
 // Disk-format magic for the RaBitQ sidecar (`.qrbq`). Bumped on
 // breaking layout changes so older caches refuse to load instead of
@@ -223,9 +223,8 @@ impl<const N: usize> RabitQDataset<N> {
         // the env-var check off the hot path (otherwise every estimate
         // becomes a syscall and QPS collapses ~10×).
         static USE_GLOBAL_SCALE: OnceLock<bool> = OnceLock::new();
-        let use_global = *USE_GLOBAL_SCALE.get_or_init(|| {
-            std::env::var("STAGED_RBQ_GLOBAL_SCALE").as_deref() != Ok("0")
-        });
+        let use_global = *USE_GLOBAL_SCALE
+            .get_or_init(|| std::env::var("STAGED_RBQ_GLOBAL_SCALE").as_deref() != Ok("0"));
         let x_norm = self.norms[vertex_id as usize];
         let divisor = if use_global {
             self.scale
@@ -311,7 +310,8 @@ impl<const N: usize> RabitQDataset<N> {
                     "bad magic 0x{magic:08x} (expected 0x{:08x} = QRBQ)",
                     RABITQ_MAGIC
                 ),
-            ).into());
+            )
+            .into());
         }
         let num_vertices = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let dim = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
@@ -319,14 +319,16 @@ impl<const N: usize> RabitQDataset<N> {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("dim mismatch: file={dim} expected={N}"),
-            ).into());
+            )
+            .into());
         }
         let stride = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
         if stride != Self::STRIDE {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
-            ).into());
+            )
+            .into());
         }
         let version = u32::from_le_bytes(hdr[4..8].try_into().unwrap());
         if version != 2 {
@@ -478,49 +480,51 @@ unsafe fn signed_sum_neon<const N: usize>(
     code: *const u8,
     rotated_q: *const f32,
     bytes: usize,
-) -> f32 { unsafe {
-    use std::arch::aarch64::*;
-    // Per-lane bit masks: lane i tests bit i of the nibble.
-    let lane_masks_arr = [1u32, 2, 4, 8];
-    let lane_masks = vld1q_u32(lane_masks_arr.as_ptr());
+) -> f32 {
+    unsafe {
+        use std::arch::aarch64::*;
+        // Per-lane bit masks: lane i tests bit i of the nibble.
+        let lane_masks_arr = [1u32, 2, 4, 8];
+        let lane_masks = vld1q_u32(lane_masks_arr.as_ptr());
 
-    // Two accumulators (one per nibble) break the loop-carried
-    // dependency so the M2 OoO engine can pipeline both vaddq_f32s
-    // every iteration.
-    let mut acc_lo = vdupq_n_f32(0.0);
-    let mut acc_hi = vdupq_n_f32(0.0);
+        // Two accumulators (one per nibble) break the loop-carried
+        // dependency so the M2 OoO engine can pipeline both vaddq_f32s
+        // every iteration.
+        let mut acc_lo = vdupq_n_f32(0.0);
+        let mut acc_hi = vdupq_n_f32(0.0);
 
-    for byte_idx in 0..bytes {
-        let byte = *code.add(byte_idx) as u32;
-        let d = byte_idx * 8;
+        for byte_idx in 0..bytes {
+            let byte = *code.add(byte_idx) as u32;
+            let d = byte_idx * 8;
 
-        // Load 8 f32 lanes of rotated_q + precompute their negations.
-        let q_lo = vld1q_f32(rotated_q.add(d));
-        let q_hi = vld1q_f32(rotated_q.add(d + 4));
-        let neg_lo = vnegq_f32(q_lo);
-        let neg_hi = vnegq_f32(q_hi);
+            // Load 8 f32 lanes of rotated_q + precompute their negations.
+            let q_lo = vld1q_f32(rotated_q.add(d));
+            let q_hi = vld1q_f32(rotated_q.add(d + 4));
+            let neg_lo = vnegq_f32(q_lo);
+            let neg_hi = vnegq_f32(q_hi);
 
-        // Low nibble → lanes 0..=3.
-        let low = vdupq_n_u32(byte & 0xf);
-        let low_masked = vandq_u32(low, lane_masks);
-        let low_set = vceqq_u32(low_masked, lane_masks);
-        // bsl: result = (mask & b) | (!mask & c) — equivalent to
-        // "if mask bit is 1 pick lane from `q`, else pick from `-q`".
-        let signed_lo = vbslq_f32(low_set, q_lo, neg_lo);
-        acc_lo = vaddq_f32(acc_lo, signed_lo);
+            // Low nibble → lanes 0..=3.
+            let low = vdupq_n_u32(byte & 0xf);
+            let low_masked = vandq_u32(low, lane_masks);
+            let low_set = vceqq_u32(low_masked, lane_masks);
+            // bsl: result = (mask & b) | (!mask & c) — equivalent to
+            // "if mask bit is 1 pick lane from `q`, else pick from `-q`".
+            let signed_lo = vbslq_f32(low_set, q_lo, neg_lo);
+            acc_lo = vaddq_f32(acc_lo, signed_lo);
 
-        // High nibble → lanes 4..=7.
-        let high = vdupq_n_u32((byte >> 4) & 0xf);
-        let high_masked = vandq_u32(high, lane_masks);
-        let high_set = vceqq_u32(high_masked, lane_masks);
-        let signed_hi = vbslq_f32(high_set, q_hi, neg_hi);
-        acc_hi = vaddq_f32(acc_hi, signed_hi);
+            // High nibble → lanes 4..=7.
+            let high = vdupq_n_u32((byte >> 4) & 0xf);
+            let high_masked = vandq_u32(high, lane_masks);
+            let high_set = vceqq_u32(high_masked, lane_masks);
+            let signed_hi = vbslq_f32(high_set, q_hi, neg_hi);
+            acc_hi = vaddq_f32(acc_hi, signed_hi);
+        }
+
+        // Horizontal sum: combine both accumulators and reduce.
+        let acc = vaddq_f32(acc_lo, acc_hi);
+        vaddvq_f32(acc)
     }
-
-    // Horizontal sum: combine both accumulators and reduce.
-    let acc = vaddq_f32(acc_lo, acc_hi);
-    vaddvq_f32(acc)
-}}
+}
 
 /// AVX-512 kernel for the signed dot product. 16 dims per outer
 /// iteration via a 16-bit mask built from two consecutive code
@@ -730,37 +734,39 @@ fn apply_rotation_scalar(m: &[f32], x: &[f32], y: &mut [f32], n: usize) {
 /// M2's ~4 FMA-IPC at f32 this lands ~15-25µs vs the scalar 436µs.
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 #[inline]
-unsafe fn apply_rotation_neon(m: &[f32], x: &[f32], y: &mut [f32], n: usize) { unsafe {
-    use std::arch::aarch64::*;
-    let chunks = n / 16;
-    let x_ptr = x.as_ptr();
-    for r in 0..n {
-        let row_ptr = m.as_ptr().add(r * n);
-        let mut a0 = vdupq_n_f32(0.0);
-        let mut a1 = vdupq_n_f32(0.0);
-        let mut a2 = vdupq_n_f32(0.0);
-        let mut a3 = vdupq_n_f32(0.0);
-        for c in 0..chunks {
-            let off = c * 16;
-            let r0 = vld1q_f32(row_ptr.add(off));
-            let r1 = vld1q_f32(row_ptr.add(off + 4));
-            let r2 = vld1q_f32(row_ptr.add(off + 8));
-            let r3 = vld1q_f32(row_ptr.add(off + 12));
-            let x0 = vld1q_f32(x_ptr.add(off));
-            let x1 = vld1q_f32(x_ptr.add(off + 4));
-            let x2 = vld1q_f32(x_ptr.add(off + 8));
-            let x3 = vld1q_f32(x_ptr.add(off + 12));
-            a0 = vfmaq_f32(a0, r0, x0);
-            a1 = vfmaq_f32(a1, r1, x1);
-            a2 = vfmaq_f32(a2, r2, x2);
-            a3 = vfmaq_f32(a3, r3, x3);
+unsafe fn apply_rotation_neon(m: &[f32], x: &[f32], y: &mut [f32], n: usize) {
+    unsafe {
+        use std::arch::aarch64::*;
+        let chunks = n / 16;
+        let x_ptr = x.as_ptr();
+        for r in 0..n {
+            let row_ptr = m.as_ptr().add(r * n);
+            let mut a0 = vdupq_n_f32(0.0);
+            let mut a1 = vdupq_n_f32(0.0);
+            let mut a2 = vdupq_n_f32(0.0);
+            let mut a3 = vdupq_n_f32(0.0);
+            for c in 0..chunks {
+                let off = c * 16;
+                let r0 = vld1q_f32(row_ptr.add(off));
+                let r1 = vld1q_f32(row_ptr.add(off + 4));
+                let r2 = vld1q_f32(row_ptr.add(off + 8));
+                let r3 = vld1q_f32(row_ptr.add(off + 12));
+                let x0 = vld1q_f32(x_ptr.add(off));
+                let x1 = vld1q_f32(x_ptr.add(off + 4));
+                let x2 = vld1q_f32(x_ptr.add(off + 8));
+                let x3 = vld1q_f32(x_ptr.add(off + 12));
+                a0 = vfmaq_f32(a0, r0, x0);
+                a1 = vfmaq_f32(a1, r1, x1);
+                a2 = vfmaq_f32(a2, r2, x2);
+                a3 = vfmaq_f32(a3, r3, x3);
+            }
+            let s01 = vaddq_f32(a0, a1);
+            let s23 = vaddq_f32(a2, a3);
+            let s = vaddq_f32(s01, s23);
+            *y.get_unchecked_mut(r) = vaddvq_f32(s);
         }
-        let s01 = vaddq_f32(a0, a1);
-        let s23 = vaddq_f32(a2, a3);
-        let s = vaddq_f32(s01, s23);
-        *y.get_unchecked_mut(r) = vaddvq_f32(s);
     }
-}}
+}
 
 /// AVX-512 `apply_rotation` — 16-lane × 4-way-ILP dot product per
 /// row. Requires `n % 64 == 0`. For SIFT D=128: 2 inner iters / row.

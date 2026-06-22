@@ -49,12 +49,12 @@
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 use std::arch::aarch64::*;
 
+use diskann::common::ANNResult;
 use diskann::common::AlignedBoxWithSlice;
 use diskann::model::InmemDataset;
 use rayon::prelude::*;
 use std::io::{Read, Write};
 use std::path::Path;
-use diskann::common::ANNResult;
 
 /// Disk-format magic for the JL Sparse sidecar (`.jls`). Bumped each
 /// time `NZ` changes so any cached sidecar from a previous projection
@@ -270,7 +270,8 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
                     "bad magic 0x{magic:08x} (expected 0x{:08x} = JLSF)",
                     JL_SPARSE_MAGIC
                 ),
-            ).into());
+            )
+            .into());
         }
         let num_vertices = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let bits = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
@@ -278,28 +279,32 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("bits mismatch: file={bits} expected={BITS}"),
-            ).into());
+            )
+            .into());
         }
         let stride = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
         if stride != Self::STRIDE {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
-            ).into());
+            )
+            .into());
         }
         let dim = u32::from_le_bytes(hdr[20..24].try_into().unwrap()) as usize;
         if dim != N {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("dim mismatch: file={dim} expected={N}"),
-            ).into());
+            )
+            .into());
         }
         let file_nz = u32::from_le_bytes(hdr[24..28].try_into().unwrap()) as usize;
         if file_nz != NZ {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("nz mismatch: file={file_nz} expected={NZ}"),
-            ).into());
+            )
+            .into());
         }
         let seed = u64::from_le_bytes(hdr[32..40].try_into().unwrap());
 
@@ -524,7 +529,8 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
                     "bad magic 0x{magic:08x} (expected 0x{:08x} = JLM8)",
                     JL_SPARSE_MIPS_MAGIC
                 ),
-            ).into());
+            )
+            .into());
         }
         let num_vertices = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let bits = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
@@ -532,28 +538,32 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("bits mismatch: file={bits} expected={BITS}"),
-            ).into());
+            )
+            .into());
         }
         let stride = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
         if stride != Self::STRIDE {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
-            ).into());
+            )
+            .into());
         }
         let dim = u32::from_le_bytes(hdr[20..24].try_into().unwrap()) as usize;
         if dim != N {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("dim mismatch: file={dim} expected={N}"),
-            ).into());
+            )
+            .into());
         }
         let file_nz = u32::from_le_bytes(hdr[24..28].try_into().unwrap()) as usize;
         if file_nz != NZ {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("nz mismatch: file={file_nz} expected={NZ}"),
-            ).into());
+            )
+            .into());
         }
         let seed = u64::from_le_bytes(hdr[32..40].try_into().unwrap());
 
@@ -603,11 +613,19 @@ pub fn hamming_dispatch(p: &[u8], q: &[u8]) -> u32 {
     {
         return unsafe { hamming_neon(p.as_ptr(), q.as_ptr(), p.len()) };
     }
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vpopcntdq"))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx512f",
+        target_feature = "avx512vpopcntdq"
+    ))]
     {
         return unsafe { hamming_avx512_vpopcnt(p.as_ptr(), q.as_ptr(), p.len()) };
     }
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", not(target_feature = "avx512vpopcntdq")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx512f",
+        not(target_feature = "avx512vpopcntdq")
+    ))]
     {
         return unsafe { hamming_avx512_harley_seal(p.as_ptr(), q.as_ptr(), p.len()) };
     }
@@ -634,24 +652,26 @@ pub fn hamming_scalar(p: &[u8], q: &[u8]) -> u32 {
 /// bytes and `len` is a 16-byte multiple.
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 #[inline]
-unsafe fn hamming_neon(p: *const u8, q: *const u8, len: usize) -> u32 { unsafe {
-    debug_assert_eq!(len % 16, 0);
-    let mut acc = vdupq_n_u32(0);
-    let n_regs = len / 16;
-    for i in 0..n_regs {
-        let vp = vld1q_u8(p.add(i * 16));
-        let vq = vld1q_u8(q.add(i * 16));
-        // popcount(p XOR q): per-byte popcount of XOR result.
-        let vc = vcntq_u8(veorq_u8(vp, vq));
-        // Widen u8 lanes → u32 lanes via two pairwise-add stages.
-        // After vpaddlq_u8: 8 lanes of u16. After vpaddlq_u16: 4 lanes
-        // of u32. Each u32 lane holds the sum of 4 input u8 bytes.
-        let h16 = vpaddlq_u8(vc);
-        let h32 = vpaddlq_u16(h16);
-        acc = vaddq_u32(acc, h32);
+unsafe fn hamming_neon(p: *const u8, q: *const u8, len: usize) -> u32 {
+    unsafe {
+        debug_assert_eq!(len % 16, 0);
+        let mut acc = vdupq_n_u32(0);
+        let n_regs = len / 16;
+        for i in 0..n_regs {
+            let vp = vld1q_u8(p.add(i * 16));
+            let vq = vld1q_u8(q.add(i * 16));
+            // popcount(p XOR q): per-byte popcount of XOR result.
+            let vc = vcntq_u8(veorq_u8(vp, vq));
+            // Widen u8 lanes → u32 lanes via two pairwise-add stages.
+            // After vpaddlq_u8: 8 lanes of u16. After vpaddlq_u16: 4 lanes
+            // of u32. Each u32 lane holds the sum of 4 input u8 bytes.
+            let h16 = vpaddlq_u8(vc);
+            let h32 = vpaddlq_u16(h16);
+            acc = vaddq_u32(acc, h32);
+        }
+        vaddvq_u32(acc)
     }
-    vaddvq_u32(acc)
-}}
+}
 
 /// AVX-512 fast path using `_mm512_popcnt_epi64` (requires
 /// `avx512vpopcntdq`, available on Ice Lake-Server, Tiger Lake,
@@ -661,7 +681,11 @@ unsafe fn hamming_neon(p: *const u8, q: *const u8, len: usize) -> u32 { unsafe {
 /// # Safety
 /// `p` and `q` must be valid for `len` bytes; `len` must be a
 /// 16-byte multiple to match the NEON contract.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", target_feature = "avx512vpopcntdq"))]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx512f",
+    target_feature = "avx512vpopcntdq"
+))]
 #[inline]
 unsafe fn hamming_avx512_vpopcnt(p: *const u8, q: *const u8, len: usize) -> u32 {
     use std::arch::x86_64::*;
@@ -683,8 +707,8 @@ unsafe fn hamming_avx512_vpopcnt(p: *const u8, q: *const u8, len: usize) -> u32 
     // ops at full width.
     let mut i = n_blocks * 64;
     while i + 16 <= len {
-        let lo = (p.add(i) as *const u64).read_unaligned()
-            ^ (q.add(i) as *const u64).read_unaligned();
+        let lo =
+            (p.add(i) as *const u64).read_unaligned() ^ (q.add(i) as *const u64).read_unaligned();
         let hi = (p.add(i + 8) as *const u64).read_unaligned()
             ^ (q.add(i + 8) as *const u64).read_unaligned();
         total += lo.count_ones() + hi.count_ones();
@@ -700,7 +724,11 @@ unsafe fn hamming_avx512_vpopcnt(p: *const u8, q: *const u8, len: usize) -> u32 
 ///
 /// Slower than the dedicated VPOPCNTQ instruction (~3× more
 /// uops) but still 4-5× faster than Harley-Seal on AVX2.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", not(target_feature = "avx512vpopcntdq")))]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx512f",
+    not(target_feature = "avx512vpopcntdq")
+))]
 #[inline]
 unsafe fn hamming_avx512_harley_seal(p: *const u8, q: *const u8, len: usize) -> u32 {
     use std::arch::x86_64::*;
@@ -710,10 +738,9 @@ unsafe fn hamming_avx512_harley_seal(p: *const u8, q: *const u8, len: usize) -> 
     // _mm512_shuffle_epi8 selects per-byte; we shuffle low nibbles
     // and shifted-high nibbles separately and add.
     let lut = _mm512_set_epi8(
-        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
-        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
-        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
-        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0,
+        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0, 4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1,
+        1, 0, 4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0, 4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1,
+        2, 1, 1, 0,
     );
     let low_mask = _mm512_set1_epi8(0x0F);
 
@@ -740,8 +767,8 @@ unsafe fn hamming_avx512_harley_seal(p: *const u8, q: *const u8, len: usize) -> 
     // Tail (same shape as the vpopcnt path).
     let mut i = n_blocks * 64;
     while i + 16 <= len {
-        let lo = (p.add(i) as *const u64).read_unaligned()
-            ^ (q.add(i) as *const u64).read_unaligned();
+        let lo =
+            (p.add(i) as *const u64).read_unaligned() ^ (q.add(i) as *const u64).read_unaligned();
         let hi = (p.add(i + 8) as *const u64).read_unaligned()
             ^ (q.add(i + 8) as *const u64).read_unaligned();
         total += lo.count_ones() + hi.count_ones();

@@ -79,11 +79,7 @@ fn build_workload(n_inserts: usize, id_population: usize, hit_rate: f64, seed: u
 
 /// Run a benchmark on a `VisitedSet` implementation. Returns
 /// `(elapsed_ns, ns_per_insert, num_new_inserts)`.
-fn bench<S: VisitedSet>(
-    set: &mut S,
-    workload: &[u32],
-    clear_every: usize,
-) -> (u128, f64, usize) {
+fn bench<S: VisitedSet>(set: &mut S, workload: &[u32], clear_every: usize) -> (u128, f64, usize) {
     let n = workload.len();
     let t = Instant::now();
     let mut new_count = 0usize;

@@ -90,9 +90,7 @@ impl<'a, const N: usize> RerankStage<N> for IpF32Rerank<'a, N> {
             });
         }
         NDC_F32.add(num_check as u64);
-        rerank_buf.sort_unstable_by(|a, b| {
-            a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0))
-        });
+        rerank_buf.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
         let n_out = k.min(rerank_buf.len());
         let mut out: Vec<u32> = Vec::with_capacity(n_out);

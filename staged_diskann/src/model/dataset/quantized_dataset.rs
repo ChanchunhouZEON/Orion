@@ -39,8 +39,8 @@
 //! On-disk format is **packed** (no padding) for portability;
 //! padding is reintroduced at load time.
 
-use diskann::common::AlignedBoxWithSlice;
 use diskann::common::ANNResult;
+use diskann::common::AlignedBoxWithSlice;
 use diskann::model::InmemDataset;
 use vector::{
     DistanceFn, FullPrecisionDistance, IpI8Distance, IpI16Distance, L2U8Distance, Metric,
@@ -261,7 +261,6 @@ impl QuantSpec for L2U8 {
         vector::distance_l2_vector_f32::<N>(query, vertex)
     }
 
-
     type QuantDistanceFn = L2U8Distance;
     type TruthDistanceFn = vector::L2F32Distance;
 }
@@ -310,16 +309,18 @@ impl QuantSpec for L2U16 {
     /// hot-path callers (entry distance, calibration) get the same
     /// memory-pipelining as the batched DistanceStream loop.
     #[inline]
-    unsafe fn distance<const N: usize>(a: *const u16, b: *const u16) -> f32 { unsafe {
-        use vector::DistanceFn;
-        let mut acc = vector::L2U16Distance::init();
-        let chunks = N / 16; // 16 u16 per 32-byte chunk
-        for i in 0..chunks {
-            let off = i * 16;
-            vector::L2U16Distance::step(&mut acc, a.add(off), b.add(off));
+    unsafe fn distance<const N: usize>(a: *const u16, b: *const u16) -> f32 {
+        unsafe {
+            use vector::DistanceFn;
+            let mut acc = vector::L2U16Distance::init();
+            let chunks = N / 16; // 16 u16 per 32-byte chunk
+            for i in 0..chunks {
+                let off = i * 16;
+                vector::L2U16Distance::step(&mut acc, a.add(off), b.add(off));
+            }
+            vector::L2U16Distance::reduce(acc)
         }
-        vector::L2U16Distance::reduce(acc)
-    }}
+    }
 
     /// 4-way batched single-shot: four serial calls to
     /// [`distance`](Self::distance). The hot path uses
@@ -334,14 +335,16 @@ impl QuantSpec for L2U16 {
         a2: *const u16,
         a3: *const u16,
         q: *const u16,
-    ) -> [f32; 4] { unsafe {
-        [
-            Self::distance::<N>(a0, q),
-            Self::distance::<N>(a1, q),
-            Self::distance::<N>(a2, q),
-            Self::distance::<N>(a3, q),
-        ]
-    }}
+    ) -> [f32; 4] {
+        unsafe {
+            [
+                Self::distance::<N>(a0, q),
+                Self::distance::<N>(a1, q),
+                Self::distance::<N>(a2, q),
+                Self::distance::<N>(a3, q),
+            ]
+        }
+    }
 
     #[inline]
     fn distance_scale_sq(p: &Self::Params) -> f32 {
@@ -542,7 +545,8 @@ impl<Q: QuantSpec, const N: usize> QuantizedDataset<Q, N> {
     /// UB if `id >= n`. Returned pointer is 32-byte aligned.
     #[inline]
     pub unsafe fn get_vertex_unchecked(&self, id: u32) -> &[Q::Storage; N] {
-        let ptr = unsafe { self.data.as_ptr().add(id as usize * Self::STRIDE) as *const [Q::Storage; N] };
+        let ptr =
+            unsafe { self.data.as_ptr().add(id as usize * Self::STRIDE) as *const [Q::Storage; N] };
         unsafe { &*ptr }
     }
 
@@ -672,7 +676,8 @@ impl<Q: QuantSpec, const N: usize> QuantizedDataset<Q, N> {
                     Q::MAGIC,
                     Q::LABEL
                 ),
-            ).into());
+            )
+            .into());
         }
         let n = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let dim = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
@@ -680,7 +685,8 @@ impl<Q: QuantSpec, const N: usize> QuantizedDataset<Q, N> {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("dim mismatch: file={dim} expected={N}"),
-            ).into());
+            )
+            .into());
         }
         // SAFETY: see save() — we re-read the same byte layout the
         // matching impl wrote.
@@ -747,9 +753,13 @@ mod tests {
 
     #[test]
     fn l2_params_from_range_zero_range_safe() {
+        // Degenerate input: min == max. `from_range` is expected to
+        // clamp the divisor to ε so neither construction nor quantize
+        // panics — the returned u8 value itself is implementation-
+        // defined under range collapse, so the test only asserts that
+        // execution reaches the end of the function.
         let p = QuantParamsL2::from_range(0.5, 0.5);
-        let q = p.quantize_scalar(0.5);
-        assert!(q <= 255);
+        let _ = p.quantize_scalar(0.5);
     }
 
     #[test]

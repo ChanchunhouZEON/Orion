@@ -8,9 +8,11 @@
 # `visualizations/ablation_<ds>.json` consumed by the plot script.
 
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/../.."
 
-PY=/opt/anaconda3/envs/ray/bin/python
+source "$SCRIPT_DIR/_env.sh"
+setup_python_env || exit 1
 BIN=./target/release/benchmark
 
 DATASETS="${DATASETS:-sift glove100}"

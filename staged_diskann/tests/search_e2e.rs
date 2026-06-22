@@ -75,9 +75,7 @@ fn unique_cache_path(test_name: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!(
-        "staged_e2e_{test_name}_{pid}_{nanos}.bin"
-    ))
+    std::env::temp_dir().join(format!("staged_e2e_{test_name}_{pid}_{nanos}.bin"))
 }
 
 /// Build a `StagedDiskANN<DIM>` from the synthetic dataset, mirroring
@@ -87,13 +85,13 @@ fn build_staged_fixture(flat: &[f32], test_name: &str) -> StagedDiskANN<DIM> {
         flat,
         N_POINTS,
         DIM,
-        1.15,                // alpha
+        1.15, // alpha
         GRAPH_DEGREE,
         BUILD_L,
-        false,               // build_pq
-        None,                // n_subquantizers
-        None,                // _n_bits
-        true,                // compute_candidate_sets
+        false, // build_pq
+        None,  // n_subquantizers
+        None,  // _n_bits
+        true,  // compute_candidate_sets
         MAX_EXTRA,
     )
     .expect("build_diskann_index");
@@ -109,10 +107,10 @@ fn build_staged_fixture(flat: &[f32], test_name: &str) -> StagedDiskANN<DIM> {
         result.entry_point,
         GRAPH_DEGREE,
         MAX_EXTRA,
-        None,                              // pq
-        None,                              // pq_codes
-        Some(unique_cache_path(test_name)),// cache_base_path — per-test
-        false,                             // is_save
+        None,                               // pq
+        None,                               // pq_codes
+        Some(unique_cache_path(test_name)), // cache_base_path — per-test
+        false,                              // is_save
     );
 
     // Attach the real f32 dataset (the constructor took an empty one).
@@ -152,12 +150,15 @@ fn search_pipeline_e2e() {
         let q = query_at(&flat, i as usize);
         let neighbors = staged
             .search_unified(
-                &q, /* k */ 5,
+                &q,
+                /* k */ 5,
                 /* search_list_size */ 32,
                 /* window_size */ 5,
                 /* epsilon */ 0.0,
                 /* early_exit_limit */ usize::MAX,
-                no_pf, &admission, &rerank,
+                no_pf,
+                &admission,
+                &rerank,
             )
             .expect("search_unified");
         assert!(!neighbors.is_empty(), "vid={i}: empty result");
@@ -188,7 +189,15 @@ fn search_pipeline_e2e() {
     }
     let batch = staged
         .search_batch_unified(
-            &queries, 3, 32, 5, 0.0, usize::MAX, no_pf, &admission, &rerank,
+            &queries,
+            3,
+            32,
+            5,
+            0.0,
+            usize::MAX,
+            no_pf,
+            &admission,
+            &rerank,
         )
         .expect("search_batch_unified");
     assert_eq!(batch.len(), 4);
@@ -204,10 +213,8 @@ fn search_pipeline_e2e() {
     let q = query_at(&flat, 0);
     let r = staged
         .search_unified(
-            &q, 5, 32, 5,
-            /* epsilon */ 0.15,
-            /* early_exit_limit */ 10,
-            no_pf, &admission, &rerank,
+            &q, 5, 32, 5, /* epsilon */ 0.15, /* early_exit_limit */ 10, no_pf,
+            &admission, &rerank,
         )
         .expect("search_unified with convergence");
     assert!(!r.is_empty());
@@ -216,12 +223,28 @@ fn search_pipeline_e2e() {
     // ── Scenario 5: distinct queries → distinct neighborhoods ──
     let r0 = staged
         .search_unified(
-            &query_at(&flat, 0), 10, 32, 5, 0.0, usize::MAX, no_pf, &admission, &rerank,
+            &query_at(&flat, 0),
+            10,
+            32,
+            5,
+            0.0,
+            usize::MAX,
+            no_pf,
+            &admission,
+            &rerank,
         )
         .unwrap();
     let r5 = staged
         .search_unified(
-            &query_at(&flat, 5), 10, 32, 5, 0.0, usize::MAX, no_pf, &admission, &rerank,
+            &query_at(&flat, 5),
+            10,
+            32,
+            5,
+            0.0,
+            usize::MAX,
+            no_pf,
+            &admission,
+            &rerank,
         )
         .unwrap();
     assert_ne!(
@@ -240,7 +263,15 @@ fn search_pipeline_e2e() {
         let rerank_u16 = U16Rerank::new(staged.ensure_quantized_dataset_l2_u16());
         let r = staged
             .search_unified(
-                &q, 3, 32, 5, 0.0, usize::MAX, no_pf, &admission_u16, &rerank_u16,
+                &q,
+                3,
+                32,
+                5,
+                0.0,
+                usize::MAX,
+                no_pf,
+                &admission_u16,
+                &rerank_u16,
             )
             .expect("L2-U16 cascade");
         assert_eq!(r[0], 1);
@@ -251,9 +282,7 @@ fn search_pipeline_e2e() {
         let kt_ds = staged.ensure_quantized_dataset_l2_kt();
         let admission_kt = L2KTAdmission::new(kt_ds);
         let r = staged
-            .search_unified(
-                &q, 3, 32, 5, 0.0, usize::MAX, no_pf, &admission_kt, &rerank,
-            )
+            .search_unified(&q, 3, 32, 5, 0.0, usize::MAX, no_pf, &admission_kt, &rerank)
             .expect("L2-KT cascade");
         assert_eq!(r[0], 2);
     }
@@ -269,9 +298,7 @@ fn search_pipeline_e2e() {
         let pf = JlPrefilter::new(jl_ds);
         let pf_opt: Option<&JlPrefilter<DIM, 9>> = Some(&pf);
         let r = staged
-            .search_unified(
-                &q, 3, 32, 5, 0.0, usize::MAX, pf_opt, &admission, &rerank,
-            )
+            .search_unified(&q, 3, 32, 5, 0.0, usize::MAX, pf_opt, &admission, &rerank)
             .expect("JL prefilter cascade");
         assert!(!r.is_empty());
     }
@@ -286,7 +313,15 @@ fn search_pipeline_e2e() {
         let rerank_ip = IpF32Rerank::new(&staged.dataset);
         let r = staged
             .search_unified(
-                &q, 3, 32, 5, 0.0, usize::MAX, no_pf, &admission_mips, &rerank_ip,
+                &q,
+                3,
+                32,
+                5,
+                0.0,
+                usize::MAX,
+                no_pf,
+                &admission_mips,
+                &rerank_ip,
             )
             .expect("MIPS cascade");
         assert!(!r.is_empty());
@@ -299,9 +334,7 @@ fn search_pipeline_e2e() {
         let pf = RabitqPrefilter::new(rabitq_ds);
         let pf_opt: Option<&RabitqPrefilter<DIM>> = Some(&pf);
         let r = staged
-            .search_unified(
-                &q, 3, 32, 5, 0.0, usize::MAX, pf_opt, &admission, &rerank,
-            )
+            .search_unified(&q, 3, 32, 5, 0.0, usize::MAX, pf_opt, &admission, &rerank)
             .expect("RaBitQ prefilter cascade");
         assert!(!r.is_empty());
     }
@@ -313,9 +346,7 @@ fn search_pipeline_e2e() {
         let pf = JlHadamardPrefilter::new(jlh_ds);
         let pf_opt: Option<&JlHadamardPrefilter<DIM>> = Some(&pf);
         let r = staged
-            .search_unified(
-                &q, 3, 32, 5, 0.0, usize::MAX, pf_opt, &admission, &rerank,
-            )
+            .search_unified(&q, 3, 32, 5, 0.0, usize::MAX, pf_opt, &admission, &rerank)
             .expect("JL Hadamard prefilter cascade");
         assert!(!r.is_empty());
     }
@@ -329,8 +360,8 @@ fn search_pipeline_e2e() {
     //   `analysis/neighbor_contribution.rs` file end-to-end.
     {
         use staged_diskann::algorithm::analysis::neighbor_contribution::{
-            PositionContributionStats, greedy_search_truncated,
-            search_with_contribution, sort_neighbors_by_distance,
+            PositionContributionStats, greedy_search_truncated, search_with_contribution,
+            sort_neighbors_by_distance,
         };
 
         let sorted_adj = sort_neighbors_by_distance(&staged.graph, &flat, DIM);
@@ -344,7 +375,11 @@ fn search_pipeline_e2e() {
         let entry = staged.entry;
         let q = query_at(&flat, 7);
         let r = greedy_search_truncated(
-            &sorted_adj, &flat, DIM, entry, &q,
+            &sorted_adj,
+            &flat,
+            DIM,
+            entry,
+            &q,
             /* k */ 5,
             /* search_list_size */ 32,
             /* max_nbrs */ usize::MAX,
@@ -353,15 +388,19 @@ fn search_pipeline_e2e() {
 
         // Same input, truncated to half the max neighbors — must still
         // return some result (likely lower recall, just check non-empty).
-        let r_trunc = greedy_search_truncated(
-            &sorted_adj, &flat, DIM, entry, &q, 5, 32, 4,
-        );
+        let r_trunc = greedy_search_truncated(&sorted_adj, &flat, DIM, entry, &q, 5, 32, 4);
         assert!(!r_trunc.is_empty());
 
         // Instrumented variant that tracks per-position contribution.
         let mut stats = PositionContributionStats::new();
         let r_ctx = search_with_contribution(
-            &sorted_adj, &flat, DIM, entry, &q, 5, 32,
+            &sorted_adj,
+            &flat,
+            DIM,
+            entry,
+            &q,
+            5,
+            32,
             /* max_degree */ GRAPH_DEGREE as usize,
             &mut stats,
         );
@@ -381,8 +420,7 @@ fn search_pipeline_e2e() {
     //   they cover the 588-line `cliff_neighbor_stats.rs` file.
     {
         use staged_diskann::algorithm::analysis::cliff_neighbor_stats::{
-            annotate_bf_ranks, compute_cliff_stats, summarize_cliff_ranks,
-            summarize_cliff_stats,
+            annotate_bf_ranks, compute_cliff_stats, summarize_cliff_ranks, summarize_cliff_stats,
         };
 
         let mut stats = compute_cliff_stats(&staged.graph, &flat, DIM);
@@ -434,7 +472,15 @@ fn search_pipeline_e2e() {
         let rerank_ip = IpF32Rerank::new(&staged.dataset);
         let r = staged
             .search_unified(
-                &q, 3, 32, 5, 0.0, usize::MAX, no_pf, &admission_mi16, &rerank_ip,
+                &q,
+                3,
+                32,
+                5,
+                0.0,
+                usize::MAX,
+                no_pf,
+                &admission_mi16,
+                &rerank_ip,
             )
             .expect("MipsI16 cascade");
         assert!(!r.is_empty());
@@ -465,8 +511,9 @@ fn search_pipeline_e2e() {
     //   the unified search exercises.
     {
         let q = query_at(&flat, 9);
-        let (results, _converge_step, total_steps, phase1_ndc, phase2_ndc) =
-            staged.search_diag(&q, 5, 32, 5, 0.0, usize::MAX).expect("search_diag");
+        let (results, _converge_step, total_steps, phase1_ndc, phase2_ndc) = staged
+            .search_diag(&q, 5, 32, 5, 0.0, usize::MAX)
+            .expect("search_diag");
         assert!(!results.is_empty());
         assert!(total_steps > 0);
         assert!(phase1_ndc + phase2_ndc > 0);
@@ -491,7 +538,15 @@ fn search_pipeline_e2e() {
         let admission_ads = AdsF32Admission::new(&staged.dataset, /* ads_epsilon */ 2.1);
         let r = staged
             .search_unified(
-                &q, 3, 32, 5, 0.0, usize::MAX, no_pf, &admission_ads, &rerank,
+                &q,
+                3,
+                32,
+                5,
+                0.0,
+                usize::MAX,
+                no_pf,
+                &admission_ads,
+                &rerank,
             )
             .expect("ADS admission cascade");
         assert!(!r.is_empty());
@@ -508,9 +563,7 @@ fn search_pipeline_e2e() {
         let pf = JlMipsPrefilter::new(jl_mips_ds);
         let pf_opt: Option<&JlMipsPrefilter<DIM>> = Some(&pf);
         let r = staged
-            .search_unified(
-                &q, 3, 32, 5, 0.0, usize::MAX, pf_opt, &admission, &rerank,
-            )
+            .search_unified(&q, 3, 32, 5, 0.0, usize::MAX, pf_opt, &admission, &rerank)
             .expect("JL-MIPS prefilter cascade");
         assert!(!r.is_empty());
     }
@@ -540,17 +593,13 @@ fn search_pipeline_e2e() {
         // Search through both — top-1 must agree on the same query.
         let q = query_at(&flat, 12);
         let r_orig = staged
-            .search_unified(
-                &q, 5, 32, 5, 0.0, usize::MAX, no_pf, &admission, &rerank,
-            )
+            .search_unified(&q, 5, 32, 5, 0.0, usize::MAX, no_pf, &admission, &rerank)
             .unwrap();
         // Rebuild admission + rerank against the reloaded instance.
         let admission2 = L2U8Admission::new(reloaded.ensure_quantized_dataset());
         let rerank2 = F32Rerank::new(&reloaded.dataset);
         let r_reloaded = reloaded
-            .search_unified(
-                &q, 5, 32, 5, 0.0, usize::MAX, no_pf, &admission2, &rerank2,
-            )
+            .search_unified(&q, 5, 32, 5, 0.0, usize::MAX, no_pf, &admission2, &rerank2)
             .unwrap();
         assert_eq!(r_orig[0], r_reloaded[0], "top-1 mismatch after reload");
 
@@ -609,9 +658,7 @@ fn search_pipeline_e2e() {
         let q = query_at(&flat, 13);
         for &sls in &[8usize, 16, 48, 96] {
             let r = staged
-                .search_unified(
-                    &q, 3, sls, 5, 0.0, usize::MAX, no_pf, &admission, &rerank,
-                )
+                .search_unified(&q, 3, sls, 5, 0.0, usize::MAX, no_pf, &admission, &rerank)
                 .expect("search_unified loop variation");
             assert!(!r.is_empty(), "sls={sls}: empty result");
         }
@@ -620,10 +667,8 @@ fn search_pipeline_e2e() {
         // the branch in the inner loop where both signals fire.
         let r = staged
             .search_unified(
-                &q, 3, 32, 5,
-                /* epsilon */ 0.20,
-                /* early_exit_limit */ 5,
-                no_pf, &admission, &rerank,
+                &q, 3, 32, 5, /* epsilon */ 0.20, /* early_exit_limit */ 5, no_pf,
+                &admission, &rerank,
             )
             .expect("search with both convergence and early exit");
         assert!(!r.is_empty());

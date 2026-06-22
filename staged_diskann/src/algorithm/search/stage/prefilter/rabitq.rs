@@ -139,8 +139,8 @@ impl<'a, const N: usize> PrefilterSession for RabitqSession<'a, N> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::PrefilterStage;
+    use super::*;
     use diskann::model::InmemDataset;
 
     #[test]

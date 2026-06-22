@@ -20,8 +20,12 @@ use diskann::common::ANNResult;
 use rayon::prelude::*;
 use vector::FullPrecisionDistance;
 
-use super::stage::{AdmissionSession, AdmissionStage, PrefilterSession, PrefilterStage, RerankStage};
-use super::utils::{AlignedQuery, FLUSH_INTERVAL, dstream_la_q, insert_route_mul, linear_merge_mul};
+use super::stage::{
+    AdmissionSession, AdmissionStage, PrefilterSession, PrefilterStage, RerankStage,
+};
+use super::utils::{
+    AlignedQuery, FLUSH_INTERVAL, dstream_la_q, insert_route_mul, linear_merge_mul,
+};
 use super::{
     NDC_I8, POST_CONV_ADMITS, POST_CONV_HOPS, PRE_CONV_ADMITS, PRE_CONV_HOPS, QUERY_COUNT,
     RAW_VISIT_COUNT, SETUP_NS, VISIT_COUNT,
@@ -335,9 +339,7 @@ where
                 if frontier_full {
                     let pq_size = scratch.pq.size();
                     let pq_back_id = scratch.pq[pq_size - 1].id;
-                    if scratch.jl_threshold_count == 0
-                        || scratch.jl_last_worst_id != pq_back_id
-                    {
+                    if scratch.jl_threshold_count == 0 || scratch.jl_last_worst_id != pq_back_id {
                         let mut tail_sum = 0.0f32;
                         for i in 0..pq_size {
                             tail_sum += ps.distance(scratch.pq[i].id);
@@ -347,16 +349,11 @@ where
                     }
                     scratch.jl_threshold_sum += scratch.jl_tail_mean;
                     scratch.jl_threshold_count += 1;
-                    let threshold = scratch.jl_threshold_sum
-                        / (scratch.jl_threshold_count as f32)
+                    let threshold = scratch.jl_threshold_sum / (scratch.jl_threshold_count as f32)
                         * prefilter_slack();
 
                     unsafe {
-                        ps.filter_compact(
-                            &mut scratch.id_scratch,
-                            threshold,
-                            lookahead_lines,
-                        );
+                        ps.filter_compact(&mut scratch.id_scratch, threshold, lookahead_lines);
                     }
                 }
             }
@@ -368,16 +365,8 @@ where
             let hop_start = scratch.dist_buffer.len();
             let hop_admits: usize = unsafe {
                 let base_out = scratch.dist_buffer.as_mut_ptr().add(hop_start);
-                let id_in = std::slice::from_raw_parts(
-                    scratch.id_scratch.as_ptr(),
-                    n_unseen,
-                );
-                let w = a_session.admit_stream(
-                    id_in,
-                    base_out,
-                    admit_cutoff,
-                    lookahead_lines,
-                );
+                let id_in = std::slice::from_raw_parts(scratch.id_scratch.as_ptr(), n_unseen);
+                let w = a_session.admit_stream(id_in, base_out, admit_cutoff, lookahead_lines);
                 scratch.dist_buffer.set_len(hop_start + w);
                 w
             };

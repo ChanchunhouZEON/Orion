@@ -122,22 +122,17 @@ macro_rules! search_staged_ads {
             $staged,
             crate::runner::cascade::RerankChoice::F32,
         );
-        $staged
-            .search_unified::<
-                staged_diskann::algorithm::search::stage::NoPrefilter,
-                _,
-                _,
-            >(
-                &q,
-                $k,
-                $self.search_list_size,
-                $self.window_size,
-                $self.epsilon,
-                $self.early_exit_limit,
-                None,
-                ad.as_ref(),
-                rr.as_ref(),
-            )
+        $staged.search_unified::<staged_diskann::algorithm::search::stage::NoPrefilter, _, _>(
+            &q,
+            $k,
+            $self.search_list_size,
+            $self.window_size,
+            $self.epsilon,
+            $self.early_exit_limit,
+            None,
+            ad.as_ref(),
+            rr.as_ref(),
+        )
     }};
 }
 
@@ -258,8 +253,8 @@ impl AlgorithmRunner for StagedDiskANNAdsRunner {
                             diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
                         let mut staged = StagedDiskANN::<$N>::load_from_cache(&cache, empty_ds)
                             .expect("StagedDiskANN::load_from_cache failed");
-                        let mut ds = diskann::model::InmemDataset::<f32, $N>::new(num_points, 1.0)
-                            .unwrap();
+                        let mut ds =
+                            diskann::model::InmemDataset::<f32, $N>::new(num_points, 1.0).unwrap();
                         ds.data.memcpy(&rotated[..num_points * $N]).unwrap();
                         staged.dataset = ds;
 
@@ -350,5 +345,4 @@ impl AlgorithmRunner for StagedDiskANNAdsRunner {
             duration: start.elapsed(),
         }
     }
-
 }

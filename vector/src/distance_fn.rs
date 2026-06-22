@@ -861,7 +861,10 @@ impl DistanceFn for L2F32Distance {
 
 // ─── Scalar fallbacks for non-aarch64, non-AVX-512 targets ────────────
 
-#[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
+#[cfg(not(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "avx512f")
+)))]
 impl DistanceFn for L2U8Distance {
     type Storage = u8;
     type Acc = u32;
@@ -888,7 +891,10 @@ impl DistanceFn for L2U8Distance {
     }
 }
 
-#[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
+#[cfg(not(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "avx512f")
+)))]
 impl DistanceFn for L2U16Distance {
     type Storage = u16;
     type Acc = u64;
@@ -915,7 +921,10 @@ impl DistanceFn for L2U16Distance {
     }
 }
 
-#[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
+#[cfg(not(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "avx512f")
+)))]
 impl DistanceFn for JLHammingDistance {
     type Storage = u8;
     type Acc = u32;
@@ -939,7 +948,10 @@ impl DistanceFn for JLHammingDistance {
     }
 }
 
-#[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
+#[cfg(not(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "avx512f")
+)))]
 impl DistanceFn for IpI8Distance {
     type Storage = i8;
     type Acc = i32;
@@ -963,7 +975,10 @@ impl DistanceFn for IpI8Distance {
     }
 }
 
-#[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
+#[cfg(not(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "avx512f")
+)))]
 impl DistanceFn for IpI16Distance {
     type Storage = i16;
     type Acc = i64;
@@ -987,7 +1002,10 @@ impl DistanceFn for IpI16Distance {
     }
 }
 
-#[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
+#[cfg(not(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "avx512f")
+)))]
 impl DistanceFn for IpF32Distance {
     type Storage = f32;
     type Acc = f32;
@@ -1011,7 +1029,10 @@ impl DistanceFn for IpF32Distance {
     }
 }
 
-#[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
+#[cfg(not(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "avx512f")
+)))]
 impl DistanceFn for L2F32Distance {
     type Storage = f32;
     type Acc = f32;

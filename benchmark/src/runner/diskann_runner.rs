@@ -194,7 +194,6 @@ impl AlgorithmRunner for DiskANNRunner {
             duration,
         }
     }
-
 }
 
 impl Drop for DiskANNRunner {
