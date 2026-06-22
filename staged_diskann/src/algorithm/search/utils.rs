@@ -247,9 +247,18 @@ where
                         scratch.id_scratch.push(nn);
                     }
                 }
-            } else {
+            } else if crate::algorithm::search::include_extras() {
                 let (local, extra) = graph.rerank_candidates(id);
                 for &nn in local.iter().chain(extra.iter()) {
+                    if scratch.seen.insert(nn) {
+                        scratch.id_scratch.push(nn);
+                    }
+                }
+            } else {
+                // Ablation: extras disabled → fall back to local+remote
+                // (same as the pre-convergence walk). See module docs
+                // on `INCLUDE_EXTRAS`.
+                for &nn in graph.neighbors(id) {
                     if scratch.seen.insert(nn) {
                         scratch.id_scratch.push(nn);
                     }
@@ -361,9 +370,17 @@ where
                             scratch.id_scratch.push(nn);
                         }
                     }
-                } else {
+                } else if crate::algorithm::search::include_extras() {
                     let (local, extra) = graph.rerank_candidates(id);
                     for &nn in local.iter().chain(extra.iter()) {
+                        if scratch.seen.insert(nn) {
+                            scratch.id_scratch.push(nn);
+                        }
+                    }
+                } else {
+                    // Ablation: extras disabled → fall back to
+                    // local+remote (same as pre-convergence walk).
+                    for &nn in graph.neighbors(id) {
                         if scratch.seen.insert(nn) {
                             scratch.id_scratch.push(nn);
                         }

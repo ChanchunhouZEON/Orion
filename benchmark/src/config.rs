@@ -272,22 +272,23 @@ fn resolve_dataset(root: &RawRoot, name: &str) -> DatasetConfig {
     };
 
     // DiskANN baseline params — per-dataset `diskann:` override block
-    // wins; otherwise fall back to staged's params (so QPS comparisons
-    // are apples-to-apples on the same graph shape by default).
-    // `defaults.diskann` is intentionally NOT consulted here: a global
-    // R/L different from the dataset's staged config would silently
-    // make the baseline slower, which is exactly the conflation we're
-    // trying to avoid. Use the dataset-level override if you want a
-    // different DiskANN config than staged.
+    // wins; otherwise fall back to `defaults.diskann` (sweep.yaml top
+    // block). This keeps the Origin row in ablation panels honest:
+    // it reports a vanilla DiskANN baseline at the *published*
+    // defaults (α=2.0, R=64, L_build=100), not at a graph shape that
+    // silently mirrors `staged.{R,L,α}` and would conflate "DiskANN
+    // is slow" with "Vamana at staged's R is slow." The 3-engine
+    // head-to-head's DiskANN row resolves the same way.
+    let diskann_d = &root.defaults.diskann;
     let dov = ds.diskann.as_ref();
     let diskann = DiskANNConfig {
-        alpha: dov.and_then(|o| o.alpha).unwrap_or(staged.alpha),
+        alpha: dov.and_then(|o| o.alpha).unwrap_or(diskann_d.alpha),
         graph_degree: dov
             .and_then(|o| o.graph_degree)
-            .unwrap_or(staged.graph_degree),
+            .unwrap_or(diskann_d.graph_degree),
         build_search_list_size: dov
             .and_then(|o| o.build_search_list_size)
-            .unwrap_or(staged.build_search_list_size),
+            .unwrap_or(diskann_d.build_search_list_size),
     };
 
     let bg_raw = ds.base_graph.as_ref();
