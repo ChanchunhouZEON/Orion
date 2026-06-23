@@ -65,6 +65,7 @@ HEADLINE_DATASETS = [
     ("glove25",         "GloVe-25 (cosine)"),
     ("glove100",        "GloVe-100 (cosine)"),
     ("gist",            "GIST 1M"),
+    ("deep10m",         "Deep10M (10M points, L2)"),
     ("msmarco_bert_1M", "MSMARCO BERT 1M"),
 ]
 

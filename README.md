@@ -606,13 +606,14 @@ This v3 design eliminates both. The cascade-vs-no-cascade headline now lives in 
 | **GIST 1M**         | `jl → l2-kt → f32`        | **0.992** / 16 K | 0.986 / 20 K | -0.001 R, +13 % QPS | -0.003 R, +8 % QPS |
 | **GloVe-25**        | `none → mips-i8 → ip-f32` | 0.999 / 64 K | 0.998 / 84 K | -0.000 R, +23 % QPS | +0.000 R, +7 % QPS |
 | **GloVe-100**       | `none → mips-i8 → ip-f32` | **0.962** / 37 K | 0.960 / 42 K | +0.000 R, +11 % QPS | -0.001 R, +6 % QPS |
+| **Deep10M**         | `none → l2-u8 → f32`      | **0.996** / 41 K | 0.994 / 52 K | -0.001 R, +18 % QPS | -0.001 R, +5 % QPS |
 | **msmarco_bert_1M** | `none → mips-i8 → ip-f32` | **0.968** / 26 K | 0.966 / 30 K | -0.001 R, +6 % QPS | -0.001 R, +8 % QPS |
 
 (Bold = highest R in the row. Δ vs Origin shows how each individual knob shifts the trade-off from the bare-cascade reference.)
 
 - **Both knobs trade recall for QPS in the same direction**, with very small recall costs (≤ 0.6 pp) and modest QPS gains (5–35 %). The convergence-side machinery is a *trade-off lever*, not a recall-improving feature. Production picks "both on" (Full) because the trade is consistently in our favor — small recall hit for non-trivial QPS.
 - **The cascade itself does the heavy lifting.** All four variants overlap tightly across every dataset's QPS-vs-recall curve (visible in the figure). What the convergence knobs change is *where on the same Pareto frontier* you sit, not the shape of the frontier.
-- **Origin has the highest recall ceiling on 3 of 5 datasets** (GIST, GloVe-100, msmarco). This is intuitive given the design: `ee=MAX` runs the full beam, so deeper exploration; `INCLUDE_EXTRAS=false` keeps the post-convergence walk on `local+remote` (long-range shortcuts) rather than switching to `local+extra` (refinement). The remote shortcuts beat the extras zone for recall at the tail.
+- **Origin has the highest recall ceiling on 4 of 6 datasets** (GIST, GloVe-100, Deep10M, msmarco). This is intuitive given the design: `ee=MAX` runs the full beam, so deeper exploration; `INCLUDE_EXTRAS=false` keeps the post-convergence walk on `local+remote` (long-range shortcuts) rather than switching to `local+extra` (refinement). The remote shortcuts beat the extras zone for recall at the tail. SIFT and GloVe-25 are the exceptions — both nearly saturate at R≈1.0 regardless of variant, so the recall ceiling difference is below measurement noise.
 - **GIST has the largest trade-off cost**: Full vs Origin is +25 % QPS for -0.6 pp recall. On every other dataset the cost is < 0.1 pp recall.
 - **Notable for design**: on the same graph, the rerank-mode mode-switch from `remote` to `extra` post-convergence doesn't help recall (and on GIST mildly hurts it). The extras zone's value, if any, lives in **build-time** behavior — does keeping pruned-loser candidates change the local-zone shape? That'd be a `PA ex16` vs `PA ex0` comparison (same builder, different cap), outside this ablation's scope.
 
@@ -635,6 +636,7 @@ All four share **one built graph and one `calibrate()` call** so QPS deltas are 
 | **GIST 1M**         | `jl → l2-kt → f32`       | **+5.0 pp** (0.986 vs 0.937) | ~1.7× at R=0.92 | **~2.3× at R=0.95** |
 | **GloVe-25**        | `none → mips-i8 → ip-f32` | **+6.7 pp** (0.998 vs 0.931) | ~5.6× at R=0.93 | n/a |
 | **GloVe-100**       | `none → mips-i8 → ip-f32` | **+3.9 pp** (0.960 vs 0.921) | ~1.8× at R=0.92 | n/a |
+| **Deep10M**         | `none → l2-u8 → f32`      | **+3.5 pp** (0.994 vs 0.959) | ~3.2× at R=0.96 | n/a |
 | **msmarco_bert_1M** | `none → mips-i8 → ip-f32` | **+13.3 pp** (0.966 vs 0.833) | **~6.6× at R=0.83** | n/a |
 
 - **Rerank dominates on IP / quantization-sensitive workloads.** The msmarco panel shows two cleanly separated populations — `full`/`no-prefilter` overlap at the top, `no-rerank`/`admission-only` overlap at the bottom — because i8 MIPS quantization loses critical ranking signal on raw-IP BERT vectors with their wide L2-norm spread; the f32 IP pass re-orders the top-`k × rerank_factor` (=20) from "wrong" to "right." At iso-recall R=0.83 the full cascade is **6.6× faster** than admission-only.
