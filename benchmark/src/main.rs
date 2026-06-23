@@ -2415,19 +2415,21 @@ fn run_ablation(dataset: &Dataset, k: usize) {
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let dscfg = crate::config::load_dataset_config_by_dim(dimension);
-    let scfg = dscfg.staged;
-    let num_threads = 8;
-
-    let dim_name = match dimension {
-        32 => "glove25",
-        100 => "glove100",
-        128 => "sift",
-        768 => "msmarco_bert_1M",
-        960 => "gist",
-        1536 => "wiki_ada_1M",
+    // Disambiguate dim=128 by num_points: sift (1M) vs deep10m (10M).
+    // Other dimensions are unambiguous across the panel set.
+    let dim_name = match (dimension, num_points) {
+        (32, _) => "glove25",
+        (100, _) => "glove100",
+        (128, n) if n >= 5_000_000 => "deep10m",
+        (128, _) => "sift",
+        (768, _) => "msmarco_bert_1M",
+        (960, _) => "gist",
+        (1536, _) => "wiki_ada_1M",
         _ => "unknown",
     };
+    let dscfg = crate::config::load_dataset_config(dim_name);
+    let scfg = dscfg.staged;
+    let num_threads = 8;
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
@@ -2809,18 +2811,19 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
-    let num_threads = 8;
-
-    let dim_name = match dimension {
-        32 => "glove25",
-        100 => "glove100",
-        128 => "sift",
-        768 => "msmarco_bert_1M",
-        960 => "gist",
-        1536 => "wiki_ada_1M",
+    // Disambiguate dim=128 by num_points: sift (1M) vs deep10m (10M).
+    let dim_name = match (dimension, num_points) {
+        (32, _) => "glove25",
+        (100, _) => "glove100",
+        (128, n) if n >= 5_000_000 => "deep10m",
+        (128, _) => "sift",
+        (768, _) => "msmarco_bert_1M",
+        (960, _) => "gist",
+        (1536, _) => "wiki_ada_1M",
         _ => "unknown",
     };
+    let scfg = crate::config::load_dataset_config(dim_name).staged;
+    let num_threads = 8;
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
