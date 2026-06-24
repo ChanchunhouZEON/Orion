@@ -74,7 +74,15 @@ A separation result in the paper establishes that **admission history is the min
 - Rust toolchain (1.75+)
 - Apple Silicon / aarch64 Linux for the NEON distance kernels; `-C target-cpu=native` enabled
 - Dataset fvecs under `data/<dataset>/` (see `data/convert_hdf5.py` for glove conversion; GloVe variants are expected **pre-normalized** under `data/glove{25,100}_norm/`)
-- **Optional** (recommended): a sibling checkout of [ParlayANN](https://github.com/cmuparlay/ParlayANN) at `../ParlayANN` so we can reuse PA's 2-pass base graphs. Override the location with `PA_ROOT=<path>`.
+- **Recommended**: clone our ParlayANN fork at [`ChanchunhouZEON/ParlayANN-staged`](https://github.com/ChanchunhouZEON/ParlayANN-staged) as a sibling directory. The fork adds the `.staged v2` export format (`-staged_outfile` flag + `staged_export.h`) that Orion's `parlayann_bridge` imports — upstream ParlayANN doesn't ship this exporter, so this fork is **required** for the `ORION_GRAPH=pa` cache path and the 3-engine head-to-head sweep. Override the location with `PA_ROOT=<path>`.
+
+  ```sh
+  cd ..
+  git clone https://github.com/ChanchunhouZEON/ParlayANN-staged.git ParlayANN
+  cd ParlayANN/algorithms/vamana
+  make                                  # builds the `neighbors` bin
+  ```
+  The fork's directory name (`ParlayANN-staged` on GitHub) is cloned into `../ParlayANN` here so `PA_ROOT=../ParlayANN` (the default) and every YAML path in `benchmark/configs/sweep.yaml` referring to `${PA_ROOT}/data/<ds>/…_ex16_pct60.staged` resolves out-of-the-box. If you keep the GitHub directory name verbatim, pass `PA_ROOT=../ParlayANN-staged` to every script.
 - Python 3.9+ for the visualization + helper scripts. Install the deps with `python3 -m pip install -r requirements.txt`. Every wrapper script under `benchmark/scripts/` honors a `PY=/path/to/python` override (default: whatever `python3` resolves to on `$PATH`) — point it at the interpreter you installed the requirements into, e.g.
 
   ```sh
@@ -84,8 +92,12 @@ A separation result in the paper establishes that **admission history is the min
 ### Build
 
 ```sh
+git clone https://github.com/ChanchunhouZEON/Orion.git
+cd Orion
 cargo build --release --bin benchmark --bin orion
 ```
+
+If you also cloned `ParlayANN-staged` as a sibling (see [Prerequisites](#prerequisites)) the production PA-graph load path works out of the box; otherwise the engine transparently falls back to an in-process Vamana build on first run.
 
 ### Per-dataset quick sweep
 
