@@ -37,7 +37,7 @@ style_fig(fig)
 axes = axes.flatten()
 
 C_DISKANN = PALETTE['cyan']
-C_STAGED = PALETTE['blue']
+C_ORION = PALETTE['blue']
 
 for idx, (name, title) in enumerate(present):
     ax = axes[idx]
@@ -48,18 +48,18 @@ for idx, (name, title) in enumerate(present):
     d_med = d['diskann']['qps_median']
     d_min = d['diskann']['qps_min']
     d_max = d['diskann']['qps_max']
-    s_med = d['staged']['qps_median']
-    s_min = d['staged']['qps_min']
-    s_max = d['staged']['qps_max']
+    s_med = d['orion']['qps_median']
+    s_min = d['orion']['qps_min']
+    s_max = d['orion']['qps_max']
 
     # Shaded bands (min-max range across trials).
     ax.fill_between(ts, d_min, d_max, color=C_DISKANN, alpha=0.18, zorder=2)
-    ax.fill_between(ts, s_min, s_max, color=C_STAGED,  alpha=0.18, zorder=2)
+    ax.fill_between(ts, s_min, s_max, color=C_ORION,  alpha=0.18, zorder=2)
 
     ax.plot(ts, d_med, marker='s', markersize=7, linewidth=1.8, color=C_DISKANN,
             linestyle='--', label='DiskANN', zorder=4)
-    ax.plot(ts, s_med, marker='o', markersize=7, linewidth=2.2, color=C_STAGED,
-            label='Staged', zorder=5)
+    ax.plot(ts, s_med, marker='o', markersize=7, linewidth=2.2, color=C_ORION,
+            label='Orion', zorder=5)
 
     # Mark the P-core saturation knee (T=10) and the all-physical-cores
     # boundary (T=14) so the eye picks up the topology transitions
@@ -102,4 +102,4 @@ for name, title in present:
         continue
     idx = d['thread_counts'].index(P_CORES)
     print(f"  {title:<10}  DiskANN: {d['diskann']['speedup'][idx]:.2f}× ({d['diskann']['efficiency'][idx]*100:.0f}%)  "
-          f"Staged: {d['staged']['speedup'][idx]:.2f}× ({d['staged']['efficiency'][idx]*100:.0f}%)")
+          f"Orion: {d['orion']['speedup'][idx]:.2f}× ({d['orion']['efficiency'][idx]*100:.0f}%)")

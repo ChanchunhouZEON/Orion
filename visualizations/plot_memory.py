@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Peak memory comparison across datasets: α-matched DiskANN vs StagedDiskANN.
+"""Peak memory comparison across datasets: α-matched DiskANN vs Orion.
 Both engines build at the dataset's PA-aligned `scfg.alpha`; the only
 delta is the `compute_candidate_sets` flag plus the per-node 60/40
 partition that materialises the PhasedGraph. The figure isolates that
@@ -32,7 +32,7 @@ if not present:
 
 # Paper figure: single panel — the right "Peak Memory Ratio" plot.
 # The left absolute-bars panel was useful in earlier iterations but
-# the headline (Staged uses ~X× of DiskANN at matched α) reads more
+# the headline (Orion uses ~X× of DiskANN at matched α) reads more
 # cleanly off the ratio bars. We compute the absolute MBs only as
 # inputs to the ratio.
 fig, ax = plt.subplots(1, 1, figsize=(7, 5.5))
@@ -44,10 +44,10 @@ n = len(present)
 x = np.arange(n) * 1.15
 
 diskann_mb = [data[k]['diskann_peak_b'] / MB for k, _ in present]
-staged_peak_mb = [data[k]['staged_peak_b'] / MB for k, _ in present]
+orion_peak_mb = [data[k]['orion_peak_b'] / MB for k, _ in present]
 
-# ── Ratio (Staged / DiskANN) ──
-ratio_peak = [sp / da if da > 0 else 1 for sp, da in zip(staged_peak_mb, diskann_mb)]
+# ── Ratio (Orion / DiskANN) ──
+ratio_peak = [sp / da if da > 0 else 1 for sp, da in zip(orion_peak_mb, diskann_mb)]
 
 ds_colors = [DATASET_COLORS.get(k, PALETTE['grey']) for k, _ in present]
 handles = []
@@ -61,7 +61,7 @@ for i, r in enumerate(ratio_peak):
                 ha='center', va='bottom', fontsize=12, fontweight='bold', color=PALETTE['annot'])
 
 ax.set_xticks(x); ax.set_xticklabels([t for _, t in present])
-ax.set_ylabel('Peak Memory Ratio (Staged / DiskANN)', fontsize=11)
+ax.set_ylabel('Peak Memory Ratio (Orion / DiskANN)', fontsize=11)
 ax.set_title('Peak Memory Ratio at Matched α (Lower is Better)', fontweight='bold')
 make_legend(ax, handles, fontsize=11)
 style_ax(ax)

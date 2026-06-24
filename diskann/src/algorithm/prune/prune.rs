@@ -51,11 +51,11 @@ where
         occlude_factor.clear();
         occlude_factor.resize(pool.len(), 0.0);
 
-        #[cfg(feature = "staged_diskann")]
+        #[cfg(feature = "orion")]
         let track_candidates = self.candidate_sets.is_some();
         // Reuse scratch buffer to avoid per-call allocation.
         // Collects (distance_bits, pruned_id) pairs; flushed to slab[location] after the loop.
-        #[cfg(feature = "staged_diskann")]
+        #[cfg(feature = "orion")]
         scratch.candidate_buffer.clear();
 
         let mut cur_alpha = 1.0;
@@ -81,7 +81,7 @@ where
                     }
 
                     let djk = self.get_distance(neighbor2.id, neighbor.id)?;
-                    #[cfg(feature = "staged_diskann")]
+                    #[cfg(feature = "orion")]
                     let old_factor = occlude_factor[j];
                     match self.configuration.dist_metric {
                         Metric::L2 | Metric::Cosine => {
@@ -95,7 +95,7 @@ where
 
                     // Record pruned candidate with its distance to location.
                     // Store (distance_bits, pruned_id) so we can sort by distance at extract time.
-                    #[cfg(feature = "staged_diskann")]
+                    #[cfg(feature = "orion")]
                     if track_candidates && old_factor <= alpha && occlude_factor[j] > alpha {
                         scratch
                             .candidate_buffer
@@ -108,7 +108,7 @@ where
         }
 
         // Flush (distance_bits, pruned_id) pairs to slab[location].
-        #[cfg(feature = "staged_diskann")]
+        #[cfg(feature = "orion")]
         if !scratch.candidate_buffer.is_empty() {
             if let Some(ref slab) = self.candidate_sets {
                 if (location as usize) < slab.num_anchors() {
@@ -216,13 +216,13 @@ where
 
             let overflow = {
                 let mut guard = self.final_graph.write_vertex_and_neighbors(vertex_id)?;
-                #[cfg(feature = "staged_diskann")]
+                #[cfg(feature = "orion")]
                 {
                     // Sorted insert: compute dist(vertex_id, n) and maintain order.
                     let dist = self.get_distance(vertex_id, n)?;
                     guard.add_sorted(n, dist, range)
                 }
-                #[cfg(not(feature = "staged_diskann"))]
+                #[cfg(not(feature = "orion"))]
                 {
                     guard.add_to_neighbors(n, range)
                 }
@@ -236,7 +236,7 @@ where
                 self.prune_neighbors(vertex_id, &mut dummy_pool, &mut new_out_neighbors, scratch)?;
 
                 // After prune, neighbors are in pool distance order — store with distances.
-                #[cfg(feature = "staged_diskann")]
+                #[cfg(feature = "orion")]
                 {
                     let dists: Vec<f32> = new_out_neighbors
                         .iter()
@@ -251,7 +251,7 @@ where
                     let mut guard = self.final_graph.write_vertex_and_neighbors(vertex_id)?;
                     guard.set_neighbors_sorted(new_out_neighbors, dists);
                 }
-                #[cfg(not(feature = "staged_diskann"))]
+                #[cfg(not(feature = "orion"))]
                 {
                     self.set_neighbors(vertex_id, new_out_neighbors)?;
                 }
@@ -261,7 +261,7 @@ where
         Ok(())
     }
 
-    #[cfg(not(feature = "staged_diskann"))]
+    #[cfg(not(feature = "orion"))]
     fn set_neighbors(&self, vertex_id: u32, new_out_neighbors: AdjacencyList) -> ANNResult<()> {
         let mut vertex_guard = self.final_graph.write_vertex_and_neighbors(vertex_id)?;
         vertex_guard.set_neighbors(new_out_neighbors);

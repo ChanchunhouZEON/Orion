@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Per-dataset QPS-vs-Recall@10 plot — three engines on one figure:
 
-  * **StagedDiskANN** (ours)
+  * **Orion** (ours)
   * **Microsoft DiskANN** (in-process via the `diskann` core crate)
   * **ParlayANN Vamana** (PA's published per-dataset recipe)
 
@@ -12,12 +12,12 @@ All three are built on the same Vamana topology (identical R / L<sub>build</sub>
 ## Data source
 
 Three series are read from a single JSON per dataset, produced by
-`benchmark/scripts/sweep_staged_vs_diskann_vs_parlayann.sh` and parsed
+`benchmark/scripts/sweep_orion_vs_diskann_vs_parlayann.sh` and parsed
 by `benchmark/scripts/collect_sweep_medians.py`:
 
-    visualizations/sweep_staged_vs_parlayann_<dataset>.json
+    visualizations/sweep_orion_vs_parlayann_<dataset>.json
         {
-          "staged":    [[recall, qps], ...],
+          "orion":    [[recall, qps], ...],
           "diskann":   [[recall, qps], ...],
           "parlayann": [[recall, qps], ...],
         }
@@ -32,9 +32,9 @@ all three series at once, so this script reads only the unified file.
     python3 visualizations/plot_dataset_all.py                  # default: sift
     DATASET=glove100 python3 visualizations/plot_dataset_all.py
     DATASET=glove100 METRIC=mips python3 visualizations/plot_dataset_all.py
-        # — reads `sweep_staged_vs_parlayann_glove100_mips.json` if present
+        # — reads `sweep_orion_vs_parlayann_glove100_mips.json` if present
 
-    # Batch — every public dataset except fashion-mnist (where staged
+    # Batch — every public dataset except fashion-mnist (where orion
     # is dominated by PA at the dataset's tiny scale; figure suppressed
     # so the headline curves communicate the production regime cleanly).
     python3 visualizations/plot_dataset_all.py --all
@@ -42,7 +42,7 @@ all three series at once, so this script reads only the unified file.
 ## Palette
 
 `chart_style.PALETTE_VIVID` — the GLM-vivid palette: sky-bright cyan for
-StagedDiskANN, rose-magenta for ParlayANN, amber for DiskANN. Tuned for
+Orion, rose-magenta for ParlayANN, amber for DiskANN. Tuned for
 white background + log-scale axes, where overlapping mid-recall regions
 need brighter hues to keep each line unambiguous.
 """
@@ -59,7 +59,7 @@ from chart_style import PALETTE_VIVID, save_png_and_pdf, style_ax
 
 
 # Datasets the script knows how to render. `fashion-mnist` is
-# excluded from `--all` because at 60K vectors the staged cascade
+# excluded from `--all` because at 60K vectors the orion cascade
 # overhead becomes proportionally significant — PA's tighter beam
 # wins, and a paper-grade comparison figure leads with the regime
 # where the headline result lives.
@@ -95,13 +95,13 @@ def render_one(dataset: str, metric: str = "l2") -> Optional[str]:
     script's directory so the entry point works from any cwd.
     """
     suffix = "_mips" if metric == "mips" else ""
-    src = VIS_DIR / f"sweep_staged_vs_parlayann_{dataset}{suffix}.json"
+    src = VIS_DIR / f"sweep_orion_vs_parlayann_{dataset}{suffix}.json"
     if not src.exists():
         print(f"[skip] {dataset}: no source JSON ({src})", file=sys.stderr)
         return None
 
     sweep = json.loads(src.read_text())
-    required = {"staged", "parlayann"}
+    required = {"orion", "parlayann"}
     if not required.issubset(sweep.keys()):
         print(
             f"[skip] {dataset}: JSON missing required keys (have {list(sweep)})",
@@ -109,7 +109,7 @@ def render_one(dataset: str, metric: str = "l2") -> Optional[str]:
         )
         return None
 
-    staged = sweep["staged"]
+    orion = sweep["orion"]
     parlay = sweep["parlayann"]
     # `diskann` is optional — older two-engine sweeps don't write it.
     # When absent, the plot degrades to 2 lines instead of failing.
@@ -135,7 +135,7 @@ def render_one(dataset: str, metric: str = "l2") -> Optional[str]:
         )
 
     # Draw order: DiskANN first (lowest zorder), then ParlayANN, then
-    # Staged on top so the "ours" line never gets visually buried by
+    # Orion on top so the "ours" line never gets visually buried by
     # the others in overlap regions.
     if diskann:
         # Label is "Microsoft Vamana" — not "Microsoft DiskANN" —
@@ -164,9 +164,9 @@ def render_one(dataset: str, metric: str = "l2") -> Optional[str]:
         zorder=3,
     )
     plot(
-        staged,
-        "StagedDiskANN (ours)",
-        PALETTE_VIVID["staged"],
+        orion,
+        "Orion (ours)",
+        PALETTE_VIVID["orion"],
         "s",
         lw=2.8,
         msize=7.0,
@@ -175,18 +175,18 @@ def render_one(dataset: str, metric: str = "l2") -> Optional[str]:
 
     # Annotation arrow on the "ours" line — keeps the figure
     # interpretable in monochrome / accessibility mode.
-    if len(staged) >= 7:
-        ar_x, ar_y = staged[6]
+    if len(orion) >= 7:
+        ar_x, ar_y = orion[6]
         ax.annotate(
             "ours",
             xy=(ar_x, ar_y),
             xytext=(ar_x - 0.035, ar_y * 2.1),
-            color=PALETTE_VIVID["staged_d"],
+            color=PALETTE_VIVID["orion_d"],
             fontsize=11,
             fontweight="bold",
             arrowprops=dict(
                 arrowstyle="->",
-                color=PALETTE_VIVID["staged_d"],
+                color=PALETTE_VIVID["orion_d"],
                 lw=1.6,
             ),
         )
@@ -197,7 +197,7 @@ def render_one(dataset: str, metric: str = "l2") -> Optional[str]:
 
     # Auto-fit x to the leftmost recall point across all available series
     # so PA's low-Q sweep (which can dip to R≈0.40) isn't clipped.
-    series_for_xlim = [staged, parlay]
+    series_for_xlim = [orion, parlay]
     if diskann:
         series_for_xlim.append(diskann)
     min_recall = min(min(p[0] for p in s) for s in series_for_xlim)

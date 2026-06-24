@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Embed a 1M-passage / 10K-query slice of MS-MARCO with a
 sentence-transformers BERT model and emit Yael `.fvecs` + `.ivecs`
-files compatible with `staged_diskann`/`staged_sweep`.
+files compatible with `orion`.
 
 Pipeline:
   1. Pull the `corpus` and `queries` subsets of
@@ -15,7 +15,7 @@ Pipeline:
      (top-100 exact MIPS NN via a single batched matmul).
 
 Output layout matches the `data/{dataset}/{dataset}_base.fvecs` style
-already used by `prepare_parlayann_data.sh` and `staged_sweep.rs`.
+already used by `prepare_parlayann_data.sh` and `orion.rs`.
 """
 
 import argparse

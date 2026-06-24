@@ -4,12 +4,12 @@ members = [
     "benchmark",
     "diskann",
     "logger",
+    "orion",
+    "orion_py",
     "platform",
-    "staged_diskann",
-    "staged_diskann_py",
     "vector",
 ]
-# `staged_diskann_py` is a PyO3 cdylib — it expects Python symbols
+# `orion_py` is a PyO3 cdylib — it expects Python symbols
 # (PyBytes_Size, PyErr_Clear, ...) to be resolved at *runtime* by
 # the Python interpreter that dlopen's the .so. `cargo build` from
 # the workspace root tries to link it as a normal cdylib and fails
@@ -17,17 +17,17 @@ members = [
 #
 # Exclude it from `default-members` so plain `cargo build` /
 # `cargo check` from root skip it. It's still a full workspace
-# member — `cargo build -p staged_diskann_py` works (with the
-# right linker flags), and `maturin develop --release` from
-# inside `staged_diskann_py/` is the recommended build path
-# documented in `benchmark/scripts/staged_python_binding_bench.py`.
+# member — `cargo build -p orion_py` works (with the right linker
+# flags), and `maturin develop --release` from inside `orion_py/`
+# is the recommended build path documented in
+# `benchmark/scripts/orion_py_bench.py`.
 default-members = [
     "adsampling",
     "benchmark",
     "diskann",
     "logger",
+    "orion",
     "platform",
-    "staged_diskann",
     "vector",
 ]
 resolver = "2"

@@ -8,14 +8,14 @@
 #
 # Usage:
 #   colima start --arch x86_64 --cpu 6 --memory 12 --disk 40
-#   docker buildx build --platform linux/amd64 -t staged-ci:latest -f Dockerfile.ci .
+#   docker buildx build --platform linux/amd64 -t orion-ci:latest -f Dockerfile.ci .
 #   docker run --platform linux/amd64 --rm \
 #     --ulimit core=0 \
 #     -v "$PWD":/work -w /work \
-#     -v staged-cargo-registry:/usr/local/cargo/registry \
-#     -v staged-cargo-target:/work/target-linux \
+#     -v orion-cargo-registry:/usr/local/cargo/registry \
+#     -v orion-cargo-target:/work/target-linux \
 #     -e CARGO_TARGET_DIR=/work/target-linux \
-#     staged-ci:latest bash benchmark/scripts/ci_smoke_sift.sh
+#     orion-ci:latest bash benchmark/scripts/ci_smoke_sift.sh
 #
 # Notes:
 #   * `target-linux` is a separate target dir from the host's `target/`

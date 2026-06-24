@@ -30,7 +30,7 @@ on:
       - 'rust-toolchain.toml'
       - 'vector/**'
       - 'diskann/**'
-      - 'staged_diskann/**'
+      - 'orion/**'
       - 'benchmark/**'
       - '.cargo/config.toml.example'
       - 'Dockerfile.ci'
@@ -42,7 +42,7 @@ on:
       - 'rust-toolchain.toml'
       - 'vector/**'
       - 'diskann/**'
-      - 'staged_diskann/**'
+      - 'orion/**'
       - 'benchmark/**'
       - '.cargo/config.toml.example'
       - 'Dockerfile.ci'
@@ -135,9 +135,9 @@ jobs:
       - name: Cross compile-check (x86_64 + AVX-512)
         env:
           RUSTFLAGS: ${{ env.RUSTFLAGS_AVX512 }}
-        run: cargo check -p vector -p staged_diskann --target x86_64-unknown-linux-gnu
+        run: cargo check -p vector -p orion --target x86_64-unknown-linux-gnu
       - name: Cross compile-check (x86_64 no AVX-512 — AVX2 fallback)
-        run: cargo check -p vector -p staged_diskann --target x86_64-unknown-linux-gnu
+        run: cargo check -p vector -p orion --target x86_64-unknown-linux-gnu
       # The `cblas` feature is opt-in. Default x86_64 build must
       # work without OpenBLAS — this catches accidental
       # re-introduction of unconditional `extern crate cblas`.
@@ -170,8 +170,8 @@ jobs:
         run: |
           cargo build -p vector --release
           cargo test -p vector --release -- --nocapture
-      - name: staged_diskann — quantized codec tests (RaBitQ, JL, L2-KT)
-        run: cargo test -p staged_diskann --release --lib model::dataset -- --nocapture
+      - name: orion — quantized codec tests (RaBitQ, JL, L2-KT)
+        run: cargo test -p orion --release --lib model::dataset -- --nocapture
       - name: diskann — default + cblas-gated check
         run: |
           cargo check -p diskann --release          # default: no cblas

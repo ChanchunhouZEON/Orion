@@ -25,10 +25,10 @@ PALETTE = {
 # References the brighter accent style used in the official GLM
 # documentation (zhipuai.cn / open.bigmodel.cn).
 PALETTE_VIVID = {
-    'staged':   '#0EA5E9',  # sky-bright cyan-blue — "ours" line
+    'orion':    '#0EA5E9',  # sky-bright cyan-blue — "ours" line
     'parlay':   '#F43F5E',  # rose / bright magenta — high contrast accent
     'diskann':  '#F59E0B',  # amber — distinct hue, separated from blue + rose
-    'staged_d': '#0284C7',  # 1-shade-darker variant for annotation arrow
+    'orion_d':  '#0284C7',  # 1-shade-darker variant for annotation arrow
     'text':     '#1F2937',  # near-black for crisp labels on bright lines
     'grid':     '#E5E7EB',  # very light grey for grid + spines
 }

@@ -3,8 +3,8 @@
 #
 # Order:
 #   1. baseline_comparison.py --no-rust  →  HNSW (hnswlib) + reuse
-#      DiskANN / Staged / ParlayANN series from the head-to-head sweep
-#      JSON produced by `sweep_staged_vs_diskann_vs_parlayann.sh`.
+#      DiskANN / Orion / ParlayANN series from the head-to-head sweep
+#      JSON produced by `sweep_orion_vs_diskann_vs_parlayann.sh`.
 #   2. additional_baselines.py            →  FAISS IVF-Flat, FAISS IVF-PQ,
 #      Annoy. Reads + appends to `visualizations/baseline_sift.json`.
 #
@@ -19,7 +19,7 @@ setup_python_env || exit 1
 
 # --max-points 0 — full SIFT 1M (no subset, no GT recomputation).
 # --threads 8   — matches `sweep.yaml` defaults.sweep.threads, so the
-#                 Rust series (Staged / DiskANN / PA) are head-to-head.
+#                 Rust series (Orion / DiskANN / PA) are head-to-head.
 $PY benchmark/scripts/baseline_comparison.py \
     --dataset sift --max-points 0 --threads 8 --trials 5 --no-rust
 

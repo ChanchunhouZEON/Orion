@@ -6,7 +6,7 @@
 //! Shared benchmark-harness utilities.
 //!
 //! Consumed by several bins via `#[path = "../utils.rs"] mod utils`
-//! (e.g. `staged_diskann.rs`, `staged_sweep.rs`). The benchmark crate
+//! (e.g. `orion.rs`, `orion.rs`). The benchmark crate
 //! itself doesn't reach every export, so we silence the dead-code
 //! warnings at the module level rather than tagging each helper.
 
@@ -92,7 +92,7 @@ pub fn set_thread_qos_user_interactive() {}
 ///
 /// Best-effort: failure (e.g. `RLIMIT_MEMLOCK` exceeded, or non-Unix
 /// target) is logged and the caller falls back to ordinary paging.
-/// Same shape as the `mlock_bytes` helper in `staged_sweep.rs` — the
+/// Same shape as the `mlock_bytes` helper in `orion.rs` — the
 /// two can be unified once one of them stops moving.
 #[cfg(unix)]
 #[inline]

@@ -4,9 +4,9 @@
  */
 
 //! DiskANN-only L-sweep — produces a QPS-vs-recall curve in the same
-//! shape as `staged_diskann`'s output so `collect_sweep_medians.py`
+//! shape as `orion`'s output so `collect_sweep_medians.py`
 //! can fold it into the three-way comparison JSON alongside
-//! StagedDiskANN and ParlayANN.
+//! Orion and ParlayANN.
 //!
 //! ## CLI
 //!
@@ -16,8 +16,8 @@
 //! ```
 //!
 //! Per-dataset build params (`R`, `L_build`, `α`) match
-//! `staged_diskann`'s defaults verbatim so the three engines
-//! (DiskANN / StagedDiskANN / ParlayANN) all build the same graph
+//! `orion`'s defaults verbatim so the three engines
+//! (DiskANN / Orion / ParlayANN) all build the same graph
 //! topology. Metric defaults: L2 for SIFT/Deep10M/GIST/Fashion-MNIST,
 //! Cosine for GloVe/MSMarco-BERT/Wiki-ada (DiskANN's `vector::Metric`
 //! ships only L2 + Cosine, so raw-MIPS workloads get the
@@ -25,7 +25,7 @@
 //!
 //! ## Output format
 //!
-//! Mirrors `staged_diskann`'s headline-line shape so
+//! Mirrors `orion`'s headline-line shape so
 //! `collect_sweep_medians.py` consumes it with the same regex.
 
 #[path = "../utils.rs"]
@@ -341,7 +341,7 @@ fn main() {
         .collect();
     println!("Loaded {n} base, {nq} queries.");
 
-    // Cache stub mirrors the staged paths so disk usage is comparable.
+    // Cache stub mirrors the orion paths so disk usage is comparable.
     let alpha_tag = format!("{:.2}", alpha).replace('.', "_");
     let cache_dir = std::path::PathBuf::from("cache/diskann");
     std::fs::create_dir_all(&cache_dir).ok();
@@ -384,7 +384,7 @@ fn main() {
         println!("DiskANN built in {:.2}s", t_build.elapsed().as_secs_f32());
     }
 
-    // Pin queries (consistency with staged_sweep's mlock setup).
+    // Pin queries (consistency with orion's mlock setup).
     utils::set_thread_qos_user_interactive();
     if let Some(first) = queries.first() {
         let qbytes = queries

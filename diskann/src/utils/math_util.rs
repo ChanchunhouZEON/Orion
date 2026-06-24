@@ -12,7 +12,7 @@
 // k-means clustering for pivot generation uses a pure-Rust ndarray
 // path on every target. The historical upstream-Microsoft x86_64
 // build pulled in OpenBLAS/cblas for `sgemm` + `snrm2`, but that
-// path was never wired into the StagedDiskANN search hot path,
+// path was never wired into the Orion search hot path,
 // added an optional dep that broke IDE builds via a transitive
 // `openblas-build` TLS-feature requirement, and only saved time on
 // the (unused) pivot-generation phase. We dropped the cblas knob
@@ -112,7 +112,7 @@ pub fn compute_closest_centers_in_block(
     // path. The historical BLAS-accelerated `sgemm` branch was
     // dropped — it required system OpenBLAS, broke IDE builds via
     // a transitive openblas-build TLS-feature requirement, and
-    // was never wired into the StagedDiskANN search hot path.
+    // was never wired into the Orion search hot path.
     {
         use ndarray::prelude::*;
 

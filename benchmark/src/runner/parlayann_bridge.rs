@@ -3,8 +3,8 @@
  * Licensed under the MIT License.
  */
 
-//! Load a ParlayANN-built StagedDiskANN index (`.staged` v3) and pass the
-//! `(local, remote, extra)` partitions through to `StagedDiskANN::new`.
+//! Load a ParlayANN-built Orion index (`.staged` v3) and pass the
+//! `(local, remote, extra)` partitions through to `Orion::new`.
 //!
 //! File format (from `ParlayANN/algorithms/utils/staged_export.h`, v3):
 //!   [u32 magic=0x53544147 "STAG"][u32 version=3]

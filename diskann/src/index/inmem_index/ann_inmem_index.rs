@@ -81,12 +81,12 @@ where
     fn start_node(&self) -> u32;
 
     /// Extract candidate sets (if computed during build).
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     fn extract_candidate_sets(&mut self) -> Option<Vec<HashSet<u32>>>;
 
     /// Sort neighbors by distance in-place, enrich slab, extract
     /// Extract pre-partitioned node data: Vec<(local, remote, extra)> per node.
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     fn extract_graph_and_candidates(
         &mut self,
         _max_extra: usize,
@@ -95,7 +95,7 @@ where
     }
 
     /// Free the candidate set slab.
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     fn drop_candidate_slab(&mut self) {}
 
     /// Extract the final graph as a HashMap for external consumers.

@@ -2,7 +2,7 @@
 # Thread-scaling sweep across SIFT 1M and GIST 1M at PA-aligned build
 # params (R / L_build / α resolved from `benchmark/configs/sweep.yaml`).
 #
-# Both engines build at the SAME staged params (since `run_thread_sweep`
+# Both engines build at the SAME orion params (since `run_thread_sweep`
 # pulls from `scfg` directly), so the QPS-vs-thread curves isolate
 # per-thread search efficiency — not graph-topology differences.
 #

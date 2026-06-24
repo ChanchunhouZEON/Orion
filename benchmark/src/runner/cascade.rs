@@ -21,9 +21,9 @@
 //!
 //! ### Two consumption shapes
 //!
-//! 1. `benchmark` crate's `main.rs` / `StagedDiskANNRunner`: imports
+//! 1. `benchmark` crate's `main.rs` / `OrionRunner`: imports
 //!    via the `runner` module tree (`runner::cascade::*`).
-//! 2. `staged_sweep` bin: imports via `#[path = "../runner/cascade.rs"]`
+//! 2. `orion_sweep` bin: imports via `#[path = "../runner/cascade.rs"]`
 //!    since it doesn't sit on top of a benchmark lib crate.
 //!
 //! Both paths satisfy `crate::utils::mlock_bytes` because every
@@ -31,8 +31,8 @@
 //! `crate::utils` (either the real one, or a `#[path]`-imported copy
 //! inside the bin).
 //!
-//! The cascade helpers are consumed by the `staged_diskann` /
-//! `staged_sweep` bins via `#[path]`, not from the `benchmark` main
+//! The cascade helpers are consumed by the `orion` /
+//! `orion_sweep` bins via `#[path]`, not from the `benchmark` main
 //! binary — so to that compilation unit they look unused. Suppress
 //! the dead-code warning at the module level rather than tagging
 //! every helper individually.
@@ -40,17 +40,17 @@
 #![allow(dead_code)]
 
 use diskann::common::ANNResult;
-use staged_diskann::algorithm::search::stage::admission::{
+use orion::algorithm::search::stage::admission::{
     AdsF32Admission, L2KTAdmission, L2U16Admission, L2U8Admission, MipsI16Admission,
     MipsI8Admission,
 };
-use staged_diskann::algorithm::search::stage::prefilter::{
+use orion::algorithm::search::stage::prefilter::{
     JlHadamardPrefilter, JlMipsPrefilter, JlPrefilter, RabitqPrefilter,
 };
-use staged_diskann::algorithm::search::stage::rerank::{
+use orion::algorithm::search::stage::rerank::{
     F32Rerank, IpF32Rerank, NoRerank, U16Rerank,
 };
-use staged_diskann::StagedDiskANN;
+use orion::Orion;
 use std::str::FromStr;
 use vector::FullPrecisionDistance;
 
@@ -84,7 +84,7 @@ pub enum AdmissionChoice {
     MipsI16,
     /// ADSampling f32 admission — scaled-partial-sum L2 with chunk-
     /// boundary early-abort. ε is fixed at [`DEFAULT_ADS_EPSILON`]
-    /// (override via `STAGED_ADS_EPSILON` env var). Requires the
+    /// (override via `ORION_ADS_EPSILON` env var). Requires the
     /// dataset and queries to be pre-rotated by the ADSampling
     /// rotator; L2 is rotation-invariant so the graph topology is
     /// unaffected.
@@ -97,12 +97,12 @@ pub enum AdmissionChoice {
 /// `benchmark/src/main.rs::run_ads_comparison`.
 pub const DEFAULT_ADS_EPSILON: f32 = 2.1;
 
-/// Read `STAGED_ADS_EPSILON` once per process (OnceLock-cached).
+/// Read `ORION_ADS_EPSILON` once per process (OnceLock-cached).
 pub fn ads_epsilon() -> f32 {
     use std::sync::OnceLock;
     static EPS: OnceLock<f32> = OnceLock::new();
     *EPS.get_or_init(|| {
-        std::env::var("STAGED_ADS_EPSILON")
+        std::env::var("ORION_ADS_EPSILON")
             .ok()
             .and_then(|s| s.parse::<f32>().ok())
             .unwrap_or(DEFAULT_ADS_EPSILON)
@@ -181,10 +181,10 @@ impl FromStr for RerankChoice {
 /// so the prefilter must agree with what the admission tier is
 /// computing.
 pub fn build_prefilter<'a, const N: usize>(
-    staged: &'a StagedDiskANN<N>,
+    orion: &'a Orion<N>,
     choice: PrefilterChoice,
     admission: AdmissionChoice,
-) -> Option<Box<dyn staged_diskann::algorithm::search::stage::PrefilterStage<N> + 'a>>
+) -> Option<Box<dyn orion::algorithm::search::stage::PrefilterStage<N> + 'a>>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
@@ -200,20 +200,20 @@ where
                 // (`Mips_JL_Sparse_Point_Normalized`). The MIPS-only
                 // adapter wraps `JLSparseDatasetMips`, which carries
                 // the per-vertex `‖v‖` slab the L2 type doesn't.
-                let ds = staged.ensure_quantized_dataset_jl_mips();
+                let ds = orion.ensure_quantized_dataset_jl_mips();
                 Some(Box::new(JlMipsPrefilter::new(ds)))
             } else {
                 // NZ=9, raw popcount — the L2-JL default.
-                let ds = staged.ensure_quantized_dataset_jl();
+                let ds = orion.ensure_quantized_dataset_jl();
                 Some(Box::new(JlPrefilter::new(ds)))
             }
         }
         PrefilterChoice::JlHadamard => {
-            let ds = staged.ensure_quantized_dataset_jl_hadamard();
+            let ds = orion.ensure_quantized_dataset_jl_hadamard();
             Some(Box::new(JlHadamardPrefilter::new(ds)))
         }
         PrefilterChoice::Rabitq => {
-            let ds = staged.ensure_quantized_dataset_rabitq();
+            let ds = orion.ensure_quantized_dataset_rabitq();
             Some(Box::new(RabitqPrefilter::new(ds)))
         }
     }
@@ -221,42 +221,42 @@ where
 
 /// Build the admission adapter.
 pub fn build_admission<'a, const N: usize>(
-    staged: &'a StagedDiskANN<N>,
+    orion: &'a Orion<N>,
     choice: AdmissionChoice,
-) -> Box<dyn staged_diskann::algorithm::search::stage::AdmissionStage<N> + 'a>
+) -> Box<dyn orion::algorithm::search::stage::AdmissionStage<N> + 'a>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
     match choice {
-        AdmissionChoice::L2U8 => Box::new(L2U8Admission::new(staged.ensure_quantized_dataset())),
+        AdmissionChoice::L2U8 => Box::new(L2U8Admission::new(orion.ensure_quantized_dataset())),
         AdmissionChoice::L2U16 => Box::new(L2U16Admission::new(
-            staged.ensure_quantized_dataset_l2_u16(),
+            orion.ensure_quantized_dataset_l2_u16(),
         )),
         AdmissionChoice::L2Kt => {
-            Box::new(L2KTAdmission::new(staged.ensure_quantized_dataset_l2_kt()))
+            Box::new(L2KTAdmission::new(orion.ensure_quantized_dataset_l2_kt()))
         }
         AdmissionChoice::MipsI8 => {
-            Box::new(MipsI8Admission::new(staged.ensure_quantized_dataset_mips()))
+            Box::new(MipsI8Admission::new(orion.ensure_quantized_dataset_mips()))
         }
         AdmissionChoice::MipsI16 => Box::new(MipsI16Admission::new(
-            staged.ensure_quantized_dataset_mips_i16(),
+            orion.ensure_quantized_dataset_mips_i16(),
         )),
-        AdmissionChoice::AdsF32 => Box::new(AdsF32Admission::new(&staged.dataset, ads_epsilon())),
+        AdmissionChoice::AdsF32 => Box::new(AdsF32Admission::new(&orion.dataset, ads_epsilon())),
     }
 }
 
 /// Build the rerank adapter.
 pub fn build_rerank<'a, const N: usize>(
-    staged: &'a StagedDiskANN<N>,
+    orion: &'a Orion<N>,
     choice: RerankChoice,
-) -> Box<dyn staged_diskann::algorithm::search::stage::RerankStage<N> + 'a>
+) -> Box<dyn orion::algorithm::search::stage::RerankStage<N> + 'a>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
     match choice {
-        RerankChoice::F32 => Box::new(F32Rerank::new(&staged.dataset)),
-        RerankChoice::IpF32 => Box::new(IpF32Rerank::new(&staged.dataset)),
-        RerankChoice::U16 => Box::new(U16Rerank::new(staged.ensure_quantized_dataset_l2_u16())),
+        RerankChoice::F32 => Box::new(F32Rerank::new(&orion.dataset)),
+        RerankChoice::IpF32 => Box::new(IpF32Rerank::new(&orion.dataset)),
+        RerankChoice::U16 => Box::new(U16Rerank::new(orion.ensure_quantized_dataset_l2_u16())),
         RerankChoice::None => Box::new(NoRerank),
     }
 }
@@ -265,7 +265,7 @@ where
 /// admission-family hint to pick the L2 (NZ=9) vs MIPS (NZ=11)
 /// sidecar — matches `build_prefilter`'s dispatch.
 pub fn pin_prefilter<const N: usize>(
-    staged: &StagedDiskANN<N>,
+    orion: &Orion<N>,
     choice: PrefilterChoice,
     admission: AdmissionChoice,
 ) where
@@ -279,7 +279,7 @@ pub fn pin_prefilter<const N: usize>(
         PrefilterChoice::None => {}
         PrefilterChoice::Jl => {
             if admission_is_mips {
-                let q = staged.ensure_quantized_dataset_jl_mips();
+                let q = orion.ensure_quantized_dataset_jl_mips();
                 crate::utils::mlock_bytes(
                     "prefilter (JL codes, mips)",
                     q.codes.as_ptr(),
@@ -291,7 +291,7 @@ pub fn pin_prefilter<const N: usize>(
                     q.indices.len() * std::mem::size_of::<u32>(),
                 );
             } else {
-                let q = staged.ensure_quantized_dataset_jl();
+                let q = orion.ensure_quantized_dataset_jl();
                 crate::utils::mlock_bytes("prefilter (JL codes)", q.codes.as_ptr(), q.codes.len());
                 crate::utils::mlock_bytes(
                     "prefilter (JL indices)",
@@ -301,7 +301,7 @@ pub fn pin_prefilter<const N: usize>(
             }
         }
         PrefilterChoice::JlHadamard => {
-            let q = staged.ensure_quantized_dataset_jl_hadamard();
+            let q = orion.ensure_quantized_dataset_jl_hadamard();
             crate::utils::mlock_bytes(
                 "prefilter (JL Hadamard codes)",
                 q.codes.as_slice().as_ptr(),
@@ -326,7 +326,7 @@ pub fn pin_prefilter<const N: usize>(
             );
         }
         PrefilterChoice::Rabitq => {
-            let q = staged.ensure_quantized_dataset_rabitq();
+            let q = orion.ensure_quantized_dataset_rabitq();
             crate::utils::mlock_bytes(
                 "prefilter (RaBitQ codes)",
                 q.codes.as_slice().as_ptr(),
@@ -346,13 +346,13 @@ pub fn pin_prefilter<const N: usize>(
 
 /// Pin the admission sidecar. L2-KT pins both i8 base + per-vertex
 /// `‖x‖²` companion (sink touches both every hop).
-pub fn pin_admission<const N: usize>(staged: &StagedDiskANN<N>, choice: AdmissionChoice)
+pub fn pin_admission<const N: usize>(orion: &Orion<N>, choice: AdmissionChoice)
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
     match choice {
         AdmissionChoice::L2U8 => {
-            let q = staged.ensure_quantized_dataset();
+            let q = orion.ensure_quantized_dataset();
             crate::utils::mlock_bytes(
                 "admission (u8 base)",
                 q.data.as_ptr() as *const u8,
@@ -360,7 +360,7 @@ where
             );
         }
         AdmissionChoice::L2U16 => {
-            let q = staged.ensure_quantized_dataset_l2_u16();
+            let q = orion.ensure_quantized_dataset_l2_u16();
             crate::utils::mlock_bytes(
                 "admission (u16 base)",
                 q.data.as_ptr() as *const u8,
@@ -368,7 +368,7 @@ where
             );
         }
         AdmissionChoice::L2Kt => {
-            let q = staged.ensure_quantized_dataset_l2_kt();
+            let q = orion.ensure_quantized_dataset_l2_kt();
             crate::utils::mlock_bytes(
                 "admission (L2-KT i8 base)",
                 q.data.as_ptr() as *const u8,
@@ -381,7 +381,7 @@ where
             );
         }
         AdmissionChoice::MipsI8 => {
-            let q = staged.ensure_quantized_dataset_mips();
+            let q = orion.ensure_quantized_dataset_mips();
             crate::utils::mlock_bytes(
                 "admission (MIPS i8 base)",
                 q.data.as_ptr() as *const u8,
@@ -389,7 +389,7 @@ where
             );
         }
         AdmissionChoice::MipsI16 => {
-            let q = staged.ensure_quantized_dataset_mips_i16();
+            let q = orion.ensure_quantized_dataset_mips_i16();
             crate::utils::mlock_bytes(
                 "admission (MIPS i16 base)",
                 q.data.as_ptr() as *const u8,
@@ -403,8 +403,8 @@ where
             // `U16` rerank, the f32 base would go un-pinned; in that
             // (currently unused) combination, ADS still needs the f32
             // base resident, so pin it here as a safety net.
-            if !matches!(staged.dataset.data.len(), 0) {
-                let d = staged.dataset.data.as_slice();
+            if !matches!(orion.dataset.data.len(), 0) {
+                let d = orion.dataset.data.as_slice();
                 crate::utils::mlock_bytes(
                     "admission (ADS f32 base)",
                     d.as_ptr() as *const u8,
@@ -417,13 +417,13 @@ where
 
 /// Pin the rerank base. `F32`/`IpF32` share the f32 base; `U16` pins
 /// the u16 sidecar (idempotent if `AdmissionChoice::L2U16` already did).
-pub fn pin_rerank<const N: usize>(staged: &StagedDiskANN<N>, choice: RerankChoice)
+pub fn pin_rerank<const N: usize>(orion: &Orion<N>, choice: RerankChoice)
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
     match choice {
         RerankChoice::F32 | RerankChoice::IpF32 => {
-            let d = staged.dataset.data.as_slice();
+            let d = orion.dataset.data.as_slice();
             crate::utils::mlock_bytes(
                 "rerank (f32 base)",
                 d.as_ptr() as *const u8,
@@ -431,7 +431,7 @@ where
             );
         }
         RerankChoice::U16 => {
-            let q = staged.ensure_quantized_dataset_l2_u16();
+            let q = orion.ensure_quantized_dataset_l2_u16();
             crate::utils::mlock_bytes(
                 "rerank (u16 base)",
                 q.data.as_ptr() as *const u8,
@@ -448,16 +448,16 @@ where
 /// Does **not** pin the `PhasedGraph` slab — the caller pins that
 /// once regardless of cascade choice.
 pub fn pin_cascade<const N: usize>(
-    staged: &StagedDiskANN<N>,
+    orion: &Orion<N>,
     prefilter: PrefilterChoice,
     admission: AdmissionChoice,
     rerank: RerankChoice,
 ) where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
-    pin_prefilter(staged, prefilter, admission);
-    pin_admission(staged, admission);
-    pin_rerank(staged, rerank);
+    pin_prefilter(orion, prefilter, admission);
+    pin_admission(orion, admission);
+    pin_rerank(orion, rerank);
 }
 
 /// Single-query dispatch through the chosen cascade — same wiring
@@ -466,7 +466,7 @@ pub fn pin_cascade<const N: usize>(
 /// loops in `main.rs` (ablation study, search_profile, etc.).
 #[allow(clippy::too_many_arguments)]
 pub fn search_compose<const N: usize>(
-    staged: &StagedDiskANN<N>,
+    orion: &Orion<N>,
     query: &[f32; N],
     k: usize,
     search_list_size: usize,
@@ -480,10 +480,10 @@ pub fn search_compose<const N: usize>(
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
-    let pf = build_prefilter(staged, prefilter, admission);
-    let ad = build_admission(staged, admission);
-    let rr = build_rerank(staged, rerank);
-    staged.search_unified(
+    let pf = build_prefilter(orion, prefilter, admission);
+    let ad = build_admission(orion, admission);
+    let rr = build_rerank(orion, rerank);
+    orion.search_unified(
         query,
         k,
         search_list_size,
@@ -504,7 +504,7 @@ where
 /// every sidecar resident.
 #[allow(clippy::too_many_arguments)]
 pub fn search_batch_compose<const N: usize>(
-    staged: &StagedDiskANN<N>,
+    orion: &Orion<N>,
     queries: &[[f32; N]],
     k: usize,
     search_list_size: usize,
@@ -518,10 +518,10 @@ pub fn search_batch_compose<const N: usize>(
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
-    let pf = build_prefilter(staged, prefilter, admission);
-    let ad = build_admission(staged, admission);
-    let rr = build_rerank(staged, rerank);
-    staged.search_batch_unified(
+    let pf = build_prefilter(orion, prefilter, admission);
+    let ad = build_admission(orion, admission);
+    let rr = build_rerank(orion, rerank);
+    orion.search_batch_unified(
         queries,
         k,
         search_list_size,

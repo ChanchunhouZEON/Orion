@@ -27,7 +27,7 @@ pub enum AlgorithmId {
     Hnsw = 1,
     Nsg = 2,
     DiskAnn = 3,
-    StagedDiskAnn = 4,
+    Orion = 4,
 }
 
 impl TryFrom<u8> for AlgorithmId {
@@ -38,7 +38,7 @@ impl TryFrom<u8> for AlgorithmId {
             1 => Ok(Self::Hnsw),
             2 => Ok(Self::Nsg),
             3 => Ok(Self::DiskAnn),
-            4 => Ok(Self::StagedDiskAnn),
+            4 => Ok(Self::Orion),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Unknown algorithm id: {v}"),

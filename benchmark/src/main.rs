@@ -15,7 +15,7 @@ use dataset::Dataset;
 use runner::common::AlgorithmRunner;
 use std::path::PathBuf;
 
-// `StagedConfig` + `load_staged_config` used to live here; they have
+// `OrionConfig` + `load_orion_config` used to live here; they have
 // been promoted to `benchmark/src/config.rs` as a proper module with
 // richer per-dataset resolution (paths, metric, base-graph source).
 // Use `config::load_dataset_config_by_dim(dim).staged` at call sites.
@@ -42,8 +42,10 @@ struct Args {
     #[arg(long, default_value = "10")]
     k: usize,
 
-    /// Algorithms to benchmark (comma-separated, e.g., diskann,staged-diskann)
-    #[arg(long, default_value = "diskann,staged-diskann")]
+    /// Algorithms to benchmark (comma-separated; see `match *algo` below
+    /// for the live list — `ablation`, `cascade-ablation`, `build-profile`,
+    /// `thread-sweep`, …)
+    #[arg(long, default_value = "ablation,cascade-ablation")]
     algorithms: String,
 
     /// Maximum number of base vectors to use (0 = use all)
@@ -87,9 +89,9 @@ struct Args {
     drop_inmem: bool,
 }
 
-/// Number of warm-up queries fed into `staged.calibrate()` across every
+/// Number of warm-up queries fed into `orion.calibrate()` across every
 /// in-process benchmark in `main.rs`. Mirrors `CALIB_SAMPLE` in the
-/// `staged_diskann` bin. 200 converges well before diminishing returns
+/// `orion` bin. 200 converges well before diminishing returns
 /// on the reference datasets and keeps calibration cost ~constant
 /// across the various ablation entry points.
 const CALIB_SAMPLES: usize = 200;
@@ -270,12 +272,12 @@ fn main() {
 }
 
 fn run_convergence_diag(dataset: &Dataset, k: usize) {
-    use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion::{build_diskann_index, Orion, DIM_100, DIM_128, DIM_32, DIM_960};
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
+    let ocfg = crate::config::load_dataset_config_by_dim(dimension).orion;
 
     let dim_name = match dimension {
         32 => "glove25",
@@ -297,37 +299,37 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
             }).collect();
 
             println!(
-                "Building StagedDiskANN ({}-dim, alpha={:.2}, R={}, L_build={})...",
-                $N, scfg.alpha, scfg.graph_degree, scfg.build_search_list_size,
+                "Building Orion ({}-dim, alpha={:.2}, R={}, L_build={})...",
+                $N, ocfg.alpha, ocfg.graph_degree, ocfg.build_search_list_size,
             );
             let result = build_diskann_index(
-                &flat_base, num_points, dimension, scfg.alpha,
-                scfg.graph_degree, scfg.build_search_list_size as u32,
-                false, None, None, true, scfg.max_extra,
+                &flat_base, num_points, dimension, ocfg.alpha,
+                ocfg.graph_degree, ocfg.build_search_list_size as u32,
+                false, None, None, true, ocfg.max_extra,
             ).expect("build failed");
             drop(result.index);
 
             let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut staged = StagedDiskANN::<$N>::new(
+            let mut idx = Orion::<$N>::new(
                 empty_ds, &result.partitions, result.entry_point,
-                scfg.graph_degree, scfg.max_extra, None, None, None, false,
+                ocfg.graph_degree, ocfg.max_extra, None, None, None, false,
             );
-            staged.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+            idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
 
             // Calibrate once on the first 200 queries.
             let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
-            let calib = staged.calibrate(&calib_qs, 48, ws).expect("calibrate failed");
+            let calib = idx.calibrate(&calib_qs, 48, ws).expect("calibrate failed");
             let thr = calib.threshold;
             let ee = calib.early_exit_limit;
             println!("Calibrated: threshold={:.2}, early_exit_limit={}\n", thr, ee);
 
             // Graph structure stats (same graph across all L).
-            let n = staged.graph.num_nodes();
+            let n = idx.graph.num_nodes();
             let (mut sum_deg, mut sum_local, mut sum_extra) = (0usize, 0usize, 0usize);
             for i in 0..n {
-                sum_deg += staged.graph.degree(i);
-                sum_local += staged.graph.local_count(i);
-                sum_extra += staged.graph.extra_count(i);
+                sum_deg += idx.graph.degree(i);
+                sum_local += idx.graph.local_count(i);
+                sum_extra += idx.graph.extra_count(i);
             }
             let avg_deg = sum_deg as f64 / n as f64;
             let avg_local = sum_local as f64 / n as f64;
@@ -341,7 +343,7 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
                 let mut results = Vec::with_capacity(queries.len());
                 for _ in 0..queries.len() { results.push(Vec::new()); }
                 for (qi, q) in queries.iter().enumerate() {
-                    let (res, _conv, steps, p1, p2) = staged
+                    let (res, _conv, steps, p1, p2) = idx
                         .search_diag(q, k, 0 /*placeholder*/, ws, thr_use, ee_use)
                         .unwrap();
                     total_steps += steps as u64;
@@ -360,7 +362,7 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
                 let mut results = Vec::with_capacity(queries.len());
                 for _ in 0..queries.len() { results.push(Vec::new()); }
                 for (qi, q) in queries.iter().enumerate() {
-                    let (res, _conv, steps, p1, p2) = staged
+                    let (res, _conv, steps, p1, p2) = idx
                         .search_diag(q, k, sls, ws, thr_use, ee_use)
                         .unwrap();
                     total_steps += steps as u64;
@@ -375,29 +377,29 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
 
             println!(
                 "  {:<8} {:<18} {:<18} {:<18} {:<18} {:<10}",
-                "L", "Steps(no-ee)", "Steps(staged)", "NDC(no-ee)", "NDC(staged)", "ΔR@10"
+                "L", "Steps(no-ee)", "Steps(orion)", "NDC(no-ee)", "NDC(orion)", "ΔR@10"
             );
             println!("  {}", "─".repeat(94));
 
             let mut no_ee_steps = Vec::with_capacity(l_values.len());
-            let mut staged_steps = Vec::with_capacity(l_values.len());
+            let mut orion_steps = Vec::with_capacity(l_values.len());
             let mut no_ee_ndc = Vec::with_capacity(l_values.len());
-            let mut staged_ndc = Vec::with_capacity(l_values.len());
+            let mut orion_ndc = Vec::with_capacity(l_values.len());
             let mut no_ee_recall = Vec::with_capacity(l_values.len());
-            let mut staged_recall = Vec::with_capacity(l_values.len());
+            let mut orion_recall = Vec::with_capacity(l_values.len());
 
             for &sls in &l_values {
                 // Baseline: convergence-monitoring disabled (runs until L is full).
                 let (s_bl, d_bl, r_bl) = measure_at_l(sls, 0.0, usize::MAX);
-                // Staged: calibrated convergence + early exit.
+                // Orion: calibrated convergence + early exit.
                 let (s_st, d_st, r_st) = measure_at_l(sls, thr, ee);
 
                 no_ee_steps.push(s_bl);
-                staged_steps.push(s_st);
+                orion_steps.push(s_st);
                 no_ee_ndc.push(d_bl);
-                staged_ndc.push(d_st);
+                orion_ndc.push(d_st);
                 no_ee_recall.push(r_bl);
-                staged_recall.push(r_st);
+                orion_recall.push(r_st);
 
                 println!(
                     "  L={:<6} {:<8.1}({:>+5.1}%)   {:<8.1}            {:<8.0}({:>+5.1}%)  {:<8.0}            {:<+7.4}",
@@ -414,7 +416,7 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
                 "dataset": dim_name,
                 "dimension": $N,
                 "num_points": num_points,
-                "alpha_staged": scfg.alpha,
+                "alpha_orion": ocfg.alpha,
                 "threshold": thr,
                 "early_exit_limit": ee,
                 "L_values": l_values,
@@ -423,10 +425,10 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
                     "ndc": no_ee_ndc,
                     "recall": no_ee_recall,
                 },
-                "staged": {
-                    "steps": staged_steps,
-                    "ndc": staged_ndc,
-                    "recall": staged_recall,
+                "orion": {
+                    "steps": orion_steps,
+                    "ndc": orion_ndc,
+                    "recall": orion_recall,
                 },
                 "graph": {
                     "avg_degree": avg_deg,
@@ -457,7 +459,7 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
+    let ocfg = crate::config::load_dataset_config_by_dim(dimension).orion;
 
     let dim_name = match dimension {
         128 => "sift",
@@ -465,87 +467,87 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
         _ => "unknown/unsupported dataset(current version only support GIST & SIFT which use L2Q metric as default)",
     };
 
-    // DiskANN and Staged both build at the dataset's staged params
-    // (sweep.yaml `datasets.<name>.staged` block) so the comparison
+    // DiskANN and Orion both build at the dataset's orion params
+    // (sweep.yaml `datasets.<name>.orion` block) so the comparison
     // isolates the search algorithm, not the build hyperparams. The
     // legacy hardcoded "α=2.0 R=32 L=48" label predated the
-    // DiskANN-matches-staged change in `run_qps_recall_sweep` and
+    // DiskANN-matches-orion change in `run_qps_recall_sweep` and
     // was lying about what got built.
     println!(
         "Building DiskANN (α={:.2}, R={}, L_build={}) for {} {}pts...",
-        scfg.alpha, scfg.graph_degree, scfg.build_search_list_size, dim_name, num_points
+        ocfg.alpha, ocfg.graph_degree, ocfg.build_search_list_size, dim_name, num_points
     );
     let mut diskann_runner =
-        runner::DiskANNRunner::new(scfg.build_search_list_size, scfg.graph_degree, scfg.alpha);
+        runner::DiskANNRunner::new(ocfg.build_search_list_size, ocfg.graph_degree, ocfg.alpha);
 
-    // Cache paths mirror `staged_sweep`'s naming so a single `staged_sweep`
+    // Cache paths mirror `orion`'s naming so a single `orion`
     // build populates both. Both algorithms here use the same R / L /
-    // α / max_extra triplet (the `scfg` block), so the same cache slot
+    // α / max_extra triplet (the `ocfg` block), so the same cache slot
     // works for both. When the cache files exist, build() short-circuits
     // straight to load — saves ~70s of Vamana construction per run and
     // eliminates graph-topology jitter between thread-sweep runs.
-    let alpha_tag = format!("{:.2}", scfg.alpha).replace('.', "_");
+    let alpha_tag = format!("{:.2}", ocfg.alpha).replace('.', "_");
     // `_l2` suffix matches `diskann_sweep`'s key shape so the cached
     // Vamana graph built by the full sweep can be reused here.
     let diskann_cache = std::path::PathBuf::from("cache/diskann").join(format!(
         "{}_n{}_r{}_l{}_a{}_l2.bin",
-        dim_name, num_points, scfg.graph_degree, scfg.build_search_list_size, alpha_tag,
+        dim_name, num_points, ocfg.graph_degree, ocfg.build_search_list_size, alpha_tag,
     ));
-    let staged_cache = std::path::PathBuf::from("cache/staged").join(format!(
+    let orion_cache = std::path::PathBuf::from("cache/orion").join(format!(
         "{}_n{}_r{}_l{}_a{}_ex{}.bin",
         dim_name,
         num_points,
-        scfg.graph_degree,
-        scfg.build_search_list_size,
+        ocfg.graph_degree,
+        ocfg.build_search_list_size,
         alpha_tag,
-        scfg.max_extra,
+        ocfg.max_extra,
     ));
     diskann_runner.set_cache_path(&diskann_cache);
     diskann_runner.build(&flat_base, num_points, dimension);
 
     println!(
-        "Building StagedDiskANN (α={:.2}, R={}, L_build={}) for {} {}pts...",
-        scfg.alpha, scfg.graph_degree, scfg.build_search_list_size, dim_name, num_points
+        "Building Orion (α={:.2}, R={}, L_build={}) for {} {}pts...",
+        ocfg.alpha, ocfg.graph_degree, ocfg.build_search_list_size, dim_name, num_points
     );
     // thread-sweep uses the dataset's `sweep.yaml` cascade triple —
     // unified pipeline drives whichever (prefilter, admission, rerank)
     // the workload's PA-aligned recipe specifies.
-    let mut staged_runner = runner::StagedDiskANNRunner::new(
-        "StagedDiskANN",
-        scfg.alpha,
-        scfg.graph_degree as usize,
-        scfg.build_search_list_size,
-        scfg.max_extra,
-        scfg.window_size,
-        scfg.prefilter,
-        scfg.admission,
-        scfg.rerank,
+    let mut orion_runner = runner::OrionRunner::new(
+        "Orion",
+        ocfg.alpha,
+        ocfg.graph_degree as usize,
+        ocfg.build_search_list_size,
+        ocfg.max_extra,
+        ocfg.window_size,
+        ocfg.prefilter,
+        ocfg.admission,
+        ocfg.rerank,
     );
-    staged_runner.set_cache_path(&staged_cache);
-    staged_runner.build(&flat_base, num_points, dimension);
+    orion_runner.set_cache_path(&orion_cache);
+    orion_runner.build(&flat_base, num_points, dimension);
 
     // Fix search L on both runners so QPS scaling is comparable across
     // thread counts AND the two algorithms operate at the same recall
-    // target. Staged's `new()` defaults `search_list_size` to the build
-    // L (scfg.build_search_list_size, 128 for SIFT) — without this
-    // override staged would search at L=128 while DiskANN searches at
+    // target. Orion's `new()` defaults `search_list_size` to the build
+    // L (ocfg.build_search_list_size, 128 for SIFT) — without this
+    // override orion would search at L=128 while DiskANN searches at
     // L=48, conflating algorithm gap with hyperparameter gap and
-    // making the staged numbers diverge from `staged_sweep`'s output.
+    // making the orion numbers diverge from `orion`'s output.
     let search_l: usize = 48;
     diskann_runner.set_search_list_size(search_l);
-    staged_runner.set_search_list_size(search_l);
+    orion_runner.set_search_list_size(search_l);
 
     // Re-calibrate `threshold` + `early_exit_limit` at the **search L**
     // (48) using **real test queries** — the build-time calibration ran
     // at L=128 (the build L) over the first 500 base vectors as warmup,
-    // both of which diverge from how `staged_sweep` calibrates
+    // both of which diverge from how `orion` calibrates
     // (CALIB_L=48, 200 real test queries). Different calibration →
     // different convergence + early-exit behavior → ~10-20% QPS gap.
-    // Match `staged_sweep`'s recipe exactly.
-    staged_runner.recalibrate(&dataset.queries, CALIB_SAMPLES);
-    let (thr, ee) = staged_runner.calibrated_params();
+    // Match `orion`'s recipe exactly.
+    orion_runner.recalibrate(&dataset.queries, CALIB_SAMPLES);
+    let (thr, ee) = orion_runner.calibrated_params();
     println!(
-        "Recalibrated at L={search_l}: threshold={thr:.2}, early_exit_limit={ee} (reference staged_sweep: threshold=0.15, early_exit_limit=15)",
+        "Recalibrated at L={search_l}: threshold={thr:.2}, early_exit_limit={ee} (reference orion: threshold=0.15, early_exit_limit=15)",
     );
 
     let queries = &dataset.queries;
@@ -560,23 +562,23 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
     let trials: usize = 5;
 
     // Pin the driver thread on P-cores; rayon workers get the same
-    // bump via `start_handler` below. Mirrors `staged_sweep`'s setup
+    // bump via `start_handler` below. Mirrors `orion`'s setup
     // — without it the macOS scheduler may demote workers to E-cores
     // (3-4× slower per op) under sustained pressure or thermal load.
     utils::set_thread_qos_user_interactive();
 
     // Pin the hot regions into RAM so warmup + timed trials see the
     // same resident pages — no page-in cost on the timed-side critical
-    // path. Mirrors `staged_sweep`'s mlock setup.
+    // path. Mirrors `orion`'s mlock setup.
     //
-    // We pin: staged's f32 dataset, quantized sidecar (L2Q for SIFT/GIST),
+    // We pin: orion's f32 dataset, quantized sidecar (L2Q for SIFT/GIST),
     // PhasedGraph slab, plus the query batch. DiskANN's internal graph
     // sits behind `Box<dyn ANNInmemIndex>` and isn't directly addressable
     // from here — its first-trial pages are still warmed by the per-pool
     // warmup pass below, just not formally mlocked. If `RLIMIT_MEMLOCK`
     // is too low the calls log a warning and fall back to ordinary
     // paging without aborting.
-    staged_runner.pin_hot_regions();
+    orion_runner.pin_hot_regions();
     {
         // Queries are a `Vec<Vec<f32>>`. The outer Vec's heap is small
         // (one `Vec<f32>` header per query); the actual f32 payload
@@ -599,18 +601,18 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
     );
     println!(
         "  {:<8} {:<14} {:<10} {:<14} {:<10} {:<10}",
-        "Threads", "DiskANN QPS", "D_R@10", "Staged QPS", "S_R@10", "Speedup",
+        "Threads", "DiskANN QPS", "D_R@10", "Orion QPS", "O_R@10", "Speedup",
     );
     println!("  {}", "─".repeat(72));
 
     // ── One-time scratch-pool sizing ──────────────────────────────────
-    // `StagedDiskANN::inmem_scratch_pool` is `get_or_init` — initialised
+    // `Orion::inmem_scratch_pool` is `get_or_init` — initialised
     // ONCE on first search with size `current_num_threads() + 5`. If we
     // let the T=1 pool's warmup initialise it (sized for 6 scratches),
     // every later thread count (T=8, T=16) reuses that under-sized pool
     // and threads block waiting for a free scratch. At T=16, 10 of 16
     // workers stall on the scratch queue → most of the QPS gap vs
-    // `staged_sweep` came from this.
+    // `orion` came from this.
     //
     // Pre-warm at the max thread count so the scratch pool is sized for
     // the worst-case (max_threads + 5). Subsequent per-thread-count
@@ -622,7 +624,7 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
             .start_handler(|_| utils::set_thread_qos_user_interactive())
             .build()
             .expect("failed to build init pool");
-        let _ = init_pool.install(|| staged_runner.search_batch(queries, k));
+        let _ = init_pool.install(|| orion_runner.search_batch(queries, k));
         let _ = init_pool.install(|| diskann_runner.search_batch(queries, k));
     }
 
@@ -657,9 +659,9 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
     };
 
     let mut diskann_qps_all: Vec<Vec<f64>> = Vec::new();
-    let mut staged_qps_all: Vec<Vec<f64>> = Vec::new();
+    let mut orion_qps_all: Vec<Vec<f64>> = Vec::new();
     let mut diskann_recall: Vec<f64> = Vec::new();
-    let mut staged_recall: Vec<f64> = Vec::new();
+    let mut orion_recall: Vec<f64> = Vec::new();
 
     for &nt in &thread_counts {
         // Build one pool for this thread count; both runners reuse it
@@ -672,7 +674,7 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
             .build()
             .expect("failed to build thread-sweep pool");
         let (d_samples, d_r) = sample_qps(&diskann_runner, &pool);
-        let (s_samples, s_r) = sample_qps(&staged_runner, &pool);
+        let (s_samples, s_r) = sample_qps(&orion_runner, &pool);
         let mut d_sorted = d_samples.clone();
         d_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mut s_sorted = s_samples.clone();
@@ -680,9 +682,9 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
         let d_med = d_sorted[trials / 2];
         let s_med = s_sorted[trials / 2];
         diskann_qps_all.push(d_samples);
-        staged_qps_all.push(s_samples);
+        orion_qps_all.push(s_samples);
         diskann_recall.push(d_r);
-        staged_recall.push(s_r);
+        orion_recall.push(s_r);
         println!(
             "  {:<8} {:<14.0} {:<10.4} {:<14.0} {:<10.4} {:<10.2}x",
             nt,
@@ -704,19 +706,19 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
         .iter()
         .map(|v| sort(v)[trials / 2])
         .collect();
-    let staged_med: Vec<f64> = staged_qps_all.iter().map(|v| sort(v)[trials / 2]).collect();
+    let orion_med: Vec<f64> = orion_qps_all.iter().map(|v| sort(v)[trials / 2]).collect();
     let diskann_min: Vec<f64> = diskann_qps_all.iter().map(|v| sort(v)[0]).collect();
-    let staged_min: Vec<f64> = staged_qps_all.iter().map(|v| sort(v)[0]).collect();
+    let orion_min: Vec<f64> = orion_qps_all.iter().map(|v| sort(v)[0]).collect();
     let diskann_max: Vec<f64> = diskann_qps_all
         .iter()
         .map(|v| sort(v)[trials - 1])
         .collect();
-    let staged_max: Vec<f64> = staged_qps_all.iter().map(|v| sort(v)[trials - 1]).collect();
+    let orion_max: Vec<f64> = orion_qps_all.iter().map(|v| sort(v)[trials - 1]).collect();
 
     let d1 = diskann_med[0];
-    let s1 = staged_med[0];
+    let s1 = orion_med[0];
     let d_speedup: Vec<f64> = diskann_med.iter().map(|q| q / d1).collect();
-    let s_speedup: Vec<f64> = staged_med.iter().map(|q| q / s1).collect();
+    let s_speedup: Vec<f64> = orion_med.iter().map(|q| q / s1).collect();
     let d_eff: Vec<f64> = thread_counts
         .iter()
         .zip(d_speedup.iter())
@@ -735,7 +737,7 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
         "num_queries": queries.len(),
         "k": k,
         "search_list_size": search_l,
-        "alpha_staged": scfg.alpha,
+        "alpha_orion": ocfg.alpha,
         "trials": trials,
         "thread_counts": thread_counts,
         "diskann": {
@@ -747,12 +749,12 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
             "speedup": d_speedup,
             "efficiency": d_eff,
         },
-        "staged": {
-            "qps_median": staged_med,
-            "qps_min": staged_min,
-            "qps_max": staged_max,
-            "qps_per_trial": staged_qps_all,
-            "recall": staged_recall,
+        "orion": {
+            "qps_median": orion_med,
+            "qps_min": orion_min,
+            "qps_max": orion_max,
+            "qps_per_trial": orion_qps_all,
+            "recall": orion_recall,
             "speedup": s_speedup,
             "efficiency": s_eff,
         },
@@ -763,13 +765,13 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
 }
 
 fn run_build_profile(dataset: &Dataset, _k: usize) {
-    use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion::{build_diskann_index, Orion, DIM_100, DIM_128, DIM_32, DIM_960};
     use std::time::Instant;
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
+    let ocfg = crate::config::load_dataset_config_by_dim(dimension).orion;
 
     let dim_name = match dimension {
         32 => "glove25",
@@ -785,8 +787,8 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
     // ~15 min/trial gist budget.
     const TRIALS: usize = 3;
     let mut diskann_times: Vec<f64> = Vec::with_capacity(TRIALS);
-    let mut staged_graph_times: Vec<f64> = Vec::with_capacity(TRIALS);
-    let mut staged_overhead_times: Vec<f64> = Vec::with_capacity(TRIALS);
+    let mut orion_graph_times: Vec<f64> = Vec::with_capacity(TRIALS);
+    let mut orion_overhead_times: Vec<f64> = Vec::with_capacity(TRIALS);
 
     macro_rules! run_trials {
         ($N:literal) => {{
@@ -796,17 +798,17 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
                     dim_name,
                     trial + 1,
                     TRIALS,
-                    scfg.alpha,
-                    scfg.graph_degree,
-                    scfg.build_search_list_size,
+                    ocfg.alpha,
+                    ocfg.graph_degree,
+                    ocfg.build_search_list_size,
                 );
 
-                // DiskANN baseline — **same α as Staged** (PA-aligned
+                // DiskANN baseline — **same α as Orion** (PA-aligned
                 // per-dataset; e.g. SIFT α=1.15, GIST α=1.1). The α=2.0
                 // recipe is never used in production, so the honest
                 // overhead delta is α-matched: every build param
                 // (R / L_build / α / num_threads / metric) matches
-                // Staged, and the only difference is the
+                // Orion, and the only difference is the
                 // `compute_candidate_sets` toggle that drives the
                 // PhasedGraph extras pass.
                 let t_da = Instant::now();
@@ -814,9 +816,9 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
                     &flat_base,
                     num_points,
                     dimension,
-                    scfg.alpha,
-                    scfg.graph_degree,
-                    scfg.build_search_list_size as u32,
+                    ocfg.alpha,
+                    ocfg.graph_degree,
+                    ocfg.build_search_list_size as u32,
                     false,
                     None,
                     None,
@@ -827,50 +829,50 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
                 let diskann_s = t_da.elapsed().as_secs_f64();
                 drop(_da);
 
-                // Staged: graph build with compute_candidate_sets=true.
+                // Orion: graph build with compute_candidate_sets=true.
                 let result = build_diskann_index(
                     &flat_base,
                     num_points,
                     dimension,
-                    scfg.alpha,
-                    scfg.graph_degree,
-                    scfg.build_search_list_size as u32,
+                    ocfg.alpha,
+                    ocfg.graph_degree,
+                    ocfg.build_search_list_size as u32,
                     false,
                     None,
                     None,
                     true,
-                    scfg.max_extra,
+                    ocfg.max_extra,
                 )
-                .expect("staged build failed");
-                let staged_graph_s = result.graph_build_time.as_secs_f64();
+                .expect("orion build failed");
+                let orion_graph_s = result.graph_build_time.as_secs_f64();
 
-                // Staged overhead: StagedDiskANN::new (extract + clustering + reorder).
+                // Orion overhead: Orion::new (extract + clustering + reorder).
                 let t_ov = Instant::now();
                 let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                let mut staged = StagedDiskANN::<$N>::new(
+                let mut idx = Orion::<$N>::new(
                     empty_ds,
                     &result.partitions,
                     result.entry_point,
-                    scfg.graph_degree,
-                    scfg.max_extra,
+                    ocfg.graph_degree,
+                    ocfg.max_extra,
                     None,
                     None,
                     None,
                     false,
                 );
-                staged.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
-                let staged_overhead_s = t_ov.elapsed().as_secs_f64();
-                drop(staged);
+                idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                let orion_overhead_s = t_ov.elapsed().as_secs_f64();
+                drop(idx);
                 drop(result.index);
 
                 println!(
-                    "  DiskANN: {:.3}s  Staged graph: {:.3}s  Staged overhead: {:.3}s",
-                    diskann_s, staged_graph_s, staged_overhead_s,
+                    "  DiskANN: {:.3}s  Orion graph: {:.3}s  Orion overhead: {:.3}s",
+                    diskann_s, orion_graph_s, orion_overhead_s,
                 );
 
                 diskann_times.push(diskann_s);
-                staged_graph_times.push(staged_graph_s);
-                staged_overhead_times.push(staged_overhead_s);
+                orion_graph_times.push(orion_graph_s);
+                orion_overhead_times.push(orion_overhead_s);
             }
         }};
     }
@@ -891,30 +893,30 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
 
     let d_mean = mean(&diskann_times);
     let d_std = stddev(&diskann_times, d_mean);
-    let g_mean = mean(&staged_graph_times);
-    let g_std = stddev(&staged_graph_times, g_mean);
-    let o_mean = mean(&staged_overhead_times);
-    let o_std = stddev(&staged_overhead_times, o_mean);
+    let g_mean = mean(&orion_graph_times);
+    let g_std = stddev(&orion_graph_times, g_mean);
+    let o_mean = mean(&orion_overhead_times);
+    let o_std = stddev(&orion_overhead_times, o_mean);
 
     let json = serde_json::json!({
         "dataset": dim_name,
         "dimension": dimension,
         "num_points": num_points,
         "trials": TRIALS,
-        "alpha": scfg.alpha,
-        "alpha_diskann": scfg.alpha,
-        "alpha_staged": scfg.alpha,
+        "alpha": ocfg.alpha,
+        "alpha_diskann": ocfg.alpha,
+        "alpha_orion": ocfg.alpha,
         "diskann_s": d_mean,
         "diskann_s_std": d_std,
-        "staged_graph_s": g_mean,
-        "staged_graph_s_std": g_std,
-        "staged_overhead_s": o_mean,
-        "staged_overhead_s_std": o_std,
-        "staged_total_s": g_mean + o_mean,
+        "orion_graph_s": g_mean,
+        "orion_graph_s_std": g_std,
+        "orion_overhead_s": o_mean,
+        "orion_overhead_s_std": o_std,
+        "orion_total_s": g_mean + o_mean,
         "per_trial": {
             "diskann_s": diskann_times,
-            "staged_graph_s": staged_graph_times,
-            "staged_overhead_s": staged_overhead_times,
+            "orion_graph_s": orion_graph_times,
+            "orion_overhead_s": orion_overhead_times,
         },
     });
 
@@ -923,53 +925,53 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
     println!("\nSaved {path}");
     println!(
         "  DiskANN (alpha={:.2}, no candidates): {:.3}s ± {:.3}s",
-        scfg.alpha, d_mean, d_std,
+        ocfg.alpha, d_mean, d_std,
     );
     println!(
-        "  Staged graph:                        {:.3}s ± {:.3}s",
+        "  Orion graph:                        {:.3}s ± {:.3}s",
         g_mean, g_std
     );
     println!(
-        "  Staged overhead:                     {:.3}s ± {:.3}s",
+        "  Orion overhead:                     {:.3}s ± {:.3}s",
         o_mean, o_std
     );
     println!(
-        "  Staged / DiskANN:     {:.2}x   overhead: {:.1}% of staged total",
+        "  Orion / DiskANN:     {:.2}x   overhead: {:.1}% of orion total",
         (g_mean + o_mean) / d_mean,
         o_mean / (g_mean + o_mean) * 100.0,
     );
 }
 
 fn run_search_profile(dataset: &Dataset, k: usize) {
-    use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion::{build_diskann_index, Orion, DIM_100, DIM_128, DIM_32, DIM_960};
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
+    let ocfg = crate::config::load_dataset_config_by_dim(dimension).orion;
 
     macro_rules! profile {
         ($N:literal) => {{
-            let alpha = scfg.alpha;
-            println!("Building StagedDiskANN ({}-dim, alpha={})...", $N, alpha);
+            let alpha = ocfg.alpha;
+            println!("Building Orion ({}-dim, alpha={})...", $N, alpha);
             let result = build_diskann_index(
                 &flat_base,
                 num_points,
                 dimension,
                 alpha,
-                scfg.graph_degree,
-                scfg.build_search_list_size as u32,
+                ocfg.graph_degree,
+                ocfg.build_search_list_size as u32,
                 false,
                 None,
                 None,
                 true,
-                scfg.max_extra,
+                ocfg.max_extra,
             )
             .expect("build failed");
             drop(result.index);
 
             let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut staged = StagedDiskANN::<$N>::new(
+            let mut idx = Orion::<$N>::new(
                 empty_ds,
                 &result.partitions,
                 result.entry_point,
@@ -980,7 +982,7 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
                 None,
                 false,
             );
-            staged.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+            idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
 
             let queries: Vec<[f32; $N]> = dataset
                 .queries
@@ -993,10 +995,10 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
                 .collect();
 
             println!("Warm-up (1000 queries)...");
-            let _ = staged.ensure_quantized_dataset();
+            let _ = idx.ensure_quantized_dataset();
             for q in &queries[..queries.len().min(1000)] {
                 crate::runner::cascade::search_compose::<$N>(
-                    &staged,
+                    &idx,
                     q,
                     k,
                     48,
@@ -1026,7 +1028,7 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
 
             // Auto-calibrate.
             let calib_sample: Vec<[f32; $N]> = queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
-            let calib = staged
+            let calib = idx
                 .calibrate(&calib_sample, 48, ws)
                 .expect("calibrate failed");
             println!(
@@ -1056,7 +1058,7 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
                     let t_start = std::time::Instant::now();
                     for (qi, q) in queries.iter().enumerate() {
                         let (res, _conv, steps, p1, p2) =
-                            staged.search_diag(q, k, sls, ws, 0.0, 0).unwrap();
+                            idx.search_diag(q, k, sls, ws, 0.0, 0).unwrap();
                         total_iter += steps as u64;
                         total_dist += (p1 + p2) as u64;
                         let gt = &dataset.ground_truth[qi];
@@ -1080,7 +1082,7 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
                     );
                 }
 
-                // Staged with early exit = 0 (no early exit, but with convergence)
+                // Orion with early exit = 0 (no early exit, but with convergence)
                 {
                     let mut total_iter = 0u64;
                     let mut total_dist = 0u64;
@@ -1088,7 +1090,7 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
                     let t_start = std::time::Instant::now();
                     for (qi, q) in queries.iter().enumerate() {
                         let (res, _conv, steps, p1, p2) =
-                            staged.search_diag(q, k, sls, ws, thr, ee).unwrap();
+                            idx.search_diag(q, k, sls, ws, thr, ee).unwrap();
                         total_iter += steps as u64;
                         total_dist += (p1 + p2) as u64;
                         let gt = &dataset.ground_truth[qi];
@@ -1104,7 +1106,7 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
                     let qps = nq / wall.as_secs_f64();
                     println!(
                         "  {:<12} {:<12.1} {:<14.1} {:<10.4} {:<10.0}",
-                        "staged",
+                        "orion",
                         total_iter as f64 / nq,
                         total_dist as f64 / nq,
                         recall_sum / nq,
@@ -1128,12 +1130,12 @@ fn run_memory_profile(dataset: &Dataset) {
     use diskann::index::{create_inmem_index, ANNInmemIndex};
     use diskann::model::configuration::index_write_parameters::IndexWriteParametersBuilder;
     use diskann::model::{IndexConfiguration, InmemDataset};
-    use staged_diskann::{StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion::{Orion, DIM_100, DIM_128, DIM_32, DIM_960};
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
+    let ocfg = crate::config::load_dataset_config_by_dim(dimension).orion;
 
     let dim_name = match dimension {
         32 => "glove25",
@@ -1149,23 +1151,23 @@ fn run_memory_profile(dataset: &Dataset) {
     let baseline = ALLOCATOR.current_bytes();
 
     println!(
-        "\n═══ Memory Profile [{} {}pts, dim={}, α_staged={:.2}] ═══",
-        dim_name, num_points, dimension, scfg.alpha,
+        "\n═══ Memory Profile [{} {}pts, dim={}, α_orion={:.2}] ═══",
+        dim_name, num_points, dimension, ocfg.alpha,
     );
     println!("  Baseline (base+queries+GT): {}\n", fmt(baseline));
 
     let num_threads = rayon::current_num_threads() as u32;
 
-    // ── DiskANN (same α as Staged, no candidate sets) ──────────────────
-    // α-matched against Staged below — every build param
+    // ── DiskANN (same α as Orion, no candidate sets) ──────────────────
+    // α-matched against Orion below — every build param
     // (R / L_build / α / num_threads / metric) is identical and the
     // only difference is the `compute_candidate_sets` flag, so the
     // peak delta isolates the PhasedGraph extras cost.
     ALLOCATOR.reset_peak();
     let diskann_peak_abs = {
         let wp =
-            IndexWriteParametersBuilder::new(scfg.build_search_list_size as u32, scfg.graph_degree)
-                .with_alpha(scfg.alpha)
+            IndexWriteParametersBuilder::new(ocfg.build_search_list_size as u32, ocfg.graph_degree)
+                .with_alpha(ocfg.alpha)
                 .with_num_threads(num_threads)
                 .with_compute_candidate_sets(false)
                 .build();
@@ -1192,16 +1194,16 @@ fn run_memory_profile(dataset: &Dataset) {
     };
     let diskann_peak = diskann_peak_abs.saturating_sub(baseline);
 
-    // ── StagedDiskANN (config α, with candidate sets) ───────────────────
+    // ── Orion (config α, with candidate sets) ───────────────────
     ALLOCATOR.reset_peak();
 
-    macro_rules! run_staged {
+    macro_rules! run_orion {
         ($N:literal) => {{
             let wp = IndexWriteParametersBuilder::new(
-                scfg.build_search_list_size as u32,
-                scfg.graph_degree,
+                ocfg.build_search_list_size as u32,
+                ocfg.graph_degree,
             )
-            .with_alpha(scfg.alpha)
+            .with_alpha(ocfg.alpha)
             .with_num_threads(num_threads)
             .with_compute_candidate_sets(true)
             .build();
@@ -1222,67 +1224,67 @@ fn run_memory_profile(dataset: &Dataset) {
             idx.build_from_data(&flat_base, num_points).expect("build");
             let entry_point = idx.start_node();
             let partitions = idx
-                .extract_graph_and_candidates(scfg.max_extra)
+                .extract_graph_and_candidates(ocfg.max_extra)
                 .expect("extract");
-            let staged_peak_abs = ALLOCATOR.peak_bytes();
+            let orion_peak_abs = ALLOCATOR.peak_bytes();
             drop(idx);
 
             let empty_ds = InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut staged = StagedDiskANN::<$N>::new(
+            let mut idx = Orion::<$N>::new(
                 empty_ds,
                 &partitions,
                 entry_point,
-                scfg.graph_degree,
-                scfg.max_extra,
+                ocfg.graph_degree,
+                ocfg.max_extra,
                 None,
                 None,
                 None,
                 false,
             );
-            staged.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
-            let staged_final_abs = ALLOCATOR.current_bytes();
-            drop(staged);
-            (staged_peak_abs, staged_final_abs)
+            idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+            let orion_final_abs = ALLOCATOR.current_bytes();
+            drop(idx);
+            (orion_peak_abs, orion_final_abs)
         }};
     }
 
-    let (staged_peak_abs, staged_final_abs) = match dimension {
-        DIM_32 => run_staged!(32),
-        DIM_100 => run_staged!(100),
-        DIM_128 => run_staged!(128),
-        DIM_960 => run_staged!(960),
+    let (orion_peak_abs, orion_final_abs) = match dimension {
+        DIM_32 => run_orion!(32),
+        DIM_100 => run_orion!(100),
+        DIM_128 => run_orion!(128),
+        DIM_960 => run_orion!(960),
         _ => panic!("Unsupported dimension for memory-profile: {dimension}"),
     };
-    let staged_peak = staged_peak_abs.saturating_sub(baseline);
-    let staged_final = staged_final_abs.saturating_sub(baseline);
+    let orion_peak = orion_peak_abs.saturating_sub(baseline);
+    let orion_final = orion_final_abs.saturating_sub(baseline);
 
     println!(
         "  DiskANN (α={:.2}, no candidates) peak: {}",
-        scfg.alpha,
+        ocfg.alpha,
         fmt(diskann_peak),
     );
     println!(
-        "  StagedDiskANN (α={:.2}) peak:         {}",
-        scfg.alpha,
-        fmt(staged_peak)
+        "  Orion (α={:.2}) peak:         {}",
+        ocfg.alpha,
+        fmt(orion_peak)
     );
-    println!("  StagedDiskANN final:        {}", fmt(staged_final));
-    let ratio = staged_peak as f64 / diskann_peak.max(1) as f64;
+    println!("  Orion final:        {}", fmt(orion_final));
+    let ratio = orion_peak as f64 / diskann_peak.max(1) as f64;
     println!(
-        "  Peak ratio (Staged / DiskANN): {:.2}x    final / DiskANN: {:.2}x",
+        "  Peak ratio (Orion / DiskANN): {:.2}x    final / DiskANN: {:.2}x",
         ratio,
-        staged_final as f64 / diskann_peak.max(1) as f64
+        orion_final as f64 / diskann_peak.max(1) as f64
     );
 
     let json = serde_json::json!({
         "dataset": dim_name,
         "dimension": dimension,
         "num_points": num_points,
-        "alpha_staged": scfg.alpha,
+        "alpha_orion": ocfg.alpha,
         "baseline_b": baseline,
         "diskann_peak_b": diskann_peak,
-        "staged_peak_b": staged_peak,
-        "staged_final_b": staged_final,
+        "orion_peak_b": orion_peak,
+        "orion_final_b": orion_final,
     });
     let path = format!("visualizations/memory_profile_{}.json", dim_name);
     std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).expect("write json");
@@ -1292,7 +1294,7 @@ fn run_memory_profile(dataset: &Dataset) {
 fn run_ads_comparison(dataset: &Dataset, k: usize) {
     use crate::runner::common::{AlgorithmRunner, SearchResult};
     use crate::runner::{
-        DiskANNAdsRunner, DiskANNRunner, StagedDiskANNAdsRunner, StagedDiskANNRunner,
+        DiskANNAdsRunner, DiskANNRunner, OrionAdsRunner, OrionRunner,
     };
     use rayon::prelude::*;
     use std::time::Instant;
@@ -1325,16 +1327,16 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
         _ => "unknown",
     };
 
-    // **Per-dataset build params from `datasets.<ds>.staged`** — falls
+    // **Per-dataset build params from `datasets.<ds>.orion`** — falls
     // back to `defaults.staged` only when a dataset entry is missing.
     // The previous version mistakenly read the global defaults (R=64
     // L=100 α=2.0/1.2) for every dataset, so GIST ran at the wrong
     // topology — masking the PA-aligned R=100 L=200 α=1.10 recipe.
-    // All four variants (DiskANN, DiskANN+ADS, Staged, Staged+ADS)
+    // All four variants (DiskANN, DiskANN+ADS, Orion, Orion+ADS)
     // build at the same per-dataset Vamana topology so the comparison
     // isolates the ADSampling effect on identical graphs.
-    let ds_st = &cfg["datasets"][dim_name]["staged"];
-    let def_st = &defaults["staged"];
+    let ds_st = &cfg["datasets"][dim_name]["orion"];
+    let def_st = &defaults["orion"];
     let pick_f32 = |path: &serde_yaml::Value, fallback: &serde_yaml::Value| -> f32 {
         path.as_f64()
             .or_else(|| fallback.as_f64())
@@ -1346,23 +1348,23 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
             .expect("missing usize field") as usize
     };
 
-    let staged_alpha = pick_f32(&ds_st["alpha"], &def_st["alpha"]);
+    let orion_alpha = pick_f32(&ds_st["alpha"], &def_st["alpha"]);
     let st_degree = pick_usize(&ds_st["graph_degree"], &def_st["graph_degree"]);
-    let staged_build_l = pick_usize(
+    let orion_build_l = pick_usize(
         &ds_st["build_search_list_size"],
         &def_st["build_search_list_size"],
     );
     let st_max_extra = pick_usize(&ds_st["max_extra"], &def_st["max_extra"]);
-    let staged_ws = pick_usize(&ds_st["window_size"], &def_st["window_size"]);
+    let orion_ws = pick_usize(&ds_st["window_size"], &def_st["window_size"]);
 
-    // α-match DiskANN baselines to the per-dataset Staged topology.
+    // α-match DiskANN baselines to the per-dataset Orion topology.
     // The global `defaults.diskann` α=2.0 R=64 L=100 recipe is never
     // used in production and would conflate algorithm noise with
     // build-config noise (the same conflation we already fixed in
     // `run_build_profile` and `run_memory_profile`).
-    let da_alpha = staged_alpha;
+    let da_alpha = orion_alpha;
     let da_degree = st_degree as u32;
-    let da_build_l = staged_build_l;
+    let da_build_l = orion_build_l;
 
     // ADSampling ε: higher = tighter confidence, less speedup but safer.
     let ads_epsilon = 2.1_f32;
@@ -1379,12 +1381,12 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
     // Per-variant cache paths — keyed by (dataset, n, R, L_build, α)
     // so cache slots are valid as long as the build params don't
     // change. ADS variants use the `_ads` suffix to distinguish from
-    // the matched-α DiskANN / Staged caches produced by other binaries
-    // (`diskann_sweep`, `staged_sweep`, the head-to-head harness).
+    // the matched-α DiskANN / Orion caches produced by other binaries
+    // (`diskann_sweep`, `orion`, the head-to-head harness).
     // First invocation pays the full build cost (~3 min per variant on
     // GIST PA-aligned); subsequent runs of the same config hit the
     // cache and skip the Vamana build entirely.
-    let alpha_tag = format!("{:.2}", staged_alpha).replace('.', "_");
+    let alpha_tag = format!("{:.2}", orion_alpha).replace('.', "_");
     let da_alpha_tag = format!("{:.2}", da_alpha).replace('.', "_");
     let diskann_cache = std::path::PathBuf::from("cache/diskann").join(format!(
         "{dim_name}_n{num_points}_r{da_degree}_l{da_build_l}_a{da_alpha_tag}_l2.bin"
@@ -1392,11 +1394,11 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
     let diskann_ads_cache = std::path::PathBuf::from("cache/diskann").join(format!(
         "{dim_name}_n{num_points}_r{da_degree}_l{da_build_l}_a{da_alpha_tag}_l2_ads.bin"
     ));
-    let staged_cache = std::path::PathBuf::from("cache/staged").join(format!(
-        "{dim_name}_n{num_points}_r{st_degree}_l{staged_build_l}_a{alpha_tag}_ex{st_max_extra}.bin"
+    let orion_cache = std::path::PathBuf::from("cache/orion").join(format!(
+        "{dim_name}_n{num_points}_r{st_degree}_l{orion_build_l}_a{alpha_tag}_ex{st_max_extra}.bin"
     ));
-    let staged_ads_cache = std::path::PathBuf::from("cache/staged").join(format!(
-        "{dim_name}_n{num_points}_r{st_degree}_l{staged_build_l}_a{alpha_tag}_ex{st_max_extra}_ads.bin"
+    let orion_ads_cache = std::path::PathBuf::from("cache/orion").join(format!(
+        "{dim_name}_n{num_points}_r{st_degree}_l{orion_build_l}_a{alpha_tag}_ex{st_max_extra}_ads.bin"
     ));
 
     // Build the 4 runners. Each holds its own index — rotation is isolated per variant.
@@ -1410,31 +1412,31 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
     da_ads_runner.set_cache_path(&diskann_ads_cache);
     da_ads_runner.build(&flat_base, num_points, dimension);
 
-    println!("Building Staged (α={staged_alpha}, R={st_degree}, extra={st_max_extra})...");
-    let mut st_runner = StagedDiskANNRunner::new(
-        "Staged",
-        staged_alpha,
+    println!("Building Orion (α={orion_alpha}, R={st_degree}, extra={st_max_extra})...");
+    let mut st_runner = OrionRunner::new(
+        "Orion",
+        orion_alpha,
         st_degree,
-        staged_build_l,
+        orion_build_l,
         st_max_extra,
-        staged_ws,
+        orion_ws,
         crate::runner::cascade::PrefilterChoice::None,
         crate::runner::cascade::AdmissionChoice::L2U8,
         crate::runner::cascade::RerankChoice::F32,
     );
-    st_runner.set_cache_path(&staged_cache);
+    st_runner.set_cache_path(&orion_cache);
     st_runner.build(&flat_base, num_points, dimension);
 
-    println!("Building Staged+ADS (α={staged_alpha}, R={st_degree}, extra={st_max_extra})...");
-    let mut st_ads_runner = StagedDiskANNAdsRunner::new(
-        "Staged+ADS",
-        staged_alpha,
+    println!("Building Orion+ADS (α={orion_alpha}, R={st_degree}, extra={st_max_extra})...");
+    let mut st_ads_runner = OrionAdsRunner::new(
+        "Orion+ADS",
+        orion_alpha,
         st_degree,
-        staged_build_l,
+        orion_build_l,
         st_max_extra,
-        staged_ws,
+        orion_ws,
     );
-    st_ads_runner.set_cache_path(&staged_ads_cache);
+    st_ads_runner.set_cache_path(&orion_ads_cache);
     st_ads_runner.build(&flat_base, num_points, dimension);
 
     // Sweep helper: swap L on the runner, run batch search `trials` times, take median QPS.
@@ -1445,7 +1447,7 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
         // Drive everything that gets lazily set up on the first search
         // call so the L = first-sls measurement doesn't pay the cold-
         // start tax (previously the L = 16 row showed a 10-20× QPS
-        // dip vs L = 20 on the Staged variants):
+        // dip vs L = 20 on the Orion variants):
         //
         //   * `InMemScratchPool::get_or_init` (allocates
         //     `current_num_threads + 5` scratch buffers on first hit)
@@ -1524,7 +1526,7 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
             self
         }
     }
-    impl RunnerWithL for StagedDiskANNRunner {
+    impl RunnerWithL for OrionRunner {
         fn set_l(&mut self, sls: usize) {
             self.set_search_list_size(sls);
         }
@@ -1532,7 +1534,7 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
             self
         }
     }
-    impl RunnerWithL for StagedDiskANNAdsRunner {
+    impl RunnerWithL for OrionAdsRunner {
         fn set_l(&mut self, sls: usize) {
             self.set_search_list_size(sls);
         }
@@ -1543,8 +1545,8 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
 
     let da_rows = sweep_runner(&mut da_runner, "DiskANN");
     let da_ads_rows = sweep_runner(&mut da_ads_runner, "DiskANN+ADS");
-    let st_rows = sweep_runner(&mut st_runner, "Staged");
-    let st_ads_rows = sweep_runner(&mut st_ads_runner, "Staged+ADS");
+    let st_rows = sweep_runner(&mut st_runner, "Orion");
+    let st_ads_rows = sweep_runner(&mut st_ads_runner, "Orion+ADS");
 
     // Emit JSON for the plot script.
     let json_path = format!("visualizations/ads_{dim_name}.json");
@@ -1556,7 +1558,7 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
             .join(", ")
     };
     let json = format!(
-        "{{\n  \"dataset\": \"{dim_name}\",\n  \"dimension\": {dimension},\n  \"num_points\": {num_points},\n  \"threads\": {num_threads},\n  \"ads_epsilon\": {ads_epsilon},\n  \"diskann\": [{}],\n  \"diskann_ads\": [{}],\n  \"staged\": [{}],\n  \"staged_ads\": [{}]\n}}",
+        "{{\n  \"dataset\": \"{dim_name}\",\n  \"dimension\": {dimension},\n  \"num_points\": {num_points},\n  \"threads\": {num_threads},\n  \"ads_epsilon\": {ads_epsilon},\n  \"diskann\": [{}],\n  \"diskann_ads\": [{}],\n  \"orion\": [{}],\n  \"orion_ads\": [{}]\n}}",
         fmt(&da_rows), fmt(&da_ads_rows), fmt(&st_rows), fmt(&st_ads_rows),
     );
     std::fs::write(&json_path, &json).expect("write json");
@@ -1564,11 +1566,11 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
 }
 
 fn run_cliff_profile(dataset: &Dataset) {
-    use staged_diskann::algorithm::analysis::{
+    use orion::algorithm::analysis::{
         annotate_bf_ranks, compute_cliff_stats, print_node_cliff_detail, summarize_cliff_ranks,
         summarize_cliff_stats,
     };
-    use staged_diskann::{build_diskann_index, PhasedGraph};
+    use orion::{build_diskann_index, PhasedGraph};
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
@@ -1738,7 +1740,7 @@ fn run_cliff_profile(dataset: &Dataset) {
     }
 
     // ── Phase 5: Rank-Precision Cliff ───────────────────────────────────
-    use staged_diskann::algorithm::analysis::{
+    use orion::algorithm::analysis::{
         compute_rank_precision_profiles, sort_neighbors_by_distance, summarize_rank_precision,
     };
 
@@ -1777,15 +1779,15 @@ fn run_cliff_profile(dataset: &Dataset) {
 
 fn run_neighbor_contribution_profile(dataset: &Dataset) {
     use diskann::model::{Neighbor as DNeighbor, Vertex};
-    use staged_diskann::algorithm::search::convergence::SearchConvergenceChecker;
-    use staged_diskann::{build_diskann_index, StagedDiskANN};
+    use orion::algorithm::search::convergence::SearchConvergenceChecker;
+    use orion::{build_diskann_index, Orion};
     use vector::Metric;
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
     let _k = 10;
-    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
+    let ocfg = crate::config::load_dataset_config_by_dim(dimension).orion;
 
     macro_rules! run_profile {
         ($N:literal) => {{
@@ -1795,22 +1797,22 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
                 arr
             }).collect();
 
-            println!("Building StagedDiskANN ({}-dim, alpha={})...", $N, scfg.alpha);
+            println!("Building Orion ({}-dim, alpha={})...", $N, ocfg.alpha);
             let result = build_diskann_index(
-                &flat_base, num_points, dimension, scfg.alpha, scfg.graph_degree,
-                scfg.build_search_list_size as u32, false, None, None, true, scfg.max_extra,
+                &flat_base, num_points, dimension, ocfg.alpha, ocfg.graph_degree,
+                ocfg.build_search_list_size as u32, false, None, None, true, ocfg.max_extra,
             ).expect("build failed");
             let entry = result.entry_point;
             drop(result.index);
             let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut staged = StagedDiskANN::<$N>::new(
+            let mut idx = Orion::<$N>::new(
                 empty_ds, &result.partitions, entry,
-                scfg.graph_degree, scfg.max_extra, None, None, None, false,
+                ocfg.graph_degree, ocfg.max_extra, None, None, None, false,
             );
-            staged.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+            idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
 
-            let graph = &staged.graph;
-            let ds = &staged.dataset;
+            let graph = &idx.graph;
+            let ds = &idx.dataset;
 
             // Per-zone counters split by phase.
             // Zones: local (0..local_count), remote (local_count..degree), extra
@@ -1978,7 +1980,7 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
                 let zone_json = serde_json::json!({
                     "dataset": dim_name,
                     "dimension": $N,
-                    "alpha": scfg.alpha,
+                    "alpha": ocfg.alpha,
                     "search_list_size": sls,
                     "zones": {
                         "nav_local":     {"unseen": nav_local.unseen as f64 / nq, "admitted": nav_local.admitted as f64 / nq},
@@ -1997,7 +1999,7 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
             // For each rank position r (0..max_degree), compute what fraction
             // of nodes have a bidirectional edge at rank r.
             // Bidir = neighbor is in local zone (rank < local_count).
-            let max_deg = scfg.graph_degree as usize;
+            let max_deg = ocfg.graph_degree as usize;
             let mut bidir_at_rank = vec![0u64; max_deg];
             let mut total_at_rank = vec![0u64; max_deg];
             for i in 0..num_points {
@@ -2035,7 +2037,7 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
             let bidir_json = serde_json::json!({
                 "dataset": dim_name,
                 "dimension": $N,
-                "alpha": scfg.alpha,
+                "alpha": ocfg.alpha,
                 "num_points": num_points,
                 "bidir_rate_by_rank": bidir_rate_by_rank,
                 "bidir_fractions": bidir_fractions,
@@ -2057,8 +2059,8 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
 }
 
 fn run_extra_profile(dataset: &Dataset, k: usize) {
-    use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
-    let scfg = crate::config::load_dataset_config_by_dim(dataset.dimension).staged;
+    use orion::{build_diskann_index, Orion, DIM_100, DIM_128, DIM_32, DIM_960};
+    let ocfg = crate::config::load_dataset_config_by_dim(dataset.dimension).orion;
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
@@ -2076,7 +2078,7 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
                 })
                 .collect();
 
-            let alpha = scfg.alpha;
+            let alpha = ocfg.alpha;
 
             // Sweep max_extra = 0, 2, 4, 8, 16, 32.
             println!(
@@ -2101,7 +2103,7 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
                 drop(result.index);
 
                 let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                let mut staged = StagedDiskANN::<$N>::new(
+                let mut idx = Orion::<$N>::new(
                     empty_ds,
                     &result.partitions,
                     entry,
@@ -2112,19 +2114,19 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
                     None,
                     false,
                 );
-                staged.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
 
                 let avg_extra = (0..num_points)
-                    .map(|i| staged.graph.extra_count(i))
+                    .map(|i| idx.graph.extra_count(i))
                     .sum::<usize>() as f64
                     / num_points as f64;
                 let avg_local = (0..num_points)
-                    .map(|i| staged.graph.local_count(i))
+                    .map(|i| idx.graph.local_count(i))
                     .sum::<usize>() as f64
                     / num_points as f64;
 
                 // Calibrate and search.
-                let calib = staged
+                let calib = idx
                     .calibrate(&queries[..queries.len().min(CALIB_SAMPLES)], 48, 5)
                     .expect("calibrate");
 
@@ -2134,7 +2136,7 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
                 let mut recall_sum = 0.0f64;
                 let t_start = std::time::Instant::now();
                 for (qi, q) in queries.iter().enumerate() {
-                    let (res, _, steps, p1, p2) = staged
+                    let (res, _, steps, p1, p2) = idx
                         .search_diag(q, k, 48, 5, calib.threshold, calib.early_exit_limit)
                         .unwrap();
                     total_iter += steps as u64;
@@ -2173,7 +2175,7 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
             .expect("build failed");
             drop(result_cov.index);
             let pg =
-                staged_diskann::PhasedGraph::build_from_partitions(&result_cov.partitions, 32, 32);
+                orion::PhasedGraph::build_from_partitions(&result_cov.partitions, 32, 32);
 
             let dim = $N;
             let l2 = |a: usize, b: usize| -> f32 {
@@ -2274,13 +2276,13 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
 }
 
 fn run_calibration_diag(dataset: &Dataset) {
-    use staged_diskann::{build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion::{build_diskann_index, Orion, DIM_100, DIM_128, DIM_32, DIM_960};
     use std::time::Instant;
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
-    let scfg = crate::config::load_dataset_config_by_dim(dimension).staged;
+    let ocfg = crate::config::load_dataset_config_by_dim(dimension).orion;
 
     let dim_name = match dimension {
         32 => "glove25",
@@ -2298,23 +2300,23 @@ fn run_calibration_diag(dataset: &Dataset) {
                 arr
             }).collect();
 
-            // Build StagedDiskANN
+            // Build Orion
             let t_build = Instant::now();
             let result = build_diskann_index(
-                &flat_base, num_points, dimension, scfg.alpha,
-                scfg.graph_degree, scfg.build_search_list_size as u32,
-                false, None, None, true, scfg.max_extra,
+                &flat_base, num_points, dimension, ocfg.alpha,
+                ocfg.graph_degree, ocfg.build_search_list_size as u32,
+                false, None, None, true, ocfg.max_extra,
             ).expect("build failed");
             let graph_build_s = result.graph_build_time.as_secs_f64();
             drop(result.index);
 
             let t_staged = Instant::now();
             let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut staged = StagedDiskANN::<$N>::new(
+            let mut idx = Orion::<$N>::new(
                 empty_ds, &result.partitions, result.entry_point,
-                scfg.graph_degree, scfg.max_extra, None, None, None, false,
+                ocfg.graph_degree, ocfg.max_extra, None, None, None, false,
             );
-            staged.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+            idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
             let staged_overhead_s = t_staged.elapsed().as_secs_f64();
             let total_build_s = t_build.elapsed().as_secs_f64();
 
@@ -2328,7 +2330,7 @@ fn run_calibration_diag(dataset: &Dataset) {
 
             // Calibrate with diagnostics
             let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
-            let diag = staged.calibrate_with_diagnostics(&calib_qs, 100, 5)
+            let diag = idx.calibrate_with_diagnostics(&calib_qs, 100, 5)
                 .expect("calibrate failed");
 
             // Write JSON
@@ -2336,7 +2338,7 @@ fn run_calibration_diag(dataset: &Dataset) {
                 "dataset": dim_name,
                 "dimension": $N,
                 "num_points": num_points,
-                "alpha": scfg.alpha,
+                "alpha": ocfg.alpha,
                 "admission_rates": diag.admission_rates,
                 "useful_gaps": diag.useful_gaps,
                 "tail_gaps": diag.tail_gaps,
@@ -2345,9 +2347,9 @@ fn run_calibration_diag(dataset: &Dataset) {
                 "early_exit_limit": diag.params.early_exit_limit,
                 "build": {
                     "diskann_s": diskann_build_s,
-                    "staged_graph_s": graph_build_s,
-                    "staged_overhead_s": staged_overhead_s,
-                    "staged_total_s": total_build_s,
+                    "orion_graph_s": graph_build_s,
+                    "orion_overhead_s": staged_overhead_s,
+                    "orion_total_s": total_build_s,
                 }
             });
 
@@ -2357,7 +2359,7 @@ fn run_calibration_diag(dataset: &Dataset) {
             println!("Saved {path}");
             println!("  threshold={:.2}, early_exit_limit={}", diag.params.threshold, diag.params.early_exit_limit);
             println!("  DiskANN build: {:.2}s", diskann_build_s);
-            println!("  Staged graph build: {:.2}s  overhead: {:.2}s  total: {:.2}s",
+            println!("  Orion graph build: {:.2}s  overhead: {:.2}s  total: {:.2}s",
                 graph_build_s, staged_overhead_s, total_build_s);
         }};
     }
@@ -2407,8 +2409,8 @@ fn run_calibration_diag(dataset: &Dataset) {
 /// search path with only the two convergence-side flags toggled.
 fn run_ablation(dataset: &Dataset, k: usize) {
     use rayon::prelude::*;
-    use staged_diskann::{
-        build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_960,
+    use orion::{
+        build_diskann_index, Orion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_960,
     };
     use std::time::Instant;
 
@@ -2427,8 +2429,8 @@ fn run_ablation(dataset: &Dataset, k: usize) {
         (1536, _) => "wiki_ada_1M",
         _ => "unknown",
     };
-    let dscfg = crate::config::load_dataset_config(dim_name);
-    let scfg = dscfg.staged;
+    let docfg = crate::config::load_dataset_config(dim_name);
+    let ocfg = docfg.orion;
     let num_threads = 8;
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -2456,15 +2458,15 @@ fn run_ablation(dataset: &Dataset, k: usize) {
                 .collect();
 
             // ── Resolve cache path (PA-mode naming, shared with cascade-ablation). ──
-            let local_pct: usize = std::env::var("STAGED_LOCAL_PCT")
+            let local_pct: usize = std::env::var("ORION_LOCAL_PCT")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .filter(|&v| (1..=100).contains(&v))
                 .unwrap_or(60);
-            let alpha_tag = format!("{:.2}", scfg.alpha).replace('.', "_");
-            let cache_dir = std::path::PathBuf::from("cache/staged_parlayann");
+            let alpha_tag = format!("{:.2}", ocfg.alpha).replace('.', "_");
+            let cache_dir = std::path::PathBuf::from("cache/orion_parlayann");
             std::fs::create_dir_all(&cache_dir).ok();
-            // Build-or-load the production staged graph (default
+            // Build-or-load the production orion graph (default
             // `max_extra`). All 4 ablation variants share this one
             // graph — `no-extra` uses the same graph with the
             // `INCLUDE_EXTRAS` toggle flipped off at search time
@@ -2476,30 +2478,30 @@ fn run_ablation(dataset: &Dataset, k: usize) {
                 "{}_n{}_r{}_l{}_a{}_ex{}_pct{}.bin",
                 dim_name,
                 num_points,
-                scfg.graph_degree,
-                scfg.build_search_list_size,
+                ocfg.graph_degree,
+                ocfg.build_search_list_size,
                 alpha_tag,
-                scfg.max_extra,
+                ocfg.max_extra,
                 local_pct,
             ));
             let pgraph_path = cache_path.with_extension("pgraph");
             println!(
-                "Loading staged graph ({}-dim, max_extra={})...",
-                $N, scfg.max_extra
+                "Loading orion graph ({}-dim, max_extra={})...",
+                $N, ocfg.max_extra
             );
             let t_load = Instant::now();
             // Wrap in `pool.install` so the Vamana builder (which
             // queries `rayon::current_num_threads()`) sees the
             // 8-thread pool, not the global all-cores pool.
-            let staged: StagedDiskANN<$N> = pool.install(|| {
+            let idx: Orion<$N> = pool.install(|| {
                 if cache_path.exists() && pgraph_path.exists() {
                     println!("  → cache hit: loading {:?}", pgraph_path);
                     let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                    let mut idx = StagedDiskANN::<$N>::load_from_cache(&cache_path, empty_ds)
+                    let mut idx = Orion::<$N>::load_from_cache(&cache_path, empty_ds)
                         .expect("load_from_cache failed");
                     idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
                     idx
-                } else if let Ok(staged_file_path) = std::env::var("STAGED_STAGED_FILE") {
+                } else if let Ok(staged_file_path) = std::env::var("ORION_STAGED_FILE") {
                     println!("  → import PA .staged from {}", staged_file_path);
                     let input = crate::runner::parlayann_bridge::load_from_staged_file(
                         &staged_file_path,
@@ -2509,11 +2511,11 @@ fn run_ablation(dataset: &Dataset, k: usize) {
                     .expect("parlayann_bridge::load_from_staged_file failed");
                     let max_extra_from_file = input.max_extra as usize;
                     let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                    let mut idx = StagedDiskANN::<$N>::new(
+                    let mut idx = Orion::<$N>::new(
                         empty_ds,
                         &input.partitions,
                         input.entry_point,
-                        scfg.graph_degree,
+                        ocfg.graph_degree,
                         max_extra_from_file,
                         None,
                         None,
@@ -2531,25 +2533,25 @@ fn run_ablation(dataset: &Dataset, k: usize) {
                         &flat_base,
                         num_points,
                         dimension,
-                        scfg.alpha,
-                        scfg.graph_degree,
-                        scfg.build_search_list_size as u32,
+                        ocfg.alpha,
+                        ocfg.graph_degree,
+                        ocfg.build_search_list_size as u32,
                         false,
                         None,
                         None,
                         true,
-                        scfg.max_extra,
+                        ocfg.max_extra,
                     )
                     .expect("build failed");
                     let entry = result.entry_point;
                     drop(result.index);
                     let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                    let mut idx = StagedDiskANN::<$N>::new(
+                    let mut idx = Orion::<$N>::new(
                         empty_ds,
                         &result.partitions,
                         entry,
-                        scfg.graph_degree,
-                        scfg.max_extra,
+                        ocfg.graph_degree,
+                        ocfg.max_extra,
                         None,
                         None,
                         Some(cache_path.clone()),
@@ -2566,7 +2568,7 @@ fn run_ablation(dataset: &Dataset, k: usize) {
             // / early-exit derive identically.
             let calib_qs: Vec<[f32; $N]> =
                 queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
-            let calib = staged
+            let calib = idx
                 .calibrate(&calib_qs, 48, 5)
                 .expect("calibrate failed");
             let (thr, ee) = (calib.threshold, calib.early_exit_limit);
@@ -2581,17 +2583,17 @@ fn run_ablation(dataset: &Dataset, k: usize) {
             // run it inside the 8-thread pool for consistency with the
             // measurement phase.
             pool.install(|| {
-                crate::runner::cascade::pin_admission(&staged, scfg.admission);
-                match scfg.prefilter {
+                crate::runner::cascade::pin_admission(&idx, ocfg.admission);
+                match ocfg.prefilter {
                     PrefilterChoice::None => {}
                     PrefilterChoice::Jl => {
-                        let _ = staged.ensure_quantized_dataset_jl();
+                        let _ = idx.ensure_quantized_dataset_jl();
                     }
                     PrefilterChoice::JlHadamard => {
-                        let _ = staged.ensure_quantized_dataset_jl_hadamard();
+                        let _ = idx.ensure_quantized_dataset_jl_hadamard();
                     }
                     PrefilterChoice::Rabitq => {
-                        let _ = staged.ensure_quantized_dataset_rabitq();
+                        let _ = idx.ensure_quantized_dataset_rabitq();
                     }
                 }
             });
@@ -2638,38 +2640,38 @@ fn run_ablation(dataset: &Dataset, k: usize) {
             // This is the 2×2 factorial's bare reference point — deltas
             // to the other three attribute cleanly to (a) extras alone,
             // (b) early-stop alone, (c) the combined effect.
-            staged_diskann::algorithm::search::set_include_extras(false);
+            orion::algorithm::search::set_include_extras(false);
             let origin_data = measure("origin (cascade-only)", &|q, sls| {
                 search_compose::<$N>(
-                    &staged,
+                    &idx,
                     q,
                     k,
                     sls,
                     5,
                     thr,
                     usize::MAX,
-                    scfg.prefilter,
-                    scfg.admission,
-                    scfg.rerank,
+                    ocfg.prefilter,
+                    ocfg.admission,
+                    ocfg.rerank,
                 )
                 .unwrap_or_default()
             });
 
             // ── 1. Full ──
             // Default INCLUDE_EXTRAS=true; convergence + early-exit on.
-            staged_diskann::algorithm::search::set_include_extras(true);
+            orion::algorithm::search::set_include_extras(true);
             let full_data = measure("full", &|q, sls| {
                 search_compose::<$N>(
-                    &staged,
+                    &idx,
                     q,
                     k,
                     sls,
                     5,
                     thr,
                     ee,
-                    scfg.prefilter,
-                    scfg.admission,
-                    scfg.rerank,
+                    ocfg.prefilter,
+                    ocfg.admission,
+                    ocfg.rerank,
                 )
                 .unwrap_or_default()
             });
@@ -2677,19 +2679,19 @@ fn run_ablation(dataset: &Dataset, k: usize) {
             // ── 2. No early-stop (convergence on, ee = MAX) ──
             // Convergence detection still fires; just doesn't terminate
             // the beam early. Extras still walked post-convergence.
-            staged_diskann::algorithm::search::set_include_extras(true);
+            orion::algorithm::search::set_include_extras(true);
             let no_ee_data = measure("no-early-stop", &|q, sls| {
                 search_compose::<$N>(
-                    &staged,
+                    &idx,
                     q,
                     k,
                     sls,
                     5,
                     thr,
                     usize::MAX,
-                    scfg.prefilter,
-                    scfg.admission,
-                    scfg.rerank,
+                    ocfg.prefilter,
+                    ocfg.admission,
+                    ocfg.rerank,
                 )
                 .unwrap_or_default()
             });
@@ -2697,26 +2699,26 @@ fn run_ablation(dataset: &Dataset, k: usize) {
             // ── 3. No extra — same graph, post-convergence branch
             //     falls back to local+remote (see `INCLUDE_EXTRAS`
             //     plumbing in `algorithm::search::mod`).
-            staged_diskann::algorithm::search::set_include_extras(false);
+            orion::algorithm::search::set_include_extras(false);
             let no_extra_data = measure("no-extra", &|q, sls| {
                 search_compose::<$N>(
-                    &staged,
+                    &idx,
                     q,
                     k,
                     sls,
                     5,
                     thr,
                     ee,
-                    scfg.prefilter,
-                    scfg.admission,
-                    scfg.rerank,
+                    ocfg.prefilter,
+                    ocfg.admission,
+                    ocfg.rerank,
                 )
                 .unwrap_or_default()
             });
             // Restore default so any subsequent code (other dataset
             // dispatch arms, downstream tests in the same process)
             // gets production semantics.
-            staged_diskann::algorithm::search::set_include_extras(true);
+            orion::algorithm::search::set_include_extras(true);
 
             // ── Summary table ──
             println!(
@@ -2754,9 +2756,9 @@ fn run_ablation(dataset: &Dataset, k: usize) {
                 "threads": num_threads,
                 "search_list_sizes": search_list_sizes,
                 "default_cascade": {
-                    "prefilter":  format!("{:?}", scfg.prefilter),
-                    "admission":  format!("{:?}", scfg.admission),
-                    "rerank":     format!("{:?}", scfg.rerank),
+                    "prefilter":  format!("{:?}", ocfg.prefilter),
+                    "admission":  format!("{:?}", ocfg.admission),
+                    "rerank":     format!("{:?}", ocfg.rerank),
                 },
                 "origin":         to_json(&origin_data),
                 "full":           to_json(&full_data),
@@ -2798,13 +2800,13 @@ fn run_ablation(dataset: &Dataset, k: usize) {
 ///   * **(no-rerank − full) at iso-L**          → rerank's QPS cost (and recall delta)
 ///   * **(admission-only − full)**              → combined effect of both auxiliary stages
 ///
-/// All four variants share one built `StagedDiskANN` and one
+/// All four variants share one built `Orion` and one
 /// `calibrate()` call so thermal / cache / build-jitter drift can't
 /// account for the QPS gaps.
 fn run_cascade_ablation(dataset: &Dataset, k: usize) {
     use rayon::prelude::*;
-    use staged_diskann::{
-        build_diskann_index, StagedDiskANN, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_960,
+    use orion::{
+        build_diskann_index, Orion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_960,
     };
     use std::time::Instant;
 
@@ -2822,7 +2824,7 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
         (1536, _) => "wiki_ada_1M",
         _ => "unknown",
     };
-    let scfg = crate::config::load_dataset_config(dim_name).staged;
+    let ocfg = crate::config::load_dataset_config(dim_name).orion;
     let num_threads = 8;
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -2847,38 +2849,38 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
                 arr
             }).collect();
 
-            // ── Build or load StagedDiskANN once (shared across all 4 variants). ──
+            // ── Build or load Orion once (shared across all 4 variants). ──
             //
-            // Cache resolution mirrors `staged_diskann.rs` bin's PA-mode
+            // Cache resolution mirrors `orion.rs` bin's PA-mode
             // naming so artifacts are interchangeable: once the bin has
-            // populated `cache/staged_parlayann/<ds>_n…_r…_l…_a…_ex…_pct60.{bin,pgraph}`,
+            // populated `cache/orion_parlayann/<ds>_n…_r…_l…_a…_ex…_pct60.{bin,pgraph}`,
             // this benchmark loads the same graph in ~1–3s instead of
             // rebuilding for 30–120s. Three paths, in priority order:
             //   1. `.bin`+`.pgraph` on disk        → `load_from_cache` (fast)
-            //   2. `STAGED_STAGED_FILE` env set    → import PA `.staged`, save to cache
+            //   2. `ORION_STAGED_FILE` env set    → import PA `.staged`, save to cache
             //   3. neither                          → in-process Vamana, save to cache
             //
             // This makes the measured QPS reflect the *steady-state*
             // production setup (graph loaded once at startup, kept hot)
             // rather than first-launch + cold build.
-            let local_pct: usize = std::env::var("STAGED_LOCAL_PCT")
+            let local_pct: usize = std::env::var("ORION_LOCAL_PCT")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .filter(|&v| (1..=100).contains(&v))
                 .unwrap_or(60);
-            let alpha_tag = format!("{:.2}", scfg.alpha).replace('.', "_");
-            let cache_dir = std::path::PathBuf::from("cache/staged_parlayann");
+            let alpha_tag = format!("{:.2}", ocfg.alpha).replace('.', "_");
+            let cache_dir = std::path::PathBuf::from("cache/orion_parlayann");
             let cache_path = cache_dir.join(format!(
                 "{}_n{}_r{}_l{}_a{}_ex{}_pct{}.bin",
-                dim_name, num_points, scfg.graph_degree, scfg.build_search_list_size,
-                alpha_tag, scfg.max_extra, local_pct,
+                dim_name, num_points, ocfg.graph_degree, ocfg.build_search_list_size,
+                alpha_tag, ocfg.max_extra, local_pct,
             ));
             std::fs::create_dir_all(&cache_dir).ok();
             let pgraph_path = cache_path.with_extension("pgraph");
 
             println!(
-                "StagedDiskANN ({}-dim, alpha={}, default cascade: {:?}/{:?}/{:?})...",
-                $N, scfg.alpha, scfg.prefilter, scfg.admission, scfg.rerank
+                "Orion ({}-dim, alpha={}, default cascade: {:?}/{:?}/{:?})...",
+                $N, ocfg.alpha, ocfg.prefilter, ocfg.admission, ocfg.rerank
             );
             let t_build = Instant::now();
             // All graph load/build wrapped in `pool.install` so the
@@ -2886,15 +2888,15 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
             // sees our 8-thread pool, not the global all-cores pool.
             // Keeps build-phase thermal/contention profile consistent
             // with the measurement phase.
-            let staged: StagedDiskANN<$N> = pool.install(|| {
+            let idx: Orion<$N> = pool.install(|| {
                 if cache_path.exists() && pgraph_path.exists() {
                     println!("  → cache hit: loading PhasedGraph from {:?}", pgraph_path);
                     let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                    let mut idx = StagedDiskANN::<$N>::load_from_cache(&cache_path, empty_ds)
+                    let mut idx = Orion::<$N>::load_from_cache(&cache_path, empty_ds)
                         .expect("load_from_cache failed");
                     idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
                     idx
-                } else if let Ok(staged_file_path) = std::env::var("STAGED_STAGED_FILE") {
+                } else if let Ok(staged_file_path) = std::env::var("ORION_STAGED_FILE") {
                     println!(
                         "  → importing ParlayANN .staged from {} (cache will be \
                          written to {:?})",
@@ -2905,34 +2907,34 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
                     ).expect("parlayann_bridge::load_from_staged_file failed");
                     let entry = input.entry_point;
                     // Use header's max_extra (the variable per-node count cap
-                    // from the C++ partition rule) rather than scfg's static
+                    // from the C++ partition rule) rather than ocfg's static
                     // value — keeps the imported graph faithful.
                     let max_extra_from_file = input.max_extra as usize;
                     let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                    let mut idx = StagedDiskANN::<$N>::new(
+                    let mut idx = Orion::<$N>::new(
                         empty_ds, &input.partitions, entry,
-                        scfg.graph_degree, max_extra_from_file,
+                        ocfg.graph_degree, max_extra_from_file,
                         None, None, Some(cache_path.clone()), true,
                     );
                     idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
                     idx
                 } else {
                     println!(
-                        "  → no PA cache / STAGED_STAGED_FILE — building Vamana \
+                        "  → no PA cache / ORION_STAGED_FILE — building Vamana \
                          in-process. Will save to {:?} for subsequent runs.",
                         pgraph_path,
                     );
                     let result = build_diskann_index(
-                        &flat_base, num_points, dimension, scfg.alpha,
-                        scfg.graph_degree, scfg.build_search_list_size as u32,
-                        false, None, None, true, scfg.max_extra,
+                        &flat_base, num_points, dimension, ocfg.alpha,
+                        ocfg.graph_degree, ocfg.build_search_list_size as u32,
+                        false, None, None, true, ocfg.max_extra,
                     ).expect("build failed");
                     let entry = result.entry_point;
                     drop(result.index);
                     let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                    let mut idx = StagedDiskANN::<$N>::new(
+                    let mut idx = Orion::<$N>::new(
                         empty_ds, &result.partitions, entry,
-                        scfg.graph_degree, scfg.max_extra,
+                        ocfg.graph_degree, ocfg.max_extra,
                         None, None, Some(cache_path.clone()), true,
                     );
                     idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
@@ -2943,7 +2945,7 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
 
             // Calibrate once with the default cascade settings.
             let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
-            let calib = staged.calibrate(&calib_qs, 48, 5).expect("calibrate failed");
+            let calib = idx.calibrate(&calib_qs, 48, 5).expect("calibrate failed");
             let thr = calib.threshold;
             let ee = calib.early_exit_limit;
             println!("Calibrated: threshold={:.2}, early_exit_limit={}\n", thr, ee);
@@ -2957,34 +2959,34 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
             // so the rayon-parallel KMeans/centroid kernels respect
             // our 8-thread pool rather than the global all-cores pool.
             pool.install(|| {
-                match scfg.admission {
+                match ocfg.admission {
                     crate::runner::cascade::AdmissionChoice::L2U8 => {
-                        let _ = staged.ensure_quantized_dataset();
+                        let _ = idx.ensure_quantized_dataset();
                     }
                     crate::runner::cascade::AdmissionChoice::L2U16 => {
-                        let _ = staged.ensure_quantized_dataset_l2_u16();
+                        let _ = idx.ensure_quantized_dataset_l2_u16();
                     }
                     crate::runner::cascade::AdmissionChoice::L2Kt => {
-                        let _ = staged.ensure_quantized_dataset_l2_kt();
+                        let _ = idx.ensure_quantized_dataset_l2_kt();
                     }
                     crate::runner::cascade::AdmissionChoice::MipsI8 => {
-                        let _ = staged.ensure_quantized_dataset_mips();
+                        let _ = idx.ensure_quantized_dataset_mips();
                     }
                     crate::runner::cascade::AdmissionChoice::MipsI16 => {
-                        let _ = staged.ensure_quantized_dataset_mips_i16();
+                        let _ = idx.ensure_quantized_dataset_mips_i16();
                     }
                     crate::runner::cascade::AdmissionChoice::AdsF32 => {}
                 }
-                match scfg.prefilter {
+                match ocfg.prefilter {
                     PrefilterChoice::None => {}
                     PrefilterChoice::Jl => {
-                        let _ = staged.ensure_quantized_dataset_jl();
+                        let _ = idx.ensure_quantized_dataset_jl();
                     }
                     PrefilterChoice::JlHadamard => {
-                        let _ = staged.ensure_quantized_dataset_jl_hadamard();
+                        let _ = idx.ensure_quantized_dataset_jl_hadamard();
                     }
                     PrefilterChoice::Rabitq => {
-                        let _ = staged.ensure_quantized_dataset_rabitq();
+                        let _ = idx.ensure_quantized_dataset_rabitq();
                     }
                 }
             });
@@ -2998,14 +3000,14 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
             // prefetchers + the rayon worker pool, and pages in the
             // cascade-specific sidecars (different prefilter/rerank choices
             // touch different byte regions). Mirrors the warmup pattern in
-            // `staged_diskann.rs::sweep_one_cascade` so cascade-ablation QPS
-            // is comparable with the published staged_sweep numbers.
+            // `orion.rs::sweep_one_cascade` so cascade-ablation QPS
+            // is comparable with the published orion numbers.
             let warmup_l = *search_list_sizes.first().unwrap_or(&16);
             let measure = |label: &str, pre: PrefilterChoice, rerank: RerankChoice|
                 -> Vec<(f64, f64)>
             {
                 println!("  [{label}] prefilter={:?}, admission={:?}, rerank={:?}",
-                    pre, scfg.admission, rerank);
+                    pre, ocfg.admission, rerank);
                 // Single warmup pass at the smallest L — cheap enough that
                 // it doesn't materially extend the run, deep enough that
                 // every page the timed sweep will touch gets brought into
@@ -3013,8 +3015,8 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
                 pool.install(|| {
                     queries.par_iter().for_each(|q| {
                         let _ = search_compose::<$N>(
-                            &staged, q, k, warmup_l, 5, thr, ee,
-                            pre, scfg.admission, rerank,
+                            &idx, q, k, warmup_l, 5, thr, ee,
+                            pre, ocfg.admission, rerank,
                         );
                     });
                 });
@@ -3028,8 +3030,8 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
                         let results: Vec<Vec<u32>> = pool.install(|| {
                             queries.par_iter().map(|q| {
                                 search_compose::<$N>(
-                                    &staged, q, k, sls, 5, thr, ee,
-                                    pre, scfg.admission, rerank,
+                                    &idx, q, k, sls, 5, thr, ee,
+                                    pre, ocfg.admission, rerank,
                                 )
                                 .unwrap_or_default()
                             }).collect()
@@ -3047,9 +3049,9 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
 
             // ── Four variants. ──
             println!("\nRunning cascade-stage ablation sweep...\n");
-            let full_data           = measure("full",            scfg.prefilter,  scfg.rerank);
-            let no_pf_data          = measure("no-prefilter",    PrefilterChoice::None, scfg.rerank);
-            let no_rerank_data      = measure("no-rerank",       scfg.prefilter,  RerankChoice::None);
+            let full_data           = measure("full",            ocfg.prefilter,  ocfg.rerank);
+            let no_pf_data          = measure("no-prefilter",    PrefilterChoice::None, ocfg.rerank);
+            let no_rerank_data      = measure("no-rerank",       ocfg.prefilter,  RerankChoice::None);
             let admission_only_data = measure("admission-only",  PrefilterChoice::None, RerankChoice::None);
 
             // ── Print summary table. ──
@@ -3080,9 +3082,9 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
                 "threads": num_threads,
                 "search_list_sizes": search_list_sizes,
                 "default_cascade": {
-                    "prefilter":  format!("{:?}", scfg.prefilter),
-                    "admission":  format!("{:?}", scfg.admission),
-                    "rerank":     format!("{:?}", scfg.rerank),
+                    "prefilter":  format!("{:?}", ocfg.prefilter),
+                    "admission":  format!("{:?}", ocfg.admission),
+                    "rerank":     format!("{:?}", ocfg.rerank),
                 },
                 "full":            to_json(&full_data),
                 "no_prefilter":    to_json(&no_pf_data),

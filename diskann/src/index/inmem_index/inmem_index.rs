@@ -62,7 +62,7 @@ where
     /// mmap-backed storage for `(location, pruned_id)` pairs per anchor.
     /// OS page cache manages residency; lock-free per-slot atomic append.
     /// Not tracked by Rust allocator — heap peak stays low.
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     pub candidate_sets: Option<crate::model::MmapAnchorSlab>,
 }
 
@@ -88,11 +88,11 @@ where
         let query_scratch_queue = ArcConcurrentBoxedQueue::<InMemQueryScratch<T, N>>::new();
         let delete_set = RwLock::new(HashSet::<u32>::new());
 
-        #[cfg(feature = "staged_diskann")]
+        #[cfg(feature = "orion")]
         let candidate_sets = if config.index_write_parameter.compute_candidate_sets {
             let max_pairs = config.index_write_parameter.max_degree as usize * 2;
             let tmp_path = std::env::temp_dir()
-                .join(format!("staged_diskann_mmap_{}.bin", std::process::id()));
+                .join(format!("orion_mmap_{}.bin", std::process::id()));
             Some(
                 crate::model::MmapAnchorSlab::new(&tmp_path, total_internal_points, max_pairs)
                     .expect("MmapAnchorSlab creation failed"),
@@ -113,7 +113,7 @@ where
             num_active_pts: 0,
             query_scratch_queue,
             delete_set,
-            #[cfg(feature = "staged_diskann")]
+            #[cfg(feature = "orion")]
             candidate_sets,
         })
     }
@@ -203,7 +203,7 @@ where
             )
         })?;
 
-        #[cfg(feature = "staged_diskann")]
+        #[cfg(feature = "orion")]
         {
             let (new_neighbors, dists) =
                 self.search_for_point_and_prune_with_dists(scratch, vertex_id)?;
@@ -212,7 +212,7 @@ where
             assert!(guard.size() <= self.configuration.index_write_parameter.max_degree as usize);
             drop(guard);
         }
-        #[cfg(not(feature = "staged_diskann"))]
+        #[cfg(not(feature = "orion"))]
         {
             let new_neighbors = self.search_for_point_and_prune(scratch, vertex_id)?;
             self.update_vertex_with_neighbors(vertex_id, new_neighbors)?;
@@ -238,7 +238,7 @@ where
         Ok(())
     }
 
-    #[cfg(not(feature = "staged_diskann"))]
+    #[cfg(not(feature = "orion"))]
     fn update_vertex_with_neighbors(
         &self,
         vertex_id: u32,
@@ -250,7 +250,7 @@ where
         Ok(())
     }
 
-    #[cfg(not(feature = "staged_diskann"))]
+    #[cfg(not(feature = "orion"))]
     fn search_for_point_and_prune(
         &self,
         scratch: &mut InMemQueryScratch<T, N>,
@@ -284,7 +284,7 @@ where
 
     /// Like `search_for_point_and_prune` but also returns per-neighbor distances.
     /// The pruned_list preserves occlude_list order (distance ascending from vertex_id).
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     fn search_for_point_and_prune_with_dists(
         &self,
         scratch: &mut InMemQueryScratch<T, N>,
@@ -471,7 +471,7 @@ where
                 );
                 self.prune_neighbors(vertex_id, &mut dummy_pool, &mut new_out_neighbors, scratch)?;
 
-                #[cfg(feature = "staged_diskann")]
+                #[cfg(feature = "orion")]
                 {
                     let dists: Vec<f32> = new_out_neighbors
                         .iter()
@@ -487,7 +487,7 @@ where
                         .write_vertex_and_neighbors(vertex_id)?
                         .set_neighbors_sorted(new_out_neighbors, dists);
                 }
-                #[cfg(not(feature = "staged_diskann"))]
+                #[cfg(not(feature = "orion"))]
                 {
                     self.final_graph
                         .write_vertex_and_neighbors(vertex_id)?
@@ -676,7 +676,7 @@ where
     ///    add `n` + all pruned_ids from `candidate_sets[n]` where location == `origin`
     ///
     /// Uses flat sorted `Vec<(location, pruned_id)>` per anchor for cache-friendly lookup.
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     pub fn extract_candidate_sets(&mut self) -> ANNResult<Vec<StdHashSet<u32>>> {
         let slab = self.candidate_sets.as_mut().ok_or_else(|| {
             ANNError::log_index_error("Candidate sets have not been built".to_string())
@@ -745,7 +745,7 @@ where
     ///
     /// The caller should `drop` the index after this call to free the
     /// `InmemDataset` and scratch queues.
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     /// Extract InMemoryGraph + candidate_sets in a memory-efficient pipeline:
     ///
     /// 1. Sort each node's neighbors by distance in-place (needs dataset).
@@ -781,7 +781,7 @@ where
     /// 1. Snapshot InMemoryGraph → flat Vec (lock-free), drop InMemoryGraph.
     /// 2. Sort slab for sequential access during the per-node scan.
     /// 3. Per-node: build combined list, sort, partition by top-X% rule.
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     pub fn extract_graph_and_candidates(
         &mut self,
         max_extra: usize,
@@ -952,7 +952,7 @@ where
 
     /// Sort each node's neighbor list by distance in-place.
     /// Must be called while the dataset is still alive.
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     pub fn sort_neighbors_by_distance_in_place(&self) -> ANNResult<()> {
         let metric = self.configuration.dist_metric;
         let num_pts = self.num_active_pts;
@@ -979,7 +979,7 @@ where
     }
 
     /// Free the candidate set slab.
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     pub fn drop_candidate_slab(&mut self) {
         self.candidate_sets = None;
     }
@@ -1227,7 +1227,7 @@ where
         self.start
     }
 
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     fn extract_candidate_sets(&mut self) -> Option<Vec<StdHashSet<u32>>> {
         InmemIndex::extract_candidate_sets(self).ok()
     }
@@ -1240,7 +1240,7 @@ where
         std::mem::replace(&mut self.final_graph, InMemoryGraph::new(0, max_degree))
     }
 
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     fn extract_graph_and_candidates(
         &mut self,
         max_extra: usize,
@@ -1248,7 +1248,7 @@ where
         InmemIndex::extract_graph_and_candidates(self, max_extra)
     }
 
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     fn drop_candidate_slab(&mut self) {
         InmemIndex::drop_candidate_slab(self)
     }

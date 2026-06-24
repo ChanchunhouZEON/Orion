@@ -1,0 +1,29 @@
+[package]
+name = "orion"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+indicatif = ["dep:indicatif"]
+
+[dependencies]
+vector = { path = "../vector" }
+diskann = { path = "../diskann", features = ["orion"]}
+rand = { workspace = true }
+rayon = { workspace = true }
+crossbeam = { workspace = true }
+ndarray = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true}
+memmap2 = { workspace = true }
+thiserror = { workspace = true }
+byteorder = { workspace = true }
+indicatif = { workspace = true, optional = true }
+hashbrown = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+anyhow = "1"
+tokio = { workspace = true }
+futures = { workspace = true }
+

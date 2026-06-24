@@ -7,11 +7,11 @@ delta is the `compute_candidate_sets` flag that drives the per-node
 60/40 partition pass.
 
   * **Left** — per-dataset trial-range box at the propagated σ around
-    the `Staged_total / DiskANN` ratio. No baseline bar — the box itself
+    the `Orion_total / DiskANN` ratio. No baseline bar — the box itself
     *is* the range. Rounded both ends, filled in the dataset's palette
     colour; a thin horizontal tick marks the mean. Reference line at
     y = 1.0 makes the parity claim land at a glance.
-  * **Right** — `staged_overhead / DiskANN` ratio as a percentage,
+  * **Right** — `orion_overhead / DiskANN` ratio as a percentage,
     rounded bars in the same per-dataset palette colour. The headline
     is "sub-1 % on every dataset"; a y = 1 % reference line gives the
     eye the threshold for free.
@@ -40,10 +40,10 @@ def load_build(name):
         return {
             'diskann_s': d['diskann_s'],
             'diskann_s_std': d.get('diskann_s_std', 0.0),
-            'staged_graph_s': d['staged_graph_s'],
-            'staged_graph_s_std': d.get('staged_graph_s_std', 0.0),
-            'staged_overhead_s': d['staged_overhead_s'],
-            'staged_overhead_s_std': d.get('staged_overhead_s_std', 0.0),
+            'orion_graph_s': d['orion_graph_s'],
+            'orion_graph_s_std': d.get('orion_graph_s_std', 0.0),
+            'orion_overhead_s': d['orion_overhead_s'],
+            'orion_overhead_s_std': d.get('orion_overhead_s_std', 0.0),
             'alpha': d.get('alpha'),
         }
     return None
@@ -63,7 +63,7 @@ short_labels = [
 # Paper figure: single panel — the left "Builds Match Within Trial
 # Noise" ratio plot. The right "Extras Pass Is Sub-1%" subplot was
 # useful in earlier iterations but the same conclusion is implicit
-# in the left panel's near-1.0 ratio (Staged/DiskANN build ≈ 1×),
+# in the left panel's near-1.0 ratio (Orion/DiskANN build ≈ 1×),
 # so we drop it here to keep the paper figure dense.
 fig, ax_left = plt.subplots(1, 1, figsize=(7, 5.5))
 axes = [ax_left, None]
@@ -74,9 +74,9 @@ ds_colors = [DATASET_COLORS.get(n, PALETTE['grey']) for n, _ in present]
 
 da_mean = np.array([diags[n]['build']['diskann_s'] for n, _ in present])
 da_std  = np.array([diags[n]['build']['diskann_s_std'] for n, _ in present])
-sg_mean = np.array([diags[n]['build']['staged_graph_s'] for n, _ in present])
-sg_std  = np.array([diags[n]['build']['staged_graph_s_std'] for n, _ in present])
-so_mean = np.array([diags[n]['build']['staged_overhead_s'] for n, _ in present])
+sg_mean = np.array([diags[n]['build']['orion_graph_s'] for n, _ in present])
+sg_std  = np.array([diags[n]['build']['orion_graph_s_std'] for n, _ in present])
+so_mean = np.array([diags[n]['build']['orion_overhead_s'] for n, _ in present])
 
 
 class TrialRangeBox(PathPatch):
@@ -175,7 +175,7 @@ def trial_range_box(ax, x_center, y_lo, y_hi, color, *, width=0.5,
                 zorder=4)
 
 
-# ── Left: trial-range boxes around the Staged/DiskANN ratio (no bars). ──
+# ── Left: trial-range boxes around the Orion/DiskANN ratio (no bars). ──
 ax = axes[0]
 st_total      = sg_mean + so_mean
 ratio         = st_total / da_mean
@@ -198,7 +198,7 @@ handles_left = [rounded_patch(c, alpha=0.85, label=t)
                 for (_, t), c in zip(present, ds_colors)]
 
 ax.set_xticks(x); ax.set_xticklabels(short_labels)
-ax.set_ylabel('Build-time ratio (Staged / DiskANN)\nat matched α', fontsize=11)
+ax.set_ylabel('Build-time ratio (Orion / DiskANN)\nat matched α', fontsize=11)
 ax.set_title('Builds Match Within Trial Noise', fontweight='bold')
 make_legend(ax, handles_left, fontsize=10)
 style_ax(ax)

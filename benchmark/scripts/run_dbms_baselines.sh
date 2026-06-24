@@ -9,7 +9,7 @@
 # Phase 2: For datasets that don't have the older HNSW / FAISS / Annoy
 #          rows in their baseline JSON yet, run baseline_comparison.py
 #          --no-rust (adds hnswlib + reuses the Rust series from
-#          sweep_staged_vs_parlayann_<ds>.json) + additional_baselines
+#          sweep_orion_vs_parlayann_<ds>.json) + additional_baselines
 #          (adds FAISS IVF-Flat / IVF-PQ + Annoy) so the panel is
 #          complete.
 #

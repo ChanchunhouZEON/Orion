@@ -12,8 +12,8 @@ use super::AdjacencyList;
 pub struct VertexAndNeighbors {
     pub vertex_id: u32,
     neighbors: AdjacencyList,
-    /// Parallel distance array (sorted ascending), maintained under `staged_diskann`.
-    #[cfg(feature = "staged_diskann")]
+    /// Parallel distance array (sorted ascending), maintained under `orion`.
+    #[cfg(feature = "orion")]
     pub neighbor_dists: Vec<f32>,
 }
 
@@ -22,18 +22,18 @@ impl VertexAndNeighbors {
         Self {
             vertex_id: id,
             neighbors: AdjacencyList::for_range(range),
-            #[cfg(feature = "staged_diskann")]
+            #[cfg(feature = "orion")]
             neighbor_dists: Vec::with_capacity(range),
         }
     }
 
     pub fn new(vertex_id: u32, neighbors: AdjacencyList) -> Self {
-        #[cfg(feature = "staged_diskann")]
+        #[cfg(feature = "orion")]
         let neighbor_dists = Vec::new();
         Self {
             vertex_id,
             neighbors,
-            #[cfg(feature = "staged_diskann")]
+            #[cfg(feature = "orion")]
             neighbor_dists,
         }
     }
@@ -46,7 +46,7 @@ impl VertexAndNeighbors {
     #[inline(always)]
     pub fn set_neighbors(&mut self, new_neighbors: AdjacencyList) {
         self.neighbors = new_neighbors;
-        #[cfg(feature = "staged_diskann")]
+        #[cfg(feature = "orion")]
         {
             self.neighbor_dists.clear();
         }
@@ -54,7 +54,7 @@ impl VertexAndNeighbors {
 
     /// Set neighbors with parallel distance array (already sorted by distance ascending).
     /// Used after `prune_neighbors` where the pruned list preserves pool order.
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     pub fn set_neighbors_sorted(&mut self, new_neighbors: AdjacencyList, dists: Vec<f32>) {
         debug_assert_eq!(new_neighbors.len(), dists.len());
         self.neighbors = new_neighbors;
@@ -66,8 +66,8 @@ impl VertexAndNeighbors {
         &self.neighbors
     }
 
-    /// Get the parallel distance array (only populated under `staged_diskann`).
-    #[cfg(feature = "staged_diskann")]
+    /// Get the parallel distance array (only populated under `orion`).
+    #[cfg(feature = "orion")]
     #[inline(always)]
     pub fn get_neighbor_dists(&self) -> &[f32] {
         &self.neighbor_dists
@@ -80,15 +80,15 @@ impl VertexAndNeighbors {
     }
 
     /// Consume self and return (neighbor_ids, distances).
-    /// Under `staged_diskann`, distances are maintained during build;
+    /// Under `orion`, distances are maintained during build;
     /// without the feature, the distance vec is empty.
     #[inline(always)]
     pub fn into_neighbors_and_dists(self) -> (Vec<u32>, Vec<f32>) {
-        #[cfg(feature = "staged_diskann")]
+        #[cfg(feature = "orion")]
         {
             (self.neighbors.into_vec(), self.neighbor_dists)
         }
-        #[cfg(not(feature = "staged_diskann"))]
+        #[cfg(not(feature = "orion"))]
         {
             (self.neighbors.into_vec(), Vec::new())
         }
@@ -102,7 +102,7 @@ impl VertexAndNeighbors {
         let nbrs = self.neighbors.into_vec();
         let degree = nbrs.len();
 
-        #[cfg(feature = "staged_diskann")]
+        #[cfg(feature = "orion")]
         {
             let dists = self.neighbor_dists;
             if dists.len() == degree && degree >= 3 {
@@ -125,7 +125,7 @@ impl VertexAndNeighbors {
         (nbrs, degree / 2)
     }
 
-    /// Original unsorted add — used when `staged_diskann` is NOT enabled.
+    /// Original unsorted add — used when `orion` is NOT enabled.
     pub fn add_to_neighbors(&mut self, node_id: u32, range: u32) -> Option<Vec<u32>> {
         if self.neighbors.contains(&node_id) {
             return None;
@@ -153,7 +153,7 @@ impl VertexAndNeighbors {
     ///
     /// Returns `Some(copy)` if degree overflows (caller should re-prune),
     /// `None` if inserted successfully within capacity.
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     pub fn add_sorted(&mut self, node_id: u32, distance: f32, range: u32) -> Option<Vec<u32>> {
         if self.neighbors.contains(&node_id) {
             return None;
@@ -232,7 +232,7 @@ mod vertex_and_neighbors_tests {
         assert_eq!(neighbors.neighbors, AdjacencyList::from(vec![1, 2]));
     }
 
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     #[test]
     fn test_add_sorted() {
         let mut vn = VertexAndNeighbors::for_range(0, 10);
