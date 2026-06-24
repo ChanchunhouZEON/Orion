@@ -43,7 +43,7 @@ pub struct InMemQueryScratch<T, const N: usize> {
 
     /// Local buffer for (anchor_id, pruned_id) pairs accumulated in `occlude_list`.
     /// Reused across calls to avoid per-call HashMap allocation.
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     pub candidate_buffer: Vec<(u32, u32)>,
 }
 
@@ -97,7 +97,7 @@ impl<T: Default + Copy, const N: usize> InMemQueryScratch<T, N> {
             expanded_neighbors_vector,
             occlude_list_output,
             node_visited_robinset,
-            #[cfg(feature = "staged_diskann")]
+            #[cfg(feature = "orion")]
             candidate_buffer: Vec::with_capacity(max_occlusion_size as usize),
         };
 
@@ -124,7 +124,7 @@ impl<T: Default + Copy, const N: usize> Scratch for InMemQueryScratch<T, N> {
         self.expanded_nodes_set.clear();
         self.expanded_neighbors_vector.clear();
         self.occlude_list_output.clear();
-        #[cfg(feature = "staged_diskann")]
+        #[cfg(feature = "orion")]
         self.candidate_buffer.clear();
     }
 }

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Parse ParlayANN `neighbors` stdout + StagedDiskANN sweep stdout +
+"""Parse ParlayANN `neighbors` stdout + Orion sweep stdout +
 DiskANN sweep stdout from a back-to-back three-engine run, compute
 per-recall medians across NUM_RUNS, and emit a single JSON consumable
 by the comparison plot script.
 
 Input files (inside `--tmpdir`):
-  staged_{1..N}.out   — full stdout from `cargo run … staged_diskann`
+  orion_{1..N}.out   — full stdout from `cargo run … orion`
                           (lines like `  L=  16  R@10=0.9095  QPS=100291`)
   diskann_{1..N}.out  — full stdout from `cargo run … diskann_sweep`
-                          (same headline format as staged)
+                          (same headline format as orion)
   pa_{1..N}.out       — full stdout from `./neighbors …`
                           (lines like `For 10@10 recall = 0.529, QPS = 1.969e+05, …`)
 
@@ -17,15 +17,15 @@ Output JSON:
     "dataset": "sift",
     "num_points": 1000000,
     "num_runs": N,
-    "staged_runs":    [[[recall, qps], …], …],
-    "staged":         [[recall, qps], …],
+    "orion_runs":    [[[recall, qps], …], …],
+    "orion":         [[recall, qps], …],
     "diskann_runs":   [[[recall, qps], …], …],
     "diskann":        [[recall, qps], …],
     "parlayann_runs": […],
     "parlayann":      […],
   }
 
-Median is taken per L index for staged/diskann (fixed L schedule
+Median is taken per L index for orion/diskann (fixed L schedule
 across runs) and per row index for ParlayANN (fixed Q schedule).
 DiskANN files are optional — if absent, the diskann series is omitted
 so the old two-engine consumers still work.
@@ -38,7 +38,7 @@ import statistics
 from pathlib import Path
 
 
-STAGED_RE = re.compile(
+ORION_RE = re.compile(
     r"^\s*L=\s*(\d+)\s+R@10=([0-9.]+)\s+QPS=(\d+)"
 )
 PA_RE = re.compile(
@@ -46,10 +46,10 @@ PA_RE = re.compile(
 )
 
 
-def parse_staged(path: Path) -> list[tuple[float, float]]:
+def parse_orion(path: Path) -> list[tuple[float, float]]:
     out = []
     for line in path.read_text().splitlines():
-        m = STAGED_RE.match(line)
+        m = ORION_RE.match(line)
         if m:
             _L, r, q = m.group(1), float(m.group(2)), float(m.group(3))
             out.append((r, q))
@@ -93,17 +93,17 @@ def main():
 
     tmpdir = Path(args.tmpdir)
 
-    staged_runs = [parse_staged(tmpdir / f"staged_{i}.out") for i in range(1, args.num_runs + 1)]
+    orion_runs = [parse_orion(tmpdir / f"orion_{i}.out") for i in range(1, args.num_runs + 1)]
     pa_runs = [parse_pa(tmpdir / f"pa_{i}.out") for i in range(1, args.num_runs + 1)]
 
     # DiskANN files are optional — older two-engine sweeps don't write them.
     diskann_paths = [tmpdir / f"diskann_{i}.out" for i in range(1, args.num_runs + 1)]
     have_diskann = all(p.exists() for p in diskann_paths)
     diskann_runs = (
-        [parse_staged(p) for p in diskann_paths] if have_diskann else []
+        [parse_orion(p) for p in diskann_paths] if have_diskann else []
     )
 
-    staged_med = median_by_slot(staged_runs)
+    orion_med = median_by_slot(orion_runs)
     pa_med = median_by_slot(pa_runs)
     diskann_med = median_by_slot(diskann_runs) if have_diskann else []
 
@@ -111,8 +111,8 @@ def main():
         "dataset": args.dataset,
         "num_points": args.num_points,
         "num_runs": args.num_runs,
-        "staged_runs": staged_runs,
-        "staged": staged_med,
+        "orion_runs": orion_runs,
+        "orion": orion_med,
         "parlayann_runs": pa_runs,
         "parlayann": pa_med,
     }
@@ -123,7 +123,7 @@ def main():
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(out, indent=2))
     print(f"Saved {args.out}")
-    print(f"  staged: {len(staged_med)} points, QPS range [{min(p[1] for p in staged_med):.0f}, {max(p[1] for p in staged_med):.0f}]")
+    print(f"  orion: {len(orion_med)} points, QPS range [{min(p[1] for p in orion_med):.0f}, {max(p[1] for p in orion_med):.0f}]")
     if have_diskann:
         print(f"  diskann: {len(diskann_med)} points, QPS range [{min(p[1] for p in diskann_med):.0f}, {max(p[1] for p in diskann_med):.0f}]")
     print(f"  parlay: {len(pa_med)} points, QPS range [{min(p[1] for p in pa_med):.0f}, {max(p[1] for p in pa_med):.0f}]")

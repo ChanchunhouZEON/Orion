@@ -137,13 +137,13 @@ dependencies = [
  "libc",
  "log",
  "ndarray",
+ "orion",
  "platform",
  "rand",
  "rayon",
  "serde",
  "serde_json",
  "serde_yaml",
- "staged_diskann",
  "thiserror",
  "vector",
 ]
@@ -873,6 +873,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "orion"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "byteorder",
+ "crossbeam",
+ "diskann",
+ "env_logger",
+ "futures",
+ "hashbrown 0.15.5",
+ "indicatif",
+ "log",
+ "memmap2",
+ "ndarray",
+ "rand",
+ "rayon",
+ "serde",
+ "thiserror",
+ "tokio",
+ "vector",
+]
+
+[[package]]
+name = "orion_py"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "diskann",
+ "ndarray",
+ "numpy",
+ "orion",
+ "pyo3",
+ "rayon",
+ "vector",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1238,44 +1276,6 @@ checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "staged_diskann"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bincode",
- "byteorder",
- "crossbeam",
- "diskann",
- "env_logger",
- "futures",
- "hashbrown 0.15.5",
- "indicatif",
- "log",
- "memmap2",
- "ndarray",
- "rand",
- "rayon",
- "serde",
- "thiserror",
- "tokio",
- "vector",
-]
-
-[[package]]
-name = "staged_diskann_py"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "diskann",
- "ndarray",
- "numpy",
- "pyo3",
- "rayon",
- "staged_diskann",
- "vector",
 ]
 
 [[package]]

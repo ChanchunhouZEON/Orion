@@ -20,7 +20,7 @@ use crate::model::graph::AdjacencyList;
 use crate::utils::{file_exists, save_data_in_base_dimensions};
 
 use super::InmemIndex;
-#[cfg(feature = "staged_diskann")]
+#[cfg(feature = "orion")]
 pub const CANDIDATE_SETS_FILE_HEADER_SIZE: usize = 16;
 
 impl<T, const N: usize> InmemIndex<T, N>
@@ -125,13 +125,13 @@ where
         let mut index_size: u64 = 24;
         let mut max_degree: u32 = 0;
 
-        // #[cfg(feature = "staged_diskann")]
+        // #[cfg(feature = "orion")]
         // let mut candidates_offset: u32 = 0;
 
         out.write_all(&index_size.to_le_bytes())?;
         out.write_all(&self.max_observed_degree.to_le_bytes())?;
 
-        // #[cfg(feature = "staged_diskann")]
+        // #[cfg(feature = "orion")]
         // out.write_all(&candidates_offset.to_le_bytes())?;
 
         out.write_all(&self.start.to_le_bytes())?;
@@ -158,8 +158,8 @@ where
             index_size += (std::mem::size_of::<u32>() * (gk as usize + 1)) as u64;
         }
 
-        // Save the candidate sets if `staged_diskann` feature activated
-        // #[cfg(feature = "staged_diskann")]
+        // Save the candidate sets if `orion` feature activated
+        // #[cfg(feature = "orion")]
         // {
         //     candidates_offset = index_size as u32;
         //     if self.candidate_sets.is_some() {
@@ -180,7 +180,7 @@ where
         out.write_all(&index_size.to_le_bytes())?;
         out.write_all(&max_degree.to_le_bytes())?;
 
-        // #[cfg(feature = "staged_diskann")]
+        // #[cfg(feature = "orion")]
         // out.write_all(&candidates_offset.to_le_bytes())?;
 
         out.flush()?;
@@ -261,7 +261,7 @@ where
     ///   - Per node:
     ///       num_candidates: u32
     ///       candidate_ids:  [u32; num_candidates]
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     pub fn save_candidate_sets(&mut self, candidate_sets_file: &str) -> ANNResult<u64> {
         let candidate_sets = self.extract_candidate_sets()?;
 
@@ -306,7 +306,7 @@ where
     ///
     /// Returns the loaded candidate sets as `Vec<HashSet<u32>>`.
     /// The binary format matches what `save_candidate_sets` produces.
-    #[cfg(feature = "staged_diskann")]
+    #[cfg(feature = "orion")]
     pub fn load_candidate_sets(candidate_sets_file: &str) -> ANNResult<Vec<StdHashSet<u32>>> {
         if !file_exists(candidate_sets_file) {
             return Err(ANNError::log_index_error(format!(

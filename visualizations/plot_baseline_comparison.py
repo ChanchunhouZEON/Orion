@@ -5,12 +5,12 @@ Reads:
   * `visualizations/baseline_<ds>.json` — HNSW, FAISS IVF-Flat,
     FAISS IVF-PQ, Annoy (from `baseline_comparison.py` +
     `additional_baselines.py`).
-  * `visualizations/sweep_staged_vs_parlayann_<ds>.json` — Staged,
+  * `visualizations/sweep_orion_vs_parlayann_<ds>.json` — Orion,
     Microsoft Vamana (the `diskann` core crate, in-memory), ParlayANN
-    Vamana (from `sweep_staged_vs_diskann_vs_parlayann.sh`).
+    Vamana (from `sweep_orion_vs_diskann_vs_parlayann.sh`).
 
 Renders one figure: log-QPS vs Recall@10 with all available series.
-StagedDiskANN drawn last so its line stays visually on top.
+Orion drawn last so its line stays visually on top.
 """
 
 import argparse
@@ -30,7 +30,7 @@ from chart_style import PALETTE, PALETTE_VIVID, save_png_and_pdf, style_ax
 VIS_DIR = Path(__file__).resolve().parent
 
 # Each entry: (key, label, color, marker, linewidth, marker_size, zorder).
-# StagedDiskANN gets the boldest line + top zorder; the bit-quantised
+# Orion gets the boldest line + top zorder; the bit-quantised
 # tree-style indices (Annoy) and product-quantised IVF (FAISS IVF-PQ)
 # sit at lower zorder because they overlap each other in the mid-recall
 # band and matter less for the headline narrative.
@@ -43,7 +43,7 @@ SERIES = [
     ("usearch_hnsw",   "USearch HNSW",         "#06B6D4", "p", 1.9, 6.5, 3),
     ("diskann",        "Microsoft Vamana",     PALETTE_VIVID["diskann"], "^", 1.9, 6.0, 3),
     ("parlayann",      "ParlayANN Vamana",     PALETTE_VIVID["parlay"],  "o", 2.0, 6.5, 3),
-    ("staged",         "StagedDiskANN (ours)", PALETTE_VIVID["staged"],  "s", 2.8, 7.5, 5),
+    ("orion",         "Orion (ours)", PALETTE_VIVID["orion"],  "s", 2.8, 7.5, 5),
 ]
 
 # Datasets the script renders. fashion-mnist excluded by design
@@ -60,25 +60,25 @@ HEADLINE_DATASETS = [
 
 
 def load(ds):
-    """Merge baseline_<ds>.json with sweep_staged_vs_parlayann_<ds>.json
+    """Merge baseline_<ds>.json with sweep_orion_vs_parlayann_<ds>.json
     into a single key→[(recall, qps), ...] dict. Sweep-file series take
     precedence (they're the head-to-head 3-engine source of truth)."""
     merged = {}
 
     baseline_path = VIS_DIR / f"baseline_{ds}.json"
-    sweep_path    = VIS_DIR / f"sweep_staged_vs_parlayann_{ds}.json"
+    sweep_path    = VIS_DIR / f"sweep_orion_vs_parlayann_{ds}.json"
 
     if baseline_path.exists():
         baseline = json.loads(baseline_path.read_text())
         for key in ("hnsw", "faiss_ivf_flat", "faiss_ivf_pq", "annoy",
                     "lancedb_hnsw", "usearch_hnsw",
-                    "diskann", "staged", "parlayann"):
+                    "diskann", "orion", "parlayann"):
             if key in baseline:
                 merged[key] = baseline[key]
 
     if sweep_path.exists():
         sweep = json.loads(sweep_path.read_text())
-        for key in ("staged", "diskann", "parlayann"):
+        for key in ("orion", "diskann", "parlayann"):
             if key in sweep:
                 merged[key] = sweep[key]
 
@@ -88,7 +88,7 @@ def load(ds):
 def subsample_series(points, target_count=14):
     """Subsample a sorted-by-recall point list down to ~`target_count`
     representative points while preserving the endpoints. Used for the
-    Staged curve, which sweeps 35 search-list sizes — far more density
+    Orion curve, which sweeps 35 search-list sizes — far more density
     than the other series and visually noisy at thumbnail scale."""
     n = len(points)
     if n <= target_count:
@@ -115,7 +115,7 @@ def render_one(dataset, title_label, *, out_path=None):
 
     fig, ax = plt.subplots(figsize=(9, 5.8))
 
-    staged_drawn = None  # remember the drawn Staged polyline for the arrow annotation
+    orion_drawn = None  # remember the drawn Orion polyline for the arrow annotation
     for key, label, color, marker, lw, msize, zorder in SERIES:
         if key not in series_data:
             continue
@@ -125,12 +125,12 @@ def render_one(dataset, title_label, *, out_path=None):
         # Sort by recall so the polyline doesn't backtrack on the x-axis
         # when an algorithm's parameter sweep crosses itself.
         pts = sorted(pts, key=lambda p: p[0])
-        # Staged has ~35 sweep points — far denser than the other series.
+        # Orion has ~35 sweep points — far denser than the other series.
         # Subsample to ~14 evenly-spaced points so markers don't visually
         # cluster into a band at low / mid recall.
-        if key == "staged":
+        if key == "orion":
             pts = subsample_series(pts, target_count=14)
-            staged_drawn = pts
+            orion_drawn = pts
         rs = [p[0] for p in pts]
         qs = [p[1] for p in pts]
         ax.plot(
@@ -141,25 +141,25 @@ def render_one(dataset, title_label, *, out_path=None):
             zorder=zorder,
         )
 
-    # ── "ours" arrow annotation on the Staged line — mirrors the
+    # ── "ours" arrow annotation on the Orion line — mirrors the
     # treatment in `plot_dataset_all.py` so the figure communicates
     # which curve is ours even in monochrome / accessibility mode. ──
-    if staged_drawn and len(staged_drawn) >= 5:
+    if orion_drawn and len(orion_drawn) >= 5:
         # Anchor the arrow at a mid-band point (not too low, not too
-        # high) where the Staged curve sits well above HNSW / Vamana
+        # high) where the Orion curve sits well above HNSW / Vamana
         # — there's headroom for the label without overlapping other
         # lines.
-        anchor_idx = min(4, len(staged_drawn) - 1)
-        ar_x, ar_y = staged_drawn[anchor_idx]
+        anchor_idx = min(4, len(orion_drawn) - 1)
+        ar_x, ar_y = orion_drawn[anchor_idx]
         ax.annotate(
             "ours",
             xy=(ar_x, ar_y),
             xytext=(ar_x - 0.05, ar_y * 2.1),
-            color=PALETTE_VIVID["staged_d"],
+            color=PALETTE_VIVID["orion_d"],
             fontsize=12, fontweight="bold",
             arrowprops=dict(
                 arrowstyle="->",
-                color=PALETTE_VIVID["staged_d"],
+                color=PALETTE_VIVID["orion_d"],
                 lw=1.7,
             ),
             zorder=6,

@@ -80,13 +80,13 @@ use crate::CACHE_LINE_BYTES;
 /// more in MSHR (no extra gain, no measurable loss).
 ///
 /// +20-27% QPS on GIST L2-KT vs burst=0, recall bit-identical.
-/// Override via `STAGED_DSTREAM_SINK_BURST`; set `0` to disable.
+/// Override via `ORION_DSTREAM_SINK_BURST`; set `0` to disable.
 #[inline]
 fn sink_burst() -> usize {
     use std::sync::OnceLock;
     static BURST: OnceLock<usize> = OnceLock::new();
     *BURST.get_or_init(|| {
-        std::env::var("STAGED_DSTREAM_SINK_BURST")
+        std::env::var("ORION_DSTREAM_SINK_BURST")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .filter(|&v| v <= 64)
@@ -481,7 +481,7 @@ impl<'a, K: DistanceFn, const N: usize> DistanceStream<'a, K, N> {
             // — the asymptotic lookahead becomes `LA + burst × vi`.
             //
             // Branch on `burst > 0` so disabling via
-            // `STAGED_DSTREAM_SINK_BURST=0` is a zero-cost no-op
+            // `ORION_DSTREAM_SINK_BURST=0` is a zero-cost no-op
             // (LLVM folds the OnceLock-derived constant after the
             // first call).
             if burst > 0 {

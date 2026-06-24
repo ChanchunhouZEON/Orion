@@ -1,5 +1,5 @@
 # Enable AVX-512 codegen for the SIMD distance kernels in vector/ and
-# staged_diskann/. Routes every `vector::distance_*` and quantized-
+# orion_diskann/. Routes every `vector::distance_*` and quantized-
 # codec hot-path call to the AVX-512 implementation on x86_64; the
 # aarch64 (NEON) path is unaffected.
 #

@@ -20,7 +20,7 @@ panel by comparing two lines at iso-recall:
   * `full` vs `admission-only`                  → combined contribution
 
 The plot mirrors `plot_baseline_comparison.py`'s log-QPS-vs-recall
-treatment so the staged_diskann figure family stays visually
+treatment so the orion figure family stays visually
 consistent across the paper.
 """
 
@@ -52,7 +52,7 @@ SERIES = [
     ("no_prefilter",   "No prefilter (admission + rerank)",
         PALETTE["green"],  "D", 1.8, 6.5, 3),
     ("full",           "Full cascade (default)",
-        PALETTE_VIVID["staged"], "s", 2.6, 7.5, 5),
+        PALETTE_VIVID["orion"], "s", 2.6, 7.5, 5),
 ]
 
 HEADLINE_DATASETS = [

@@ -37,7 +37,7 @@ fig, axes = plt.subplots(1, 4, figsize=(26, 6.5))
 style_fig(fig)
 axes = axes.reshape(1, 4)
 
-# Per-dataset color pair: lighter = no-ee baseline, solid = staged.
+# Per-dataset color pair: lighter = no-ee baseline, solid = orion.
 color_pairs = {
     'sift': (PALETTE['cyan'],   PALETTE['blue']),
     'gist': (PALETTE['orange'], PALETTE['red']),
@@ -50,21 +50,21 @@ all_step_vals = []
 for di, (name, title) in enumerate(present):
     d = data[name]
     no_ee = d['no_early_exit']['steps']
-    staged = d['staged']['steps']
-    all_step_vals.extend(no_ee + staged)
+    orion = d['orion']['steps']
+    all_step_vals.extend(no_ee + orion)
     c_bl, c_st = color_pairs.get(name, (PALETTE['grey'], PALETTE['blue']))
 
     pos_bl = x + (2 * di - len(present) + 0.5) * (w + gap) - (w + gap) / 2
     pos_st = x + (2 * di - len(present) + 0.5) * (w + gap) + (w + gap) / 2
 
     h_bl = rounded_bars(ax, pos_bl, no_ee, w, c_bl, label=f'{title} no-ee')
-    h_st = rounded_bars(ax, pos_st, staged, w, c_st, label=f'{title} staged')
+    h_st = rounded_bars(ax, pos_st, orion, w, c_st, label=f'{title} orion')
     if h_bl: handles.append(h_bl)
     if h_st: handles.append(h_st)
 
     for j in range(n_L):
-        pct = (staged[j] / no_ee[j] - 1) * 100
-        ax.annotate(f'{pct:+.0f}%', xy=(pos_st[j], staged[j]),
+        pct = (orion[j] / no_ee[j] - 1) * 100
+        ax.annotate(f'{pct:+.0f}%', xy=(pos_st[j], orion[j]),
                     ha='center', va='bottom', fontsize=12, color=c_st, fontweight='bold')
 
 ax.set_xticks(x); ax.set_xticklabels([f'L={l}' for l in L_values])
@@ -82,21 +82,21 @@ all_ndc_vals = []
 for di, (name, title) in enumerate(present):
     d = data[name]
     no_ee = d['no_early_exit']['ndc']
-    staged = d['staged']['ndc']
-    all_ndc_vals.extend(no_ee + staged)
+    orion = d['orion']['ndc']
+    all_ndc_vals.extend(no_ee + orion)
     c_bl, c_st = color_pairs.get(name, (PALETTE['grey'], PALETTE['blue']))
 
     pos_bl = x + (2 * di - len(present) + 0.5) * (w + gap) - (w + gap) / 2
     pos_st = x + (2 * di - len(present) + 0.5) * (w + gap) + (w + gap) / 2
 
     h_bl = rounded_bars(ax, pos_bl, no_ee, w, c_bl, label=f'{title} no-ee')
-    h_st = rounded_bars(ax, pos_st, staged, w, c_st, label=f'{title} staged')
+    h_st = rounded_bars(ax, pos_st, orion, w, c_st, label=f'{title} orion')
     if h_bl: handles2.append(h_bl)
     if h_st: handles2.append(h_st)
 
     for j in range(n_L):
-        pct = (staged[j] / no_ee[j] - 1) * 100
-        ax.annotate(f'{pct:+.0f}%', xy=(pos_st[j], staged[j]),
+        pct = (orion[j] / no_ee[j] - 1) * 100
+        ax.annotate(f'{pct:+.0f}%', xy=(pos_st[j], orion[j]),
                     ha='center', va='bottom', fontsize=12, color=c_st, fontweight='bold')
 
 ax.set_xticks(x); ax.set_xticklabels([f'L={l}' for l in L_values])
@@ -122,7 +122,7 @@ for di, (name, title) in enumerate(present):
     all_g_vals.extend(vals)
     _, c_st = color_pairs.get(name, (PALETTE['grey'], PALETTE['blue']))
     pos = x3 + (di - (len(present) - 1) / 2) * (w3 + gap3)
-    alpha_label = f"α={data[name]['alpha_staged']:.1f}"
+    alpha_label = f"α={data[name]['alpha_orion']:.1f}"
     h = rounded_bars(ax, pos, vals, w3, c_st, label=f'{title} ({alpha_label})')
     if h: handles3.append(h)
 
@@ -141,8 +141,8 @@ for name, title in present:
     _, c_st = color_pairs.get(name, (PALETTE['grey'], PALETTE['blue']))
     marker = 'o' if name == 'sift' else 's'
     for j, l in enumerate(L_values):
-        saved_pct = (1 - d['staged']['steps'][j] / d['no_early_exit']['steps'][j]) * 100
-        recall_loss_pp = (d['no_early_exit']['recall'][j] - d['staged']['recall'][j]) * 100
+        saved_pct = (1 - d['orion']['steps'][j] / d['no_early_exit']['steps'][j]) * 100
+        recall_loss_pp = (d['no_early_exit']['recall'][j] - d['orion']['recall'][j]) * 100
         ax.scatter(saved_pct, recall_loss_pp, s=110, color=c_st, marker=marker,
                    zorder=5, edgecolor='white', linewidth=1.5)
         ax.annotate(f'{title} L={l}', (saved_pct + 0.5, recall_loss_pp),

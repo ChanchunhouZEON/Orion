@@ -10,7 +10,7 @@
 *.ibin
 /data/**/*.bin
 
-/visualizations/staged_diskann/
+/visualizations/orion/
 /visualizations/**/*.json
 /visualizations/__pycache__/
 /*_graphs/
@@ -37,13 +37,13 @@ qemu_*.core
 core.*
 
 # Host bind-mount target for the Colima x86_64 cargo build. The
-# real target dir lives inside the docker volume `staged-cargo-target`;
+# real target dir lives inside the docker volume `orion-cargo-target`;
 # the host-side directory is just an empty mount point that docker
 # auto-creates and we don't want it committed.
 /target-linux/
 
-# Default `StagedDiskANN::new` cache dir — kicks in when the e2e
+# Default `Orion::new` cache dir — kicks in when the e2e
 # integration test fixture doesn't override `cache_base_path`. The
 # dir auto-creates next to the test binary's cwd.
-/staged_diskann/staged_diskann_graphs/
-/staged_diskann_graphs/
+/orion/orion_graphs/
+/orion_graphs/

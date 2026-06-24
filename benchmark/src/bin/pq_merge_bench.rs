@@ -15,7 +15,7 @@
 
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
-use staged_diskann::model::{Neighbor, NeighborPriorityQueue};
+use orion::model::{Neighbor, NeighborPriorityQueue};
 use std::time::Instant;
 
 const SEED: u64 = 0xC0FFEE;

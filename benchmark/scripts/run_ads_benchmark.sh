@@ -5,7 +5,7 @@
 # GIST 1M (the headline ADS-sensitive workload), then re-renders
 # `visualizations/ads_comparison.png` via `plot_ads.py`. All four
 # variants reuse the cascade cache (cache/diskann/*_ads.bin,
-# cache/staged/*_ads.bin) — first invocation pays the full build
+# cache/orion/*_ads.bin) — first invocation pays the full build
 # cost (~6 min); subsequent runs of the same config hit the cache.
 
 set -euo pipefail

@@ -7,7 +7,7 @@ edition = "2021"
 adsampling = { path = "../adsampling" }
 diskann = { path = "../diskann" }
 platform = { path = "../platform" }
-staged_diskann = { path = "../staged_diskann" }
+orion = { path = "../orion" }
 vector = { path = "../vector" }
 anyhow = "1"
 rayon = { workspace = true }

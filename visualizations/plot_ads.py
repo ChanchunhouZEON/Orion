@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4-way ADSampling comparison: DiskANN / DiskANN+ADS / Staged / Staged+ADS."""
+"""4-way ADSampling comparison: DiskANN / DiskANN+ADS / Orion / Orion+ADS."""
 
 import json, os, sys
 import numpy as np
@@ -20,8 +20,8 @@ datasets = [
 variants = [
     ("diskann",     "DiskANN",      PALETTE['cyan'],   'o-',  2.0),
     ("diskann_ads", "DiskANN+ADS",  PALETTE['orange'], 's--', 2.0),
-    ("staged",      "StagedDiskANN",PALETTE['blue'],   'D-',  2.3),
-    ("staged_ads",  "Staged+ADS",   PALETTE['red'],    '^--', 2.3),
+    ("orion",      "Orion",PALETTE['blue'],   'D-',  2.3),
+    ("orion_ads",  "Orion+ADS",   PALETTE['red'],    '^--', 2.3),
 ]
 
 present = [(n, t) for n, t in datasets if os.path.exists(f"visualizations/ads_{n}.json")]

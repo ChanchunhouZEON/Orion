@@ -57,7 +57,7 @@ SERIES = [
     ("no_early_stop", "No early-stop (ee = MAX, extras on)",
         PALETTE["purple"], "X", 1.8, 6.5, 3),
     ("full",          "Full (default cascade + early-stop + extras)",
-        PALETTE_VIVID["staged"], "s", 2.6, 7.5, 5),
+        PALETTE_VIVID["orion"], "s", 2.6, 7.5, 5),
 ]
 
 HEADLINE_DATASETS = [

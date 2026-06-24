@@ -2,11 +2,11 @@
 """
 Baseline comparison & ablation study.
 
-Compares StagedDiskANN against:
+Compares Orion against:
   - DiskANN (Vamana) — our Rust implementation
   - HNSW (hnswlib) — official C++ implementation via Python bindings
 
-Ablation variants of StagedDiskANN:
+Ablation variants of Orion:
   - full: all optimizations enabled (auto-calibrated)
   - no-convergence: epsilon=0 (never switch to reranking)
   - no-early-exit: ee=0 (no early termination)
@@ -165,9 +165,9 @@ def main():
     parser.add_argument(
         "--no-rust", action="store_true",
         help=("Skip the embedded `qps-recall-sweep` call and read the "
-              "DiskANN / Staged series from "
-              "`visualizations/sweep_staged_vs_parlayann_<ds>.json` "
-              "(produced by `sweep_staged_vs_diskann_vs_parlayann.sh`). "
+              "DiskANN / Orion series from "
+              "`visualizations/sweep_orion_vs_parlayann_<ds>.json` "
+              "(produced by `sweep_orion_vs_diskann_vs_parlayann.sh`). "
               "Use this when the head-to-head sweep is already current."),
     )
     args = parser.parse_args()
@@ -215,31 +215,31 @@ def main():
         print(f"  ef={ef:>4}  R@{args.k}={r:.4f}  QPS={qps:.0f}")
     all_results["hnsw"] = hnsw_data
 
-    # ── 2. DiskANN + StagedDiskANN (Rust sweep) ──
+    # ── 2. DiskANN + Orion (Rust sweep) ──
     if args.no_rust:
         # Pull from the head-to-head sweep produced by
-        # `sweep_staged_vs_diskann_vs_parlayann.sh`. That file is the
+        # `sweep_orion_vs_diskann_vs_parlayann.sh`. That file is the
         # source of truth for the 3-engine comparison and the Rust
         # numbers there are α/R/L-aligned with PA across the full
         # sweep.yaml `search_list_sizes`.
-        sv_path = f"visualizations/sweep_staged_vs_parlayann_{args.dataset}.json"
-        print(f"\n── DiskANN + StagedDiskANN — reading {sv_path} (--no-rust) ──")
+        sv_path = f"visualizations/sweep_orion_vs_parlayann_{args.dataset}.json"
+        print(f"\n── DiskANN + Orion — reading {sv_path} (--no-rust) ──")
         with open(sv_path) as f:
             sv = json.load(f)
         all_results["diskann"] = sv["diskann"]
-        all_results["staged"] = sv["staged"]
+        all_results["orion"] = sv["orion"]
         if "parlayann" in sv:
             all_results["parlayann"] = sv["parlayann"]
     else:
-        print("\n── DiskANN + StagedDiskANN (Rust) ──")
+        print("\n── DiskANN + Orion (Rust) ──")
         run_rust_sweep(paths["base"], paths["query"], paths["gt"], args.max_points)
         json_path = f"visualizations/qps_recall_{args.dataset}.json"
         with open(json_path) as f:
             rust_data = json.load(f)
         all_results["diskann"] = rust_data["diskann"]
-        all_results["staged"] = rust_data["staged"]
+        all_results["orion"] = rust_data["orion"]
 
-    for name in ["diskann", "staged"]:
+    for name in ["diskann", "orion"]:
         print(f"\n  {name}:")
         for point in all_results[name]:
             r, qps = point
@@ -264,7 +264,7 @@ def main():
         "k": args.k,
         "hnsw": all_results["hnsw"],
         "diskann": all_results["diskann"],
-        "staged": all_results["staged"],
+        "orion": all_results["orion"],
     })
     bt = output.get("build_time", {})
     bt["hnsw"] = round(hnsw_build, 3)

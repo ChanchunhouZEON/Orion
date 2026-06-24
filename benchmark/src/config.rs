@@ -6,14 +6,14 @@
 //! Central config loader for `benchmark/configs/sweep.yaml`.
 //!
 //! Every benchmark entry point (`run_qps_recall_sweep`,
-//! `run_staged_parlayann_sweep`, and the secondary profiling utilities)
+//! `run_orion_parlayann_sweep`, and the secondary profiling utilities)
 //! resolves its per-dataset parameters through [`load_dataset_config`].
 //! The YAML file is the single source of truth for:
 //!
 //!   * data file paths (`paths.{base, query, groundtruth}`)
-//!   * build parameters (`staged.{alpha, graph_degree, build_l, max_extra,
+//!   * build parameters (`orion.{alpha, graph_degree, build_l, max_extra,
 //!     window_size}`)
-//!   * search metric (`staged.metric` ∈ `l2` | `mips` | `mips-q`)
+//!   * search metric (`orion.metric` ∈ `l2` | `mips` | `mips-q`)
 //!   * base-graph source (`base_graph.{source, staged_file}` —
 //!     `rust` = build in-process; `parlayann` = import a `.staged v2`
 //!     export)
@@ -21,7 +21,7 @@
 //! Placeholders in path strings (`${PA_ROOT}`, `${max_extra}`) are
 //! resolved at load time. `${PA_ROOT}` must be set via env (no
 //! repo-baked default — keeps user paths out of committed config);
-//! `${max_extra}` resolves from the dataset's `staged.max_extra`.
+//! `${max_extra}` resolves from the dataset's `orion.max_extra`.
 //!
 //! Many fields are deserialised by serde from YAML but consumed only
 //! in subsystems that aren't reached from every benchmark binary —
@@ -54,13 +54,13 @@ pub struct DatasetConfig {
     pub query_path: PathBuf,
     pub groundtruth_path: PathBuf,
     pub diskann: DiskANNConfig,
-    pub staged: StagedConfig,
+    pub orion: OrionConfig,
     pub base_graph: BaseGraphConfig,
     pub sweep: SweepConfig,
 }
 
 #[derive(Clone, Debug)]
-pub struct StagedConfig {
+pub struct OrionConfig {
     pub alpha: f32,
     pub graph_degree: u32,
     pub build_search_list_size: usize,
@@ -69,7 +69,7 @@ pub struct StagedConfig {
     /// Cascade triple loaded directly from `sweep.yaml`. The unified
     /// search pipeline reads these to build the prefilter / admission
     /// / rerank stages. Mirrors the `Cascade::default_for_dataset`
-    /// mapping in `staged_diskann.rs`.
+    /// mapping in `orion.rs`.
     pub prefilter: crate::runner::cascade::PrefilterChoice,
     pub admission: crate::runner::cascade::AdmissionChoice,
     pub rerank: crate::runner::cascade::RerankChoice,
@@ -109,7 +109,7 @@ struct RawRoot {
 #[derive(Deserialize)]
 struct RawDefaults {
     diskann: RawDiskANNDefaults,
-    staged: RawStagedDefaults,
+    orion: RawOrionDefaults,
     sweep: RawSweepDefaults,
 }
 
@@ -121,7 +121,7 @@ struct RawDiskANNDefaults {
 }
 
 #[derive(Deserialize)]
-struct RawStagedDefaults {
+struct RawOrionDefaults {
     alpha: f32,
     graph_degree: u32,
     build_search_list_size: usize,
@@ -145,7 +145,7 @@ struct RawDataset {
     paths: Option<RawPaths>,
     base_graph: Option<RawBaseGraph>,
     diskann: Option<RawDiskANNOverride>,
-    staged: Option<RawStagedOverride>,
+    orion: Option<RawOrionOverride>,
 }
 
 #[derive(Deserialize, Default)]
@@ -169,7 +169,7 @@ struct RawBaseGraph {
 }
 
 #[derive(Deserialize, Default)]
-struct RawStagedOverride {
+struct RawOrionOverride {
     alpha: Option<f32>,
     graph_degree: Option<u32>,
     build_search_list_size: Option<usize>,
@@ -189,7 +189,7 @@ const DEFAULT_CONFIG_PATH: &str = "benchmark/configs/sweep.yaml";
 /// input, so early failure is the right response.
 pub fn load_dataset_config(name: &str) -> DatasetConfig {
     let path =
-        std::env::var("STAGED_SWEEP_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
+        std::env::var("ORION_SWEEP_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("Cannot read {path}: {e}"));
     let root: RawRoot =
         serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("Invalid YAML in {path}: {e}"));
@@ -213,10 +213,10 @@ pub fn load_dataset_config_by_dim(dimension: usize) -> DatasetConfig {
 
 /// Global DiskANN defaults — only used when no dataset is in scope
 /// (e.g. utility scripts). Per-dataset DiskANN config travels on
-/// `DatasetConfig::diskann` with field-level fallback to staged → defaults.
+/// `DatasetConfig::diskann` with field-level fallback to orion → defaults.
 pub fn load_diskann_defaults() -> DiskANNConfig {
     let path =
-        std::env::var("STAGED_SWEEP_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
+        std::env::var("ORION_SWEEP_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("Cannot read {path}: {e}"));
     let root: RawRoot =
         serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("Invalid YAML in {path}: {e}"));
@@ -240,33 +240,33 @@ fn resolve_dataset(root: &RawRoot, name: &str) -> DatasetConfig {
         .as_ref()
         .unwrap_or_else(|| panic!("Dataset '{name}' missing `paths` block"));
 
-    let staged_d = &root.defaults.staged;
-    let ov = ds.staged.as_ref();
-    let staged = StagedConfig {
-        alpha: ov.and_then(|o| o.alpha).unwrap_or(staged_d.alpha),
+    let orion_d = &root.defaults.orion;
+    let ov = ds.orion.as_ref();
+    let orion = OrionConfig {
+        alpha: ov.and_then(|o| o.alpha).unwrap_or(orion_d.alpha),
         graph_degree: ov
             .and_then(|o| o.graph_degree)
-            .unwrap_or(staged_d.graph_degree),
+            .unwrap_or(orion_d.graph_degree),
         build_search_list_size: ov
             .and_then(|o| o.build_search_list_size)
-            .unwrap_or(staged_d.build_search_list_size),
-        max_extra: ov.and_then(|o| o.max_extra).unwrap_or(staged_d.max_extra),
+            .unwrap_or(orion_d.build_search_list_size),
+        max_extra: ov.and_then(|o| o.max_extra).unwrap_or(orion_d.max_extra),
         window_size: ov
             .and_then(|o| o.window_size)
-            .unwrap_or(staged_d.window_size),
+            .unwrap_or(orion_d.window_size),
         prefilter: parse_cascade_str::<crate::runner::cascade::PrefilterChoice>(
             ov.and_then(|o| o.prefilter.as_deref())
-                .unwrap_or(staged_d.prefilter.as_str()),
+                .unwrap_or(orion_d.prefilter.as_str()),
             "prefilter",
         ),
         admission: parse_cascade_str::<crate::runner::cascade::AdmissionChoice>(
             ov.and_then(|o| o.admission.as_deref())
-                .unwrap_or(staged_d.admission.as_str()),
+                .unwrap_or(orion_d.admission.as_str()),
             "admission",
         ),
         rerank: parse_cascade_str::<crate::runner::cascade::RerankChoice>(
             ov.and_then(|o| o.rerank.as_deref())
-                .unwrap_or(staged_d.rerank.as_str()),
+                .unwrap_or(orion_d.rerank.as_str()),
             "rerank",
         ),
     };
@@ -276,8 +276,8 @@ fn resolve_dataset(root: &RawRoot, name: &str) -> DatasetConfig {
     // block). This keeps the Origin row in ablation panels honest:
     // it reports a vanilla DiskANN baseline at the *published*
     // defaults (α=2.0, R=64, L_build=100), not at a graph shape that
-    // silently mirrors `staged.{R,L,α}` and would conflate "DiskANN
-    // is slow" with "Vamana at staged's R is slow." The 3-engine
+    // silently mirrors `orion.{R,L,α}` and would conflate "DiskANN
+    // is slow" with "Vamana at orion's R is slow." The 3-engine
     // head-to-head's DiskANN row resolves the same way.
     let diskann_d = &root.defaults.diskann;
     let dov = ds.diskann.as_ref();
@@ -298,7 +298,7 @@ fn resolve_dataset(root: &RawRoot, name: &str) -> DatasetConfig {
         other => panic!("Unknown base_graph.source: {other} (expected rust|parlayann)"),
     };
     // `staged_file` may reference `${max_extra}` (dataset-context) so
-    // the path stays in sync with whatever `staged.max_extra` is set
+    // the path stays in sync with whatever `orion.max_extra` is set
     // at, plus env-var placeholders like `${PA_ROOT}`. Substitute
     // `${max_extra}` first, then try to resolve env vars — if any
     // env var is unset (typically `PA_ROOT` on a dev box without a
@@ -307,7 +307,7 @@ fn resolve_dataset(root: &RawRoot, name: &str) -> DatasetConfig {
     // out of the box without requiring PA_ROOT.
     let mut staged_file: Option<PathBuf> = None;
     if let Some(s) = bg_raw.and_then(|b| b.staged_file.clone()) {
-        let max_extra_subbed = s.replace("${max_extra}", &staged.max_extra.to_string());
+        let max_extra_subbed = s.replace("${max_extra}", &orion.max_extra.to_string());
         match try_resolve_placeholders(&max_extra_subbed) {
             Some(resolved) => staged_file = Some(PathBuf::from(resolved)),
             None => {
@@ -334,7 +334,7 @@ fn resolve_dataset(root: &RawRoot, name: &str) -> DatasetConfig {
         query_path: PathBuf::from(paths.query.clone()),
         groundtruth_path: PathBuf::from(paths.groundtruth.clone()),
         diskann,
-        staged,
+        orion,
         base_graph: BaseGraphConfig {
             source,
             staged_file,
@@ -390,7 +390,7 @@ fn default_for(_var: &str) -> Option<String> {
 /// per-enum `FromStr` impls so the YAML loader can fail fast with a
 /// pointed message on a typo.
 fn parse_cascade_str<T: std::str::FromStr<Err = String>>(s: &str, axis: &str) -> T {
-    T::from_str(s).unwrap_or_else(|e| panic!("sweep.yaml staged.{axis} = {s:?} — {e}"))
+    T::from_str(s).unwrap_or_else(|e| panic!("sweep.yaml orion.{axis} = {s:?} — {e}"))
 }
 
 #[cfg(test)]

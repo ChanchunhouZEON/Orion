@@ -2,7 +2,7 @@
 """Convert BigANN-style `.fbin` (Yandex/Microsoft) → `.fvecs` (Yael format).
 
 Used to bring Deep10M (and similar BigANN-track datasets) into the
-fvecs format that the rust-side `staged_diskann` / `staged_sweep` bins
+fvecs format that the rust-side `orion` bin
 expect.
 
 ## File formats

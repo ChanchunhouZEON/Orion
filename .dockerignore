@@ -22,7 +22,7 @@ visualizations/*.json
 /tmp_*
 
 # Python/maturin scratch.
-staged_diskann_py/target/
+orion_py/target/
 *.egg-info/
 __pycache__/
 

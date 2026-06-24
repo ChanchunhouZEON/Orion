@@ -1,15 +1,15 @@
 # QPS-Recall Sweep Configuration
 #
 # Per-dataset source of truth for the benchmark harness. `main.rs` and
-# `staged_sweep.rs` both resolve dataset paths, build parameters, and
-# the staged search metric through this file.
+# `orion.rs` both resolve dataset paths, build parameters, and
+# the orion search metric through this file.
 
 defaults:
   diskann:
     alpha: 2.0
     graph_degree: 64
     build_search_list_size: 100
-  staged:
+  orion:
     alpha: 1.2
     graph_degree: 64
     build_search_list_size: 100
@@ -22,7 +22,7 @@ defaults:
     # ── Cascade triple (search-time, replaces the legacy `metric`) ──
     # The unified search pipeline reads these directly; per-dataset
     # blocks below override what their workload needs. Mirrors the
-    # `Cascade::default_for_dataset` mapping in `staged_diskann.rs`.
+    # `Cascade::default_for_dataset` mapping in `orion.rs`.
     #   prefilter: none | jl | jl-hadamard | rabitq
     #   admission: l2-u8 | l2-u16 | l2-kt | mips-i8 | mips-i16 | ads-f32
     #   rerank:    f32 | ip-f32 | u16
@@ -37,7 +37,7 @@ defaults:
 # ── Base-graph source policy ───────────────────────────────────────────────
 # Each dataset may set `base_graph.source = rust|parlayann`:
 #   rust       — build the graph in-process via `build_diskann_index`
-#                using the `staged.{alpha,graph_degree,...}` params above.
+#                using the `orion.{alpha,graph_degree,...}` params above.
 #   parlayann  — import a `.staged v2` export produced by ParlayANN's
 #                `./neighbors -staged_outfile`, so our PhasedGraph sits
 #                on top of PA's RNG-pruned Vamana graph. Requires
@@ -46,7 +46,7 @@ defaults:
 #                PhasedGraph is cached under `cache/staged_parlayann/`
 #                so subsequent runs hit the fast load path.
 #
-# When `source: parlayann`, the `staged.{graph_degree, alpha, build_l,
+# When `source: parlayann`, the `orion.{graph_degree, alpha, build_l,
 # max_extra}` params above are **advisory** (they feed the cache-filename
 # convention and calibration) — the actual graph topology comes from PA.
 #
@@ -68,7 +68,7 @@ datasets:
       # publishes its SIFT1M recall-QPS numbers on. Produced by:
       #   PA_NUM_PASSES=2 DATASET=sift bash benchmark/scripts/prepare_parlayann_data.sh
       staged_file: "${PA_ROOT}/data/sift1m/sift1m_ex${max_extra}.staged"
-    staged:
+    orion:
       alpha: 1.15
       graph_degree: 64
       build_search_list_size: 128
@@ -90,7 +90,7 @@ datasets:
       # Produced by:
       #   PA_NUM_PASSES=2 DATASET=glove25 bash benchmark/scripts/prepare_parlayann_data.sh
       staged_file: "${PA_ROOT}/data/glove25/glove25_ex${max_extra}.staged"
-    staged:
+    orion:
       alpha: 1.0
       graph_degree: 100
       build_search_list_size: 200
@@ -110,7 +110,7 @@ datasets:
       # vs PA native angular in the main sweep. Produced by:
       #   PA_NUM_PASSES=2 DATASET=glove100 bash benchmark/scripts/prepare_parlayann_data.sh
       staged_file: "${PA_ROOT}/data/glove100/glove100_ex${max_extra}.staged"
-    staged:
+    orion:
       alpha: 1.0
       graph_degree: 100
       build_search_list_size: 200
@@ -132,7 +132,7 @@ datasets:
       # Produced by:
       #   PA_NUM_PASSES=2 DATASET=gist bash benchmark/scripts/prepare_parlayann_data.sh
       staged_file: "${PA_ROOT}/data/gist/gist_ex${max_extra}.staged"
-    staged:
+    orion:
       # Aligned with ParlayANN `vamana/scripts/gist`:
       #   BUILD_ARGS="-R 100 -L 200 -alpha 1.1 -num_passes 2"
       # Replaces the prior local recipe (R=32 L=48 α=1.5) which built
@@ -160,7 +160,7 @@ datasets:
       # Produced by:
       #   PA_NUM_PASSES=2 DATASET=deep10m bash benchmark/scripts/prepare_parlayann_data.sh
       staged_file: "${PA_ROOT}/data/deep10M/deep10M_ex${max_extra}.staged"
-    staged:
+    orion:
       # Aligned with ParlayANN `vamana/scripts/deep10M`:
       #   BUILD_ARGS="-R 64 -L 128 -alpha 1.05 -num_passes 2 -quantize_bits 8"
       alpha: 1.05
@@ -182,7 +182,7 @@ datasets:
       # Produced by:
       #   PA_NUM_PASSES=2 DATASET=fashion-mnist bash benchmark/scripts/prepare_parlayann_data.sh
       staged_file: "${PA_ROOT}/data/fashion-mnist-784-euclidean/fashion-mnist-784-euclidean_ex${max_extra}.staged"
-    staged:
+    orion:
       # Aligned with ParlayANN `vamana/scripts/fashion`:
       #   BUILD_ARGS="-R 40 -L 80 -alpha 1.1 -num_passes 2 -quantize_bits 8"
       alpha: 1.1
@@ -209,7 +209,7 @@ datasets:
       # Produced by:
       #   PA_NUM_PASSES=1 DATASET=msmarco_bert_1M bash benchmark/scripts/prepare_parlayann_data.sh
       staged_file: "${PA_ROOT}/data/MSMarcoBert1M/MSMarcoBert1M_ex${max_extra}.staged"
-    staged:
+    orion:
       # Aligned with ParlayANN `vamana/scripts/msmarco_websearch`:
       #   BUILD_ARGS="-R 64 -L 128 -alpha 1 -num_passes 1 -quantize_bits 8"
       alpha: 1.0
@@ -238,7 +238,7 @@ datasets:
       # PA `vamana/scripts/<wiki_ada>` recipe so we mirror the
       # OpenAIArXiv shape (closest D + same dot-product metric).
       staged_file: "${PA_ROOT}/data/WikiAda1M/WikiAda1M_ex${max_extra}.staged"
-    staged:
+    orion:
       alpha: 1.05
       graph_degree: 100
       build_search_list_size: 200

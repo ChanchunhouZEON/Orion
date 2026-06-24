@@ -12,10 +12,10 @@
 #       admission-only / no-rerank / no-prefilter / full.
 #       Writes `visualizations/cascade_ablation_<ds>.{json,png,pdf}`.
 #
-# Both ablations share the cache-first staged-graph load mirroring
-# the `staged_diskann.rs` bin's PA-mode naming — first run pays the
+# Both ablations share the cache-first orion-graph load mirroring
+# the `orion.rs` bin's PA-mode naming — first run pays the
 # import/build cost, subsequent runs load from
-# `cache/staged_parlayann/<ds>_…_pct60.pgraph` in 0.1-2 s.
+# `cache/orion_parlayann/<ds>_…_pct60.pgraph` in 0.1-2 s.
 #
 # Override the dataset list with `DATASETS="…"`; default covers the
 # five panel datasets the README references.
@@ -72,8 +72,8 @@ echo "── building benchmark binary ──"
 cargo build --release --bin benchmark 2>&1 | tail -2
 
 # Run each algorithm × each dataset. Iterating algorithm-outermost
-# lets the staged graph + sidecars stay warm in page-cache across
-# the two ablations on the same dataset (only the staged graph is
+# lets the orion graph + sidecars stay warm in page-cache across
+# the two ablations on the same dataset (only the orion graph is
 # shared though — DiskANN baseline still rebuilds per ablation run).
 IFS=',' read -ra ALG_LIST <<< "$ALGORITHMS"
 for alg in "${ALG_LIST[@]}"; do

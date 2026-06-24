@@ -18,7 +18,7 @@
 //! cargo run --release --bin hashset_profile -- [--L 128] [--n 5000000] [--hit 0.0,0.3,0.6]
 //! ```
 
-use staged_diskann::model::visited_set::{BucketedSet, LinearProbeSet, VisitedSet};
+use orion::model::visited_set::{BucketedSet, LinearProbeSet, VisitedSet};
 use std::time::Instant;
 
 const DEFAULT_L: usize = 128;

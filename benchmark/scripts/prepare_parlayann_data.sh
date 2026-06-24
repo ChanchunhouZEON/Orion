@@ -193,8 +193,8 @@ PA_VAMANA="$PA_ROOT/algorithms/vamana"
 # stub keeps generated artifacts disambiguated when sweeping the
 # parameter (e.g. ex16_pct60 vs ex16_pct70).
 LOCAL_PCT="${LOCAL_PCT:-60}"
-STAGED_STUB="${PA_DIR_NAME}_ex${MAX_EXTRA}_pct${LOCAL_PCT}"
-STAGED_OUT="$PA_OUT_DIR/${STAGED_STUB}.staged"
+ORION_STUB="${PA_DIR_NAME}_ex${MAX_EXTRA}_pct${LOCAL_PCT}"
+ORION_OUT="$PA_OUT_DIR/${ORION_STUB}.staged"
 
 # ParlayANN's per-dataset scripts (e.g. `algorithms/vamana/scripts/gist`)
 # save the built graph as `graphs/graph_<R>_<alpha>` and pass it to
@@ -237,7 +237,7 @@ fi
 PA_NUM_PASSES="${PA_NUM_PASSES:-1}"
 # `PA_NORMALIZE=1` tells `./neighbors` to L2-normalize base+queries before
 # building — needed for angular datasets where our `glove*_aligned`
-# staged_sweep config reads pre-normalized fvecs.
+# orion config reads pre-normalized fvecs.
 PA_NORMALIZE_FLAG=""
 if [ "${PA_NORMALIZE:-0}" = "1" ]; then
     PA_NORMALIZE_FLAG="-normalize"
@@ -254,7 +254,7 @@ if [ "${PA_VERBOSE:-0}" = "1" ]; then
     PA_VERBOSE_FLAG="-verbose"
 fi
 
-echo "═══ Step 3/3: ParlayANN build → $STAGED_OUT  (R=$PA_R L=$PA_L α=$PA_ALPHA passes=$PA_NUM_PASSES normalize=${PA_NORMALIZE:-0} qbits=${PA_QUANTIZE_BITS:-none} ex=$MAX_EXTRA pct=$LOCAL_PCT) ═══"
+echo "═══ Step 3/3: ParlayANN build → $ORION_OUT  (R=$PA_R L=$PA_L α=$PA_ALPHA passes=$PA_NUM_PASSES normalize=${PA_NORMALIZE:-0} qbits=${PA_QUANTIZE_BITS:-none} ex=$MAX_EXTRA pct=$LOCAL_PCT) ═══"
 echo "                                graph → $GRAPH_OUT (for PA's own search re-runs)"
 (cd "$PA_VAMANA" && PARLAY_NUM_THREADS=8 ./neighbors \
     -R "$PA_R" -L "$PA_L" -alpha "$PA_ALPHA" -num_passes "$PA_NUM_PASSES" \
@@ -266,10 +266,10 @@ echo "                                graph → $GRAPH_OUT (for PA's own search 
     -gt_path "$PA_OUT_DIR/gt.bin" \
     -res_path "/tmp/parlayann_${DATASET}_prep.csv" \
     -graph_outfile "$GRAPH_OUT" \
-    -staged_outfile "$STAGED_OUT" 2>&1 | tail -20)
+    -staged_outfile "$ORION_OUT" 2>&1 | tail -20)
 
 echo
 echo "Done. Artifacts in $PA_OUT_DIR:"
 ls -lh "$PA_OUT_DIR"
 echo
-echo "Next: DATASET=$DATASET bash benchmark/scripts/sweep_staged_vs_diskann_vs_parlayann.sh"
+echo "Next: DATASET=$DATASET bash benchmark/scripts/sweep_orion_vs_diskann_vs_parlayann.sh"

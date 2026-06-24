@@ -4,7 +4,7 @@
 # correctly to x86_64-unknown-linux-gnu** end-to-end:
 #
 #   1. `vector/` (NEON gated out, AVX2/scalar fallbacks active) compiles.
-#   2. `staged_diskann/` (RaBitQ, JL, visited_set quantized codecs) compiles.
+#   2. `orion/` (RaBitQ, JL, visited_set quantized codecs) compiles.
 #   3. The `benchmark` binary (the SIFT entry point) links cleanly.
 #
 # Each phase is timed so we know which step blew the budget under
@@ -71,9 +71,9 @@ phase_vector_check_no_default_runtime_detect() {
     time cargo check -p vector --release --no-default-features
 }
 
-phase_staged_check() {
-    banner "Phase 3: cargo check -p staged_diskann (quantized codecs)"
-    time cargo check -p staged_diskann --release
+phase_orion_check() {
+    banner "Phase 3: cargo check -p orion (quantized codecs)"
+    time cargo check -p orion --release
 }
 
 phase_diskann_check() {
@@ -106,7 +106,7 @@ phase_sift_smoke_note() {
 cpu_info
 phase_vector_check
 phase_vector_check_no_default_runtime_detect
-phase_staged_check
+phase_orion_check
 phase_diskann_check
 phase_build_benchmark
 phase_sift_smoke_note
