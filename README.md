@@ -123,7 +123,7 @@ Prefetch tuning lives in three env vars: `ORION_DSTREAM_LA_Q` (per-iter L1 looka
 
 ### One-time PA base-graph prep
 
-The yaml points every dataset at `${PA_ROOT}/data/<ds>/<stub>.staged`. Generate these with the `prepare_parlayann_data.sh` helper (≈ 4–10 min on the 1M-class sets, ~30 min on Deep10M):
+The yaml points every dataset at `${PA_ROOT}/data/<ds>/<stub>.staged`. Generate these with the `prepare_parlayann_data.sh` helper (≈ 4–10 min on the 1M-class sets, ~30 min on Deep10M). `PA_ROOT` defaults to the recommended sibling clone `../ParlayANN`; if your checkout lives elsewhere (e.g. the verbatim `../ParlayANN-staged` directory name), prefix each command with `PA_ROOT=<path>`:
 
 ```sh
 PA_NUM_PASSES=2 DATASET=sift     bash benchmark/scripts/prepare_parlayann_data.sh
