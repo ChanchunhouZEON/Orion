@@ -1,8 +1,9 @@
 # Orion: Composable Cascade Search with Admission-Rate Convergence for Graph-Based Approximate Nearest Neighbors
 
-<!-- Badges: the AVX-512 CI badge is now LIVE against
-     ChanchunhouZEON/Orion. The Coverage % is still STATIC until
-     Codecov is wired up.
+<!-- Badges: the Coverage % is STATIC until Codecov is wired up.
+     (A live AVX-512 CI badge was dropped — shields.io 404s on a
+     private repo and GitHub's native badge wouldn't render over
+     the user's network; re-add it once the repo is public.)
 
        Coverage (after configuring Codecov upload in avx512.yml —
        add `codecov/codecov-action@v4` step on the `build-and-test`
@@ -14,7 +15,6 @@
      re-run that after substantial changes and update the
      hardcoded `46%` below until Codecov is wired up. -->
 
-[![AVX-512 CI](https://img.shields.io/github/actions/workflow/status/ChanchunhouZEON/Orion/avx512.yml?branch=main&label=AVX-512%20CI&logo=github-actions&logoColor=white)](https://github.com/ChanchunhouZEON/Orion/actions/workflows/avx512.yml)
 [![Cross-platform smoke test](https://img.shields.io/badge/Colima%20x86__64-compile--verified-success?logo=docker&logoColor=white)](benchmark/scripts/ci_smoke_sift.sh)
 [![Tests](https://img.shields.io/badge/tests-268%20passing-success?logo=rust&logoColor=white)](#testing)
 [![Coverage](https://img.shields.io/badge/line%20coverage-85%25%20(ours)-success?logo=codecov&logoColor=white)](#coverage)
