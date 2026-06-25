@@ -76,17 +76,17 @@ cd "$ROOT"
 # (Staged cascade triple is picked automatically by
 # `orion`'s `Cascade::default_for_dataset` — no `--metric`
 # / `--prefilter` / `--admission` / `--rerank` overrides needed here.)
-if [ -z "${PA_ROOT:-}" ]; then
-    echo "ERROR: PA_ROOT env var must be set (path to your ParlayANN checkout)" >&2
-    echo "  e.g. PA_ROOT=/path/to/ParlayANN DATASET=$DATASET bash $0" >&2
-    exit 2
-fi
+# ParlayANN checkout. Defaults to the recommended sibling clone
+# (`../ParlayANN`); override on the command line for any other layout:
+#   PA_ROOT=/path/to/ParlayANN DATASET=$DATASET bash $0
+PA_ROOT="${PA_ROOT:-../ParlayANN}"
 # Resolve PA_ROOT to absolute so the per-dataset `cd "$PA_DIR" &&
 # ./neighbors ...` invocations still see the right `$PA_OUT_DIR/*`
 # paths (callers can hand in `../ParlayANN` interchangeably with
 # `/abs/path`).
 if [ ! -d "$PA_ROOT" ]; then
     echo "ERROR: PA_ROOT='$PA_ROOT' is not a directory" >&2
+    echo "  set PA_ROOT to your ParlayANN checkout, e.g. PA_ROOT=/path/to/ParlayANN bash $0" >&2
     exit 2
 fi
 PA_ROOT="$(cd "$PA_ROOT" && pwd)"

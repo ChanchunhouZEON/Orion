@@ -170,11 +170,10 @@ case "$DATASET" in
         ;;
 esac
 
-if [ -z "${PA_ROOT:-}" ]; then
-    echo "ERROR: PA_ROOT env var must be set (path to your ParlayANN checkout)" >&2
-    echo "  e.g. PA_ROOT=/path/to/ParlayANN DATASET=glove100 bash $0" >&2
-    exit 2
-fi
+# ParlayANN checkout. Defaults to the recommended sibling clone
+# (`../ParlayANN`); override on the command line for any other layout:
+#   PA_ROOT=/path/to/ParlayANN DATASET=glove100 bash $0
+PA_ROOT="${PA_ROOT:-../ParlayANN}"
 # Resolve PA_ROOT to an absolute path. The PA build invokes its
 # `neighbors` binary via `cd "$PA_VAMANA" && ./neighbors ...`, so any
 # relative paths derived from PA_ROOT (`PA_OUT_DIR/base.fbin`,
@@ -183,6 +182,7 @@ fi
 # `/abs/path/to/ParlayANN` interchangeably.
 if [ ! -d "$PA_ROOT" ]; then
     echo "ERROR: PA_ROOT='$PA_ROOT' is not a directory" >&2
+    echo "  set PA_ROOT to your ParlayANN checkout, e.g. PA_ROOT=/path/to/ParlayANN bash $0" >&2
     exit 2
 fi
 PA_ROOT="$(cd "$PA_ROOT" && pwd)"
