@@ -58,13 +58,13 @@ impl SearchConvergenceChecker {
         self.reset();
     }
 
-    /// Feed the number of admitted candidates from this expansion step.
+    /// Feed whether admitted happens from this expansion step.
     /// Returns true if currently converged (low admission rate).
     #[inline]
-    pub fn update(&mut self, num_admitted: usize) -> bool {
+    pub fn update(&mut self, is_admitted: usize) -> bool {
         self.total_steps += 1;
 
-        let val = if num_admitted > 0 { 1u8 } else { 0u8 };
+        let val = if is_admitted > 0 { 1u8 } else { 0u8 };
 
         // Evict oldest entry if window is full.
         if self.count >= self.window_size {
