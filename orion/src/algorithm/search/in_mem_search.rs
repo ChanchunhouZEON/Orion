@@ -384,7 +384,7 @@ where
                 scratch.dist_buffer.set_len(hop_start + w);
                 w
             };
-            prev_admitted = hop_admits;
+            prev_admitted = hop_admits.max(1);
 
             // Per-phase counter split for diagnostic printing.
             if converged {

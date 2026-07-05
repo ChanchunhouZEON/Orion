@@ -9,6 +9,10 @@
 *.fbin
 *.ibin
 /data/**/*.bin
+# Exclude the sift and gist manually since they are symbolic linked in
+# current project.
+/data/sift
+/data/gist
 
 /visualizations/orion/
 /visualizations/**/*.json
