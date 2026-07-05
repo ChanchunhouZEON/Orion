@@ -1,4 +1,4 @@
-# Orion: Composable Cascade Search with Admission-Rate Convergence for Graph-Based Approximate Nearest Neighbors
+# Orion: Admission-Aware Cascades for Graph-Based Approximate Nearest Neighbor Search
 
 <!-- Badges: the Coverage % is STATIC until Codecov is wired up.
      (A live AVX-512 CI badge was dropped — shields.io 404s on a
