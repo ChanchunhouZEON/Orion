@@ -691,8 +691,6 @@ Sapphire Rapids, Genoa, Zen 4).
 
 ## License
 
-Source files carry **MIT** headers (`Copyright (c) Chanchunhou` —
+The project is under **MIT** license (`Copyright (c) Chanchunhou` —
 plus original `Copyright (c) Microsoft Corporation` headers on the
-files inherited from the upstream Microsoft DiskANN reference). A
-top-level `LICENSE` file is on the TODO list; until then, each file's
-header is authoritative.
+files inherited from the upstream Microsoft DiskANN reference).
