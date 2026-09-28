@@ -8,13 +8,14 @@
 //!
 //! Per-node slot layout (fixed stride, cache-line aligned):
 //! ```text
-//! ┌─── Header (4 × u32 = 16 bytes) ───────────────────────────────┐
-//! │ degree (R) │ extra_count (E) │ local_count (L) │ reserved     │
-//! ├─── Data ───────────────────────────────────────────────────────┤
-//! │ local_neighbors  [u32 × L]       ← navigation + reranking     │
-//! │ remote_neighbors [u32 × (R − L)] ← navigation only            │
-//! │ extra_candidates [u32 × E]       ← reranking only             │
-//! └────────────────────────────────────────────────────────────────┘
+//! ┌─── Header (4 × u32 = 16 bytes) ─────────────────────────────────────────────────┐
+//! │ degree (R) │ extra_count (E) │ local_count (L) │ reserved                       │
+//! ├─── Data ────────────────────────────────────────────────────────────────────────┤
+//! │ local_neighbors  [u32 × L]       ← navigation + reranking                       │
+//! │ remote_neighbors [u32 × (R − L)] ← navigation only                              │
+//! │ extra_candidates [u32 × E]       ← reranking only(starts at `start+ max_degree`)│
+//! │ padding to max_extra * u32                                                      │
+//! └─────────────────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! Backed by `AlignedBoxWithSlice<u32>` with per-node reader tracking

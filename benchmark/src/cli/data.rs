@@ -1,5 +1,5 @@
 //! Bounded-buffer vector loading into the allocation transferred to Orion.
-use super::config::ResolvedRunConfig;
+use super::config::{ResolvedRunConfig, VectorStorageKind};
 use crate::cascade::SearchMetric;
 use diskann::common::AlignedBoxWithSlice;
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -7,7 +7,6 @@ use std::path::Path;
 
 const VECTOR_READ_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 const SIMD_ALIGNMENT_BYTES: usize = 64;
-const SIMD_PAD_ELEMENTS: usize = SIMD_ALIGNMENT_BYTES / std::mem::size_of::<f32>();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -100,11 +99,53 @@ pub fn inspect_vector_file(path: &Path, format: VectorFormat) -> Result<VectorHe
     Ok(VectorHeader { count, dimension })
 }
 
-fn read_vectors_into(
+/// The loader writes directly into the final storage type. Byte mode rejects
+/// float encodings rather than allocating a temporary f32 dataset to quantize.
+pub trait BaseElement: Default + Copy + Send + Sync + Into<f32> {
+    const STORAGE: VectorStorageKind;
+    fn from_byte(value: u8) -> Self;
+    fn from_float(value: f32) -> Result<Self, String>;
+    fn normalize(data: &mut [Self], dimension: usize, metric: SearchMetric) -> Result<(), String>;
+}
+
+impl BaseElement for f32 {
+    const STORAGE: VectorStorageKind = VectorStorageKind::F32;
+    fn from_byte(value: u8) -> Self {
+        f32::from(value)
+    }
+    fn from_float(value: f32) -> Result<Self, String> {
+        Ok(value)
+    }
+    fn normalize(data: &mut [Self], dimension: usize, metric: SearchMetric) -> Result<(), String> {
+        validate_and_normalize_vectors(data, dimension, metric)
+    }
+}
+
+impl BaseElement for u8 {
+    const STORAGE: VectorStorageKind = VectorStorageKind::U8;
+    fn from_byte(value: u8) -> Self {
+        value
+    }
+    fn from_float(_value: f32) -> Result<Self, String> {
+        Err("native u8 loader does not quantize f32 input".into())
+    }
+    fn normalize(
+        _data: &mut [Self],
+        _dimension: usize,
+        metric: SearchMetric,
+    ) -> Result<(), String> {
+        if metric != SearchMetric::L2 {
+            return Err("native u8 requires L2".into());
+        }
+        Ok(())
+    }
+}
+
+fn read_vectors_into<T: BaseElement>(
     path: &Path,
     format: VectorFormat,
     dimension: usize,
-    output: &mut [f32],
+    output: &mut [T],
 ) -> Result<(), String> {
     let mut reader = BufReader::with_capacity(
         VECTOR_READ_BUFFER_BYTES,
@@ -136,35 +177,74 @@ fn read_vectors_into(
             .map_err(|e| e.to_string())?;
         if format.coordinate_bytes() == 1 {
             for (coordinate, &encoded_coordinate) in values.iter_mut().zip(&encoded_row) {
-                *coordinate = encoded_coordinate as f32;
+                *coordinate = T::from_byte(encoded_coordinate);
             }
         } else {
             for (coordinate, encoded_coordinate) in
                 values.iter_mut().zip(encoded_row.chunks_exact(4))
             {
-                *coordinate = f32::from_le_bytes(encoded_coordinate.try_into().unwrap());
+                *coordinate =
+                    T::from_float(f32::from_le_bytes(encoded_coordinate.try_into().unwrap()))?;
             }
         }
     }
     Ok(())
 }
 
-pub struct LoadedDataset {
+/// Temporary in-memory representation of a loaded benchmark dataset.
+///
+/// `LoadedDataset` owns the aligned allocation containing the base vectors,
+/// together with the query vectors and ground-truth neighbor IDs required by
+/// the benchmark. The base-vector element type is parameterized by `T`, which
+/// defaults to `f32`.
+///
+/// # Ownership
+///
+/// The base vectors are stored in an [`AlignedBoxWithSlice<T>`] and are owned
+/// by this struct until [`take_index_dataset`](Self::take_index_dataset) is
+/// called. That method transfers the allocation directly into an
+/// [`InmemDataset`](diskann::model::InmemDataset) without reallocating or
+/// copying the base vectors.
+///
+/// After the transfer, [`base`](Self::base) becomes `None`, while the query
+/// vectors and ground truth remain available to the benchmark.
+///
+/// # Workflow
+///
+/// A `LoadedDataset` is normally constructed from a validated
+/// [`ResolvedRunConfig`] using [`load`](Self::load). The resulting base
+/// allocation can then be moved into an
+/// [`Orion`](orion::index::compressed_index::Orion) index via
+/// [`take_index_dataset`](Self::take_index_dataset).
+///
+/// This ownership-transfer path avoids keeping a second copy of the original
+/// base dataset and eliminates the corresponding `memcpy`, which is especially
+/// important for large datasets.
+pub struct LoadedDataset<T = f32> {
     /// Padded base allocation. `None` means it has been transferred to the index.
     /// Keep this separate from queries/GT, which the benchmark still needs afterwards.
-    pub base: Option<AlignedBoxWithSlice<f32>>,
+    pub base: Option<AlignedBoxWithSlice<T>>,
     pub num_points: usize,
     pub queries: Vec<Vec<f32>>,
     pub ground_truth: Vec<Vec<u32>>,
 }
 
-impl LoadedDataset {
-    /// Move, never copy, the large allocation into the library's dataset type.
+impl<T: BaseElement> LoadedDataset<T> {
+    /// Transfers ownership of the base-vector allocation into an
+    /// [`InmemDataset`](diskann::model::InmemDataset).
+    ///
+    /// The underlying allocation is moved rather than copied. After a
+    /// successful call, [`Self::base`] is `None`, so the allocation cannot be
+    /// transferred a second time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the base allocation has already been transferred.
     pub fn take_index_dataset<const N: usize>(
         &mut self,
-    ) -> Result<diskann::model::InmemDataset<f32, N>, String>
+    ) -> Result<diskann::model::InmemDataset<T, N>, String>
     where
-        [f32; N]: vector::FullPrecisionDistance<f32, N>,
+        [T; N]: vector::FullPrecisionDistance<T, N>,
     {
         let allocation = self
             .base
@@ -178,7 +258,23 @@ impl LoadedDataset {
         })
     }
 
+    /// Loads the benchmark dataset described by `config` into memory.
+    ///
+    /// The method validates the dataset metadata and small auxiliary inputs
+    /// before allocating the potentially large base-vector buffer. Base
+    /// vectors are loaded into a SIMD-aligned allocation and normalized
+    /// according to the configured distance metric.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the configured storage type does not match `T`,
+    /// dataset dimensions are inconsistent, the point count is invalid,
+    /// memory-budget validation fails, allocation fails, or any input file
+    /// cannot be loaded or validated.
     pub fn load(config: &ResolvedRunConfig) -> Result<Self, String> {
+        if config.vector_storage != T::STORAGE {
+            return Err("this executable expects f32 storage; use the orion binary for native u8, or --vector-storage f32".into());
+        }
         let base_header = inspect_vector_file(&config.base, config.base_format)?;
         let query_header = inspect_vector_file(&config.query, config.query_format)?;
         if base_header.dimension != config.dimension
@@ -204,7 +300,7 @@ impl LoadedDataset {
         // Reserve one tail for SIMD reads past the final vector. Individual
         // vectors remain contiguous and keep their original dimension.
         let allocation_elements = coordinate_count
-            .checked_add(SIMD_PAD_ELEMENTS)
+            .checked_add(SIMD_ALIGNMENT_BYTES / std::mem::size_of::<T>())
             .ok_or("base size overflow")?;
         let mut base = AlignedBoxWithSlice::new(allocation_elements, SIMD_ALIGNMENT_BYTES)
             .map_err(|e| e.to_string())?;
@@ -215,7 +311,7 @@ impl LoadedDataset {
             dimension,
             &mut base[..coordinate_count],
         )?;
-        validate_and_normalize_vectors(&mut base[..coordinate_count], dimension, config.metric)?;
+        T::normalize(&mut base[..coordinate_count], dimension, config.metric)?;
         Ok(Self {
             base: Some(base),
             num_points,

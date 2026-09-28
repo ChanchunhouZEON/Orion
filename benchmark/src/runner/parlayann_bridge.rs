@@ -42,7 +42,7 @@ pub struct StagedInput {
 const MAGIC: u32 = 0x53544147;
 const VERSION: u32 = 3;
 
-/// Read a u32 at the given byte offset from `buf`.
+/// Read an u32 at the given byte offset from `buf`.
 #[inline]
 fn read_u32_at(buf: &[u8], off: usize) -> u32 {
     u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
@@ -57,10 +57,10 @@ fn read_u32_vec_at(buf: &[u8], off: usize, n: usize) -> Vec<u32> {
     v
 }
 
-fn dist_l2(a: &[f32], b: &[f32]) -> f32 {
+fn dist_l2<T: Copy + Into<f32>>(a: &[T], b: &[T]) -> f32 {
     let mut s = 0.0f32;
     for (x, y) in a.iter().zip(b.iter()) {
-        let d = x - y;
+        let d = (*x).into() - (*y).into();
         s += d * d;
     }
     s
@@ -165,7 +165,7 @@ pub fn load_from_staged_file<P: AsRef<Path>>(
 }
 
 /// Preserve the historical PA importer entry selection without owning partitions.
-pub fn sampled_medoid(base_flat: &[f32], dim: usize) -> u32 {
+pub fn sampled_medoid<T: Copy + Sync + Into<f32>>(base_flat: &[T], dim: usize) -> u32 {
     let n = base_flat.len() / dim;
     // Recompute medoid: smallest sum-of-distances to a stride sample.
     let sample_size = 1024.min(n);

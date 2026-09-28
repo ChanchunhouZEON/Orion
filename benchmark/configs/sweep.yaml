@@ -24,7 +24,7 @@ defaults:
     # `Cascade::default_for_dataset` mapping in `orion.rs`.
     #   prefilter: none | jl | jl-hadamard | rabitq
     #   admission: l2-u8 | l2-u16 | l2-kt | mips-i8 | mips-i16 | ads-f32
-    #   rerank:    f32 | ip-f32 | u16
+    #   rerank:    f32 | ip-f32 | u16 | none
     prefilter: none
     admission: l2-u8
     rerank: f32
@@ -65,7 +65,7 @@ defaults:
 # Each dataset may set `base_graph.source = rust|parlayann`:
 #   rust       — build the graph in-process via `build_diskann_index`
 #                using the `orion.{alpha,graph_degree,...}` params above.
-#   parlayann  — import a `.staged v2` export produced by ParlayANN's
+#   parlayann  — import a `.staged v3` export produced by ParlayANN's
 #                `./neighbors -staged_outfile`, so our PhasedGraph sits
 #                on top of PA's RNG-pruned Vamana graph. Requires
 #                `base_graph.staged_file`. The importer is
@@ -83,9 +83,55 @@ defaults:
 # absolute paths out of this file so the config stays portable.
 
 datasets:
+  sift10m:
+    dimension: 128
+    metric: l2
+    # Reuse the BIGANN base file; the export and GT must match this exact prefix.
+    max_points: 10000000
+    paths:
+      base: "data/sift1b/bigann_base.bvecs"
+      query: "data/sift1b/bigann_query.bvecs"
+      groundtruth: "data/sift1b/idx_10M.ivecs"
+    base_graph:
+      source: parlayann
+      staged_file: "${PA_ROOT}/data/sift10m/sift10m_ex${max_extra}_pct60.staged"
+    orion:
+      alpha: 1.15
+      graph_degree: 64
+      build_search_list_size: 128
+      max_extra: 16
+      # Original bytes are shared by admission and final ranking: no f32 base or sidecar.
+      vector_storage: u8
+      prefilter: none
+      admission: l2-u8
+      rerank: none
+  sift100m:
+    dimension: 128
+    metric: l2
+    # Reuse the BIGANN base file; the export and GT must match this exact prefix.
+    max_points: 100000000
+    paths:
+      base: "data/sift1b/bigann_base.bvecs"
+      query: "data/sift1b/bigann_query.bvecs"
+      groundtruth: "data/sift1b/idx_100M.ivecs"
+    base_graph:
+      source: parlayann
+      staged_file: "${PA_ROOT}/data/sift100m/sift100m_ex${max_extra}_pct60.staged"
+    orion:
+      alpha: 1.15
+      graph_degree: 64
+      build_search_list_size: 128
+      max_extra: 16
+      # Original bytes are shared by admission and final ranking: no f32 base or sidecar.
+      vector_storage: u8
+      prefilter: none
+      admission: l2-u8
+      rerank: none
   sift1b:
     dimension: 128
     metric: l2
+    # Reuse the BIGANN base file; the export and GT must match this exact prefix.
+    max_points: 1000000000
     paths:
       base: "data/sift1b/bigann_base.bvecs"
       query: "data/sift1b/bigann_query.bvecs"
@@ -98,9 +144,11 @@ datasets:
       graph_degree: 64
       build_search_list_size: 128
       max_extra: 16
+      # Original bytes are shared by admission and final ranking: no f32 base or sidecar.
+      vector_storage: u8
       prefilter: none
       admission: l2-u8
-      rerank: f32
+      rerank: none
   sift:
     dimension: 128
     metric: l2

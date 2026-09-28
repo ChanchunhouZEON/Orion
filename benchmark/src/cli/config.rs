@@ -3,7 +3,23 @@
  * Licensed under the MIT License.
  */
 
-//! Resolve presets and CLI overrides before loading vectors or running search.
+//! Resolve benchmark configuration before loading vectors or constructing an index.
+//!
+//! This module combines:
+//!
+//! - dataset presets from YAML,
+//! - legacy environment variables,
+//! - explicit command-line overrides,
+//! - dimension- and metric-dependent cascade defaults,
+//!
+//! into a validated [`ResolvedRunConfig`].
+//!
+//! Resolution is intentionally separated from dataset loading and index construction so
+//! configuration errors can be reported before large allocations or expensive graph work
+//! begin.
+//!
+//! The resulting configuration also derives the graph-cache identity used to distinguish
+//! graphs built from different datasets or construction parameters.
 use super::data::VectorFormat;
 use crate::cascade::{AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric};
 use crate::config::{
@@ -15,20 +31,57 @@ use serde::Serialize;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
+/// Source used to obtain the base proximity graph.
+///
+/// The graph can either be constructed by DiskANN native Rust builder or imported
+/// from a ParlayANN-generated staged graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum GraphSource {
+    /// Construct the graph using DiskANN native Rust implementation with extra
+    /// candidates complemented.
     Rust,
+
+    /// Import a graph produced by ParlayANN.
     #[value(alias = "pa")]
     Parlayann,
 }
 
+/// Element representation used for resident base vectors.
+///
+/// This is independent of the on-disk [`VectorFormat`]. For example, vectors read
+/// from a `.bvecs` file may either remain as native `u8` values or be expanded into
+/// `f32` values after loading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum VectorStorageKind {
+    /// Store each coordinate as `f32`.
+    F32,
+
+    /// Keep each coordinate in its native unsigned 8-bit representation if the base vector
+    /// is in `u8` stored form.
+    U8,
+}
+
+/// Command-line configuration accepted by the Orion benchmark executable.
+///
+/// Most fields are optional because their effective values may come from a dataset
+/// preset or global YAML defaults. Explicit CLI values take precedence during
+/// [`resolve`](Self::resolve).
+///
+/// `Args` represents unresolved user input. Code that loads data or constructs an
+/// index should normally operate on [`ResolvedRunConfig`] instead.
 #[derive(Debug, Parser)]
 #[command(name = "orion", about = "Configurable Orion QPS-recall sweep")]
 pub struct Args {
-    /// Optional dataset shortcut from sweep.yaml; defaults to sift with no paths.
+    /// Optional dataset preset name defined in the sweep configuration.
+    ///
+    /// When omitted together with all explicit dataset paths, the bundled `sift`
+    /// preset is selected for backward compatibility.
     pub dataset: Option<String>,
-    /// Legacy second positional argument.
+    /// Legacy positional limit retained for compatibility with older benchmark scripts.
+    ///
+    /// Prefer [`max_points`](Self::max_points) in new invocations.
     pub legacy_max_points: Option<usize>,
     #[arg(long)]
     pub config: Option<PathBuf>,
@@ -42,10 +95,19 @@ pub struct Args {
     pub base_format: Option<VectorFormat>,
     #[arg(long, value_enum)]
     pub query_format: Option<VectorFormat>,
+    /// Element representation used after loading the base vectors.
+    ///
+    /// This affects resident memory usage and may impose additional restrictions on
+    /// the selected cascade and graph source.
+    #[arg(long, value_enum)]
+    pub vector_storage: Option<VectorStorageKind>,
     /// Print input and resident-memory lower bounds without loading base or graph.
     #[arg(long)]
     pub preflight: bool,
-    /// Reject when known resident components exceed this GiB budget. Not a peak guarantee.
+    /// Reject configurations whose known resident components exceed this budget.
+    ///
+    /// The value is expressed in GiB and is only a lower-bound check; temporary
+    /// construction allocations are not guaranteed to fit within this limit.
     #[arg(long)]
     pub memory_budget_gib: Option<f64>,
     /// Build/import and save graph cache, then exit before calibration/search.
@@ -89,14 +151,30 @@ pub struct Args {
     pub print_config: bool,
 }
 
+/// Fully resolved and validated configuration for one Orion benchmark run.
+///
+/// Unlike [`Args`], all required settings have concrete values. The resolution
+/// process has already applied dataset presets, legacy compatibility settings,
+/// global defaults, and explicit CLI overrides.
+///
+/// Instances of this type are intended to be passed to the data-loading, graph
+/// preparation, calibration, and search stages.
+///
+/// # Cache identity
+///
+/// [`cache_namespace`](Self::cache_namespace) identifies graph state derived from
+/// the effective base dataset and graph-construction parameters. Query-only
+/// settings intentionally do not participate in that identity.
 #[derive(Debug, Serialize)]
 pub struct ResolvedRunConfig {
+    /// Logical dataset preset name, if this run originated from one.
     pub dataset: Option<String>,
     pub base: PathBuf,
     pub query: PathBuf,
     pub groundtruth: PathBuf,
     pub base_format: VectorFormat,
     pub query_format: VectorFormat,
+    pub vector_storage: VectorStorageKind,
     pub memory_budget_gib: Option<f64>,
     pub prepare_only: bool,
     pub dimension: usize,
@@ -111,17 +189,27 @@ pub struct ResolvedRunConfig {
     pub staged_file: Option<PathBuf>,
     pub max_points: usize,
     pub sweep: ResolvedSweep,
+    /// Cache namespace derived from graph-affecting inputs and construction settings.
     pub cache_namespace: String,
     pub cache_dir: PathBuf,
+    /// Whether the staged graph path came explicitly from CLI or the legacy environment.
+    ///
+    /// This is excluded from serialization because it records resolution provenance
+    /// rather than runtime semantics.
     #[serde(skip)]
     pub staged_file_explicit: bool,
+    /// Matching legacy bundled preset, when this configuration is compatible with an
+    /// older cache naming scheme.
     #[serde(skip)]
     pub legacy_dataset: Option<String>,
     #[serde(skip)]
     pub legacy_local_pct: usize,
 }
 
-/// Compatibility settings from older shell-based benchmark workflows.
+/// Compatibility settings read from legacy environment variables.
+///
+/// These values preserve older shell-based benchmark workflows and participate
+/// in configuration resolution only when no higher-precedence CLI value is present.
 #[derive(Default)]
 struct LegacyEnvironment {
     graph_source: Option<GraphSource>,
@@ -132,6 +220,10 @@ struct LegacyEnvironment {
 }
 
 impl LegacyEnvironment {
+    /// Reads all supported legacy environment variables.
+    ///
+    /// Missing variables are treated as unspecified. Malformed graph-source values
+    /// are reported as configuration errors.
     fn read() -> Result<Self, String> {
         Ok(Self {
             graph_source: std::env::var("ORION_GRAPH")
@@ -149,6 +241,7 @@ impl LegacyEnvironment {
     }
 }
 
+/// Parses a legacy graph-source spelling accepted outside Clap's `ValueEnum`.
 fn parse_graph_source(s: &str) -> Result<GraphSource, String> {
     match s.to_ascii_lowercase().as_str() {
         "rust" => Ok(GraphSource::Rust),
@@ -160,8 +253,18 @@ fn parse_graph_source(s: &str) -> Result<GraphSource, String> {
 }
 
 impl Args {
-    /// Merge a YAML preset, legacy environment settings, and explicit CLI overrides.
-    /// This resolves settings only; payload loading and export validation happen later.
+    /// Resolves this CLI input into a complete runtime configuration.
+    ///
+    /// Resolution merges, in precedence order, explicit CLI values, legacy environment
+    /// settings, dataset-specific YAML overrides, and global defaults.
+    ///
+    /// This method does not load vector payloads or construct/import graph data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the custom configuration file cannot be read or parsed,
+    /// a referenced dataset preset does not exist, required settings are missing,
+    /// or any resolved option combination is invalid.
     pub fn resolve(&self) -> Result<ResolvedRunConfig, String> {
         let custom_root: Option<RawRoot> = self
             .config
@@ -178,6 +281,21 @@ impl Args {
         )
     }
 
+    /// Resolves configuration against an explicit preset root and legacy environment.
+    ///
+    /// This helper exists primarily so configuration resolution can be tested without
+    /// reading process-global environment state.
+    ///
+    /// Resolution broadly proceeds as:
+    ///
+    /// 1. select the dataset preset,
+    /// 2. resolve paths and file formats,
+    /// 3. resolve metric, dimension, and resident storage,
+    /// 4. resolve cascade and graph-construction settings,
+    /// 5. validate cross-option constraints,
+    /// 6. resolve graph source and staged export,
+    /// 7. resolve sweep parameters,
+    /// 8. derive cache compatibility and cache identity.
     fn resolve_with(
         &self,
         root: &RawRoot,
@@ -246,6 +364,18 @@ impl Args {
 
         let defaults = &root.defaults.orion;
         let dataset_overrides = preset.and_then(|p| p.orion.as_ref());
+        let vector_storage = match self.vector_storage {
+            Some(storage) => storage,
+            None => match dataset_overrides.and_then(|o| o.vector_storage.as_deref()) {
+                None | Some("f32") => VectorStorageKind::F32,
+                Some("u8") => VectorStorageKind::U8,
+                Some(other) => {
+                    return Err(format!(
+                        "unknown vector_storage {other:?}; expected f32 or u8"
+                    ))
+                }
+            },
+        };
         let cascade = self.resolve_cascade(dimension, metric, dataset_overrides)?;
 
         // Construction settings use CLI > dataset override > global default.
@@ -272,6 +402,7 @@ impl Args {
         let max_points = self
             .max_points
             .or(self.legacy_max_points)
+            .or_else(|| preset.and_then(|p| p.max_points))
             .unwrap_or(usize::MAX);
 
         if !alpha.is_finite()
@@ -293,6 +424,39 @@ impl Args {
             env,
             max_extra,
         )?;
+
+        // Native u8 storage is currently a deliberately narrow execution path.
+        // It exists for SIFT-style 128-dimensional L2 data and reuses an imported
+        // ParlayANN graph because the native Rust graph builder still operates on f32.
+        if vector_storage == VectorStorageKind::U8 {
+            if dimension != 128 || metric != SearchMetric::L2 {
+                return Err(
+                    "native u8 storage currently requires 128-dimensional L2 vectors".into(),
+                );
+            }
+            if !matches!(base_format, VectorFormat::Bvecs | VectorFormat::U8bin)
+                || !matches!(query_format, VectorFormat::Bvecs | VectorFormat::U8bin)
+            {
+                return Err(
+                    "native u8 requires bvecs/u8bin base and queries; it does not quantize floats"
+                        .into(),
+                );
+            }
+            if cascade.prefilter != PrefilterChoice::None
+                || cascade.admission != AdmissionChoice::L2U8
+                || cascade.rerank != RerankChoice::None
+            {
+                return Err(
+                    "native u8 requires --prefilter none --admission l2-u8 --rerank none".into(),
+                );
+            }
+            if graph_source != GraphSource::Parlayann {
+                return Err(
+                    "native u8 uses a ParlayANN STAG export/cache; the Rust builder remains f32"
+                        .into(),
+                );
+            }
+        }
 
         // Profiling supplies a trial count only when the CLI did not specify one.
         let mut overrides = self.sweep.clone();
@@ -317,6 +481,7 @@ impl Args {
             groundtruth,
             base_format,
             query_format,
+            vector_storage,
             memory_budget_gib: self.memory_budget_gib,
             prepare_only: self.prepare_only,
             dimension,
@@ -351,8 +516,17 @@ impl Args {
         Ok(run)
     }
 
-    /// Select by dimension/metric first, then overlay dataset axes and explicit flags.
-    /// Do not apply global cascade defaults here: unspecified datasets use the selector.
+    /// Resolves the effective search cascade.
+    ///
+    /// The dimension/metric selector provides the initial cascade. Dataset-specific
+    /// axis overrides are then applied, followed by explicit CLI overrides.
+    ///
+    /// Global Orion defaults are intentionally not consulted here so previously unseen
+    /// datasets can select a cascade from their dimension and metric alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the resulting axis combination is invalid for `metric`.
     fn resolve_cascade(
         &self,
         dimension: usize,
@@ -388,8 +562,17 @@ impl Args {
         Ok(cascade)
     }
 
-    /// Source precedence: CLI source/export, environment source/export, then YAML.
-    /// Resolve the export path without opening it: a cache hit can outlive its export.
+    /// Resolves the graph implementation and optional staged graph path.
+    ///
+    /// Graph-source precedence is:
+    ///
+    /// 1. explicit CLI source or staged-file selection,
+    /// 2. legacy environment settings,
+    /// 3. dataset preset,
+    /// 4. native Rust builder.
+    ///
+    /// The staged file is resolved but not opened here because an existing cache may
+    /// remain valid even when its original staged export is no longer available.
     fn resolve_graph_source(
         &self,
         preset_graph: Option<&RawBaseGraph>,
@@ -438,11 +621,20 @@ impl Args {
 }
 
 impl ResolvedRunConfig {
+    /// Returns the bundled legacy preset whose historical cache identity exactly
+    /// matches this resolved configuration.
+    ///
+    /// A matching dataset name alone is insufficient: the base path, storage format,
+    /// metric, dimension, and graph-construction parameters must also match the
+    /// bundled preset.
+    ///
+    /// This prevents custom configurations from accidentally reusing legacy caches.
     fn matching_legacy_preset(&self) -> Option<String> {
         // A custom YAML entry called "sift" is not evidence of the old cache's identity.
         let bundled: RawRoot =
             serde_yaml::from_str(include_str!("../../configs/sweep.yaml")).ok()?;
-        if self.base_format != VectorFormat::Fvecs {
+        if self.base_format != VectorFormat::Fvecs || self.vector_storage != VectorStorageKind::F32
+        {
             return None;
         }
         let name = self.dataset.as_ref()?;
@@ -471,6 +663,17 @@ impl ResolvedRunConfig {
         Some(name.clone())
     }
 
+    /// Computes the stable namespace used for graph-cache files.
+    ///
+    /// The identity includes the base-file identity and every resolved setting that
+    /// changes the stored graph. Query paths and search-only sweep settings are
+    /// intentionally excluded.
+    ///
+    /// Existing `v3_*` cache identities depend on the serialized tuple layout below.
+    /// Reordering fields or changing their encoding is therefore a cache-format change.
+    ///
+    /// Native `u8` storage additionally uses a dedicated namespace discriminator to
+    /// prevent raw-byte graphs from colliding with historical `f32` cache entries.
     fn compute_cache_namespace(&self) -> String {
         fn base_file_identity(path: &std::path::Path) -> (PathBuf, Option<u64>, Option<u128>) {
             let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| {
@@ -515,6 +718,11 @@ impl ResolvedRunConfig {
         if self.base_format != VectorFormat::Fvecs {
             format!("{:?}", self.base_format).hash(&mut hash);
         }
+        // Preserve all historical f32 identities; native storage gets its own
+        // namespace so a stale quantized sidecar cannot be mistaken for raw bytes.
+        if self.vector_storage == VectorStorageKind::U8 {
+            "native-u8-v1".hash(&mut hash);
+        }
         format!("v3_{:016x}", hash.finish())
     }
 }
@@ -529,6 +737,47 @@ mod tests {
         Args::try_parse_from(args)
             .map_err(|e| e.to_string())?
             .resolve_with(&root(), &LegacyEnvironment::default())
+    }
+
+    #[test]
+    fn large_sift_presets_select_native_bytes_and_exact_prefixes() {
+        for (name, count, groundtruth) in [
+            ("sift10m", 10_000_000, "idx_10M.ivecs"),
+            ("sift100m", 100_000_000, "idx_100M.ivecs"),
+            ("sift1b", 1_000_000_000, "idx_1000M.ivecs"),
+        ] {
+            let config = resolve(&["orion", name]).unwrap();
+            assert_eq!(config.vector_storage, VectorStorageKind::U8);
+            assert_eq!(config.max_points, count);
+            assert_eq!(config.base_format, VectorFormat::Bvecs);
+            assert_eq!(config.query_format, VectorFormat::Bvecs);
+            assert!(config.groundtruth.ends_with(groundtruth));
+            assert_eq!(config.cascade.prefilter, PrefilterChoice::None);
+            assert_eq!(config.cascade.admission, AdmissionChoice::L2U8);
+            assert_eq!(config.cascade.rerank, RerankChoice::None);
+            assert_eq!(config.graph_source, GraphSource::Parlayann);
+            assert!(config.staged_file.unwrap().to_string_lossy().contains(name));
+        }
+        assert_eq!(
+            resolve(&["orion", "sift10m", "--max-points", "1000"])
+                .unwrap()
+                .max_points,
+            1000
+        );
+    }
+
+    #[test]
+    fn native_storage_is_validated_and_has_a_distinct_cache_identity() {
+        let native = resolve(&["orion", "sift10m"]).unwrap();
+        let float = resolve(&["orion", "sift10m", "--vector-storage", "f32"]).unwrap();
+        assert_ne!(native.cache_namespace, float.cache_namespace);
+        assert!(resolve(&["orion", "sift10m", "--rerank", "f32"]).is_err());
+        assert!(resolve(&["orion", "sift10m", "--admission", "l2-u16"]).is_err());
+        assert!(resolve(&["orion", "sift10m", "--prefilter", "jl"]).is_err());
+        assert!(resolve(&["orion", "sift10m", "--query", "query.fvecs"]).is_err());
+        assert!(resolve(&["orion", "sift10m", "--base", "base.fbin"]).is_err());
+        assert!(resolve(&["orion", "sift10m", "--graph-source", "rust"]).is_err());
+        assert!(resolve(&["orion", "sift10m", "--dimension", "32"]).is_err());
     }
 
     #[test]

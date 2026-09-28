@@ -2,7 +2,7 @@
 use super::{
     cache::CachePlan,
     config::{GraphSource, ResolvedRunConfig},
-    data::LoadedDataset,
+    data::{BaseElement, LoadedDataset},
 };
 use crate::parlayann_bridge;
 use diskann::model::InmemDataset;
@@ -15,9 +15,26 @@ use std::{path::Path, time::Instant};
 pub fn load_index<const N: usize>(
     config: &ResolvedRunConfig,
     data: &mut LoadedDataset,
-) -> Result<Orion<N>, String>
+) -> Result<Orion<N>, String> {
+    load_index_impl(config, data, build_in_process::<N>)
+}
+
+pub fn load_u8_index<const N: usize>(
+    config: &ResolvedRunConfig,
+    data: &mut LoadedDataset<u8>,
+) -> Result<Orion<N, u8>, String> {
+    load_index_impl(config, data, |_, _| {
+        Err("native u8 construction requires a ParlayANN STAG export".into())
+    })
+}
+
+fn load_index_impl<const N: usize, T: BaseElement>(
+    config: &ResolvedRunConfig,
+    data: &mut LoadedDataset<T>,
+    build: impl FnOnce(&ResolvedRunConfig, InmemDataset<T, N>) -> Result<Orion<N, T>, String>,
+) -> Result<Orion<N, T>, String>
 where
-    [f32; N]: vector::FullPrecisionDistance<f32, N>,
+    [T; N]: vector::FullPrecisionDistance<T, N>,
 {
     if config.dimension != N {
         return Err("index dimension does not match input".into());
@@ -37,11 +54,11 @@ where
             "Loading cached PhasedGraph from {:?}",
             cache.metadata_path.with_extension("pgraph")
         );
-        Orion::<N>::load_from_cache(&cache.metadata_path, dataset).map_err(|e| e.to_string())?
+        Orion::<N, T>::load_from_cache(&cache.metadata_path, dataset).map_err(|e| e.to_string())?
     } else {
         let start = Instant::now();
         let mut index = match config.graph_source {
-            GraphSource::Rust => build_in_process(config, dataset)?,
+            GraphSource::Rust => build(config, dataset)?,
             GraphSource::Parlayann => {
                 let staged_path = import_source
                     .as_deref()
@@ -117,13 +134,13 @@ where
     ))
 }
 
-fn import_staged_graph<const N: usize>(
+fn import_staged_graph<const N: usize, T: BaseElement>(
     config: &ResolvedRunConfig,
-    dataset: InmemDataset<f32, N>,
+    dataset: InmemDataset<T, N>,
     staged_path: &Path,
-) -> Result<Orion<N>, String>
+) -> Result<Orion<N, T>, String>
 where
-    [f32; N]: vector::FullPrecisionDistance<f32, N>,
+    [T; N]: vector::FullPrecisionDistance<T, N>,
 {
     log::info!(
         "Streaming ParlayANN .staged export from {}",
@@ -146,6 +163,107 @@ mod large_input_tests {
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
     static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn native_byte_import_and_reload_keep_one_buffer_and_no_sidecars() {
+        use orion::algorithm::search::stage::{
+            admission::NativeU8Admission, prefilter::NoPrefilter, rerank::NoRerank,
+        };
+        let directory = std::env::temp_dir().join(format!(
+            "orion-native-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let base = directory.join("base.bvecs");
+        let query = directory.join("query.bvecs");
+        let gt = directory.join("gt.ivecs");
+        let staged = directory.join("graph.staged");
+        let mut payload = Vec::new();
+        for i in 0..4u8 {
+            payload.extend(128u32.to_le_bytes());
+            payload.extend([i; 128]);
+        }
+        std::fs::write(&base, &payload).unwrap();
+        std::fs::write(&query, &payload[..132]).unwrap();
+        std::fs::write(
+            &gt,
+            [1u32, 0]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let mut file = std::fs::File::create(&staged).unwrap();
+        for word in [0x53544147u32, 3, 4, 2, 1, 0] {
+            file.write_all(&word.to_le_bytes()).unwrap();
+        }
+        for i in 0..4u32 {
+            for word in [1, 1, 1, (i + 1) % 4, (i + 2) % 4, (i + 3) % 4] {
+                file.write_all(&word.to_le_bytes()).unwrap();
+            }
+        }
+        drop(file);
+        let config = super::super::config::Args::try_parse_from([
+            "orion",
+            "sift10m",
+            "--base",
+            base.to_str().unwrap(),
+            "--query",
+            query.to_str().unwrap(),
+            "--groundtruth",
+            gt.to_str().unwrap(),
+            "--staged-file",
+            staged.to_str().unwrap(),
+            "--cache-dir",
+            directory.to_str().unwrap(),
+            "--graph-degree",
+            "2",
+            "--k",
+            "1",
+            "--search-list-sizes",
+            "4",
+        ])
+        .unwrap()
+        .resolve()
+        .unwrap();
+        // F32-only diagnostic executables must reject this config before loading a base.
+        assert!(LoadedDataset::<f32>::load(&config).is_err());
+        for reload in [false, true] {
+            let mut data = LoadedDataset::<u8>::load(&config).unwrap();
+            let pointer = data.base.as_ref().unwrap().as_ptr();
+            let index = load_u8_index::<128>(&config, &mut data).unwrap();
+            assert!(data.base.is_none());
+            assert_eq!(index.dataset.data.as_ptr(), pointer);
+            assert_eq!(index.dataset.data.len(), 4 * 128 + 64);
+            assert_eq!(&index.dataset.data[384..512], &[3; 128]);
+            let result = index
+                .search_unified(
+                    &[0.; 128],
+                    1,
+                    4,
+                    2,
+                    1.,
+                    100,
+                    None::<&NoPrefilter>,
+                    &NativeU8Admission::new(&index.dataset),
+                    &NoRerank,
+                )
+                .unwrap();
+            assert_eq!(result, vec![0]);
+            if !reload {
+                std::fs::remove_file(&staged).unwrap();
+            }
+        }
+        assert!(std::fs::read_dir(&directory).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "qds")
+        }));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn byte_input_streamed_graph_and_cache_transfer_the_same_allocation() {

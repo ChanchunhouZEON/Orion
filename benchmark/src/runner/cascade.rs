@@ -197,6 +197,9 @@ pub enum PrefilterChoice {
 }
 
 /// Admission (PQ-ranking) tier choice.
+///
+/// # Notice
+///
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum AdmissionChoice {
     L2U8,
