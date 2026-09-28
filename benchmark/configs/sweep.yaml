@@ -1,8 +1,7 @@
 # QPS-Recall Sweep Configuration
 #
-# Per-dataset source of truth for the benchmark harness. `main.rs` and
-# `orion.rs` both resolve dataset paths, build parameters, and
-# the orion search metric through this file.
+# Shared search schedules and calibration defaults for `main.rs` and
+# `bin/orion.rs`. The main harness also resolves per-dataset settings here.
 
 defaults:
   diskann:
@@ -30,9 +29,37 @@ defaults:
     admission: l2-u8
     rerank: f32
   sweep:
-    search_list_sizes: [16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256, 512, 768, 1024]
+    k: 10
     threads: 8
     trials: 1
+    calibration:
+      samples: 200
+      # Effective calibration L = max(base_l, CALIBRATION_BEAM_FACTOR * k).
+      # This does not clamp or alter the measured search L schedule.
+      base_l: 48
+      diagnostic_l: 100
+    profiles:
+      ablation: {trials: 5}
+      single: {trials: 5}
+      profiling: {trials: 30}
+    # Rows are selected by k; each experiment keeps its own sampling density.
+    # Unknown k requires a new row or an explicit --search-list-sizes override.
+    # Both entry points accept --k, --search-list-sizes, --threads, --trials.
+    # Use --print-config to inspect settings without loading data.
+    # CLI overrides > profile defaults > sweep defaults.
+    schedules_by_k:
+      10:
+        sweep: [16, 18, 20, 22, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 72, 80, 90, 100, 114, 128, 144, 160, 180, 200, 224, 256, 288, 320, 384, 448, 512, 640, 768, 1024]
+        ablation: [16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256]
+        ads: [16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256, 512, 768, 1024]
+        diagnostic: [48, 100, 200]
+        single: [48]
+      100:
+        sweep: [100, 112, 128, 144, 160, 180, 200, 224, 256, 288, 320, 384, 448, 512, 640, 768, 1024, 1536, 2048]
+        ablation: &k100_sparse [100, 128, 160, 200, 256, 384, 512, 768, 1024, 1536, 2048]
+        ads: *k100_sparse
+        diagnostic: [128, 256, 512]
+        single: [200]
 
 # ── Base-graph source policy ───────────────────────────────────────────────
 # Each dataset may set `base_graph.source = rust|parlayann`:
@@ -56,8 +83,27 @@ defaults:
 # absolute paths out of this file so the config stays portable.
 
 datasets:
+  sift1b:
+    dimension: 128
+    metric: l2
+    paths:
+      base: "data/sift1b/bigann_base.bvecs"
+      query: "data/sift1b/bigann_query.bvecs"
+      groundtruth: "data/sift1b/idx_1000M.ivecs"
+    base_graph:
+      source: parlayann
+      staged_file: "${PA_ROOT}/data/sift1b/sift1b_ex${max_extra}_pct60.staged"
+    orion:
+      alpha: 1.15
+      graph_degree: 64
+      build_search_list_size: 128
+      max_extra: 16
+      prefilter: none
+      admission: l2-u8
+      rerank: f32
   sift:
     dimension: 128
+    metric: l2
     paths:
       base:        "data/sift/sift_base.fvecs"
       query:       "data/sift/sift_query.fvecs"
@@ -67,7 +113,7 @@ datasets:
       # PA's `-two_pass 1` vamana export (α=1.15 R=64) — the graph PA
       # publishes its SIFT1M recall-QPS numbers on. Produced by:
       #   PA_NUM_PASSES=2 DATASET=sift bash benchmark/scripts/prepare_parlayann_data.sh
-      staged_file: "${PA_ROOT}/data/sift1m/sift1m_ex${max_extra}.staged"
+      staged_file: "${PA_ROOT}/data/sift1m/sift1m_ex${max_extra}_pct60.staged"
     orion:
       alpha: 1.15
       graph_degree: 64
@@ -78,6 +124,7 @@ datasets:
       rerank: f32
   glove25:
     dimension: 32
+    metric: inner-product
     paths:
       # Pre-normalized fvecs — cosine on normalized ≡ L2 on unit
       # vectors, so the graph built under L2 is the same shape PA
@@ -89,7 +136,7 @@ datasets:
       source: parlayann
       # Produced by:
       #   PA_NUM_PASSES=2 DATASET=glove25 bash benchmark/scripts/prepare_parlayann_data.sh
-      staged_file: "${PA_ROOT}/data/glove25/glove25_ex${max_extra}.staged"
+      staged_file: "${PA_ROOT}/data/glove25/glove25_ex${max_extra}_pct60.staged"
     orion:
       alpha: 1.0
       graph_degree: 100
@@ -100,6 +147,7 @@ datasets:
       rerank: ip-f32
   glove100:
     dimension: 100
+    metric: inner-product
     paths:
       base:        "data/glove100_norm/glove-100-angular_base.fvecs"
       query:       "data/glove100_norm/glove-100-angular_query.fvecs"
@@ -109,7 +157,7 @@ datasets:
       # 2-pass PA-built graph — our production config that wins ~10%
       # vs PA native angular in the main sweep. Produced by:
       #   PA_NUM_PASSES=2 DATASET=glove100 bash benchmark/scripts/prepare_parlayann_data.sh
-      staged_file: "${PA_ROOT}/data/glove100/glove100_ex${max_extra}.staged"
+      staged_file: "${PA_ROOT}/data/glove100/glove100_ex${max_extra}_pct60.staged"
     orion:
       alpha: 1.0
       graph_degree: 100
@@ -121,6 +169,7 @@ datasets:
       rerank: ip-f32
   gist:
     dimension: 960
+    metric: l2
     paths:
       base:        "data/gist/gist_base.fvecs"
       query:       "data/gist/gist_query.fvecs"
@@ -131,7 +180,7 @@ datasets:
       # matching `../ParlayANN/algorithms/vamana/scripts/gist`.
       # Produced by:
       #   PA_NUM_PASSES=2 DATASET=gist bash benchmark/scripts/prepare_parlayann_data.sh
-      staged_file: "${PA_ROOT}/data/gist/gist_ex${max_extra}.staged"
+      staged_file: "${PA_ROOT}/data/gist/gist_ex${max_extra}_pct60.staged"
     orion:
       # Aligned with ParlayANN `vamana/scripts/gist`:
       #   BUILD_ARGS="-R 100 -L 200 -alpha 1.1 -num_passes 2"
@@ -147,6 +196,7 @@ datasets:
       rerank: f32
   deep10m:
     dimension: 128
+    metric: l2
     paths:
       # Yandex Deep10M — first 10M of Deep1B, native D=96 zero-padded
       # to D=128 by `convert_fbin.py --pad-to-dim 128` so the f32 rerank
@@ -172,6 +222,7 @@ datasets:
       rerank: f32
   fashion-mnist:
     dimension: 784
+    metric: l2
     paths:
       base:        "data/fashion-mnist/fashion-mnist-784-euclidean_base.fvecs"
       query:       "data/fashion-mnist/fashion-mnist-784-euclidean_query.fvecs"
@@ -181,7 +232,7 @@ datasets:
       # Mirrors `../ParlayANN/algorithms/vamana/scripts/fashion`.
       # Produced by:
       #   PA_NUM_PASSES=2 DATASET=fashion-mnist bash benchmark/scripts/prepare_parlayann_data.sh
-      staged_file: "${PA_ROOT}/data/fashion-mnist-784-euclidean/fashion-mnist-784-euclidean_ex${max_extra}.staged"
+      staged_file: "${PA_ROOT}/data/fashion-mnist-784-euclidean/fashion-mnist-784-euclidean_ex${max_extra}_pct60.staged"
     orion:
       # Aligned with ParlayANN `vamana/scripts/fashion`:
       #   BUILD_ARGS="-R 40 -L 80 -alpha 1.1 -num_passes 2 -quantize_bits 8"
@@ -195,6 +246,7 @@ datasets:
       rerank: f32
   msmarco_bert_1M:
     dimension: 768
+    metric: inner-product
     paths:
       # 1M MS-MARCO passages embedded with
       # sentence-transformers/msmarco-bert-base-dot-v5 (D=768, raw dot
@@ -208,7 +260,7 @@ datasets:
       # Mirrors `../ParlayANN/algorithms/vamana/scripts/msmarco_websearch`.
       # Produced by:
       #   PA_NUM_PASSES=1 DATASET=msmarco_bert_1M bash benchmark/scripts/prepare_parlayann_data.sh
-      staged_file: "${PA_ROOT}/data/MSMarcoBert1M/MSMarcoBert1M_ex${max_extra}.staged"
+      staged_file: "${PA_ROOT}/data/MSMarcoBert1M/MSMarcoBert1M_ex${max_extra}_pct60.staged"
     orion:
       # Aligned with ParlayANN `vamana/scripts/msmarco_websearch`:
       #   BUILD_ARGS="-R 64 -L 128 -alpha 1 -num_passes 1 -quantize_bits 8"
@@ -223,6 +275,7 @@ datasets:
       rerank: ip-f32
   wiki_ada_1M:
     dimension: 1536
+    metric: inner-product
     paths:
       # 1M Wikipedia passages × 1536-D OpenAI ada-002 embeddings,
       # sourced from `nlpkevinl/wikipedia_openai_embeddings` via
@@ -237,7 +290,7 @@ datasets:
       # shape (R=100 L=200 α=1.05 num_passes=2) — there's no direct
       # PA `vamana/scripts/<wiki_ada>` recipe so we mirror the
       # OpenAIArXiv shape (closest D + same dot-product metric).
-      staged_file: "${PA_ROOT}/data/WikiAda1M/WikiAda1M_ex${max_extra}.staged"
+      staged_file: "${PA_ROOT}/data/WikiAda1M/WikiAda1M_ex${max_extra}_pct60.staged"
     orion:
       alpha: 1.05
       graph_degree: 100

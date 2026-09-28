@@ -417,6 +417,17 @@ pub struct HashsetSeen {
 }
 
 impl HashsetSeen {
+    /// Sorted semantic contents for opt-in checkpoint diagnostics.
+    pub fn diagnostic_ids(&self) -> Vec<u32> {
+        let entries = match &self.inner {
+            HashsetInner::Linear(s) => &s.entries,
+            HashsetInner::Bucketed(s) => &s.entries,
+        };
+        let mut ids: Vec<_> = entries.iter().copied().filter(|&id| id != SENTINEL).collect();
+        ids.sort_unstable();
+        ids
+    }
+
     pub fn new(search_list_size: usize) -> Self {
         let bucketed = std::env::var("ORION_HASHSET")
             .map(|s| s.eq_ignore_ascii_case("bucketed"))

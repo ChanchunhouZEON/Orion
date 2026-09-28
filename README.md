@@ -101,17 +101,31 @@ The `orion` binary is the production driver — loads the cached `PhasedGraph` (
 
 ```sh
 # SIFT1M — defaults to (none, l2-u8, f32) — direct u8 L2, no prefilter
-{ORION_GRAPH=pa} {ORION_STAGED_FILE=$PA_ROOT/data/<ds>/<ds>_ex16_pct60.staged} cargo run --release --bin orion -- sift
+ORION_GRAPH=pa cargo run --release --bin orion -- sift
 
 # GloVe-25 — defaults to (none, mips-i8, ip-f32) — MIPS i8 sdot
-{ORION_GRAPH=pa} {ORION_STAGED_FILE=$PA_ROOT/data/<ds>/<ds>_ex16_pct60.staged} cargo run --release --bin orion -- glove25
+ORION_GRAPH=pa cargo run --release --bin orion -- glove25
 
 # GloVe-100 — defaults to (none, mips-i8, ip-f32)
-{ORION_GRAPH=pa} {ORION_STAGED_FILE=$PA_ROOT/data/<ds>/<ds>_ex16_pct60.staged} cargo run --release --bin orion -- glove100
+ORION_GRAPH=pa cargo run --release --bin orion -- glove100
 
 # GIST — defaults to (jl, l2-kt, f32) — JL prefilter + i8 kernel-trick L2
-{ORION_GRAPH=pa} {ORION_STAGED_FILE=$PA_ROOT/data/<ds>/<ds>_ex16_pct60.staged} cargo run --release --bin orion -- gist
+ORION_GRAPH=pa cargo run --release --bin orion -- gist
 ```
+
+Cached runs do not require `PA_ROOT` or the original `.staged` file. On a
+cache miss, Orion resolves the YAML export path with `PA_ROOT` defaulting
+to `../ParlayANN`; `--staged-file` or `ORION_STAGED_FILE` can select an
+explicit export instead. Missing exports produce an error on a PA cache
+miss, never an implicit switch to a Rust graph. Use `--graph-source rust`
+to request an in-process build.
+
+The driver checks the new input-keyed cache first, then a preset-compatible
+legacy cache. Legacy reuse validates available graph headers and records
+the current input identity, but cannot recover historical export provenance.
+Custom inputs cannot borrow a cache based only on its dataset name. An
+explicit export that conflicts with recorded provenance is rejected; use
+`--cache-dir <another-directory>` to import it separately.
 
 **Cascade axes** (override any of the three independently):
 
@@ -689,8 +703,140 @@ top of that file. See [`.cargo/config.toml.example`](.cargo/config.toml.example)
 for the per-CPU-SKU compatibility matrix (Skylake-SP, Ice Lake,
 Sapphire Rapids, Genoa, Zen 4).
 
+## Adaptive-search diagnostics
+
+The `adaptive` executable compares three post-convergence policies on the
+same index with early exit disabled: `full_neighbor` (local + remote),
+`local_only`, and `local_extra`. All use the same cascade, calibration,
+navigation prefix, convergence detector, and convergence-dependent PQ flush
+schedule. This isolates neighbor selection, not every difference from a
+conventional beam implementation.
+
+```bash
+cargo run --release -p benchmark --bin adaptive -- sift \
+  --graph-source parlayann --k 10 --search-list-sizes 48,100,200,256 \
+  --threads 8 --trials 5 --diagnostic-queries 1000
+```
+
+The executable shares dataset shortcuts, path/metric/cascade overrides,
+cache validation, and per-k L schedules with `orion`. Replace `sift` with
+`gist` for the high-dimensional L2 cascade. Omit `--search-list-sizes` to
+use the configured schedule. A ParlayANN cache miss requires a matching
+staged export. `--print-config` resolves inputs without building the index.
+
+Results default to `visualizations/adaptive_<dataset>_k<k>.json`; use
+`--output` to keep multiple runs. Detailed instrumentation uses an evenly
+spaced query sample (`--diagnostic-queries 0` selects all queries); timed
+trials use all queries and a no-op observer. Trial order rotates between
+arms. Existing lightweight production counters remain active in both passes.
+
+The JSON includes per-query and mean expansions, first switch and reversals,
+unique encountered objects, and separate admission/prefilter/rerank counts.
+Admission counts include the entry. Prefilter threshold recomputations and
+reranking can evaluate objects already encountered, so total stage NDC is
+not the unique-object count. First discovery is before prefilter; first
+admission means passing the admission cutoff, not necessarily surviving
+the subsequent PQ merge. Entry is step 0 and missing targets are `null`.
+Paired discovery means use only the same query/target pairs discovered by
+both arms; discovery fractions and final recall are reported separately.
+
+`--recall-targets 0.9,0.95,0.99` reports the best measured QPS reaching each
+target, together with its actual recall and L. An unreachable target is
+`null`; no extrapolated or interpolated dominance is claimed. These sweeps
+do not implement matched-state branch replay or validate pruning witnesses.
+
+Visualize a completed run with the shared chart style:
+
+```bash
+python visualizations/plot_adaptive.py visualizations/adaptive_sift_k10.json
+# Optional: choose the detailed-panel L and output directory.
+python visualizations/plot_adaptive.py visualizations/adaptive_gist_k100.json \
+  --detail-l 256 --out-dir visualizations/adaptive_figures
+```
+
+Each input produces PNG/PDF overview, per-L stage/phase/discovery panels,
+paired discovery-step differences with common-target counts, and (when
+available) measured QPS at common recall targets. Inputs are never merged.
+The detail panel defaults to the largest measured L. Unreached targets
+are marked explicitly; discovery curves keep unfound targets in the
+denominator. Multiple JSON paths may be passed to render several runs.
+
+## Adaptive switching and early-exit ablation
+
+`adaptive_ee_ablation` runs a same-graph 2x2 experiment: full neighbors,
+adaptive neighbors, full neighbors with EE, and adaptive neighbors with EE.
+Every arm uses the same cascade, calibrated admission threshold, and
+convergence-dependent flush scheduling. The two EE arms share one calibrated
+EE limit; `--ee-limit` can override it for controlled experiments.
+
+```bash
+cargo run --release -p benchmark --bin adaptive_ee_ablation -- sift \
+  --graph-source parlayann --k 10 --threads 8 --trials 5 \
+  --diagnostic-queries 0 --recall-targets 0.9,0.95,0.99 \
+  --output visualizations/adaptive_ee_ablation_sift_k10.json
+```
+
+Diagnostics default to all queries and are separate from QPS timing. The JSON
+records per-query NDC before/after the **first** converged expansion, with any
+later reversals included in the tail. Entry scoring belongs to the prefix;
+final rerank is counted separately. Stage counts include visited-set-deduplicated
+candidate evaluations and repeated prefilter threshold work, not equal-cost
+full-precision operations. `early_exited` records an actual EE-triggered break.
+Observer/no-observer results and the shared pre-convergence prefix are checked
+at runtime.
+
+For each recall target, `matched_recall` reports the lowest measured NDC and
+highest measured QPS configurations separately, including actual recall and L.
+These meet a minimum recall rather than exactly matching recall; an unreachable
+target is `null`. Existing output files are never overwritten. The experiment
+tests complementarity without presuming a positive interaction.
+
+## Matched-state diagnostics
+
+`matched_state` replays three deterministic full-neighbor prefixes and checks
+logical state equality immediately before the first converged expansion collects
+neighbors. It then follows full, local-only, and local-plus-extra policies with
+EE disabled. It measures no QPS and never overwrites existing output files.
+
+```bash
+cargo run --release -p benchmark --bin matched_state -- sift \
+  --graph-source parlayann --k 10 --diagnostic-queries 200 \
+  --diagnostic-ls 64,128,256 --track both --geometry-alpha 1.1 \
+  --output visualizations/matched_state_sift_k10.json
+```
+
+This diagnostic currently accepts L2 only. `exact` uses full-precision L2
+admission without prefilter/rerank; `cascade` uses the resolved production
+recipe. Both use the same calibration rule/threshold, but their checkpoints
+are not asserted to match each other. `--diagnostic-ls` controls this binary's
+L values independently of the performance sweep. Queries run sequentially.
+
+The JSON contains checkpoint beam/pending state, candidate-zone audits,
+branch NDC/recall, actual post-switch PQ retention, and first discovery times.
+Geometric audits use Euclidean distances: `--geometry-alpha` is explicit and
+is not automatically equated to a builder's potentially squared-distance
+alpha. Witnesses are existential local anchors, not historical pruning
+provenance. Coverage is tested only for ground-truth targets missing from the
+checkpoint beam; grouped summaries use those inside its exact enclosing ball.
+Empty coverage sets are not counted as successes. No-switch queries remain
+in the output.
+
+Audit distance computations are recorded separately from search-stage NDC.
+Admission-cutoff eligibility ignores the prefilter; later PQ retention is
+observed in the full continuation rather than inferred from the cutoff.
+Full-only returned targets indicate branch disagreement, not causal
+attribution to an individual remote edge. These sampled checks do not certify
+global shortcut reachability, a universal candidate budget, or a theorem.
+
 ## License
 
 The project is under **MIT** license (`Copyright (c) Chanchunhou` —
 plus original `Copyright (c) Microsoft Corporation` headers on the
 files inherited from the upstream Microsoft DiskANN reference).
+
+## Large in-memory datasets
+
+The standalone CLI supports byte-vector input, ownership transfer of the base,
+streaming STAG v3 import, `--preflight`, `--memory-budget-gib`, and
+`--prepare-only`. See [the large-dataset guide](docs/large-datasets.md) for the
+SIFT1B preset, staged execution, memory-estimate limits, and run-log script.

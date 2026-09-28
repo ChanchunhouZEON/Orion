@@ -8,11 +8,10 @@
 //! Single beam loop parameterised over the three-stage cascade
 //! ([`PrefilterStage`], [`AdmissionStage`], [`RerankStage`]) —
 //! every recipe `Cascade::default_for_dataset` ships routes
-//! through this one function. See `super::utils` for the
-//! shared per-thread counter machinery, search-loop tuning
-//! constants, and diagnostic search variants (`search_diag`,
-//! `search_profile`).
+//! through this one function. Tuning constants live in `super::utils`;
+//! instrumentation and legacy diagnostic searches live in `super::diagnostics`.
 
+use super::diagnostics::{NeighborMode, NoopObserver, SearchObserver};
 use crate::Orion;
 use crate::model::Neighbor as DNeighbor;
 use crate::model::scratch::{InMemScratchPool, InMemSearchScratch};
@@ -96,12 +95,13 @@ where
     /// the caller); the session owns the padded query / norm-sq /
     /// short form, so no per-hop quantization happens here.
     #[inline]
-    fn peel_hop_unified(
+    fn peel_hop_unified<O: SearchObserver>(
         &self,
         a_session: &dyn AdmissionSession,
         search_list_size: usize,
         scratch: &mut InMemSearchScratch,
         lookahead_lines: usize,
+        observer: &mut O,
     ) -> Option<(usize, usize)> {
         if !scratch.pq.has_notvisited_node() {
             return None;
@@ -120,6 +120,7 @@ where
             }
         }
         let n = scratch.id_scratch.len();
+        observer.expansion(false, &scratch.id_scratch);
         if n == 0 {
             return Some((0, 0));
         }
@@ -137,6 +138,8 @@ where
             scratch.dist_buffer.set_len(w);
             w
         };
+
+        observer.admission(n, &scratch.dist_buffer);
 
         // The legacy peel sorts and batch_merges admits directly into
         // the PQ each hop — no per-hop flush deferral, no 3-way
@@ -207,6 +210,37 @@ where
         A: ?Sized + AdmissionStage<N>,
         R: ?Sized + RerankStage<N>,
     {
+        let mode = if super::include_extras() {
+            NeighborMode::LocalExtra
+        } else {
+            NeighborMode::FullNeighbor
+        };
+        self.search_unified_observed(query, k, search_list_size, window_size,
+            epsilon, early_exit_limit, prefilter, admission, rerank, mode, &mut NoopObserver)
+    }
+
+    /// Same production loop, with explicit neighbor policy and optional instrumentation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_unified_observed<P, A, R, O>(
+        &self,
+        query: &[f32; N],
+        k: usize,
+        search_list_size: usize,
+        window_size: usize,
+        epsilon: f32,
+        early_exit_limit: usize,
+        prefilter: Option<&P>,
+        admission: &A,
+        rerank: &R,
+        mode: NeighborMode,
+        observer: &mut O,
+    ) -> ANNResult<Vec<u32>>
+    where
+        P: ?Sized + PrefilterStage<N>,
+        A: ?Sized + AdmissionStage<N>,
+        R: ?Sized + RerankStage<N>,
+        O: SearchObserver,
+    {
         let t_setup = std::time::Instant::now();
         let entry = self.entry;
         let graph = &self.graph;
@@ -228,13 +262,14 @@ where
         let mut guard = pool.acquire();
         let scratch = guard.scratch();
         scratch.prepare_for_query(search_list_size);
-        scratch.dcc.reconfigure(window_size, epsilon);
+        scratch.scc.reconfigure(window_size, epsilon);
         scratch.early_exit.reconfigure(early_exit_limit);
 
         // ── Entry distance + insert ──────────────────────────────
         scratch.seen.insert(entry);
         let entry_dist = a_session.entry_distance(entry);
         scratch.pq.insert(DNeighbor::new(entry, entry_dist));
+        observer.entry(entry);
         SETUP_NS.add(t_setup.elapsed().as_nanos() as u64);
 
         // ── Stack-local counter accumulators ──────────────────────
@@ -268,11 +303,12 @@ where
                     search_list_size,
                     scratch,
                     lookahead_lines,
+                    observer,
                 ) {
                     Some((admitted, n_unseen)) => {
-                        scratch.dcc.update(prev_admitted);
+                        scratch.scc.update(prev_admitted);
                         scratch.early_exit.should_exit(false, prev_admitted);
-                        prev_admitted = admitted.max(1);
+                        prev_admitted = admitted;
                         pre_hops += 1;
                         pre_admits += admitted as u64;
                         visits += n_unseen as u64;
@@ -296,41 +332,30 @@ where
                 graph.prefetch_node(next.id as usize);
             }
 
-            let converged = scratch.dcc.update(prev_admitted);
+            let converged = scratch.scc.update(prev_admitted);
+            observer.before_expansion(id as u32, converged, scratch, prev_admitted, hops_since_flush);
 
             // Expand unseen neighbours from the graph. Converged
             // hops use `rerank_candidates` (local + extra), which
             // pulls in the off-graph extras that lift recall in the
             // tail of the search.
             scratch.id_scratch.clear();
-            if !converged {
+            if !converged || mode == NeighborMode::FullNeighbor {
                 for &nn in graph.neighbors(id) {
-                    if scratch.seen.insert(nn) {
-                        scratch.id_scratch.push(nn);
-                    }
-                }
-            } else if crate::algorithm::search::include_extras() {
-                let (local, extra) = graph.rerank_candidates(id);
-                for &nn in local.iter().chain(extra.iter()) {
                     if scratch.seen.insert(nn) {
                         scratch.id_scratch.push(nn);
                     }
                 }
             } else {
-                // Ablation toggle: with `INCLUDE_EXTRAS=false`, the
-                // post-convergence branch falls back to the same
-                // `local + remote` walk used pre-convergence — i.e.
-                // the rerank-mode "substitute remote with extras"
-                // never fires. Without this fallback, disabling
-                // extras would collapse the converged branch to
-                // `local` only, which drops the long-range remote
-                // shortcuts and degrades worse than just "no extras."
-                for &nn in graph.neighbors(id) {
+                let (local, extra) = graph.rerank_candidates(id);
+                let extra = if mode == NeighborMode::LocalExtra { extra } else { &[] };
+                for &nn in local.iter().chain(extra.iter()) {
                     if scratch.seen.insert(nn) {
                         scratch.id_scratch.push(nn);
                     }
                 }
             }
+            observer.expansion(converged, &scratch.id_scratch);
 
             let pq_worst = if scratch.pq.size() >= search_list_size {
                 scratch.pq[scratch.pq.size() - 1].distance
@@ -354,6 +379,7 @@ where
                     let pq_size = scratch.pq.size();
                     let pq_back_id = scratch.pq[pq_size - 1].id;
                     if scratch.jl_threshold_count == 0 || scratch.jl_last_worst_id != pq_back_id {
+                        observer.prefilter(pq_size, 0);
                         let mut tail_sum = 0.0f32;
                         for i in 0..pq_size {
                             tail_sum += ps.distance(scratch.pq[i].id);
@@ -366,6 +392,7 @@ where
                     let threshold = scratch.jl_threshold_sum / (scratch.jl_threshold_count as f32)
                         * prefilter_slack();
 
+                    observer.prefilter(0, scratch.id_scratch.len());
                     unsafe {
                         ps.filter_compact(&mut scratch.id_scratch, threshold, lookahead_lines);
                     }
@@ -384,7 +411,8 @@ where
                 scratch.dist_buffer.set_len(hop_start + w);
                 w
             };
-            prev_admitted = hop_admits.max(1);
+            observer.admission(n_unseen, &scratch.dist_buffer[hop_start..]);
+            prev_admitted = hop_admits;
 
             // Per-phase counter split for diagnostic printing.
             if converged {
@@ -433,9 +461,11 @@ where
                     }
                 }
                 hops_since_flush = 0;
+                observer.after_flush(scratch.pq.neighbors());
             }
 
             if should_exit {
+                observer.early_exit();
                 break;
             }
         }
@@ -455,6 +485,7 @@ where
         // future flexibility, but current impls read directly from
         // `scratch.pq` (the unified loop guarantees `scratch.pq`
         // holds the post-search entries here).
+        observer.rerank(scratch.pq.size().min(k.saturating_mul(RERANK_FACTOR)));
         Ok(rerank.rerank(query, &[], k, RERANK_FACTOR, scratch))
     }
 

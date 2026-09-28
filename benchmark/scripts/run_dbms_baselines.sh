@@ -3,8 +3,8 @@
 #
 # Phase 1: For every dataset, run dbms_baselines.py which adds two
 #          series to baseline_<ds>.json — `milvus_auto` (Milvus Lite
-#          AUTOINDEX = IVF-class index family) and `usearch_hnsw`
-#          (Unum's in-process SIMD HNSW, M=16/efC=200).
+#          AUTOINDEX = IVF-class index family), `usearch_hnsw`
+#          (Unum's in-process SIMD HNSW, M=16/efC=200) and `faiss hnsw + sq`.
 #
 # Phase 2: For datasets that don't have the older HNSW / FAISS / Annoy
 #          rows in their baseline JSON yet, run baseline_comparison.py
@@ -50,7 +50,7 @@ run_phase2_baseline() {
        --dataset "$ds" --max-points 0 --threads 8 --trials 3
 }
 
-# ── Phase 1: in-process Milvus + USearch on every dataset ────────────────
+# ── Phase 1: in-process Milvus + USearch + FAISS HNSW + SQ on every dataset ────────────────
 for ds in $DATASETS; do
   run_phase1 "$ds"
 done

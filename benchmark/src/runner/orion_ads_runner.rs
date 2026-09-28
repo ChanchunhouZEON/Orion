@@ -94,7 +94,7 @@ macro_rules! build_orion_ads {
             })
             .collect();
         if let Ok(calib) =
-            orion.calibrate(&calib_queries, $self.search_list_size, $self.window_size)
+            orion.calibrate(&calib_queries, $self.search_list_size, $self.window_size, Default::default())
         {
             $self.epsilon = calib.threshold;
             $self.early_exit_limit = calib.early_exit_limit;
@@ -275,6 +275,7 @@ impl AlgorithmRunner for OrionAdsRunner {
                             &calib_queries,
                             self.search_list_size,
                             self.window_size,
+                            Default::default(),
                         ) {
                             self.epsilon = calib.threshold;
                             self.early_exit_limit = calib.early_exit_limit;

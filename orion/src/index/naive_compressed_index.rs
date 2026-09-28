@@ -15,7 +15,7 @@ use rayon::prelude::*;
 use std::sync::OnceLock;
 use vector::FullPrecisionDistance;
 
-/// Naive compressed DiskANN: two-phase search with prefix-based compression.
+/// Naive Orion: two-phase search with prefix-based compression.
 ///
 /// Each node's `compressed_degree` is set to `min(max_pruned_degree, degree)`.
 /// Neighbors are NOT reordered — the Vamana insertion order is preserved.
@@ -81,7 +81,6 @@ where
 
     // Search methods are identical to Orion — reuse via in_mem_search.
     // We implement them here by delegating to the same greedy beam search logic.
-
     pub fn search(
         &self,
         query: &[f32; N],
@@ -106,7 +105,7 @@ where
         let mut guard = pool.acquire();
         let scratch = guard.scratch();
         scratch.prepare_for_query(search_list_size);
-        scratch.dcc.reconfigure(window_size, epsilon);
+        scratch.scc.reconfigure(window_size, epsilon);
 
         scratch.seen.insert(entry);
         let entry_dist = {
@@ -126,7 +125,7 @@ where
                 dataset.prefetch_vector(next.id);
             }
 
-            let phase_converged = scratch.dcc.update(prev_admitted);
+            let phase_converged = scratch.scc.update(prev_admitted);
             let neighbors_to_use = if !phase_converged {
                 graph.neighbors(id as usize)
             } else {

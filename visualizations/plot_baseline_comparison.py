@@ -37,6 +37,7 @@ VIS_DIR = Path(__file__).resolve().parent
 SERIES = [
     ("annoy",          "Annoy",                "#94A3B8", "v", 1.7, 6.0, 2),
     ("lancedb_hnsw",   "LanceDB (HNSW)",         "#EA580C", "h", 1.9, 6.5, 3),
+    ("faiss_hnsw_sq",  "FAISS HNSW+SQ",        "#D1495B", "h", 1.9, 6.5, 3),
     ("faiss_ivf_pq",   "FAISS IVF-PQ",         "#A78BFA", "P", 1.7, 6.5, 2),
     ("faiss_ivf_flat", "FAISS IVF-Flat",       "#FBBF24", "X", 1.8, 6.5, 2),
     ("hnsw",           "HNSW (hnswlib)",       "#10B981", "D", 1.9, 6.5, 3),
@@ -71,7 +72,7 @@ def load(ds):
     if baseline_path.exists():
         baseline = json.loads(baseline_path.read_text())
         for key in ("hnsw", "faiss_ivf_flat", "faiss_ivf_pq", "annoy",
-                    "lancedb_hnsw", "usearch_hnsw",
+                    "lancedb_hnsw", "usearch_hnsw", "faiss_hnsw_sq",
                     "diskann", "orion", "parlayann"):
             if key in baseline:
                 merged[key] = baseline[key]
@@ -105,10 +106,16 @@ def subsample_series(points, target_count=14):
     return out
 
 
-def render_one(dataset, title_label, *, out_path=None):
+def render_one(dataset, title_label, *, out_path=None, input_path=None):
     """Render a single dataset's panel. Returns the saved path or
     `None` if the dataset has no source JSON."""
-    series_data = load(dataset)
+    k, threads = 10, 8
+    if input_path:
+        source = json.loads(Path(input_path).read_text())
+        k, threads = source["k"], source["threads"]
+        series_data = {key: source[key] for key, *_ in SERIES if key in source}
+    else:
+        series_data = load(dataset)
     if not series_data:
         print(f"[skip] {dataset}: no source JSON")
         return None
@@ -165,7 +172,7 @@ def render_one(dataset, title_label, *, out_path=None):
             zorder=6,
         )
 
-    ax.set_xlabel("Recall@10", fontsize=11)
+    ax.set_xlabel(f"Recall@{k}", fontsize=11)
     ax.set_ylabel("QPS (queries / sec)", fontsize=11)
     ax.set_yscale("log")
 
@@ -175,13 +182,14 @@ def render_one(dataset, title_label, *, out_path=None):
     if all_recalls:
         ax.set_xlim(max(0.0, min(all_recalls) - 0.02), 1.0)
 
-    title = f"{title_label} — QPS vs Recall@10 (8 threads, k=10)"
+    title = f"{title_label} — QPS vs Recall@{k} ({threads} threads, k={k})"
     ax.set_title(title, fontsize=12, color=PALETTE_VIVID["text"], pad=10)
     ax.grid(True, which="both", alpha=0.35, color=PALETTE_VIVID["grid"])
     ax.legend(loc="lower left", frameon=True, fontsize=10, framealpha=0.92)
     style_ax(ax)
 
-    out = str(out_path or (VIS_DIR / f"baseline_panel_{dataset}.png"))
+    suffix = "" if k == 10 else f"_k{k}"
+    out = str(out_path or (VIS_DIR / f"baseline_panel_{dataset}{suffix}.png"))
     plt.tight_layout()
     # Sibling PDF for paper use — fonts upscaled (see chart_style).
     png_path, pdf_path = save_png_and_pdf(fig, out)
@@ -194,11 +202,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default="sift")
     ap.add_argument("--out", default=None, help="Override output PNG path.")
+    ap.add_argument("--input", type=Path, help="Plot only this result JSON; use its k and threads.")
     ap.add_argument(
         "--all", action="store_true",
         help="Render every dataset in HEADLINE_DATASETS (one PNG each).",
     )
     args = ap.parse_args()
+    if args.input and args.all:
+        ap.error("--input cannot be combined with --all")
 
     if args.all:
         rendered = 0
@@ -209,7 +220,7 @@ def main():
         return
 
     label = dict(HEADLINE_DATASETS).get(args.dataset, args.dataset)
-    if render_one(args.dataset, label, out_path=args.out) is None:
+    if render_one(args.dataset, label, out_path=args.out, input_path=args.input) is None:
         sys.exit(1)
 
 

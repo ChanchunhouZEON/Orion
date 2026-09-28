@@ -76,7 +76,7 @@ pub struct InMemSearchScratch {
     pub jl_last_worst_id: u32,
     pub jl_tail_mean: f32,
     /// Reusable convergence checker — avoids per-query allocation.
-    pub dcc: SearchConvergenceChecker,
+    pub scc: SearchConvergenceChecker,
     /// Reusable early exit checker.
     pub early_exit: crate::algorithm::search::early_exit::EarlyExitChecker,
 }
@@ -113,7 +113,7 @@ impl InMemSearchScratch {
             jl_threshold_count: 0,
             jl_last_worst_id: u32::MAX,
             jl_tail_mean: 0.0,
-            dcc: SearchConvergenceChecker::new(5, 0.0),
+            scc: SearchConvergenceChecker::new(5, 0.0),
             early_exit: crate::algorithm::search::early_exit::EarlyExitChecker::new(5),
         }
     }
@@ -135,7 +135,7 @@ impl InMemSearchScratch {
         self.jl_threshold_count = 0;
         self.jl_last_worst_id = u32::MAX;
         self.jl_tail_mean = 0.0;
-        self.dcc.reset();
+        self.scc.reset();
         self.early_exit.reset();
     }
 }

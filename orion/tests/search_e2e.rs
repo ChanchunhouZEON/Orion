@@ -171,7 +171,7 @@ fn search_pipeline_e2e() {
     // ── Scenario 2: calibrate returns finite params ──
     let warmup: Vec<[f32; DIM]> = (0..16).map(|i| query_at(&flat, i)).collect();
     let calib = orion
-        .calibrate(&warmup, /* sls */ 32, /* ws */ 5)
+        .calibrate(&warmup, /* sls */ 32, /* ws */ 5, Default::default())
         .expect("calibrate");
     assert!(calib.threshold.is_finite());
     assert!(calib.threshold >= 0.0 && calib.threshold <= 1.0);
@@ -498,7 +498,7 @@ fn search_pipeline_e2e() {
     {
         let warmup: Vec<[f32; DIM]> = (0..16).map(|i| query_at(&flat, i)).collect();
         let diag = orion
-            .calibrate_with_diagnostics(&warmup, /* sls */ 32, /* ws */ 5)
+            .calibrate_with_diagnostics(&warmup, /* sls */ 32, /* ws */ 5, Default::default())
             .expect("calibrate_with_diagnostics");
         assert!(diag.params.threshold.is_finite());
         assert!(diag.params.early_exit_limit > 0);

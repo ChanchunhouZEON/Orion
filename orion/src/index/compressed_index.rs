@@ -145,7 +145,6 @@ where
 
         let cache_base_path = cache_base_path.unwrap_or_else(|| {
             let dir = PathBuf::from("orion_graphs");
-            fs::create_dir_all(&dir).unwrap();
             dir.join(format!("orion_n{}.bin", num_nodes))
         });
 
@@ -182,8 +181,8 @@ where
         };
 
         if is_save {
-            if let Err(e) = result.save(&result.cache_base_path.clone()) {
-                log::warn!("Failed to save graph: {}", e);
+            if let Err(e) = result.save(&result.cache_base_path) {
+                log::error!("Failed to save graph: {}", e);
             }
         }
 
@@ -328,18 +327,27 @@ where
         fs::create_dir_all(dir)?;
 
         let graph_path = path.as_ref().with_extension("pgraph");
-        self.graph.save(&graph_path)?;
+        // Publish completed files only; metadata is the last file published.
+        // The CLI additionally requires a matching manifest before cache reuse.
+        let graph_tmp = graph_path.with_extension(format!("pgraph.{}.tmp", std::process::id()));
+        self.graph.save(&graph_tmp)?;
+        File::open(&graph_tmp)?.sync_all()?;
+        let meta_tmp = path.as_ref().with_extension(format!("bin.{}.tmp", std::process::id()));
 
         let meta = OrionMeta {
             version: 5,
             entry: self.entry,
         };
-        let mut writer = BufWriter::new(File::create(path)?);
+        let mut writer = BufWriter::new(File::create(&meta_tmp)?);
         let config = bincode::config::standard()
             .with_fixed_int_encoding()
             .with_little_endian();
         bincode::serde::encode_into_std_write(&meta, &mut writer, config)?;
         writer.flush()?;
+        writer.get_ref().sync_all()?;
+        drop(writer);
+        fs::rename(graph_tmp, graph_path)?;
+        fs::rename(meta_tmp, path.as_ref())?;
         Ok(())
     }
 

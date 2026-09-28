@@ -28,6 +28,11 @@ impl<T> AlignedBoxWithSlice<T> {
 
         let val = unsafe {
             let mem = std::alloc::alloc_zeroed(layout);
+            if mem.is_null() {
+                return Err(ANNError::log_index_error(format!(
+                    "allocation failed: {allocsize} bytes"
+                )));
+            }
             let ptr = mem as *mut T;
             let slice = std::slice::from_raw_parts_mut(ptr, capacity);
             std::boxed::Box::from_raw(slice)

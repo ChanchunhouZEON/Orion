@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""In-process vector-DB baseline panel — LanceDB + USearch.
+"""In-process baseline panel — LanceDB + USearch + Faiss HNSW+SQ.
 
-Two genuinely in-process engines, both fully sweepable at 1 M+ scale:
+In-process engines:
+
+* **Faiss** — HNSW with trained 8-bit scalar quantization by default,
+  M=16, efConstruction=200, and no exact reranking. Cosine uses
+  normalized vectors with inner product; raw IP is not normalized.
 
 * **LanceDB** — mainstream commercial vector database (Rust core,
   Python in-process via `pyarrow`). The HNSW config we use is
@@ -29,7 +33,7 @@ The per-dataset metric is read from `DATASET_PATHS[ds]["metric"]`:
   * `ip`   — raw dot product; matches MS-MARCO BERT (non-unit-norm).
 
 Outputs land in `visualizations/baseline_<dataset>.json` under the
-keys `lancedb_hnsw` and `usearch_hnsw`, appended next to whatever
+keys `lancedb_hnsw`, `usearch_hnsw`, and `faiss_hnsw_sq`, next to whatever
 else (hnswlib / faiss / annoy) already lives there.
 
 Usage:
@@ -78,6 +82,67 @@ def recall_at_k(results, gt, k):
         hits = sum(1 for r in results[i][:k] if int(r) in gt_set)
         total += hits / k
     return total / n
+
+
+def faiss_vectors(vectors, metric):
+    vectors = np.array(vectors, dtype=np.float32, order="C", copy=True)
+    if not np.isfinite(vectors).all():
+        raise ValueError("Vectors must be finite")
+    if metric == "cos":
+        norms = np.sqrt(np.einsum("ij,ij->i", vectors, vectors, dtype=np.float64))
+        if np.any(norms == 0):
+            raise ValueError("Cosine requires nonzero vectors")
+        vectors /= norms[:, None]
+    return vectors
+
+
+def run_faiss_hnsw_sq(base, queries, gt, k, ef_list, *, metric, threads,
+                      trials, m=16, ef_construction=200, sq="8bit"):
+    """Batch search including Python binding cost; no exact reranking."""
+    import faiss
+
+    if min(k, threads, trials, m, ef_construction) <= 0 or k > len(base):
+        raise ValueError("Invalid k, thread count, trials, or HNSW parameters")
+    if not ef_list or any(ef < k for ef in ef_list):
+        raise ValueError("Every efSearch must be >= k")
+    metric_id = {"l2": faiss.METRIC_L2, "ip": faiss.METRIC_INNER_PRODUCT,
+                 "cos": faiss.METRIC_INNER_PRODUCT}[metric]
+    qtype = {"8bit": faiss.ScalarQuantizer.QT_8bit,
+             "fp16": faiss.ScalarQuantizer.QT_fp16}[sq]
+    faiss.omp_set_num_threads(threads)
+    t0 = time.perf_counter()
+    xb = faiss_vectors(base, metric)
+    index = faiss.IndexHNSWSQ(xb.shape[1], qtype, m, metric_id)
+    index.hnsw.efConstruction = ef_construction
+    index.train(xb)
+    index.add(xb)
+    build_time = time.perf_counter() - t0
+    del xb
+    # Include cosine query normalization in every timed batch.
+    def search():
+        xq = faiss_vectors(queries, metric) if metric == "cos" else queries
+        return index.search(xq, k)[1]
+
+    results = []
+    for ef in ef_list:
+        index.hnsw.efSearch = ef
+        search()
+        samples = []
+        for _ in range(trials):
+            start = time.perf_counter()
+            ids = search()
+            samples.append(len(queries) / (time.perf_counter() - start))
+        recall = recall_at_k(ids, gt, k)
+        qps = sorted(samples)[trials // 2]
+        results.append([round(recall, 6), round(qps)])
+        print(f"    ef={ef:>4}  R@{k}={recall:.6f}  QPS={qps:.0f}")
+    metadata = dict(version=faiss.__version__, sq=sq, m=m,
+                    ef_construction=ef_construction, ef_search=ef_list,
+                    metric=metric, normalized=metric == "cos", rerank=False,
+                    threads=threads, trials=trials, k=k,
+                    timing="batch search; cosine query normalization included",
+                    build_timing="base preparation + SQ training + graph construction")
+    return results, build_time, metadata
 
 
 # ── LanceDB (in-process, file-backed Rust core) ─────────────────────────────
@@ -371,11 +436,22 @@ def main():
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--trials", type=int, default=3)
     ap.add_argument("--k", type=int, default=10)
+    ap.add_argument("--ef-list", type=int, nargs="+")
+    ap.add_argument("--faiss-m", type=int, default=16)
+    ap.add_argument("--faiss-ef-construction", type=int, default=200)
+    ap.add_argument("--faiss-sq", choices=["8bit", "fp16"], default="8bit")
+    ap.add_argument("--output", type=Path)
     ap.add_argument(
-        "--engines", default="lancedb,usearch",
-        help="Comma-separated subset of {lancedb, usearch}. Default both.",
+        "--engines", default="lancedb,usearch,faiss",
+        help="Comma-separated subset of {lancedb, usearch, faiss}. Default all.",
     )
     args = ap.parse_args()
+    selected = [s.strip() for s in args.engines.split(",")]
+    if not set(selected) <= {"lancedb", "usearch", "faiss"}:
+        ap.error("Unknown engine; choose lancedb, usearch, faiss")
+    if min(args.k, args.threads, args.trials, args.faiss_m,
+           args.faiss_ef_construction) <= 0 or args.max_points < 0:
+        ap.error("Counts must be positive; max-points must be nonnegative")
 
     # ── Cap every runtime to args.threads BEFORE we touch any lazy
     # imports (lancedb/usearch/faiss). LanceDB's Rust core spawns
@@ -397,6 +473,14 @@ def main():
     # row in the existing baseline panel so the three HNSW lanes are
     # apples-to-apples.
     ef_list = [16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256]
+    if args.k > 10:
+        ef_list = sorted(set([args.k] + [ef for ef in ef_list if ef >= args.k]
+                             + [ef for ef in [384, 512, 768, 1024, 1536, 2048]
+                                if ef >= args.k]))
+    if args.ef_list is not None:
+        ef_list = args.ef_list
+    if any(ef < args.k for ef in ef_list) or ef_list != sorted(set(ef_list)):
+        ap.error("ef-list must be strictly increasing and every value >= k")
 
     print(f"\n{'='*60}")
     print(f"  DBMS baselines: {args.dataset} (metric={metric}, max_points={args.max_points})")
@@ -406,17 +490,33 @@ def main():
     base, n, dim = read_fvecs(paths["base"], args.max_points)
     queries, nq, _ = read_fvecs(paths["query"])
     gt = read_ivecs(paths["gt"])
-    if n < gt.shape[0] or (gt.size and int(np.max(gt)) >= n):
+    if not nq or args.k > n or queries.shape[1] != dim:
+        ap.error("Empty queries, k exceeds base count, or mismatched dimensions")
+    if (gt.shape[0] != nq or gt.shape[1] < args.k or
+            np.any(gt < 0) or np.any(gt >= n)):
         print(f"Recomputing ground truth for {n} points...")
         from scipy.spatial.distance import cdist
-        dists = cdist(queries, base, metric="sqeuclidean")
-        gt = np.argsort(dists, axis=1)[:, :100].astype(np.int32)
+        gt = np.empty((nq, args.k), dtype=np.int32)
+        # Bound the distance matrix to approximately 64 MiB, not nq * n.
+        batch = max(1, min(nq, (64 * 1024 * 1024) // (8 * n)))
+        for start in range(0, nq, batch):
+            q = queries[start:start + batch]
+            if metric == "ip":
+                dists = -(q @ base.T)
+            else:
+                dists = cdist(q, base, metric={"l2": "sqeuclidean", "cos": "cosine"}[metric])
+            gt[start:start + len(q)] = np.argsort(dists, axis=1)[:, :args.k]
     print(f"  {n} base, {nq} queries, dim={dim}\n")
 
-    out_path = f"visualizations/baseline_{args.dataset}.json"
+    suffix = "" if args.k == 10 else f"_k{args.k}"
+    out_path = args.output or Path(f"visualizations/baseline_{args.dataset}{suffix}.json")
     if os.path.exists(out_path):
         with open(out_path) as f:
             output = json.load(f)
+        for field, value in dict(dataset=args.dataset, dimension=dim,
+                                 num_points=n, threads=args.threads, k=args.k).items():
+            if output.get(field) != value:
+                ap.error(f"Existing output has incompatible {field}; use --output")
     else:
         output = {
             "dataset": args.dataset,
@@ -426,8 +526,20 @@ def main():
             "k": args.k,
         }
     output.setdefault("build_time", {})
+    output.setdefault("engine_config", {})
 
     selected = [s.strip() for s in args.engines.split(",")]
+
+    if "faiss" in selected:
+        print("── Faiss HNSW+SQ ──")
+        data, bt, metadata = run_faiss_hnsw_sq(
+            base, queries, gt, args.k, ef_list, metric=metric,
+            threads=args.threads, trials=args.trials, m=args.faiss_m,
+            ef_construction=args.faiss_ef_construction, sq=args.faiss_sq,
+        )
+        output["faiss_hnsw_sq"] = data
+        output["build_time"]["faiss_hnsw_sq"] = round(bt, 3)
+        output["engine_config"]["faiss_hnsw_sq"] = metadata
 
     if "lancedb" in selected:
         print("── LanceDB (IVF_HNSW_SQ, partitions=1) ──")
@@ -457,7 +569,7 @@ def main():
         except Exception as e:
             print(f"  [USearch error] {e}")
 
-    os.makedirs("visualizations", exist_ok=True)
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(output, f, indent=2)
     print(f"\nSaved {out_path}")

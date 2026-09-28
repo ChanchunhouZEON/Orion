@@ -15,6 +15,10 @@ pub struct EarlyExitChecker {
 }
 
 impl EarlyExitChecker {
+    pub fn diagnostic_state(&self) -> (usize, usize) {
+        (self.limit, self.consecutive_no_admit)
+    }
+
     pub fn new(limit: usize) -> Self {
         Self {
             limit,

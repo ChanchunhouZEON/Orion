@@ -9,10 +9,14 @@ mod metrics;
 mod report;
 mod runner;
 mod utils;
+#[allow(dead_code)]
+mod cli;
+use runner::parlayann_bridge;
 
 use clap::Parser;
 use dataset::Dataset;
 use runner::common::AlgorithmRunner;
+use runner::cascade;
 use std::path::PathBuf;
 
 // `OrionConfig` + `load_orion_config` used to live here; they have
@@ -39,8 +43,15 @@ struct Args {
     groundtruth: Option<PathBuf>,
 
     /// Number of nearest neighbors to retrieve
-    #[arg(long, default_value = "10")]
+    #[arg(long, default_value_t = config::load_sweep_config().k)]
     k: usize,
+
+    #[command(flatten)]
+    sweep: config::SweepOverrides,
+
+    /// Print resolved settings without loading vectors or building indexes.
+    #[arg(long)]
+    print_config: bool,
 
     /// Algorithms to benchmark (comma-separated; see `match *algo` below
     /// for the live list — `ablation`, `cascade-ablation`, `build-profile`,
@@ -89,12 +100,18 @@ struct Args {
     drop_inmem: bool,
 }
 
-/// Number of warm-up queries fed into `orion.calibrate()` across every
-/// in-process benchmark in `main.rs`. Mirrors `CALIB_SAMPLE` in the
-/// `orion` bin. 200 converges well before diminishing returns
-/// on the reference datasets and keeps calibration cost ~constant
-/// across the various ablation entry points.
-const CALIB_SAMPLES: usize = 200;
+fn calibration_samples() -> usize {
+    config::load_sweep_config().calibration.samples
+}
+
+fn calibration_l(k: usize) -> usize {
+    config::load_sweep_config().calibration.search_list_size(k)
+}
+
+fn experiment(profile: &str, k: usize, overrides: &config::SweepOverrides) -> config::ResolvedSweep {
+    config::load_sweep_config().resolve(profile, k, overrides)
+        .unwrap_or_else(|e| panic!("Invalid benchmark settings: {e}"))
+}
 
 /// Rebuild an InmemDataset from flat base vectors.
 /// Used after extract_graph_and_candidates frees the dataset to reduce peak memory.
@@ -209,6 +226,21 @@ fn main() {
     env_logger::init();
     let args = Args::parse();
 
+    let selected: Vec<&str> = args.algorithms.split(',').map(|s| s.trim()).collect();
+    let resolved: Vec<_> = selected.iter().filter_map(|algo| {
+        let profile = match *algo {
+            "ablation" | "cascade-ablation" => "ablation",
+            "ads-comparison" => "ads",
+            "convergence-diag" | "search-profile" => "diagnostic",
+            "thread-sweep" | "extra-profile" => "single",
+            _ => return None,
+        };
+        Some((algo, experiment(profile, args.k, &args.sweep)))
+    }).collect();
+    assert!(args.k > 0, "k must be positive");
+    println!("{}", serde_json::to_string_pretty(&resolved).unwrap());
+    if args.print_config { return; }
+
     let dataset = if args.random_dataset {
         // Dimension is 128 (the most commonly supported across all algorithms)
         let dimension = 128;
@@ -224,7 +256,8 @@ fn main() {
         load_dataset(&args)
     };
 
-    let selected: Vec<&str> = args.algorithms.split(',').map(|s| s.trim()).collect();
+    utils::validate_ground_truth(&dataset.ground_truth, dataset.queries.len(), args.k)
+        .expect("invalid ground truth");
 
     for algo in &selected {
         match *algo {
@@ -232,13 +265,13 @@ fn main() {
                 run_build_profile(&dataset, args.k);
             }
             "convergence-diag" => {
-                run_convergence_diag(&dataset, args.k);
+                run_convergence_diag(&dataset, args.k, &args.sweep);
             }
             "thread-sweep" => {
-                run_thread_sweep(&dataset, args.k);
+                run_thread_sweep(&dataset, args.k, &args.sweep);
             }
             "search-profile" => {
-                run_search_profile(&dataset, args.k);
+                run_search_profile(&dataset, args.k, &args.sweep);
             }
             "memory-profile" => {
                 run_memory_profile(&dataset);
@@ -250,19 +283,19 @@ fn main() {
                 run_neighbor_contribution_profile(&dataset);
             }
             "extra-profile" => {
-                run_extra_profile(&dataset, args.k);
+                run_extra_profile(&dataset, args.k, &args.sweep);
             }
             "calibration-diag" => {
-                run_calibration_diag(&dataset);
+                run_calibration_diag(&dataset, args.k);
             }
             "ablation" => {
-                run_ablation(&dataset, args.k);
+                run_ablation(&dataset, args.k, &args.sweep);
             }
             "cascade-ablation" => {
-                run_cascade_ablation(&dataset, args.k);
+                run_cascade_ablation(&dataset, args.k, &args.sweep);
             }
             "ads-comparison" => {
-                run_ads_comparison(&dataset, args.k);
+                run_ads_comparison(&dataset, args.k, &args.sweep);
             }
             other => {
                 log::warn!("Unknown algorithm: {other}");
@@ -271,7 +304,7 @@ fn main() {
     }
 }
 
-fn run_convergence_diag(dataset: &Dataset, k: usize) {
+fn run_convergence_diag(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
     use orion::{build_diskann_index, Orion, DIM_100, DIM_128, DIM_32, DIM_960};
 
     let num_points = dataset.num_base();
@@ -287,8 +320,8 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
         _ => "unknown",
     };
 
-    let l_values: [usize; 3] = [48, 100, 200];
-    let ws: usize = 5;
+    let l_values = experiment("diagnostic", k, overrides).search_list_sizes;
+    let ws = ocfg.window_size;
 
     macro_rules! run_diag {
         ($N:literal) => {{
@@ -317,8 +350,9 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
             idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
 
             // Calibrate once on the first 200 queries.
-            let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
-            let calib = idx.calibrate(&calib_qs, 48, ws).expect("calibrate failed");
+            let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(calibration_samples())].to_vec();
+            let calib_l = calibration_l(k);
+            let calib = idx.calibrate(&calib_qs, calib_l, ws, orion::CalibrationConfig { k, ..Default::default() }).expect("calibrate failed");
             let thr = calib.threshold;
             let ee = calib.early_exit_limit;
             println!("Calibrated: threshold={:.2}, early_exit_limit={}\n", thr, ee);
@@ -377,7 +411,7 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
 
             println!(
                 "  {:<8} {:<18} {:<18} {:<18} {:<18} {:<10}",
-                "L", "Steps(no-ee)", "Steps(orion)", "NDC(no-ee)", "NDC(orion)", "ΔR@10"
+                "L", "Steps(no-ee)", "Steps(orion)", "NDC(no-ee)", "NDC(orion)", format!("ΔR@{k}")
             );
             println!("  {}", "─".repeat(94));
 
@@ -437,7 +471,7 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
                     "avg_rerank": avg_rerank,
                 },
             });
-            let path = format!("visualizations/convergence_diag_{}.json", dim_name);
+            let path = utils::result_path("convergence_diag", dim_name, k);
             std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap())
                 .expect("write json");
             println!("\nSaved {path}");
@@ -453,7 +487,7 @@ fn run_convergence_diag(dataset: &Dataset, k: usize) {
     }
 }
 
-fn run_thread_sweep(dataset: &Dataset, k: usize) {
+fn run_thread_sweep(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
     use std::time::Instant;
 
     let num_points = dataset.num_base();
@@ -533,7 +567,9 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
     // override orion would search at L=128 while DiskANN searches at
     // L=48, conflating algorithm gap with hyperparameter gap and
     // making the orion numbers diverge from `orion`'s output.
-    let search_l: usize = 48;
+    let run = experiment("single", k, overrides);
+    assert_eq!(run.search_list_sizes.len(), 1, "thread-sweep requires one search L");
+    let search_l = run.search_list_sizes[0];
     diskann_runner.set_search_list_size(search_l);
     orion_runner.set_search_list_size(search_l);
 
@@ -544,7 +580,7 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
     // (CALIB_L=48, 200 real test queries). Different calibration →
     // different convergence + early-exit behavior → ~10-20% QPS gap.
     // Match `orion`'s recipe exactly.
-    orion_runner.recalibrate(&dataset.queries, CALIB_SAMPLES);
+    orion_runner.recalibrate(&dataset.queries, calibration_samples(), k);
     let (thr, ee) = orion_runner.calibrated_params();
     println!(
         "Recalibrated at L={search_l}: threshold={thr:.2}, early_exit_limit={ee} (reference orion: threshold=0.15, early_exit_limit=15)",
@@ -559,7 +595,7 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
     // The shape across these thresholds is the whole story — going
     // straight from 8 → 16 hides the P-core saturation knee.
     let thread_counts: [usize; 9] = [1, 2, 4, 6, 8, 10, 12, 14, 16];
-    let trials: usize = 5;
+    let trials = run.trials;
 
     // Pin the driver thread on P-cores; rayon workers get the same
     // bump via `start_handler` below. Mirrors `orion`'s setup
@@ -601,7 +637,7 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
     );
     println!(
         "  {:<8} {:<14} {:<10} {:<14} {:<10} {:<10}",
-        "Threads", "DiskANN QPS", "D_R@10", "Orion QPS", "O_R@10", "Speedup",
+        "Threads", "DiskANN QPS", format!("D_R@{k}"), "Orion QPS", format!("O_R@{k}"), "Speedup",
     );
     println!("  {}", "─".repeat(72));
 
@@ -759,7 +795,7 @@ fn run_thread_sweep(dataset: &Dataset, k: usize) {
             "efficiency": s_eff,
         },
     });
-    let path = format!("visualizations/thread_sweep_{}.json", dim_name);
+    let path = utils::result_path("thread_sweep", dim_name, k);
     std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).expect("write json");
     println!("\nSaved {path}");
 }
@@ -942,8 +978,10 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
     );
 }
 
-fn run_search_profile(dataset: &Dataset, k: usize) {
+fn run_search_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
     use orion::{build_diskann_index, Orion, DIM_100, DIM_128, DIM_32, DIM_960};
+
+    let run = experiment("diagnostic", k, overrides);
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
@@ -1001,8 +1039,8 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
                     &idx,
                     q,
                     k,
-                    48,
-                    5,
+                    run.search_list_sizes[0],
+                    ocfg.window_size,
                     0.15,
                     1000,
                     crate::runner::cascade::PrefilterChoice::None,
@@ -1015,21 +1053,21 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
             // Early-exit sweep: simulate search with different early_exit_count.
             // Uses search_diag which returns (results, converge_step, total_steps, p1_ndc, p2_ndc).
             println!(
-                "\n─── Early Exit Sweep ({} queries, L=48, ws=5, thr=0.15) ───\n",
+                "\n─── Early Exit Sweep ({} queries) ───\n",
                 queries.len()
             );
             println!(
                 "  {:<12} {:<12} {:<14} {:<10} {:<10}",
-                "EarlyExit", "Iter/query", "DistCalls/q", "R@10", "QPS_est"
+                "EarlyExit", "Iter/query", "DistCalls/q", format!("R@{k}"), "QPS_est"
             );
             println!("  {}", "─".repeat(60));
 
-            let ws = 5usize;
+            let ws = ocfg.window_size;
 
             // Auto-calibrate.
-            let calib_sample: Vec<[f32; $N]> = queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
+            let calib_sample: Vec<[f32; $N]> = queries[..queries.len().min(calibration_samples())].to_vec();
             let calib = idx
-                .calibrate(&calib_sample, 48, ws)
+                .calibrate(&calib_sample, calibration_l(k), ws, orion::CalibrationConfig { k, ..Default::default() })
                 .expect("calibrate failed");
             println!(
                 "  Calibrated: threshold={:.2}, early_exit_limit={}",
@@ -1039,14 +1077,14 @@ fn run_search_profile(dataset: &Dataset, k: usize) {
             let thr = calib.threshold;
             let ee = calib.early_exit_limit;
 
-            for &sls in &[48usize, 100, 200] {
+            for &sls in &run.search_list_sizes {
                 println!(
                     "\n─── L={}, ws={}, thr={:.2}, ee={} ───\n",
                     sls, ws, thr, ee
                 );
                 println!(
                     "  {:<12} {:<12} {:<14} {:<10} {:<10}",
-                    "Mode", "Iter/query", "DistCalls/q", "R@10", "QPS_est"
+                    "Mode", "Iter/query", "DistCalls/q", format!("R@{k}"), "QPS_est"
                 );
                 println!("  {}", "─".repeat(60));
 
@@ -1291,7 +1329,7 @@ fn run_memory_profile(dataset: &Dataset) {
     println!("\nSaved {path}");
 }
 
-fn run_ads_comparison(dataset: &Dataset, k: usize) {
+fn run_ads_comparison(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
     use crate::runner::common::{AlgorithmRunner, SearchResult};
     use crate::runner::{
         DiskANNAdsRunner, DiskANNRunner, OrionAdsRunner, OrionRunner,
@@ -1303,21 +1341,10 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
     let dimension = dataset.dimension;
     let flat_base = dataset.base_flat();
 
-    // Config for graph degree / α / sweep L values — match run_qps_recall_sweep so
-    // numbers are directly comparable across benchmarks.
-    let config_path = "benchmark/configs/sweep.yaml";
-    let cfg: serde_yaml::Value = serde_yaml::from_str(
-        &std::fs::read_to_string(config_path)
-            .unwrap_or_else(|_| panic!("Cannot read {config_path}")),
-    )
-    .expect("Invalid sweep config YAML");
-    let defaults = &cfg["defaults"];
-    let search_list_sizes: Vec<usize> = defaults["sweep"]["search_list_sizes"]
-        .as_sequence()
-        .map(|s| s.iter().map(|v| v.as_u64().unwrap() as usize).collect())
-        .unwrap_or_else(|| vec![16, 24, 32, 48, 64, 96, 128, 192, 256]);
-    let num_threads = defaults["sweep"]["threads"].as_u64().unwrap_or(8) as usize;
-    let trials = defaults["sweep"]["trials"].as_u64().unwrap_or(3) as usize;
+    let run = experiment("ads", k, overrides);
+    let search_list_sizes = &run.search_list_sizes;
+    let num_threads = run.threads;
+    let trials = run.trials;
 
     let dim_name = match dimension {
         32 => "glove25",
@@ -1327,35 +1354,12 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
         _ => "unknown",
     };
 
-    // **Per-dataset build params from `datasets.<ds>.orion`** — falls
-    // back to `defaults.staged` only when a dataset entry is missing.
-    // The previous version mistakenly read the global defaults (R=64
-    // L=100 α=2.0/1.2) for every dataset, so GIST ran at the wrong
-    // topology — masking the PA-aligned R=100 L=200 α=1.10 recipe.
-    // All four variants (DiskANN, DiskANN+ADS, Orion, Orion+ADS)
-    // build at the same per-dataset Vamana topology so the comparison
-    // isolates the ADSampling effect on identical graphs.
-    let ds_st = &cfg["datasets"][dim_name]["orion"];
-    let def_st = &defaults["orion"];
-    let pick_f32 = |path: &serde_yaml::Value, fallback: &serde_yaml::Value| -> f32 {
-        path.as_f64()
-            .or_else(|| fallback.as_f64())
-            .expect("missing f32 field") as f32
-    };
-    let pick_usize = |path: &serde_yaml::Value, fallback: &serde_yaml::Value| -> usize {
-        path.as_u64()
-            .or_else(|| fallback.as_u64())
-            .expect("missing usize field") as usize
-    };
-
-    let orion_alpha = pick_f32(&ds_st["alpha"], &def_st["alpha"]);
-    let st_degree = pick_usize(&ds_st["graph_degree"], &def_st["graph_degree"]);
-    let orion_build_l = pick_usize(
-        &ds_st["build_search_list_size"],
-        &def_st["build_search_list_size"],
-    );
-    let st_max_extra = pick_usize(&ds_st["max_extra"], &def_st["max_extra"]);
-    let orion_ws = pick_usize(&ds_st["window_size"], &def_st["window_size"]);
+    let ocfg = config::load_dataset_config(dim_name).orion;
+    let orion_alpha = ocfg.alpha;
+    let st_degree = ocfg.graph_degree as usize;
+    let orion_build_l = ocfg.build_search_list_size;
+    let st_max_extra = ocfg.max_extra;
+    let orion_ws = ocfg.window_size;
 
     // α-match DiskANN baselines to the per-dataset Orion topology.
     // The global `defaults.diskann` α=2.0 R=64 L=100 recipe is never
@@ -1479,7 +1483,7 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
         });
 
         let mut rows: Vec<(f64, f64)> = Vec::new();
-        for &sls in &search_list_sizes {
+        for &sls in search_list_sizes {
             runner.set_l(sls);
             let mut qps_samples = Vec::with_capacity(trials);
             let mut recall = 0.0f64;
@@ -1500,7 +1504,7 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
             qps_samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let qps = qps_samples[trials / 2];
             rows.push((recall, qps));
-            println!("  L={sls:>4}  R@10={recall:.4}  QPS={qps:.0}");
+            println!("  L={sls:>4}  R@{k}={recall:.4}  QPS={qps:.0}");
         }
         rows
     };
@@ -1549,7 +1553,7 @@ fn run_ads_comparison(dataset: &Dataset, k: usize) {
     let st_ads_rows = sweep_runner(&mut st_ads_runner, "Orion+ADS");
 
     // Emit JSON for the plot script.
-    let json_path = format!("visualizations/ads_{dim_name}.json");
+    let json_path = utils::result_path("ads", dim_name, k);
     std::fs::create_dir_all("visualizations").ok();
     let fmt = |rows: &[(f64, f64)]| {
         rows.iter()
@@ -1839,7 +1843,7 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
 
                 for query in &queries {
                     let query_vertex = Vertex::new(query, 0);
-                    let mut dcc = SearchConvergenceChecker::new(ws, eps);
+                    let mut scc = SearchConvergenceChecker::new(ws, eps);
                     let mut seen = vec![false; num_points];
                     let mut pq = diskann::model::NeighborPriorityQueue::with_capacity(sls);
 
@@ -1852,7 +1856,7 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
                     while pq.has_notvisited_node() {
                         let cur = pq.closest_notvisited();
                         let id = cur.id as usize;
-                        let converged = dcc.update(prev_admitted);
+                        let converged = scc.update(prev_admitted);
 
                         let pq_worst = if pq.size() >= sls { pq[pq.size() - 1].distance } else { f32::MAX };
 
@@ -2058,9 +2062,12 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
     }
 }
 
-fn run_extra_profile(dataset: &Dataset, k: usize) {
+fn run_extra_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
     use orion::{build_diskann_index, Orion, DIM_100, DIM_128, DIM_32, DIM_960};
     let ocfg = crate::config::load_dataset_config_by_dim(dataset.dimension).orion;
+    let run = experiment("single", k, overrides);
+    assert_eq!(run.search_list_sizes.len(), 1, "extra-profile requires one search L");
+    let search_l = run.search_list_sizes[0];
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
@@ -2089,7 +2096,7 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
             );
             println!(
                 "  {:<10} {:<10} {:<10} {:<12} {:<14} {:<10} {:<10}",
-                "MaxExtra", "AvgExtra", "AvgLocal", "Iter/query", "DistCalls/q", "R@10", "QPS"
+                "MaxExtra", "AvgExtra", "AvgLocal", "Iter/query", "DistCalls/q", format!("R@{k}"), "QPS"
             );
             println!("  {}", "─".repeat(78));
 
@@ -2127,7 +2134,7 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
 
                 // Calibrate and search.
                 let calib = idx
-                    .calibrate(&queries[..queries.len().min(CALIB_SAMPLES)], 48, 5)
+                    .calibrate(&queries[..queries.len().min(calibration_samples())], calibration_l(k), ocfg.window_size, orion::CalibrationConfig { k, ..Default::default() })
                     .expect("calibrate");
 
                 // Run search_diag for detailed stats.
@@ -2137,7 +2144,7 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
                 let t_start = std::time::Instant::now();
                 for (qi, q) in queries.iter().enumerate() {
                     let (res, _, steps, p1, p2) = idx
-                        .search_diag(q, k, 48, 5, calib.threshold, calib.early_exit_limit)
+                        .search_diag(q, k, search_l, ocfg.window_size, calib.threshold, calib.early_exit_limit)
                         .unwrap();
                     total_iter += steps as u64;
                     total_dist += (p1 + p2) as u64;
@@ -2275,7 +2282,7 @@ fn run_extra_profile(dataset: &Dataset, k: usize) {
     }
 }
 
-fn run_calibration_diag(dataset: &Dataset) {
+fn run_calibration_diag(dataset: &Dataset, k: usize) {
     use orion::{build_diskann_index, Orion, DIM_100, DIM_128, DIM_32, DIM_960};
     use std::time::Instant;
 
@@ -2329,8 +2336,10 @@ fn run_calibration_diag(dataset: &Dataset) {
             let diskann_build_s = t_da.elapsed().as_secs_f64();
 
             // Calibrate with diagnostics
-            let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
-            let diag = idx.calibrate_with_diagnostics(&calib_qs, 100, 5)
+            let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(calibration_samples())].to_vec();
+            let diag = idx.calibrate_with_diagnostics(&calib_qs, config::load_sweep_config().calibration.diagnostic_search_list_size(k), ocfg.window_size, orion::CalibrationConfig {
+                k, metric: ocfg.admission.calibration_metric(),
+            })
                 .expect("calibrate failed");
 
             // Write JSON
@@ -2353,7 +2362,7 @@ fn run_calibration_diag(dataset: &Dataset) {
                 }
             });
 
-            let path = format!("visualizations/calibration_diag_{}.json", dim_name);
+            let path = utils::result_path("calibration_diag", dim_name, k);
             std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap())
                 .expect("write json");
             println!("Saved {path}");
@@ -2407,7 +2416,7 @@ fn run_calibration_diag(dataset: &Dataset) {
 /// search-time extras contribution). This design eliminates both
 /// confounds: one graph, one calibration, all variants on the same
 /// search path with only the two convergence-side flags toggled.
-fn run_ablation(dataset: &Dataset, k: usize) {
+fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
     use rayon::prelude::*;
     use orion::{
         build_diskann_index, Orion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_960,
@@ -2431,7 +2440,8 @@ fn run_ablation(dataset: &Dataset, k: usize) {
     };
     let docfg = crate::config::load_dataset_config(dim_name);
     let ocfg = docfg.orion;
-    let num_threads = 8;
+    let run = experiment("ablation", k, overrides);
+    let num_threads = run.threads;
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
@@ -2439,9 +2449,8 @@ fn run_ablation(dataset: &Dataset, k: usize) {
         .unwrap();
 
     // Same L schedule as `run_cascade_ablation` for cross-panel comparability.
-    let search_list_sizes: &[usize] =
-        &[16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256];
-    let trials = 5;
+    let search_list_sizes = run.search_list_sizes.as_slice();
+    let trials = run.trials;
 
     macro_rules! run_ablation_inner {
         ($N:literal) => {{
@@ -2567,9 +2576,11 @@ fn run_ablation(dataset: &Dataset, k: usize) {
             // they all run on the same graph topology, so threshold
             // / early-exit derive identically.
             let calib_qs: Vec<[f32; $N]> =
-                queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
+                queries[..queries.len().min(calibration_samples())].to_vec();
             let calib = idx
-                .calibrate(&calib_qs, 48, 5)
+                .calibrate(&calib_qs, calibration_l(k), ocfg.window_size, orion::CalibrationConfig {
+                    k, metric: ocfg.admission.calibration_metric(),
+                })
                 .expect("calibrate failed");
             let (thr, ee) = (calib.threshold, calib.early_exit_limit);
             println!(
@@ -2647,7 +2658,7 @@ fn run_ablation(dataset: &Dataset, k: usize) {
                     q,
                     k,
                     sls,
-                    5,
+                    ocfg.window_size,
                     thr,
                     usize::MAX,
                     ocfg.prefilter,
@@ -2666,7 +2677,7 @@ fn run_ablation(dataset: &Dataset, k: usize) {
                     q,
                     k,
                     sls,
-                    5,
+                    ocfg.window_size,
                     thr,
                     ee,
                     ocfg.prefilter,
@@ -2686,7 +2697,7 @@ fn run_ablation(dataset: &Dataset, k: usize) {
                     q,
                     k,
                     sls,
-                    5,
+                    ocfg.window_size,
                     thr,
                     usize::MAX,
                     ocfg.prefilter,
@@ -2706,7 +2717,7 @@ fn run_ablation(dataset: &Dataset, k: usize) {
                     q,
                     k,
                     sls,
-                    5,
+                    ocfg.window_size,
                     thr,
                     ee,
                     ocfg.prefilter,
@@ -2755,6 +2766,9 @@ fn run_ablation(dataset: &Dataset, k: usize) {
                 "num_points": num_points,
                 "threads": num_threads,
                 "search_list_sizes": search_list_sizes,
+                "k": k,
+                "sweep": run,
+                "window_size": ocfg.window_size,
                 "default_cascade": {
                     "prefilter":  format!("{:?}", ocfg.prefilter),
                     "admission":  format!("{:?}", ocfg.admission),
@@ -2765,7 +2779,7 @@ fn run_ablation(dataset: &Dataset, k: usize) {
                 "no_early_stop":  to_json(&no_ee_data),
                 "no_extra":       to_json(&no_extra_data),
             });
-            let path = format!("visualizations/ablation_{}.json", dim_name);
+            let path = utils::result_path("ablation", dim_name, k);
             std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap())
                 .expect("write json");
             println!("\nSaved {path}");
@@ -2803,7 +2817,7 @@ fn run_ablation(dataset: &Dataset, k: usize) {
 /// All four variants share one built `Orion` and one
 /// `calibrate()` call so thermal / cache / build-jitter drift can't
 /// account for the QPS gaps.
-fn run_cascade_ablation(dataset: &Dataset, k: usize) {
+fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
     use rayon::prelude::*;
     use orion::{
         build_diskann_index, Orion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_960,
@@ -2825,7 +2839,8 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
         _ => "unknown",
     };
     let ocfg = crate::config::load_dataset_config(dim_name).orion;
-    let num_threads = 8;
+    let run = experiment("ablation", k, overrides);
+    let num_threads = run.threads;
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
@@ -2833,9 +2848,8 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
         .unwrap();
 
     // Same L schedule as `run_ablation` for cross-figure comparability.
-    let search_list_sizes: &[usize] =
-        &[16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256];
-    let trials = 5;
+    let search_list_sizes = run.search_list_sizes.as_slice();
+    let trials = run.trials;
 
     macro_rules! run_cascade_ablation_inner {
         ($N:literal) => {{
@@ -2944,8 +2958,10 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
             println!("  → graph ready in {:.1}s", t_build.elapsed().as_secs_f64());
 
             // Calibrate once with the default cascade settings.
-            let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(CALIB_SAMPLES)].to_vec();
-            let calib = idx.calibrate(&calib_qs, 48, 5).expect("calibrate failed");
+            let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(calibration_samples())].to_vec();
+            let calib = idx.calibrate(&calib_qs, calibration_l(k), ocfg.window_size, orion::CalibrationConfig {
+                k, metric: ocfg.admission.calibration_metric(),
+            }).expect("calibrate failed");
             let thr = calib.threshold;
             let ee = calib.early_exit_limit;
             println!("Calibrated: threshold={:.2}, early_exit_limit={}\n", thr, ee);
@@ -3015,7 +3031,7 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
                 pool.install(|| {
                     queries.par_iter().for_each(|q| {
                         let _ = search_compose::<$N>(
-                            &idx, q, k, warmup_l, 5, thr, ee,
+                            &idx, q, k, warmup_l, ocfg.window_size, thr, ee,
                             pre, ocfg.admission, rerank,
                         );
                     });
@@ -3030,7 +3046,7 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
                         let results: Vec<Vec<u32>> = pool.install(|| {
                             queries.par_iter().map(|q| {
                                 search_compose::<$N>(
-                                    &idx, q, k, sls, 5, thr, ee,
+                                    &idx, q, k, sls, ocfg.window_size, thr, ee,
                                     pre, ocfg.admission, rerank,
                                 )
                                 .unwrap_or_default()
@@ -3081,6 +3097,9 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
                 "num_points": num_points,
                 "threads": num_threads,
                 "search_list_sizes": search_list_sizes,
+                "k": k,
+                "sweep": run,
+                "window_size": ocfg.window_size,
                 "default_cascade": {
                     "prefilter":  format!("{:?}", ocfg.prefilter),
                     "admission":  format!("{:?}", ocfg.admission),
@@ -3091,7 +3110,7 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize) {
                 "no_rerank":       to_json(&no_rerank_data),
                 "admission_only":  to_json(&admission_only_data),
             });
-            let path = format!("visualizations/cascade_ablation_{}.json", dim_name);
+            let path = utils::result_path("cascade_ablation", dim_name, k);
             std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap())
                 .expect("write json");
             println!("\nSaved {path}");

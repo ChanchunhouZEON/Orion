@@ -142,25 +142,7 @@ pub fn load_from_staged_file<P: AsRef<Path>>(
         })
         .collect();
 
-    // Recompute medoid: smallest sum-of-distances to a stride sample.
-    let sample_size = 1024.min(n);
-    let step = (n / sample_size).max(1);
-    let sample: Vec<usize> = (0..sample_size).map(|k| k * step).collect();
-    let candidate_stride = (n / 10_000).max(1);
-    let entry_point = (0..n)
-        .into_par_iter()
-        .step_by(candidate_stride)
-        .map(|i| {
-            let i_vec = &base_flat[i * dim..(i + 1) * dim];
-            let sum: f32 = sample
-                .iter()
-                .map(|&s| dist_l2(i_vec, &base_flat[s * dim..(s + 1) * dim]))
-                .sum();
-            (sum, i as u32)
-        })
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, i)| i)
-        .unwrap_or(0);
+    let entry_point = sampled_medoid(base_flat, dim);
 
     let total_local: usize = partitions.iter().map(|(l, _, _)| l.len()).sum();
     let total_remote: usize = partitions.iter().map(|(_, r, _)| r.len()).sum();
@@ -180,4 +162,28 @@ pub fn load_from_staged_file<P: AsRef<Path>>(
         max_deg,
         max_extra,
     })
+}
+
+/// Preserve the historical PA importer entry selection without owning partitions.
+pub fn sampled_medoid(base_flat: &[f32], dim: usize) -> u32 {
+    let n = base_flat.len() / dim;
+    // Recompute medoid: smallest sum-of-distances to a stride sample.
+    let sample_size = 1024.min(n);
+    let step = (n / sample_size).max(1);
+    let sample: Vec<usize> = (0..sample_size).map(|k| k * step).collect();
+    let candidate_stride = (n / 10_000).max(1);
+    (0..n)
+        .into_par_iter()
+        .step_by(candidate_stride)
+        .map(|i| {
+            let i_vec = &base_flat[i * dim..(i + 1) * dim];
+            let sum: f32 = sample
+                .iter()
+                .map(|&s| dist_l2(i_vec, &base_flat[s * dim..(s + 1) * dim]))
+                .sum();
+            (sum, i as u32)
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, i)| i)
+        .unwrap_or(0)
 }

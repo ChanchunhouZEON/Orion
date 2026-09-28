@@ -11,9 +11,11 @@ pub mod storage;
 pub mod utils;
 
 pub use algorithm::SearchProfile;
-pub use algorithm::search::calibrate::{CalibratedParams, CalibrationDiagnostics};
+pub use algorithm::search::calibrate::{
+    CalibratedParams, CalibrationConfig, CalibrationDiagnostics, CalibrationMetric,
+};
 pub use algorithm::search::convergence::SearchConvergenceChecker;
-pub use algorithm::search::utils::SearchProfileStats;
+pub use algorithm::search::diagnostics::SearchProfileStats;
 pub use index::NaiveOrion;
 pub use index::Orion;
 pub use index::{BeamSearchConfig, BeamSearchResult, IoLimiter, async_beam_search};
