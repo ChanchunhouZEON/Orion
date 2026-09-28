@@ -33,6 +33,11 @@
 //!
 //! * **i16 MIPS** ([`mips_i16::MipsI16Admission`]) — twin of i8 for
 //!   high-recall MIPS workloads.
+//!
+//! * **native u8**([`native_u8::NativeU8Admission`]) - u8 native kernel,
+//!   only apply to large scale `SIFT` currently. Differ from **l2 u8** as
+//!   it directly use original dataset in referenced form without introducing
+//!   quantized dataset sidecar. The rest is all the same.
 
 pub mod ads_f32;
 pub mod l2kt;
@@ -40,6 +45,7 @@ pub mod l2u16;
 pub mod l2u8;
 pub mod mips_i16;
 pub mod mips_i8;
+mod native_u8;
 
 pub use ads_f32::AdsF32Admission;
 pub use l2kt::L2KTAdmission;
@@ -47,6 +53,7 @@ pub use l2u8::L2U8Admission;
 pub use l2u16::L2U16Admission;
 pub use mips_i8::MipsI8Admission;
 pub use mips_i16::MipsI16Admission;
+pub use native_u8::NativeU8Admission;
 
 use crate::model::Neighbor;
 

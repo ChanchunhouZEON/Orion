@@ -225,6 +225,7 @@ pub struct RawOrionDefaults {
 
 #[derive(Deserialize, Default, Debug)]
 pub struct RawDataset {
+    pub max_points: Option<usize>,
     pub dimension: usize,
     pub metric: Option<crate::cascade::SearchMetric>,
     pub paths: Option<RawPaths>,
@@ -255,6 +256,7 @@ pub struct RawBaseGraph {
 
 #[derive(Deserialize, Default, Debug)]
 pub struct RawOrionOverride {
+    pub vector_storage: Option<String>,
     pub alpha: Option<f32>,
     pub graph_degree: Option<u32>,
     pub build_search_list_size: Option<usize>,

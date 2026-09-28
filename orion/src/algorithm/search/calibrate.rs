@@ -84,6 +84,39 @@ impl CalibrationMetric {
     }
 }
 
+/// Storage-specific exact scoring for calibration. Only a visited byte vector
+/// is widened on the stack; the full base is never materialized as f32.
+pub trait CalibrationElement: Default + Copy + Send + Sync + Into<f32> {
+    fn calibration_distance<const N: usize>(
+        metric: CalibrationMetric,
+        query: &[f32; N],
+        vertex: &[Self; N],
+    ) -> ANNResult<f32>;
+}
+
+impl CalibrationElement for f32 {
+    fn calibration_distance<const N: usize>(
+        metric: CalibrationMetric,
+        query: &[f32; N],
+        vertex: &[Self; N],
+    ) -> ANNResult<f32> {
+        metric.distance(query, vertex)
+    }
+}
+
+impl CalibrationElement for u8 {
+    fn calibration_distance<const N: usize>(
+        metric: CalibrationMetric,
+        query: &[f32; N],
+        vertex: &[Self; N],
+    ) -> ANNResult<f32> {
+        if metric != CalibrationMetric::L2 {
+            return Err(calibration_error("metric", "native u8 requires L2"));
+        }
+        metric.distance(query, &vertex.map(f32::from))
+    }
+}
+
 /// Calibration target, independent of the lossy search cascade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CalibrationConfig {
@@ -135,9 +168,9 @@ pub struct CalibratedParams {
     pub early_exit_limit: usize,
 }
 
-impl<const N: usize> Orion<N>
+impl<const N: usize, T: CalibrationElement> Orion<N, T>
 where
-    [f32; N]: FullPrecisionDistance<f32, N>,
+    [T; N]: FullPrecisionDistance<T, N>,
 {
     /// Calibrate convergence and early exit parameters from warmup queries.
     ///
@@ -180,7 +213,7 @@ where
             scratch.seen.insert(entry);
             let entry_dist = {
                 let v = dataset.get_vertex(entry)?;
-                config.metric.distance(&aligned.0, v.vector())?
+                T::calibration_distance(config.metric, &aligned.0, v.vector())?
             };
             scratch.pq.insert(DNeighbor::new(entry, entry_dist));
 
@@ -213,7 +246,7 @@ where
                 for m in 0..n_unseen {
                     let nn = scratch.id_scratch[m];
                     let v = dataset.get_vertex(nn)?;
-                    let dist = config.metric.distance(&aligned.0, v.vector())?;
+                    let dist = T::calibration_distance(config.metric, &aligned.0, v.vector())?;
                     if dist < pq_worst || scratch.pq.size() < search_list_size {
                         admitted = true;
                         admit_step.insert(nn, step);
@@ -377,9 +410,9 @@ pub struct CalibrationDiagnostics {
     pub params: CalibratedParams,
 }
 
-impl<const N: usize> Orion<N>
+impl<const N: usize, T: CalibrationElement> Orion<N, T>
 where
-    [f32; N]: FullPrecisionDistance<f32, N>,
+    [T; N]: FullPrecisionDistance<T, N>,
 {
     /// Calibrate with full diagnostics using the same target as `calibrate`.
     pub fn calibrate_with_diagnostics(
@@ -410,7 +443,7 @@ where
             scratch.seen.insert(entry);
             let entry_dist = {
                 let v = dataset.get_vertex(entry)?;
-                config.metric.distance(&aligned.0, v.vector())?
+                T::calibration_distance(config.metric, &aligned.0, v.vector())?
             };
             scratch.pq.insert(DNeighbor::new(entry, entry_dist));
 
@@ -441,7 +474,7 @@ where
                 for m in 0..n_unseen {
                     let nn = scratch.id_scratch[m];
                     let v = dataset.get_vertex(nn)?;
-                    let dist = config.metric.distance(&aligned.0, v.vector())?;
+                    let dist = T::calibration_distance(config.metric, &aligned.0, v.vector())?;
                     if dist < pq_worst || scratch.pq.size() < search_list_size {
                         admitted = true;
                         admit_step.insert(nn, step);
@@ -541,7 +574,7 @@ where
                 scratch.seen.insert(entry);
                 let entry_dist = {
                     let v = dataset.get_vertex(entry)?;
-                    config.metric.distance(&aligned.0, v.vector())?
+                    T::calibration_distance(config.metric, &aligned.0, v.vector())?
                 };
                 scratch.pq.insert(DNeighbor::new(entry, entry_dist));
 
@@ -567,7 +600,7 @@ where
                     for m in 0..scratch.id_scratch.len() {
                         let nn = scratch.id_scratch[m];
                         let v = dataset.get_vertex(nn)?;
-                        let dist = config.metric.distance(&aligned.0, v.vector())?;
+                        let dist = T::calibration_distance(config.metric, &aligned.0, v.vector())?;
                         if dist < pq_worst || scratch.pq.size() < search_list_size {
                             admit_step_map.insert(nn, step);
                         }

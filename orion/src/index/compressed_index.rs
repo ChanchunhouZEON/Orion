@@ -29,12 +29,12 @@ use vector::FullPrecisionDistance;
 /// - `local_neighbors`: candidate-set-confirmed (navigation + reranking)
 /// - `remote_neighbors`: long-range shortcuts (navigation only)
 /// - `extra_candidates`: non-graph candidate-set points (reranking only)
-pub struct Orion<const N: usize>
+pub struct Orion<const N: usize, T = f32>
 where
-    [f32; N]: FullPrecisionDistance<f32, N>,
+    [T; N]: FullPrecisionDistance<T, N>,
 {
     /// Vector data storage taken from the DiskANN `InmemIndex`.
-    pub dataset: InmemDataset<f32, N>,
+    pub dataset: InmemDataset<T, N>,
     /// PhasedGraph with local/remote/extra layout + bidir bits.
     pub graph: PhasedGraph,
     pub entry: u32,
@@ -123,13 +123,13 @@ where
     pub(crate) q_dataset_l2_kt: OnceLock<L2KTDataset<N>>,
 }
 
-impl<const N: usize> Orion<N>
+impl<const N: usize, T> Orion<N, T>
 where
-    [f32; N]: FullPrecisionDistance<f32, N>,
+    [T; N]: FullPrecisionDistance<T, N>,
 {
     /// Build a Orion from pre-computed partitions.
     pub fn new(
-        dataset: InmemDataset<f32, N>,
+        dataset: InmemDataset<T, N>,
         partitions: &[(Vec<u32>, Vec<u32>, Vec<u32>)],
         entry: u32,
         max_degree: u32,
@@ -191,7 +191,7 @@ where
 
     /// Build from a pre-built PhasedGraph (e.g. cloned from another instance).
     pub fn from_phased_graph(
-        dataset: InmemDataset<f32, N>,
+        dataset: InmemDataset<T, N>,
         graph: PhasedGraph,
         entry: u32,
         pq: Option<Arc<FixedChunkPQTable>>,
@@ -222,7 +222,11 @@ where
             q_dataset_l2_kt: OnceLock::new(),
         }
     }
+}
 
+// Quantized sidecars belong only to the f32 storage path. Native-byte indexes
+// borrow their original dataset directly and cannot accidentally build a copy.
+impl<const N: usize> Orion<N> {
     /// Lazily obtain the u8 quantized dataset (L2 prefilter path).
     /// Tries the sidecar `.qds` first (memcpy load); on miss, builds
     /// from the f32 dataset and writes back.
@@ -311,7 +315,12 @@ where
         self.q_dataset_l2_kt
             .get_or_init(|| build_l2_kt::<N>(&self.dataset, &self.cache_base_path))
     }
+}
 
+impl<const N: usize, T> Orion<N, T>
+where
+    [T; N]: FullPrecisionDistance<T, N>,
+{
     /// Return per-node (degree, local_count) from the PhasedGraph.
     pub fn graph_degree_stats(&self) -> Vec<(usize, usize)> {
         let n = self.num_nodes;
@@ -332,7 +341,9 @@ where
         let graph_tmp = graph_path.with_extension(format!("pgraph.{}.tmp", std::process::id()));
         self.graph.save(&graph_tmp)?;
         File::open(&graph_tmp)?.sync_all()?;
-        let meta_tmp = path.as_ref().with_extension(format!("bin.{}.tmp", std::process::id()));
+        let meta_tmp = path
+            .as_ref()
+            .with_extension(format!("bin.{}.tmp", std::process::id()));
 
         let meta = OrionMeta {
             version: 5,
@@ -353,10 +364,10 @@ where
 
     /// Construct from cached PhasedGraph + metadata on disk.
     /// `path` is the metadata `.bin` file; PhasedGraph is read from `path.with_extension("pgraph")`.
-    /// The returned instance has an empty `dataset` — caller must install it afterwards.
+    /// Takes ownership of the caller-provided dataset without copying its payload.
     pub fn load_from_cache<P: AsRef<Path>>(
         path: P,
-        dataset: InmemDataset<f32, N>,
+        dataset: InmemDataset<T, N>,
     ) -> ANNResult<Self> {
         let graph_path = path.as_ref().with_extension("pgraph");
         if !graph_path.exists() {

@@ -152,8 +152,30 @@ impl<const N: usize> FullPrecisionDistance<i8, N> for [i8; N] {
 
 #[allow(clippy::panic)]
 impl<const N: usize> FullPrecisionDistance<u8, N> for [u8; N] {
-    fn distance_compare(_a: &[u8; N], _b: &[u8; N], _metric: Metric) -> f32 {
-        panic!("Not supported VectorType u8")
+    /// Squared L2 on original byte coordinates, without quantization or scaling.
+    /// For SIFT's 128 dimensions even the maximum sum is below 2^24, so the
+    /// integer result is represented exactly by the returned f32.
+    #[inline(always)]
+    fn distance_compare(a: &[u8; N], b: &[u8; N], metric: Metric) -> f32 {
+        if metric != Metric::L2 {
+            panic!("Not supported Metric type {:?} for u8", metric);
+        }
+
+        // Existing SIMD kernels consume fixed blocks and use 32-bit accumulators.
+        // A multiple of 32 avoids partial-block loads on both NEON and AVX-512;
+        // the dimension cap keeps even the signed x86 reduction below i32::MAX.
+        if N % 32 == 0 && N <= 32_768 {
+            crate::distance_l2_vector_u8::<N>(a, b)
+        } else {
+            // FullPrecisionDistance accepts arbitrary N. Widen before subtraction,
+            // and sum in u64 so large dimensions cannot wrap a 32-bit accumulator.
+            let mut sum = 0u64;
+            for (&left, &right) in a.iter().zip(b) {
+                let difference = i32::from(left) - i32::from(right);
+                sum += (difference * difference) as u64;
+            }
+            sum as f32
+        }
     }
 }
 
@@ -215,10 +237,83 @@ mod tests {
         <[i8; 4] as FullPrecisionDistance<i8, 4>>::distance_compare(&a, &a, Metric::L2);
     }
 
+    fn check_u8_against_integer_oracle<const N: usize>() {
+        let a = std::array::from_fn(|i| (i.wrapping_mul(73).wrapping_add(255)) as u8);
+        let b = std::array::from_fn(|i| (i.wrapping_mul(151).wrapping_add(17)) as u8);
+        let expected: u64 = a
+            .iter()
+            .zip(&b)
+            .map(|(&x, &y)| {
+                let difference = i64::from(x) - i64::from(y);
+                (difference * difference) as u64
+            })
+            .sum();
+        let compare = <[u8; N] as FullPrecisionDistance<u8, N>>::distance_compare;
+        assert_eq!(compare(&a, &b, Metric::L2), expected as f32);
+        assert_eq!(compare(&b, &a, Metric::L2), expected as f32);
+        assert_eq!(compare(&a, &a, Metric::L2), 0.0);
+    }
+
     #[test]
-    #[should_panic(expected = "VectorType u8")]
-    fn u8_storage_panics() {
-        let a = [0u8; 4];
-        <[u8; 4] as FullPrecisionDistance<u8, 4>>::distance_compare(&a, &a, Metric::L2);
+    fn u8_l2_handles_simd_blocks_and_arbitrary_tails() {
+        check_u8_against_integer_oracle::<0>();
+        check_u8_against_integer_oracle::<1>();
+        check_u8_against_integer_oracle::<15>();
+        check_u8_against_integer_oracle::<16>();
+        check_u8_against_integer_oracle::<17>();
+        check_u8_against_integer_oracle::<31>();
+        check_u8_against_integer_oracle::<32>();
+        check_u8_against_integer_oracle::<33>();
+        check_u8_against_integer_oracle::<128>();
+        check_u8_against_integer_oracle::<784>();
+    }
+
+    #[test]
+    fn u8_sift_extremes_equal_full_precision_f32() {
+        let a = [0u8; 128];
+        let b = [255u8; 128];
+        let byte_distance =
+            <[u8; 128] as FullPrecisionDistance<u8, 128>>::distance_compare(&a, &b, Metric::L2);
+        let float_distance = <[f32; 128] as FullPrecisionDistance<f32, 128>>::distance_compare(
+            &a.map(f32::from),
+            &b.map(f32::from),
+            Metric::L2,
+        );
+        assert_eq!(byte_distance, 8_323_200.0);
+        assert_eq!(byte_distance, float_distance);
+    }
+
+    #[test]
+    fn u8_large_dimension_does_not_overflow_u32() {
+        let distance = <[u8; 70_000] as FullPrecisionDistance<u8, 70_000>>::distance_compare(
+            &[0; 70_000],
+            &[255; 70_000],
+            Metric::L2,
+        );
+        assert_eq!(distance, (70_000u64 * 65_025) as f32);
+    }
+
+    #[test]
+    fn u8_bound_and_adsampling_fallback_follow_the_trait_contract() {
+        type Distance = [u8; 128];
+        let a = [0; 128];
+        let b = [1; 128];
+        assert_eq!(Distance::distance_compare_with_bound(&a, &b, 129.0), 128.0);
+        assert_eq!(Distance::distance_compare_with_bound(&a, &b, 128.0), -1.0);
+        assert_eq!(Distance::distance_compare_with_bound(&a, &b, 1.0), -1.0);
+        assert_eq!(
+            Distance::distance_compare_adsampling(&a, &b, 129.0, 2.1),
+            128.0
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Not supported Metric")]
+    fn u8_cosine_is_not_silently_treated_as_l2() {
+        <[u8; 4] as FullPrecisionDistance<u8, 4>>::distance_compare(
+            &[0; 4],
+            &[1; 4],
+            Metric::Cosine,
+        );
     }
 }

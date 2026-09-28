@@ -76,9 +76,9 @@ fn prefilter_slack() -> f32 {
     })
 }
 
-impl<const N: usize> Orion<N>
+impl<const N: usize, T: Send + Sync> Orion<N, T>
 where
-    [f32; N]: FullPrecisionDistance<f32, N>,
+    [T; N]: FullPrecisionDistance<T, N>,
 {
     /// **One peeled hop**: bypass prefilter / DCC / early-exit and
     /// run the admission stream directly. Used in the search-start
@@ -215,8 +215,19 @@ where
         } else {
             NeighborMode::FullNeighbor
         };
-        self.search_unified_observed(query, k, search_list_size, window_size,
-            epsilon, early_exit_limit, prefilter, admission, rerank, mode, &mut NoopObserver)
+        self.search_unified_observed(
+            query,
+            k,
+            search_list_size,
+            window_size,
+            epsilon,
+            early_exit_limit,
+            prefilter,
+            admission,
+            rerank,
+            mode,
+            &mut NoopObserver,
+        )
     }
 
     /// Same production loop, with explicit neighbor policy and optional instrumentation.
@@ -333,7 +344,13 @@ where
             }
 
             let converged = scratch.scc.update(prev_admitted);
-            observer.before_expansion(id as u32, converged, scratch, prev_admitted, hops_since_flush);
+            observer.before_expansion(
+                id as u32,
+                converged,
+                scratch,
+                prev_admitted,
+                hops_since_flush,
+            );
 
             // Expand unseen neighbours from the graph. Converged
             // hops use `rerank_candidates` (local + extra), which
@@ -348,7 +365,11 @@ where
                 }
             } else {
                 let (local, extra) = graph.rerank_candidates(id);
-                let extra = if mode == NeighborMode::LocalExtra { extra } else { &[] };
+                let extra = if mode == NeighborMode::LocalExtra {
+                    extra
+                } else {
+                    &[]
+                };
                 for &nn in local.iter().chain(extra.iter()) {
                     if scratch.seen.insert(nn) {
                         scratch.id_scratch.push(nn);
