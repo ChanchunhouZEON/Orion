@@ -1,13 +1,17 @@
-//! Shared index loading for sweep and diagnostic executables.
+//! Resolve graph provenance, transfer the base allocation, then load/build/import.
 use super::{
     cache::CachePlan,
     config::{GraphSource, ResolvedRunConfig},
     data::LoadedDataset,
 };
 use crate::parlayann_bridge;
+use diskann::model::InmemDataset;
 use orion::{build_diskann_index, Orion};
-use std::time::Instant;
+use std::{path::Path, time::Instant};
 
+/// Leaves query vectors and ground truth in `data`, but consumes its base allocation.
+/// Check the export path/header before transferring ownership of the allocation.
+/// The graph payload itself is validated later, during streaming import.
 pub fn load_index<const N: usize>(
     config: &ResolvedRunConfig,
     data: &mut LoadedDataset,
@@ -18,104 +22,121 @@ where
     if config.dimension != N {
         return Err("index dimension does not match input".into());
     }
-    let n = data.num_points;
-    let use_pa_graph = config.graph_source == GraphSource::Parlayann;
-    let cache = CachePlan::select(config, n)?;
-    let import_source = if !cache.hit && use_pa_graph {
-        Some(CachePlan::source_for_import(config, n)?)
+
+    let num_points = data.num_points;
+    let cache = CachePlan::resolve(config, num_points)?;
+    let import_source = if !cache.is_hit && config.graph_source == GraphSource::Parlayann {
+        Some(CachePlan::resolve_staged_export(config, num_points)?)
     } else {
         None
     };
-    let cache_path = &cache.path;
-    let pgraph_path = cache_path.with_extension("pgraph");
 
-    let allocation = data
-        .base
-        .take()
-        .ok_or("base allocation already transferred")?;
-    let ds = diskann::model::InmemDataset::<f32, N> {
-        data: allocation,
-        num_points: n,
-        num_active_pts: n,
-        capacity: n * N,
-    };
-    let idx = if cache.hit {
-        log::info!("Loading cached PhasedGraph from {:?}", pgraph_path);
-        Orion::<N>::load_from_cache(&cache_path, ds).map_err(|e| e.to_string())?
-    } else if !use_pa_graph {
+    let dataset = data.take_index_dataset::<N>()?;
+    let index = if cache.is_hit {
         log::info!(
-            "Building Orion ({}-dim, R={}, L={}, α={}, ex={}) — will save to {:?}",
-            N,
-            config.graph_degree,
-            config.build_l,
-            config.alpha,
-            config.max_extra,
-            pgraph_path
+            "Loading cached PhasedGraph from {:?}",
+            cache.metadata_path.with_extension("pgraph")
         );
-        let t0 = Instant::now();
-        let result = build_diskann_index(
-            &ds.data[..n * N],
-            n,
-            N,
-            config.alpha as f32,
-            config.graph_degree as u32,
-            config.build_l as u32,
-            false,
-            None,
-            None,
-            true,
-            config.max_extra,
-        )
-        .map_err(|e| e.to_string())?;
-        let entry = result.entry_point;
-        drop(result.index);
-        let mut idx = Orion::<N>::new(
-            ds,
-            &result.partitions,
-            entry,
-            config.graph_degree,
-            config.max_extra,
-            None,
-            None,
-            Some(cache_path.clone()),
-            false,
-        );
-        idx.save(cache_path).map_err(|e| e.to_string())?;
-        idx.is_save = true;
-        log::info!("Build+save took {:.1}s", t0.elapsed().as_secs_f64());
-        idx
+        Orion::<N>::load_from_cache(&cache.metadata_path, dataset).map_err(|e| e.to_string())?
     } else {
-        // PA-graph cache is missing and build_diskann_index isn't our
-        // path — instead import the `.staged` export PA wrote. Path
-        // given by `ORION_STAGED_FILE`; we save to the same cache
-        // slot on the way out so the second invocation hits the fast
-        // load-from-cache arm above.
-        let staged_file_path = import_source
-            .as_ref()
-            .ok_or("missing staged_file on cache miss")?;
-        log::info!(
-            "Importing ParlayANN .staged export from {} — will save \
-             PhasedGraph cache to {:?}",
-            staged_file_path.display(),
-            pgraph_path
-        );
-        let t0 = Instant::now();
-        let graph = orion::PhasedGraph::load_staged(staged_file_path, n, config.graph_degree)
-            .map_err(|e| format!("ParlayANN import failed: {e}"))?;
-        let entry = parlayann_bridge::sampled_medoid(&ds.data[..n * N], N);
-        let mut idx = Orion::<N>::from_phased_graph(ds, graph, entry, None, None);
-        idx.cache_base_path = cache_path.clone();
-        idx.save(cache_path).map_err(|e| e.to_string())?;
-        idx.is_save = true;
-        log::info!(
-            "Streaming import+save took {:.1}s (n={n})",
-            t0.elapsed().as_secs_f64()
-        );
-        idx
-    };
-    cache.record(config, n, import_source.as_deref())?;
+        let start = Instant::now();
+        let mut index = match config.graph_source {
+            GraphSource::Rust => build_in_process(config, dataset)?,
+            GraphSource::Parlayann => {
+                let staged_path = import_source
+                    .as_deref()
+                    .ok_or("missing staged_file on cache miss")?;
 
-    Ok(idx)
+                import_staged_graph(config, dataset, staged_path)?
+            }
+        };
+
+        // Both constructors defer saving. Publish once and propagate IO failures
+        // before recording provenance, so an incomplete cache is never advertised.
+        index.cache_base_path = cache.metadata_path.clone();
+        index
+            .save(&cache.metadata_path)
+            .map_err(|e| e.to_string())?;
+        index.is_save = true;
+        log::info!(
+            "Graph preparation+save took {:.1}s (n={num_points})",
+            start.elapsed().as_secs_f64()
+        );
+        index
+    };
+
+    cache.write_manifest(config, num_points, import_source.as_deref())?;
+    Ok(index)
+}
+
+fn build_in_process<const N: usize>(
+    config: &ResolvedRunConfig,
+    dataset: InmemDataset<f32, N>,
+) -> Result<Orion<N>, String>
+where
+    [f32; N]: vector::FullPrecisionDistance<f32, N>,
+{
+    log::info!(
+        "Building Orion ({N}-dim, R={}, L={}, α={}, ex={})",
+        config.graph_degree,
+        config.build_l,
+        config.alpha,
+        config.max_extra
+    );
+    let num_points = dataset.num_points;
+    let build = build_diskann_index(
+        &dataset.data[..num_points * N],
+        num_points,
+        N,
+        config.alpha,
+        config.graph_degree,
+        config.build_l as u32,
+        false,
+        None,
+        None,
+        true,
+        config.max_extra,
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Release the builder's working index before allocating the final graph slab.
+    let entry = build.entry_point;
+    drop(build.index);
+
+    // PQ sidecars are not supplied here; load_index saves the completed graph.
+    Ok(Orion::new(
+        dataset,
+        &build.partitions,
+        entry,
+        config.graph_degree,
+        config.max_extra,
+        None,
+        None,
+        None,
+        false,
+    ))
+}
+
+fn import_staged_graph<const N: usize>(
+    config: &ResolvedRunConfig,
+    dataset: InmemDataset<f32, N>,
+    staged_path: &Path,
+) -> Result<Orion<N>, String>
+where
+    [f32; N]: vector::FullPrecisionDistance<f32, N>,
+{
+    log::info!(
+        "Streaming ParlayANN .staged export from {}",
+        staged_path.display()
+    );
+    let num_points = dataset.num_points;
+    let graph = orion::PhasedGraph::load_staged(staged_path, num_points, config.graph_degree)
+        .map_err(|e| format!("ParlayANN import failed: {e}"))?;
+
+    // Keep the historical sampled-medoid choice; storage refactoring must not
+    // silently change the search entry point to the export's header hint.
+    let entry = parlayann_bridge::sampled_medoid(&dataset.data[..num_points * N], N);
+    Ok(Orion::from_phased_graph(dataset, graph, entry, None, None))
 }
 
 #[cfg(test)]

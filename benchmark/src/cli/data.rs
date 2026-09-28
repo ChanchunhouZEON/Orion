@@ -5,6 +5,10 @@ use diskann::common::AlignedBoxWithSlice;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
+const VECTOR_READ_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+const SIMD_ALIGNMENT_BYTES: usize = 64;
+const SIMD_PAD_ELEMENTS: usize = SIMD_ALIGNMENT_BYTES / std::mem::size_of::<f32>();
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum VectorFormat {
@@ -13,6 +17,7 @@ pub enum VectorFormat {
     Fbin,
     U8bin,
 }
+
 impl VectorFormat {
     pub fn infer(path: &Path) -> Result<Self, String> {
         match path.extension().and_then(|x| x.to_str()) {
@@ -26,14 +31,16 @@ impl VectorFormat {
             )),
         }
     }
-    fn width(self) -> usize {
+
+    fn coordinate_bytes(self) -> usize {
         if matches!(self, Self::Bvecs | Self::U8bin) {
             1
         } else {
             4
         }
     }
-    fn bin(self) -> bool {
+
+    fn has_file_header(self) -> bool {
         matches!(self, Self::Fbin | Self::U8bin)
     }
 }
@@ -43,42 +50,51 @@ pub struct VectorHeader {
     pub count: usize,
     pub dimension: usize,
 }
-pub fn inspect(path: &Path, format: VectorFormat) -> Result<VectorHeader, String> {
-    let mut f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let bytes = f.metadata().map_err(|e| e.to_string())?.len();
-    let word = |f: &mut std::fs::File| -> Result<usize, String> {
-        let mut b = [0; 4];
-        f.read_exact(&mut b).map_err(|e| e.to_string())?;
-        Ok(u32::from_le_bytes(b) as usize)
+
+/// Inspect shape and file size without reading the coordinate payload.
+/// Per-record dimensions are checked later while decoding the requested prefix.
+pub fn inspect_vector_file(path: &Path, format: VectorFormat) -> Result<VectorHeader, String> {
+    let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let file_bytes = file.metadata().map_err(|e| e.to_string())?.len();
+    let read_header_word = |file: &mut std::fs::File| -> Result<usize, String> {
+        let mut word_bytes = [0; 4];
+        file.read_exact(&mut word_bytes)
+            .map_err(|e| e.to_string())?;
+        Ok(u32::from_le_bytes(word_bytes) as usize)
     };
-    let first = word(&mut f)?;
-    let (count, dimension) = if format.bin() {
-        (first, word(&mut f)?)
+
+    // Binary formats have one [count, dimension] header; vecs formats repeat
+    // a dimension word before every vector and derive their count from file size.
+    let first_header_word = read_header_word(&mut file)?;
+    let (count, dimension) = if format.has_file_header() {
+        (first_header_word, read_header_word(&mut file)?)
     } else {
-        let record = 4 + first as u64 * format.width() as u64;
-        if bytes % record != 0 {
+        let record_bytes = 4 + first_header_word as u64 * format.coordinate_bytes() as u64;
+        if file_bytes % record_bytes != 0 {
             return Err("truncated vector records".into());
         }
         (
-            usize::try_from(bytes / record).map_err(|e| e.to_string())?,
-            first,
+            usize::try_from(file_bytes / record_bytes).map_err(|e| e.to_string())?,
+            first_header_word,
         )
     };
+
     if dimension == 0 || count == 0 {
         return Err("empty vectors".into());
     }
-    let expected = if format.bin() {
-        8u64.checked_add(
-            (count as u64)
-                .checked_mul(dimension as u64)
-                .and_then(|x| x.checked_mul(format.width() as u64))
-                .ok_or("file size overflow")?,
-        )
-        .ok_or("file size overflow")?
+
+    let expected_file_bytes = if format.has_file_header() {
+        let payload_bytes = (count as u64)
+            .checked_mul(dimension as u64)
+            .and_then(|count| count.checked_mul(format.coordinate_bytes() as u64))
+            .ok_or("file size overflow")?;
+
+        8u64.checked_add(payload_bytes)
+            .ok_or("file size overflow")?
     } else {
-        bytes
+        file_bytes
     };
-    if expected != bytes {
+    if expected_file_bytes != file_bytes {
         return Err("binary header/file length mismatch".into());
     }
     Ok(VectorHeader { count, dimension })
@@ -88,37 +104,45 @@ fn read_vectors_into(
     path: &Path,
     format: VectorFormat,
     dimension: usize,
-    out: &mut [f32],
+    output: &mut [f32],
 ) -> Result<(), String> {
-    let mut r = BufReader::with_capacity(
-        8 * 1024 * 1024,
+    let mut reader = BufReader::with_capacity(
+        VECTOR_READ_BUFFER_BYTES,
         std::fs::File::open(path).map_err(|e| e.to_string())?,
     );
-    if format.bin() {
-        r.seek(SeekFrom::Start(8)).map_err(|e| e.to_string())?;
+    if format.has_file_header() {
+        reader.seek(SeekFrom::Start(8)).map_err(|e| e.to_string())?;
     }
-    let mut row = vec![
-        0;
-        dimension
-            .checked_mul(format.width())
-            .ok_or("row overflow")?
-    ];
-    for values in out.chunks_exact_mut(dimension) {
-        if !format.bin() {
-            let mut h = [0; 4];
-            r.read_exact(&mut h).map_err(|e| e.to_string())?;
-            if u32::from_le_bytes(h) as usize != dimension {
+
+    // Reuse one encoded row: temporary decoding storage is independent of N.
+    // The output slice controls how much of the input prefix is read.
+    let row_bytes = dimension
+        .checked_mul(format.coordinate_bytes())
+        .ok_or("row overflow")?;
+    let mut encoded_row = vec![0; row_bytes];
+
+    for values in output.chunks_exact_mut(dimension) {
+        if !format.has_file_header() {
+            let mut dimension_header = [0; 4];
+            reader
+                .read_exact(&mut dimension_header)
+                .map_err(|e| e.to_string())?;
+            if u32::from_le_bytes(dimension_header) as usize != dimension {
                 return Err("inconsistent per-record dimension".into());
             }
         }
-        r.read_exact(&mut row).map_err(|e| e.to_string())?;
-        if format.width() == 1 {
-            for (v, &b) in values.iter_mut().zip(&row) {
-                *v = b as f32;
+        reader
+            .read_exact(&mut encoded_row)
+            .map_err(|e| e.to_string())?;
+        if format.coordinate_bytes() == 1 {
+            for (coordinate, &encoded_coordinate) in values.iter_mut().zip(&encoded_row) {
+                *coordinate = encoded_coordinate as f32;
             }
         } else {
-            for (v, b) in values.iter_mut().zip(row.chunks_exact(4)) {
-                *v = f32::from_le_bytes(b.try_into().unwrap());
+            for (coordinate, encoded_coordinate) in
+                values.iter_mut().zip(encoded_row.chunks_exact(4))
+            {
+                *coordinate = f32::from_le_bytes(encoded_coordinate.try_into().unwrap());
             }
         }
     }
@@ -126,46 +150,72 @@ fn read_vectors_into(
 }
 
 pub struct LoadedDataset {
-    // Includes the same 64-byte trailing SIMD pad as InmemDataset.
+    /// Padded base allocation. `None` means it has been transferred to the index.
+    /// Keep this separate from queries/GT, which the benchmark still needs afterwards.
     pub base: Option<AlignedBoxWithSlice<f32>>,
     pub num_points: usize,
     pub queries: Vec<Vec<f32>>,
     pub ground_truth: Vec<Vec<u32>>,
 }
+
 impl LoadedDataset {
+    /// Move, never copy, the large allocation into the library's dataset type.
+    pub fn take_index_dataset<const N: usize>(
+        &mut self,
+    ) -> Result<diskann::model::InmemDataset<f32, N>, String>
+    where
+        [f32; N]: vector::FullPrecisionDistance<f32, N>,
+    {
+        let allocation = self
+            .base
+            .take()
+            .ok_or("base allocation already transferred")?;
+        Ok(diskann::model::InmemDataset {
+            data: allocation,
+            num_points: self.num_points,
+            num_active_pts: self.num_points,
+            capacity: self.num_points * N,
+        })
+    }
+
     pub fn load(config: &ResolvedRunConfig) -> Result<Self, String> {
-        let h = inspect(&config.base, config.base_format)?;
-        let qh = inspect(&config.query, config.query_format)?;
-        if h.dimension != config.dimension || qh.dimension != h.dimension {
+        let base_header = inspect_vector_file(&config.base, config.base_format)?;
+        let query_header = inspect_vector_file(&config.query, config.query_format)?;
+        if base_header.dimension != config.dimension
+            || query_header.dimension != base_header.dimension
+        {
             return Err("base/query/config dimension mismatch".into());
         }
-        let num_points = h.count.min(config.max_points);
+
+        let num_points = base_header.count.min(config.max_points);
         if num_points == 0 || num_points > u32::MAX as usize || config.sweep.k > num_points {
             return Err("invalid point count or k (IDs must fit u32 excluding sentinel)".into());
         }
-        let dim = h.dimension;
+        let dimension = base_header.dimension;
+
         // Validate small inputs and GT before allocating the large base.
-        let mut queries = vec![0.; qh.count.checked_mul(dim).ok_or("query size overflow")?];
-        read_vectors_into(&config.query, config.query_format, dim, &mut queries)?;
-        prepare_vectors(&mut queries, dim, config.metric)?;
-        let queries: Vec<Vec<f32>> = queries.chunks_exact(dim).map(|q| q.to_vec()).collect();
-        let (gt, depth) = read_file(&config.groundtruth, queries.len(), u32::from_le_bytes)?;
-        let ground_truth: Vec<Vec<u32>> = gt.chunks_exact(depth).map(|r| r.to_vec()).collect();
-        crate::utils::validate_ground_truth(&ground_truth, queries.len(), config.sweep.k)?;
-        if ground_truth
-            .iter()
-            .flatten()
-            .any(|&id| id as usize >= num_points)
-        {
-            return Err("ground truth contains IDs outside the loaded base; use ground truth computed for this exact subset".into());
-        }
-        super::resources::check(config, num_points)?;
-        let len = num_points.checked_mul(dim).ok_or("base size overflow")?;
-        let mut base =
-            AlignedBoxWithSlice::new(len.checked_add(16).ok_or("base size overflow")?, 64)
-                .map_err(|e| e.to_string())?;
-        read_vectors_into(&config.base, config.base_format, dim, &mut base[..len])?;
-        prepare_vectors(&mut base[..len], dim, config.metric)?;
+        let queries = load_queries(config, query_header.count, dimension)?;
+        let ground_truth = load_ground_truth(config, queries.len(), num_points)?;
+        super::resources::check_memory_budget(config, num_points)?;
+
+        let coordinate_count = num_points
+            .checked_mul(dimension)
+            .ok_or("base size overflow")?;
+        // Reserve one tail for SIMD reads past the final vector. Individual
+        // vectors remain contiguous and keep their original dimension.
+        let allocation_elements = coordinate_count
+            .checked_add(SIMD_PAD_ELEMENTS)
+            .ok_or("base size overflow")?;
+        let mut base = AlignedBoxWithSlice::new(allocation_elements, SIMD_ALIGNMENT_BYTES)
+            .map_err(|e| e.to_string())?;
+
+        read_vectors_into(
+            &config.base,
+            config.base_format,
+            dimension,
+            &mut base[..coordinate_count],
+        )?;
+        validate_and_normalize_vectors(&mut base[..coordinate_count], dimension, config.metric)?;
         Ok(Self {
             base: Some(base),
             num_points,
@@ -175,16 +225,61 @@ impl LoadedDataset {
     }
 }
 
-fn read_file<T>(
+fn load_queries(
+    config: &ResolvedRunConfig,
+    query_count: usize,
+    dimension: usize,
+) -> Result<Vec<Vec<f32>>, String> {
+    let coordinate_count = query_count
+        .checked_mul(dimension)
+        .ok_or("query size overflow")?;
+    let mut queries = vec![0.; coordinate_count];
+
+    read_vectors_into(&config.query, config.query_format, dimension, &mut queries)?;
+    validate_and_normalize_vectors(&mut queries, dimension, config.metric)?;
+
+    let queries: Vec<Vec<f32>> = queries
+        .chunks_exact(dimension)
+        .map(|q| q.to_vec())
+        .collect();
+    Ok(queries)
+}
+
+fn load_ground_truth(
+    config: &ResolvedRunConfig,
+    query_count: usize,
+    num_points: usize,
+) -> Result<Vec<Vec<u32>>, String> {
+    let (ground_truth_values, neighbors_per_query) =
+        read_dimensioned_file(&config.groundtruth, query_count, u32::from_le_bytes)?;
+    let ground_truth: Vec<Vec<u32>> = ground_truth_values
+        .chunks_exact(neighbors_per_query)
+        .map(|r| r.to_vec())
+        .collect();
+    crate::utils::validate_ground_truth(&ground_truth, query_count, config.sweep.k)?;
+    if ground_truth
+        .iter()
+        .flatten()
+        .any(|&id| id as usize >= num_points)
+    {
+        return Err("ground truth contains IDs outside the loaded base; use ground truth computed for this exact subset".into());
+    }
+    Ok(ground_truth)
+}
+
+fn read_dimensioned_file<T>(
     path: &Path,
     limit: usize,
     decode: fn([u8; 4]) -> T,
 ) -> Result<(Vec<T>, usize), String> {
     let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    read_records(&mut BufReader::new(file), limit, decode)
+    read_dimensioned_records(&mut BufReader::new(file), limit, decode)
         .map_err(|e| format!("{}: {e}", path.display()))
 }
-fn read_records<R: Read + Seek, T>(
+
+/// Decode up to `limit` records with four-byte elements (for example, ivecs IDs).
+/// Validate every consumed dimension header; a valid first row is not sufficient.
+fn read_dimensioned_records<R: Read + Seek, T>(
     reader: &mut R,
     limit: usize,
     decode: fn([u8; 4]) -> T,
@@ -204,8 +299,12 @@ fn read_records<R: Read + Seek, T>(
     let count = usize::try_from(bytes / record_bytes)
         .map_err(|e| e.to_string())?
         .min(limit);
-    let mut data = Vec::with_capacity(count.checked_mul(dimension).ok_or("vector size overflow")?);
-    let mut record = vec![0; dimension.checked_mul(4).ok_or("dimension overflow")?];
+
+    let element_count = count.checked_mul(dimension).ok_or("vector size overflow")?;
+    let record_bytes = dimension.checked_mul(4).ok_or("dimension overflow")?;
+    let mut data = Vec::with_capacity(element_count);
+    let mut record = vec![0; record_bytes];
+
     reader.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
     for _ in 0..count {
         reader.read_exact(&mut header).map_err(|e| e.to_string())?;
@@ -221,7 +320,13 @@ fn read_records<R: Read + Seek, T>(
     }
     Ok((data, dimension))
 }
-fn prepare_vectors(data: &mut [f32], dimension: usize, metric: SearchMetric) -> Result<(), String> {
+
+// Normalize only cosine inputs. Raw inner-product searches depend on vector norms.
+fn validate_and_normalize_vectors(
+    data: &mut [f32],
+    dimension: usize,
+    metric: SearchMetric,
+) -> Result<(), String> {
     for vector in data.chunks_exact_mut(dimension) {
         if vector.iter().any(|v| !v.is_finite()) {
             return Err("non-finite vector coordinate".into());
@@ -262,11 +367,17 @@ mod tests {
     fn records_validate_headers_and_respect_limit() {
         let data = bytes(&[(2, [1.0, 2.0]), (2, [3.0, 4.0])]);
         let (read, d) =
-            read_records(&mut Cursor::new(data.clone()), 1, f32::from_le_bytes).unwrap();
+            read_dimensioned_records(&mut Cursor::new(data.clone()), 1, f32::from_le_bytes)
+                .unwrap();
         assert_eq!((read, d), (vec![1.0, 2.0], 2));
         let invalid = bytes(&[(2, [1.0, 2.0]), (3, [3.0, 4.0])]);
-        assert!(read_records(&mut Cursor::new(invalid), usize::MAX, f32::from_le_bytes).is_err());
-        assert!(read_records(
+        assert!(read_dimensioned_records(
+            &mut Cursor::new(invalid),
+            usize::MAX,
+            f32::from_le_bytes
+        )
+        .is_err());
+        assert!(read_dimensioned_records(
             &mut Cursor::new(&data[..data.len() - 1]),
             usize::MAX,
             f32::from_le_bytes
@@ -278,12 +389,12 @@ mod tests {
     fn cosine_normalizes_but_raw_mips_keeps_norms() {
         let mut raw = [3.0, 4.0, 6.0, 8.0];
         let original = raw;
-        prepare_vectors(&mut raw, 2, SearchMetric::InnerProduct).unwrap();
+        validate_and_normalize_vectors(&mut raw, 2, SearchMetric::InnerProduct).unwrap();
         assert_eq!(raw, original);
-        prepare_vectors(&mut raw, 2, SearchMetric::Cosine).unwrap();
+        validate_and_normalize_vectors(&mut raw, 2, SearchMetric::Cosine).unwrap();
         assert_eq!(raw, [0.6, 0.8, 0.6, 0.8]);
-        assert!(prepare_vectors(&mut [0.0, 0.0], 2, SearchMetric::Cosine).is_err());
-        assert!(prepare_vectors(&mut [f32::NAN, 0.0], 2, SearchMetric::L2).is_err());
+        assert!(validate_and_normalize_vectors(&mut [0.0, 0.0], 2, SearchMetric::Cosine).is_err());
+        assert!(validate_and_normalize_vectors(&mut [f32::NAN, 0.0], 2, SearchMetric::L2).is_err());
     }
 }
 
@@ -309,16 +420,16 @@ mod format_tests {
         ] {
             let p = path();
             let mut b = Vec::new();
-            if format.bin() {
+            if format.has_file_header() {
                 b.extend(2u32.to_le_bytes());
                 b.extend(2u32.to_le_bytes());
             }
             for row in [[1u8, 2], [3, 4]] {
-                if !format.bin() {
+                if !format.has_file_header() {
                     b.extend(2u32.to_le_bytes());
                 }
                 for x in row {
-                    if format.width() == 1 {
+                    if format.coordinate_bytes() == 1 {
                         b.push(x);
                     } else {
                         b.extend((x as f32).to_le_bytes());
@@ -326,7 +437,7 @@ mod format_tests {
                 }
             }
             std::fs::write(&p, &b).unwrap();
-            let h = inspect(&p, format).unwrap();
+            let h = inspect_vector_file(&p, format).unwrap();
             assert_eq!((h.count, h.dimension), (2, 2));
             let mut all = [0.; 4];
             read_vectors_into(&p, format, 2, &mut all).unwrap();
@@ -335,7 +446,7 @@ mod format_tests {
             read_vectors_into(&p, format, 2, &mut prefix).unwrap();
             assert_eq!(prefix, [1., 2.]);
             std::fs::write(&p, &b[..b.len() - 1]).unwrap();
-            assert!(inspect(&p, format).is_err());
+            assert!(inspect_vector_file(&p, format).is_err());
             std::fs::remove_file(p).unwrap();
         }
     }
@@ -348,7 +459,7 @@ mod format_tests {
         f.write_all(&128u32.to_le_bytes()).unwrap();
         f.set_len(128_000_000_008).unwrap();
         drop(f);
-        let h = inspect(&p, VectorFormat::U8bin).unwrap();
+        let h = inspect_vector_file(&p, VectorFormat::U8bin).unwrap();
         assert_eq!((h.count, h.dimension), (1_000_000_000, 128));
         std::fs::remove_file(p).unwrap();
     }

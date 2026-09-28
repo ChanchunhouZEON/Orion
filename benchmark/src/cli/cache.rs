@@ -9,12 +9,14 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
+/// Selected metadata file and whether its graph/provenance have been validated.
+/// A miss names the destination for a newly built/imported index.
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct CachePlan {
-    pub path: PathBuf,
-    pub hit: bool,
-    pub legacy: bool,
+    pub metadata_path: PathBuf,
+    pub is_hit: bool,
+    pub is_legacy: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -23,18 +25,19 @@ struct CacheManifest {
     namespace: String,
     num_points: usize,
     dimension: usize,
-    imported_from: Option<SourceFile>,
+    imported_from: Option<SourceFileIdentity>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct SourceFile {
+struct SourceFileIdentity {
     path: PathBuf,
     size: u64,
     modified_ns: Option<u128>,
 }
 
+/// Normalize lexically without requiring the export to still exist on disk.
 #[allow(dead_code)]
-fn absolute_path(path: &Path) -> Result<PathBuf, String> {
+fn normalize_absolute_path(path: &Path) -> Result<PathBuf, String> {
     let absolute = if path.is_absolute() {
         path.to_owned()
     } else {
@@ -42,6 +45,7 @@ fn absolute_path(path: &Path) -> Result<PathBuf, String> {
             .map_err(|e| e.to_string())?
             .join(path)
     };
+
     let mut normalized = PathBuf::new();
     for component in absolute.components() {
         match component {
@@ -55,14 +59,14 @@ fn absolute_path(path: &Path) -> Result<PathBuf, String> {
     Ok(normalized)
 }
 
-impl SourceFile {
+impl SourceFileIdentity {
     fn read(path: &Path) -> Result<Self, String> {
         let metadata = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
         if !metadata.is_file() {
             return Err(format!("{} is not a file", path.display()));
         }
         Ok(Self {
-            path: absolute_path(path)?,
+            path: normalize_absolute_path(path)?,
             size: metadata.len(),
             modified_ns: metadata
                 .modified()
@@ -72,10 +76,11 @@ impl SourceFile {
         })
     }
 
-    fn matches_explicit(&self, path: &Path) -> Result<bool, String> {
-        if self.path != absolute_path(path)? {
+    fn matches_requested_export(&self, path: &Path) -> Result<bool, String> {
+        if self.path != normalize_absolute_path(path)? {
             return Ok(false);
         }
+
         // Reusing an explicitly named, since-removed export is still a cache hit.
         match std::fs::metadata(path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
@@ -93,51 +98,62 @@ fn manifest_path(path: &Path) -> PathBuf {
 }
 
 fn validate_headers(path: &Path, num_points: usize, degree: u32) -> Result<(), String> {
-    let mut meta = [0; 8];
+    let mut metadata_bytes = [0; 8];
     std::fs::File::open(path)
-        .and_then(|mut f| f.read_exact(&mut meta))
+        .and_then(|mut f| f.read_exact(&mut metadata_bytes))
         .map_err(|e| e.to_string())?;
-    let version = u32::from_le_bytes(meta[..4].try_into().unwrap());
-    let entry = u32::from_le_bytes(meta[4..].try_into().unwrap()) as usize;
+    let version = u32::from_le_bytes(metadata_bytes[..4].try_into().unwrap());
+    let entry = u32::from_le_bytes(metadata_bytes[4..].try_into().unwrap()) as usize;
     if version != 5 || entry >= num_points {
         return Err(format!(
             "invalid cache metadata: version={version}, entry={entry}, N={num_points}"
         ));
     }
+
     let graph = path.with_extension("pgraph");
     let mut file = std::fs::File::open(&graph).map_err(|e| e.to_string())?;
     let mut header = [0; 16];
     file.read_exact(&mut header).map_err(|e| e.to_string())?;
     let word = |i: usize| u32::from_le_bytes(header[i * 4..i * 4 + 4].try_into().unwrap());
-    let n = word(0) as usize;
-    let r = word(1);
-    let stride = word(2) as u64;
-    let expected_bytes = (n as u64)
-        .checked_mul(stride)
+    let stored_points = word(0) as usize;
+    let stored_degree = word(1);
+    let stride_words = word(2) as u64;
+
+    // The header is followed by fixed-stride node records, measured in u32 words.
+    let expected_bytes = (stored_points as u64)
+        .checked_mul(stride_words)
         .and_then(|v| v.checked_mul(4))
         .and_then(|v| v.checked_add(16))
         .ok_or("cache size overflow")?;
-    if n != num_points
-        || r != degree
-        || stride < r as u64 + 4
+    if stored_points != num_points
+        || stored_degree != degree
+        || stride_words < stored_degree as u64 + 4
         || file.metadata().map_err(|e| e.to_string())?.len() != expected_bytes
     {
-        return Err(format!("cache header/size mismatch: N={n}, R={r}, stride={stride}; expected N={num_points}, R={degree}"));
+        return Err(format!(
+            "cache header/size mismatch: N={stored_points}, R={stored_degree}, \
+             stride={stride_words}; expected N={num_points}, R={degree}"
+        ));
     }
     Ok(())
 }
 
-fn check_manifest(path: &Path, config: &ResolvedRunConfig, n: usize) -> Result<(), String> {
+fn validate_manifest(
+    path: &Path,
+    config: &ResolvedRunConfig,
+    num_points: usize,
+) -> Result<(), String> {
+    let manifest_bytes = std::fs::read(manifest_path(path)).map_err(|e| e.to_string())?;
     let metadata: CacheManifest =
-        serde_json::from_slice(&std::fs::read(manifest_path(path)).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        serde_json::from_slice(&manifest_bytes).map_err(|e| e.to_string())?;
     if metadata.version != 1
         || metadata.namespace != config.cache_namespace
-        || metadata.num_points != n
+        || metadata.num_points != num_points
         || metadata.dimension != config.dimension
     {
         return Err("cache provenance does not match the current dataset/configuration".into());
     }
+
     if config.graph_source == GraphSource::Parlayann && config.staged_file_explicit {
         let requested = config
             .staged_file
@@ -146,76 +162,98 @@ fn check_manifest(path: &Path, config: &ResolvedRunConfig, n: usize) -> Result<(
         let matches = metadata
             .imported_from
             .as_ref()
-            .map(|source| source.matches_explicit(requested))
+            .map(|source| source.matches_requested_export(requested))
             .transpose()?
             .unwrap_or(false);
         if !matches {
-            return Err("explicit staged_file differs from the cached source (or provenance is unknown); choose another --cache-dir to import it without overwriting this cache".into());
+            return Err(
+                "explicit staged_file differs from the cached source (or provenance is unknown); \
+                 choose another --cache-dir to import it without overwriting this cache"
+                    .into(),
+            );
         }
     }
     Ok(())
 }
 
+fn legacy_cache_path(config: &ResolvedRunConfig, name: &str, num_points: usize) -> PathBuf {
+    let alpha = format!("{:.2}", config.alpha).replace('.', "_");
+    let suffix = if config.graph_source == GraphSource::Parlayann {
+        format!("_pct{}", config.legacy_local_pct)
+    } else {
+        String::new()
+    };
+    config.cache_dir.join(format!(
+        "{name}_n{num_points}_r{}_l{}_a{alpha}_ex{}{suffix}.bin",
+        config.graph_degree, config.build_l, config.max_extra
+    ))
+}
+
 impl CachePlan {
-    pub fn select(config: &ResolvedRunConfig, n: usize) -> Result<Self, String> {
+    pub fn resolve(config: &ResolvedRunConfig, num_points: usize) -> Result<Self, String> {
         let path = config
             .cache_dir
-            .join(format!("{}_n{n}.bin", config.cache_namespace));
+            .join(format!("{}_n{num_points}.bin", config.cache_namespace));
+
         let graph = path.with_extension("pgraph");
+
+        // Either file means a cache was started. Reject incomplete pairs instead
+        // of treating them as misses and overwriting the remaining file.
         if path.exists() || graph.exists() {
-            validate_headers(&path, n, config.graph_degree)?;
-            check_manifest(&path, config, n)?;
+            validate_headers(&path, num_points, config.graph_degree)?;
+            validate_manifest(&path, config, num_points)?;
             return Ok(Self {
-                path,
-                hit: true,
-                legacy: false,
+                metadata_path: path,
+                is_hit: true,
+                is_legacy: false,
             });
         }
+
         if let Some(name) = &config.legacy_dataset {
-            let alpha = format!("{:.2}", config.alpha).replace('.', "_");
-            let suffix = if config.graph_source == GraphSource::Parlayann {
-                format!("_pct{}", config.legacy_local_pct)
-            } else {
-                String::new()
-            };
-            let legacy = config.cache_dir.join(format!(
-                "{name}_n{n}_r{}_l{}_a{alpha}_ex{}{suffix}.bin",
-                config.graph_degree, config.build_l, config.max_extra
-            ));
+            let legacy = legacy_cache_path(config, name, num_points);
             if legacy.is_file() && legacy.with_extension("pgraph").is_file() {
                 // Old caches carry no export identity. An explicit alternative export must
                 // not be ignored merely because a name-based legacy cache happens to exist.
                 if config.staged_file_explicit && !manifest_path(&legacy).is_file() {
-                    log::warn!("Legacy cache has no source provenance; importing the explicitly selected export into a new cache");
+                    log::warn!(
+                        "Legacy cache has no source provenance; \
+                         importing the explicitly selected export into a new cache"
+                    );
                 } else {
-                    validate_headers(&legacy, n, config.graph_degree)?;
+                    validate_headers(&legacy, num_points, config.graph_degree)?;
                     if manifest_path(&legacy).is_file() {
-                        check_manifest(&legacy, config, n)?;
+                        validate_manifest(&legacy, config, num_points)?;
                     }
                     log::info!(
                         "Reusing preset-compatible legacy cache {}",
                         legacy.display()
                     );
                     return Ok(Self {
-                        path: legacy,
-                        hit: true,
-                        legacy: true,
+                        metadata_path: legacy,
+                        is_hit: true,
+                        is_legacy: true,
                     });
                 }
             }
         }
+
         Ok(Self {
-            path,
-            hit: false,
-            legacy: false,
+            metadata_path: path,
+            is_hit: false,
+            is_legacy: false,
         })
     }
 
-    /// Called only on a PA cache miss. Merely resolving a candidate path performs no IO.
-    pub fn source_for_import(config: &ResolvedRunConfig, n: usize) -> Result<PathBuf, String> {
+    /// Resolve and validate the STAG header on a cache miss.
+    /// Cache hits deliberately skip this IO: the original export may have been removed.
+    pub fn resolve_staged_export(
+        config: &ResolvedRunConfig,
+        num_points: usize,
+    ) -> Result<PathBuf, String> {
         let mut path = config.staged_file.clone().ok_or(
             "ParlayANN cache miss: provide --staged-file or ORION_STAGED_FILE, or set PA_ROOT for the YAML export path"
         )?;
+
         // The prep script appends _pct60; also accept older YAML paths without that suffix.
         if !config.staged_file_explicit && !path.is_file() {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
@@ -226,43 +264,59 @@ impl CachePlan {
                 }
             }
         }
-        let mut file = std::fs::File::open(&path).map_err(|e| format!(
-            "ParlayANN cache miss; cannot import {}: {e}. Set --staged-file/ORION_STAGED_FILE or PA_ROOT (default ../ParlayANN). No Rust graph was substituted.",
-            path.display()
-        ))?;
+
+        let mut file = std::fs::File::open(&path).map_err(|e| {
+            format!(
+                "ParlayANN cache miss; cannot import {}: {e}. \
+             Set --staged-file/ORION_STAGED_FILE or PA_ROOT (default ../ParlayANN). \
+             No Rust graph was substituted.",
+                path.display()
+            )
+        })?;
         let mut header = [0; 24];
         file.read_exact(&mut header)
             .map_err(|e| format!("invalid staged header: {e}"))?;
+
+        // STAG v3 starts with magic, version, and point count. The streaming
+        // importer validates capacities and adjacency records when it loads them.
         let word = |i: usize| u32::from_le_bytes(header[i * 4..i * 4 + 4].try_into().unwrap());
-        if word(0) != 0x53544147 || word(1) != 3 || word(2) as usize != n {
-            return Err(format!("staged header must be STAG v3 with N={n}"));
+        if word(0) != 0x53544147 || word(1) != 3 || word(2) as usize != num_points {
+            return Err(format!("staged header must be STAG v3 with N={num_points}"));
         }
         Ok(path)
     }
 
-    pub fn record(
+    /// Publish provenance after graph and metadata have been saved successfully.
+    /// Missing manifests are rejected on the next lookup rather than guessed.
+    pub fn write_manifest(
         &self,
         config: &ResolvedRunConfig,
-        n: usize,
+        num_points: usize,
         source: Option<&Path>,
     ) -> Result<(), String> {
-        let path = manifest_path(&self.path);
-        if self.hit && path.is_file() {
+        let path = manifest_path(&self.metadata_path);
+        if self.is_hit && path.is_file() {
             return Ok(());
         }
+
         let manifest = CacheManifest {
             version: 1,
             namespace: config.cache_namespace.clone(),
-            num_points: n,
+            num_points: num_points,
             dimension: config.dimension,
-            imported_from: source.map(SourceFile::read).transpose()?,
+            imported_from: source.map(SourceFileIdentity::read).transpose()?,
         };
+
+        // Publish with a same-directory rename so readers never see partial JSON.
         let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
         let bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
         std::fs::write(&temporary, bytes).map_err(|e| e.to_string())?;
         std::fs::rename(&temporary, &path).map_err(|e| e.to_string())?;
-        if self.legacy {
-            log::warn!("Legacy headers were validated and current input identity recorded; historical export provenance is unavailable");
+        if self.is_legacy {
+            log::warn!(
+                "Legacy headers were validated and current input identity recorded; \
+                 historical export provenance is unavailable"
+            );
         }
         Ok(())
     }
@@ -270,8 +324,8 @@ impl CachePlan {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::config::Args;
+    use super::*;
     use clap::Parser;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -338,19 +392,19 @@ mod tests {
     fn cached_pa_graph_survives_export_removal() {
         let dir = Temp::new();
         let mut c = config(&dir.0);
-        let plan = CachePlan::select(&c, 1).unwrap();
-        assert!(!plan.hit);
-        write_cache(&plan.path, 1, 4);
+        let plan = CachePlan::resolve(&c, 1).unwrap();
+        assert!(!plan.is_hit);
+        write_cache(&plan.metadata_path, 1, 4);
         let export = dir.0.join("source.staged");
         std::fs::write(&export, b"fixture").unwrap();
-        plan.record(&c, 1, Some(&export)).unwrap();
+        plan.write_manifest(&c, 1, Some(&export)).unwrap();
         std::fs::remove_file(&export).unwrap();
-        assert!(CachePlan::select(&c, 1).unwrap().hit);
+        assert!(CachePlan::resolve(&c, 1).unwrap().is_hit);
         c.staged_file_explicit = true;
         c.staged_file = Some(export);
-        assert!(CachePlan::select(&c, 1).unwrap().hit);
+        assert!(CachePlan::resolve(&c, 1).unwrap().is_hit);
         c.staged_file = Some(dir.0.join("different.staged"));
-        assert!(CachePlan::select(&c, 1).is_err());
+        assert!(CachePlan::resolve(&c, 1).is_err());
     }
 
     #[test]
@@ -359,14 +413,14 @@ mod tests {
         let mut c = config(&dir.0);
         let legacy = dir.0.join("fixture_n1_r4_l100_a1_20_ex16_pct60.bin");
         write_cache(&legacy, 1, 4);
-        assert!(!CachePlan::select(&c, 1).unwrap().hit);
+        assert!(!CachePlan::resolve(&c, 1).unwrap().is_hit);
         c.legacy_dataset = Some("fixture".into());
-        let plan = CachePlan::select(&c, 1).unwrap();
-        assert!(plan.hit && plan.legacy);
-        plan.record(&c, 1, None).unwrap();
-        assert!(CachePlan::select(&c, 1).unwrap().hit);
+        let plan = CachePlan::resolve(&c, 1).unwrap();
+        assert!(plan.is_hit && plan.is_legacy);
+        plan.write_manifest(&c, 1, None).unwrap();
+        assert!(CachePlan::resolve(&c, 1).unwrap().is_hit);
         write_cache(&legacy, 2, 4);
-        assert!(CachePlan::select(&c, 1).is_err());
+        assert!(CachePlan::resolve(&c, 1).is_err());
     }
 
     #[test]
@@ -377,15 +431,15 @@ mod tests {
         write_cache(&dir.0.join("fixture_n1_r4_l100_a1_20_ex16_pct60.bin"), 1, 4);
         c.staged_file_explicit = true;
         c.staged_file = Some(dir.0.join("new.staged"));
-        assert!(!CachePlan::select(&c, 1).unwrap().hit);
+        assert!(!CachePlan::resolve(&c, 1).unwrap().is_hit);
     }
 
     #[test]
     fn pa_miss_requires_export_and_never_changes_graph_source() {
         let dir = Temp::new();
         let c = config(&dir.0);
-        assert!(!CachePlan::select(&c, 1).unwrap().hit);
-        assert!(CachePlan::source_for_import(&c, 1).is_err());
+        assert!(!CachePlan::resolve(&c, 1).unwrap().is_hit);
+        assert!(CachePlan::resolve_staged_export(&c, 1).is_err());
         assert_eq!(c.graph_source, GraphSource::Parlayann);
     }
 }

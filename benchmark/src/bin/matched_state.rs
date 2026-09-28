@@ -534,7 +534,7 @@ fn execute(args: Args) -> Result<(), String> {
         return Ok(());
     }
     if args.run.preflight {
-        println!("{}", serde_json::to_string_pretty(&cli::resources::report(&config)?).map_err(|e| e.to_string())?);
+        println!("{}", serde_json::to_string_pretty(&cli::resources::preflight_report(&config)?).map_err(|e| e.to_string())?);
         return Ok(());
     }
     let data = cli::data::LoadedDataset::load(&config)?;
