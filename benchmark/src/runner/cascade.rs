@@ -47,15 +47,137 @@ use orion::algorithm::search::stage::admission::{
 use orion::algorithm::search::stage::prefilter::{
     JlHadamardPrefilter, JlMipsPrefilter, JlPrefilter, RabitqPrefilter,
 };
-use orion::algorithm::search::stage::rerank::{
-    F32Rerank, IpF32Rerank, NoRerank, U16Rerank,
-};
+use orion::algorithm::search::stage::rerank::{F32Rerank, IpF32Rerank, NoRerank, U16Rerank};
 use orion::Orion;
 use std::str::FromStr;
 use vector::FullPrecisionDistance;
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, clap::ValueEnum,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum SearchMetric {
+    L2,
+    #[serde(alias = "mips", alias = "ip")]
+    #[value(alias = "mips", alias = "ip")]
+    InnerProduct,
+    Cosine,
+}
+
+impl SearchMetric {
+    pub fn calibration_metric(self) -> orion::CalibrationMetric {
+        match self {
+            Self::L2 => orion::CalibrationMetric::L2,
+            Self::InnerProduct => orion::CalibrationMetric::InnerProduct,
+            Self::Cosine => orion::CalibrationMetric::Cosine,
+        }
+    }
+}
+
+/// Default heuristic, not an optimality claim for arbitrary distributions.
+pub const HIGH_DIMENSION_L2: usize = 512;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Cascade {
+    pub prefilter: PrefilterChoice,
+    pub admission: AdmissionChoice,
+    pub rerank: RerankChoice,
+}
+
+impl Cascade {
+    pub fn default_for_specified_dimension_and_metric(
+        dimension: usize,
+        metric: SearchMetric,
+    ) -> Self {
+        match metric {
+            SearchMetric::L2 if dimension >= HIGH_DIMENSION_L2 => Self {
+                prefilter: PrefilterChoice::Jl,
+                admission: AdmissionChoice::L2Kt,
+                rerank: RerankChoice::F32,
+            },
+            SearchMetric::L2 => Self {
+                prefilter: PrefilterChoice::None,
+                admission: AdmissionChoice::L2U8,
+                rerank: RerankChoice::F32,
+            },
+            // Dimension alone does not establish sketch quality for MIPS.
+            SearchMetric::InnerProduct | SearchMetric::Cosine => Self {
+                prefilter: PrefilterChoice::None,
+                admission: AdmissionChoice::MipsI8,
+                rerank: RerankChoice::IpF32,
+            },
+        }
+    }
+
+    pub fn validate_cascade_options(self, metric: SearchMetric) -> Result<(), String> {
+        let ip = metric != SearchMetric::L2;
+        if matches!(
+            self.admission,
+            AdmissionChoice::MipsI8 | AdmissionChoice::MipsI16
+        ) != ip
+        {
+            return Err("admission does not match --metric; override --admission or choose the correct metric".into());
+        }
+        let rerank_matches = match self.rerank {
+            RerankChoice::None => true,
+            RerankChoice::IpF32 => ip,
+            RerankChoice::F32 | RerankChoice::U16 => !ip,
+        };
+        if !rerank_matches {
+            return Err("rerank does not match --metric; override --rerank".into());
+        }
+        if ip
+            && matches!(
+                self.prefilter,
+                PrefilterChoice::JlHadamard | PrefilterChoice::Rabitq
+            )
+        {
+            return Err("this prefilter has no MIPS-aware adapter; use none or jl".into());
+        }
+        Ok(())
+    }
+
+    pub fn label(self) -> String {
+        format!(
+            "{:?} -> {:?} -> {:?}",
+            self.prefilter, self.admission, self.rerank
+        )
+    }
+}
+
+#[cfg(test)]
+mod selector_tests {
+    use super::*;
+
+    #[test]
+    fn dimension_and_metric_select_independent_defaults() {
+        let low = Cascade::default_for_specified_dimension_and_metric(128, SearchMetric::L2);
+        let high = Cascade::default_for_specified_dimension_and_metric(960, SearchMetric::L2);
+        assert_eq!(low.admission, AdmissionChoice::L2U8);
+        assert_eq!(high.admission, AdmissionChoice::L2Kt);
+        assert_eq!(high.prefilter, PrefilterChoice::Jl);
+        assert_eq!(
+            Cascade::default_for_specified_dimension_and_metric(511, SearchMetric::L2).prefilter,
+            PrefilterChoice::None
+        );
+        assert_eq!(
+            Cascade::default_for_specified_dimension_and_metric(512, SearchMetric::L2).prefilter,
+            PrefilterChoice::Jl
+        );
+        for metric in [SearchMetric::InnerProduct, SearchMetric::Cosine] {
+            let c = Cascade::default_for_specified_dimension_and_metric(1536, metric);
+            assert_eq!(c.prefilter, PrefilterChoice::None);
+            assert_eq!(c.admission, AdmissionChoice::MipsI8);
+            assert_eq!(c.rerank, RerankChoice::IpF32);
+            c.validate_cascade_options(metric).unwrap();
+        }
+        assert!(low.validate_cascade_options(SearchMetric::InnerProduct).is_err());
+        assert!(high.validate_cascade_options(SearchMetric::L2).is_ok());
+    }
+}
+
 /// Prefilter tier choice. Maps to `--prefilter <none|jl|jl-hadamard|rabitq>`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum PrefilterChoice {
     /// No prefilter — graph neighbours go straight to admission.
     None,
@@ -75,7 +197,7 @@ pub enum PrefilterChoice {
 }
 
 /// Admission (PQ-ranking) tier choice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum AdmissionChoice {
     L2U8,
     L2U16,
@@ -89,6 +211,16 @@ pub enum AdmissionChoice {
     /// rotator; L2 is rotation-invariant so the graph topology is
     /// unaffected.
     AdsF32,
+}
+
+impl AdmissionChoice {
+    /// Full-precision metric corresponding to the admission ordering.
+    pub fn calibration_metric(self) -> orion::CalibrationMetric {
+        match self {
+            Self::MipsI8 | Self::MipsI16 => orion::CalibrationMetric::InnerProduct,
+            _ => orion::CalibrationMetric::L2,
+        }
+    }
 }
 
 /// ADSampling confidence ε constant — higher ⇒ tighter confidence
@@ -110,7 +242,7 @@ pub fn ads_epsilon() -> f32 {
 }
 
 /// Final-precision rerank tier choice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum RerankChoice {
     F32,
     IpF32,
@@ -229,9 +361,9 @@ where
 {
     match choice {
         AdmissionChoice::L2U8 => Box::new(L2U8Admission::new(orion.ensure_quantized_dataset())),
-        AdmissionChoice::L2U16 => Box::new(L2U16Admission::new(
-            orion.ensure_quantized_dataset_l2_u16(),
-        )),
+        AdmissionChoice::L2U16 => {
+            Box::new(L2U16Admission::new(orion.ensure_quantized_dataset_l2_u16()))
+        }
         AdmissionChoice::L2Kt => {
             Box::new(L2KTAdmission::new(orion.ensure_quantized_dataset_l2_kt()))
         }

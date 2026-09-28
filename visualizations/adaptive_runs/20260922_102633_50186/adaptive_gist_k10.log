@@ -1,0 +1,119 @@
+[2026-09-22T02:31:20Z INFO  adaptive::cli::cache] Reusing preset-compatible legacy cache cache/orion_parlayann/gist_n1000000_r100_l200_a1_10_ex16_pct60.bin
+[2026-09-22T02:31:20Z INFO  adaptive::cli::index] Loading cached PhasedGraph from "cache/orion_parlayann/gist_n1000000_r100_l200_a1_10_ex16_pct60.pgraph"
+[2026-09-22T02:31:21Z INFO  orion::algorithm::search::calibrate] calibrate: 200 queries, 1335 gaps, gap_p50=2, gap_p90=9, gap_p95=13, tail_p50=26
+[2026-09-22T02:31:21Z INFO  orion::algorithm::search::calibrate]   gap 0-1     : 617 (46.2%)
+[2026-09-22T02:31:21Z INFO  orion::algorithm::search::calibrate]   gap 2       : 224 (16.8%)
+[2026-09-22T02:31:21Z INFO  orion::algorithm::search::calibrate]   gap 3-4     : 182 (13.6%)
+[2026-09-22T02:31:21Z INFO  orion::algorithm::search::calibrate]   gap 5-7     : 143 (10.7%)
+[2026-09-22T02:31:21Z INFO  orion::algorithm::search::calibrate]   gap 8-15    : 126 (9.4%)
+[2026-09-22T02:31:21Z INFO  orion::algorithm::search::calibrate]   gap 16-31   : 42 (3.1%)
+[2026-09-22T02:31:21Z INFO  orion::algorithm::search::calibrate]   gap 32+     : 1 (0.1%)
+[2026-09-22T02:31:21Z INFO  orion::algorithm::search::calibrate] calibrate result: k=10, metric=L2, threshold=0.20, early_exit_limit=13 (gap_p95)
+[2026-09-22T02:31:21Z INFO  orion::index::compressed_index] JLSparseDataset (L2, NZ=9) loaded from "cache/orion_parlayann/gist_n1000000_r100_l200_a1_10_ex16_pct60.jls"
+[2026-09-22T02:31:21Z INFO  orion::index::compressed_index] L2KTDataset loaded from "cache/orion_parlayann/gist_n1000000_r100_l200_a1_10_ex16_pct60.qdsl2kt"
+[2026-09-22T02:31:21Z INFO  adaptive] L=16 full_neighbor R@10=0.757900 QPS=129480
+[2026-09-22T02:31:21Z INFO  adaptive] L=16 local_only R@10=0.756100 QPS=130500
+[2026-09-22T02:31:21Z INFO  adaptive] L=16 local_extra R@10=0.756600 QPS=130514
+[2026-09-22T02:31:22Z INFO  adaptive] L=18 full_neighbor R@10=0.778400 QPS=120275
+[2026-09-22T02:31:22Z INFO  adaptive] L=18 local_only R@10=0.775700 QPS=121085
+[2026-09-22T02:31:22Z INFO  adaptive] L=18 local_extra R@10=0.775900 QPS=120059
+[2026-09-22T02:31:22Z INFO  adaptive] L=20 full_neighbor R@10=0.800800 QPS=118068
+[2026-09-22T02:31:22Z INFO  adaptive] L=20 local_only R@10=0.797200 QPS=118754
+[2026-09-22T02:31:22Z INFO  adaptive] L=20 local_extra R@10=0.797400 QPS=118669
+[2026-09-22T02:31:22Z INFO  adaptive] L=22 full_neighbor R@10=0.820400 QPS=112153
+[2026-09-22T02:31:22Z INFO  adaptive] L=22 local_only R@10=0.815700 QPS=112659
+[2026-09-22T02:31:22Z INFO  adaptive] L=22 local_extra R@10=0.816700 QPS=112753
+[2026-09-22T02:31:23Z INFO  adaptive] L=24 full_neighbor R@10=0.832200 QPS=107102
+[2026-09-22T02:31:23Z INFO  adaptive] L=24 local_only R@10=0.826100 QPS=108402
+[2026-09-22T02:31:23Z INFO  adaptive] L=24 local_extra R@10=0.827100 QPS=107524
+[2026-09-22T02:31:23Z INFO  adaptive] L=28 full_neighbor R@10=0.853900 QPS=98401
+[2026-09-22T02:31:23Z INFO  adaptive] L=28 local_only R@10=0.850000 QPS=99799
+[2026-09-22T02:31:23Z INFO  adaptive] L=28 local_extra R@10=0.851800 QPS=99418
+[2026-09-22T02:31:23Z INFO  adaptive] L=32 full_neighbor R@10=0.872100 QPS=90351
+[2026-09-22T02:31:23Z INFO  adaptive] L=32 local_only R@10=0.867000 QPS=92557
+[2026-09-22T02:31:23Z INFO  adaptive] L=32 local_extra R@10=0.868400 QPS=91485
+[2026-09-22T02:31:24Z INFO  adaptive] L=36 full_neighbor R@10=0.888500 QPS=71746
+[2026-09-22T02:31:24Z INFO  adaptive] L=36 local_only R@10=0.882300 QPS=74591
+[2026-09-22T02:31:24Z INFO  adaptive] L=36 local_extra R@10=0.883900 QPS=71243
+[2026-09-22T02:31:24Z INFO  adaptive] L=40 full_neighbor R@10=0.902400 QPS=70469
+[2026-09-22T02:31:24Z INFO  adaptive] L=40 local_only R@10=0.896300 QPS=76485
+[2026-09-22T02:31:24Z INFO  adaptive] L=40 local_extra R@10=0.897700 QPS=72896
+[2026-09-22T02:31:25Z INFO  adaptive] L=44 full_neighbor R@10=0.912600 QPS=73079
+[2026-09-22T02:31:25Z INFO  adaptive] L=44 local_only R@10=0.907200 QPS=75296
+[2026-09-22T02:31:25Z INFO  adaptive] L=44 local_extra R@10=0.908900 QPS=74308
+[2026-09-22T02:31:25Z INFO  adaptive] L=48 full_neighbor R@10=0.920300 QPS=68796
+[2026-09-22T02:31:25Z INFO  adaptive] L=48 local_only R@10=0.915200 QPS=70410
+[2026-09-22T02:31:25Z INFO  adaptive] L=48 local_extra R@10=0.917100 QPS=69256
+[2026-09-22T02:31:26Z INFO  adaptive] L=52 full_neighbor R@10=0.926900 QPS=60557
+[2026-09-22T02:31:26Z INFO  adaptive] L=52 local_only R@10=0.922200 QPS=62623
+[2026-09-22T02:31:26Z INFO  adaptive] L=52 local_extra R@10=0.923700 QPS=63281
+[2026-09-22T02:31:27Z INFO  adaptive] L=56 full_neighbor R@10=0.934100 QPS=61347
+[2026-09-22T02:31:27Z INFO  adaptive] L=56 local_only R@10=0.928100 QPS=63558
+[2026-09-22T02:31:27Z INFO  adaptive] L=56 local_extra R@10=0.929900 QPS=62588
+[2026-09-22T02:31:27Z INFO  adaptive] L=60 full_neighbor R@10=0.939200 QPS=57013
+[2026-09-22T02:31:27Z INFO  adaptive] L=60 local_only R@10=0.933200 QPS=59844
+[2026-09-22T02:31:27Z INFO  adaptive] L=60 local_extra R@10=0.934700 QPS=59348
+[2026-09-22T02:31:28Z INFO  adaptive] L=64 full_neighbor R@10=0.943600 QPS=56035
+[2026-09-22T02:31:28Z INFO  adaptive] L=64 local_only R@10=0.937200 QPS=58629
+[2026-09-22T02:31:28Z INFO  adaptive] L=64 local_extra R@10=0.939100 QPS=57867
+[2026-09-22T02:31:28Z INFO  adaptive] L=72 full_neighbor R@10=0.951200 QPS=50809
+[2026-09-22T02:31:28Z INFO  adaptive] L=72 local_only R@10=0.946600 QPS=53461
+[2026-09-22T02:31:28Z INFO  adaptive] L=72 local_extra R@10=0.948300 QPS=52234
+[2026-09-22T02:31:29Z INFO  adaptive] L=80 full_neighbor R@10=0.957600 QPS=36579
+[2026-09-22T02:31:29Z INFO  adaptive] L=80 local_only R@10=0.951500 QPS=42277
+[2026-09-22T02:31:29Z INFO  adaptive] L=80 local_extra R@10=0.952500 QPS=47526
+[2026-09-22T02:31:30Z INFO  adaptive] L=90 full_neighbor R@10=0.964200 QPS=39423
+[2026-09-22T02:31:30Z INFO  adaptive] L=90 local_only R@10=0.959000 QPS=42320
+[2026-09-22T02:31:30Z INFO  adaptive] L=90 local_extra R@10=0.959800 QPS=42335
+[2026-09-22T02:31:31Z INFO  adaptive] L=100 full_neighbor R@10=0.968900 QPS=37001
+[2026-09-22T02:31:31Z INFO  adaptive] L=100 local_only R@10=0.964100 QPS=40682
+[2026-09-22T02:31:31Z INFO  adaptive] L=100 local_extra R@10=0.964600 QPS=39191
+[2026-09-22T02:31:31Z INFO  adaptive] L=114 full_neighbor R@10=0.974100 QPS=33473
+[2026-09-22T02:31:31Z INFO  adaptive] L=114 local_only R@10=0.970000 QPS=35360
+[2026-09-22T02:31:31Z INFO  adaptive] L=114 local_extra R@10=0.970800 QPS=35391
+[2026-09-22T02:31:32Z INFO  adaptive] L=128 full_neighbor R@10=0.978200 QPS=29968
+[2026-09-22T02:31:32Z INFO  adaptive] L=128 local_only R@10=0.973700 QPS=33510
+[2026-09-22T02:31:32Z INFO  adaptive] L=128 local_extra R@10=0.975000 QPS=32888
+[2026-09-22T02:31:33Z INFO  adaptive] L=144 full_neighbor R@10=0.981200 QPS=27187
+[2026-09-22T02:31:33Z INFO  adaptive] L=144 local_only R@10=0.977400 QPS=29179
+[2026-09-22T02:31:33Z INFO  adaptive] L=144 local_extra R@10=0.978700 QPS=29441
+[2026-09-22T02:31:34Z INFO  adaptive] L=160 full_neighbor R@10=0.984100 QPS=25270
+[2026-09-22T02:31:34Z INFO  adaptive] L=160 local_only R@10=0.980800 QPS=27585
+[2026-09-22T02:31:34Z INFO  adaptive] L=160 local_extra R@10=0.981300 QPS=26566
+[2026-09-22T02:31:36Z INFO  adaptive] L=180 full_neighbor R@10=0.986500 QPS=22882
+[2026-09-22T02:31:36Z INFO  adaptive] L=180 local_only R@10=0.983800 QPS=24591
+[2026-09-22T02:31:36Z INFO  adaptive] L=180 local_extra R@10=0.983900 QPS=23819
+[2026-09-22T02:31:37Z INFO  adaptive] L=200 full_neighbor R@10=0.988900 QPS=20588
+[2026-09-22T02:31:37Z INFO  adaptive] L=200 local_only R@10=0.985600 QPS=22771
+[2026-09-22T02:31:37Z INFO  adaptive] L=200 local_extra R@10=0.986100 QPS=21793
+[2026-09-22T02:31:38Z INFO  adaptive] L=224 full_neighbor R@10=0.990100 QPS=18360
+[2026-09-22T02:31:38Z INFO  adaptive] L=224 local_only R@10=0.987100 QPS=20153
+[2026-09-22T02:31:38Z INFO  adaptive] L=224 local_extra R@10=0.987600 QPS=19337
+[2026-09-22T02:31:40Z INFO  adaptive] L=256 full_neighbor R@10=0.991800 QPS=16067
+[2026-09-22T02:31:40Z INFO  adaptive] L=256 local_only R@10=0.988900 QPS=17758
+[2026-09-22T02:31:40Z INFO  adaptive] L=256 local_extra R@10=0.989300 QPS=17363
+[2026-09-22T02:31:41Z INFO  adaptive] L=288 full_neighbor R@10=0.992900 QPS=13761
+[2026-09-22T02:31:41Z INFO  adaptive] L=288 local_only R@10=0.990100 QPS=15739
+[2026-09-22T02:31:41Z INFO  adaptive] L=288 local_extra R@10=0.990400 QPS=14866
+[2026-09-22T02:31:43Z INFO  adaptive] L=320 full_neighbor R@10=0.993500 QPS=12842
+[2026-09-22T02:31:43Z INFO  adaptive] L=320 local_only R@10=0.990800 QPS=14363
+[2026-09-22T02:31:43Z INFO  adaptive] L=320 local_extra R@10=0.991200 QPS=13984
+[2026-09-22T02:31:46Z INFO  adaptive] L=384 full_neighbor R@10=0.994600 QPS=10296
+[2026-09-22T02:31:46Z INFO  adaptive] L=384 local_only R@10=0.992000 QPS=11517
+[2026-09-22T02:31:46Z INFO  adaptive] L=384 local_extra R@10=0.992500 QPS=11220
+[2026-09-22T02:31:48Z INFO  adaptive] L=448 full_neighbor R@10=0.995800 QPS=8793
+[2026-09-22T02:31:48Z INFO  adaptive] L=448 local_only R@10=0.993200 QPS=9822
+[2026-09-22T02:31:48Z INFO  adaptive] L=448 local_extra R@10=0.993600 QPS=9545
+[2026-09-22T02:31:51Z INFO  adaptive] L=512 full_neighbor R@10=0.996300 QPS=7745
+[2026-09-22T02:31:51Z INFO  adaptive] L=512 local_only R@10=0.994000 QPS=8610
+[2026-09-22T02:31:51Z INFO  adaptive] L=512 local_extra R@10=0.994100 QPS=8380
+[2026-09-22T02:31:55Z INFO  adaptive] L=640 full_neighbor R@10=0.997000 QPS=5868
+[2026-09-22T02:31:55Z INFO  adaptive] L=640 local_only R@10=0.995300 QPS=6662
+[2026-09-22T02:31:55Z INFO  adaptive] L=640 local_extra R@10=0.995000 QPS=6533
+[2026-09-22T02:32:00Z INFO  adaptive] L=768 full_neighbor R@10=0.997500 QPS=4686
+[2026-09-22T02:32:00Z INFO  adaptive] L=768 local_only R@10=0.996400 QPS=5291
+[2026-09-22T02:32:00Z INFO  adaptive] L=768 local_extra R@10=0.996400 QPS=5136
+[2026-09-22T02:32:07Z INFO  adaptive] L=1024 full_neighbor R@10=0.997900 QPS=3273
+[2026-09-22T02:32:07Z INFO  adaptive] L=1024 local_only R@10=0.997200 QPS=3616
+[2026-09-22T02:32:07Z INFO  adaptive] L=1024 local_extra R@10=0.996800 QPS=3606
+[2026-09-22T02:32:08Z INFO  adaptive] Saved /Users/chanchunhou/ANNS/orion/visualizations/adaptive_runs/20260922_102633_50186/adaptive_gist_k10.json

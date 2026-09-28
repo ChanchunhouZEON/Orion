@@ -29,6 +29,15 @@ pub struct SearchConvergenceChecker {
 }
 
 impl SearchConvergenceChecker {
+    /// Bit-exact active state, excluding unused ring slots retained by scratch reuse.
+    pub fn diagnostic_state(&self) -> Vec<u64> {
+        let mut state = vec![self.window_size as u64, self.threshold.to_bits() as u64,
+            self.head as u64, self.count as u64, self.admit_sum as u64,
+            self.total_steps as u64, self.min_steps as u64];
+        state.extend(self.buf[..self.window_size].iter().map(|&v| v as u64));
+        state
+    }
+
     pub fn new(window_size: usize, threshold: f32) -> Self {
         debug_assert!(window_size <= MAX_WINDOW_SIZE);
         Self {
@@ -59,12 +68,13 @@ impl SearchConvergenceChecker {
     }
 
     /// Feed whether admitted happens from this expansion step.
-    /// Returns true if currently converged (low admission rate).
+    /// The function will return true if currently converged
+    /// implying rare update at the beam.
     #[inline]
-    pub fn update(&mut self, is_admitted: usize) -> bool {
+    pub fn update(&mut self, num_admitted: usize) -> bool {
         self.total_steps += 1;
 
-        let val = if is_admitted > 0 { 1u8 } else { 0u8 };
+        let val = if num_admitted > 0 { 1u8 } else { 0u8 };
 
         // Evict oldest entry if window is full.
         if self.count >= self.window_size {

@@ -8,11 +8,11 @@
 //! Shared per-thread metric machinery — counter handles like
 //! [`VISIT_COUNT`] / [`NDC_I8`] / [`SETUP_NS`] live here so that every
 //! search variant ([`in_mem_search::search_unified`], the stage trait
-//! implementations under [`stage`], the diagnostics in [`utils`]) can
+//! implementations under [`stage`], the diagnostics in [`diagnostics`]) can
 //! bump the same per-worker u64 slots without coupling.
 //!
 //! Search-loop tuning constants (`FLUSH_INTERVAL`, env-driven
-//! lookahead, etc.) and diagnostic helpers stay in [`utils`].
+//! lookahead, etc.) stay in [`utils`]; diagnostic helpers live in [`diagnostics`].
 
 use std::cell::UnsafeCell;
 
@@ -233,4 +233,5 @@ pub mod jl_hamming_cache;
 
 pub mod stage;
 
-pub use utils::SearchProfile;
+pub mod diagnostics;
+pub use diagnostics::SearchProfile;

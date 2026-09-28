@@ -95,7 +95,10 @@ macro_rules! build_orion {
             })
             .collect();
         if let Ok(calib) =
-            idx.calibrate(&calib_queries, $self.search_list_size, $self.window_size)
+            idx.calibrate(&calib_queries, $self.search_list_size, $self.window_size, orion::CalibrationConfig {
+                metric: $self.admission.calibration_metric(),
+                ..Default::default()
+            })
         {
             $self.epsilon = calib.threshold;
             $self.early_exit_limit = calib.early_exit_limit;
@@ -225,10 +228,11 @@ impl OrionRunner {
     /// distributions. `orion` calibrates at CALIB_L=48 with 200
     /// real queries; mirror that here so the early-exit / threshold
     /// params match and the QPS gap from calibration drift closes.
-    pub fn recalibrate(&mut self, queries: &[Vec<f32>], sample: usize) {
+    pub fn recalibrate(&mut self, queries: &[Vec<f32>], sample: usize, k: usize) {
         let n = sample.min(queries.len());
-        let sls = self.search_list_size;
+        let sls = orion::calibration_search_list_size!(self.search_list_size, k);
         let ws = self.window_size;
+        let config = orion::CalibrationConfig { k, metric: self.admission.calibration_metric() };
         macro_rules! recal {
             ($idx:ident, $N:literal) => {{
                 let qs: Vec<[f32; $N]> = queries[..n]
@@ -239,7 +243,7 @@ impl OrionRunner {
                         a
                     })
                     .collect();
-                $idx.calibrate(&qs, sls, ws).ok()
+                $idx.calibrate(&qs, sls, ws, config).ok()
             }};
         }
         let calib = match self.inner.as_ref().expect("Index not built") {

@@ -1,0 +1,71 @@
+[2026-09-22T02:32:10Z INFO  adaptive::cli::cache] Reusing preset-compatible legacy cache cache/orion_parlayann/gist_n1000000_r100_l200_a1_10_ex16_pct60.bin
+[2026-09-22T02:32:10Z INFO  adaptive::cli::index] Loading cached PhasedGraph from "cache/orion_parlayann/gist_n1000000_r100_l200_a1_10_ex16_pct60.pgraph"
+[2026-09-22T02:32:10Z INFO  orion::algorithm::search::calibrate] calibrate: 200 queries, 8572 gaps, gap_p50=1, gap_p90=7, gap_p95=12, tail_p50=56
+[2026-09-22T02:32:10Z INFO  orion::algorithm::search::calibrate]   gap 0-1     : 5074 (59.2%)
+[2026-09-22T02:32:10Z INFO  orion::algorithm::search::calibrate]   gap 2       : 1185 (13.8%)
+[2026-09-22T02:32:10Z INFO  orion::algorithm::search::calibrate]   gap 3-4     : 966 (11.3%)
+[2026-09-22T02:32:10Z INFO  orion::algorithm::search::calibrate]   gap 5-7     : 556 (6.5%)
+[2026-09-22T02:32:10Z INFO  orion::algorithm::search::calibrate]   gap 8-15    : 486 (5.7%)
+[2026-09-22T02:32:10Z INFO  orion::algorithm::search::calibrate]   gap 16-31   : 199 (2.3%)
+[2026-09-22T02:32:10Z INFO  orion::algorithm::search::calibrate]   gap 32+     : 106 (1.2%)
+[2026-09-22T02:32:10Z INFO  orion::algorithm::search::calibrate] calibrate result: k=100, metric=L2, threshold=0.25, early_exit_limit=12 (gap_p95)
+[2026-09-22T02:32:10Z INFO  orion::index::compressed_index] JLSparseDataset (L2, NZ=9) loaded from "cache/orion_parlayann/gist_n1000000_r100_l200_a1_10_ex16_pct60.jls"
+[2026-09-22T02:32:10Z INFO  orion::index::compressed_index] L2KTDataset loaded from "cache/orion_parlayann/gist_n1000000_r100_l200_a1_10_ex16_pct60.qdsl2kt"
+[2026-09-22T02:32:11Z INFO  adaptive] L=100 full_neighbor R@100=0.882260 QPS=33947
+[2026-09-22T02:32:11Z INFO  adaptive] L=100 local_only R@100=0.854810 QPS=37910
+[2026-09-22T02:32:11Z INFO  adaptive] L=100 local_extra R@100=0.861130 QPS=36699
+[2026-09-22T02:32:12Z INFO  adaptive] L=112 full_neighbor R@100=0.902310 QPS=30628
+[2026-09-22T02:32:12Z INFO  adaptive] L=112 local_only R@100=0.874430 QPS=34333
+[2026-09-22T02:32:12Z INFO  adaptive] L=112 local_extra R@100=0.880070 QPS=33175
+[2026-09-22T02:32:13Z INFO  adaptive] L=128 full_neighbor R@100=0.918760 QPS=26879
+[2026-09-22T02:32:13Z INFO  adaptive] L=128 local_only R@100=0.890640 QPS=30422
+[2026-09-22T02:32:13Z INFO  adaptive] L=128 local_extra R@100=0.896060 QPS=29245
+[2026-09-22T02:32:14Z INFO  adaptive] L=144 full_neighbor R@100=0.931010 QPS=22320
+[2026-09-22T02:32:14Z INFO  adaptive] L=144 local_only R@100=0.904280 QPS=27128
+[2026-09-22T02:32:14Z INFO  adaptive] L=144 local_extra R@100=0.909070 QPS=26079
+[2026-09-22T02:32:16Z INFO  adaptive] L=160 full_neighbor R@100=0.941050 QPS=21536
+[2026-09-22T02:32:16Z INFO  adaptive] L=160 local_only R@100=0.916290 QPS=23633
+[2026-09-22T02:32:16Z INFO  adaptive] L=160 local_extra R@100=0.920590 QPS=23408
+[2026-09-22T02:32:17Z INFO  adaptive] L=180 full_neighbor R@100=0.950390 QPS=18314
+[2026-09-22T02:32:17Z INFO  adaptive] L=180 local_only R@100=0.927370 QPS=21083
+[2026-09-22T02:32:17Z INFO  adaptive] L=180 local_extra R@100=0.930700 QPS=20164
+[2026-09-22T02:32:19Z INFO  adaptive] L=200 full_neighbor R@100=0.957600 QPS=16596
+[2026-09-22T02:32:19Z INFO  adaptive] L=200 local_only R@100=0.936100 QPS=19059
+[2026-09-22T02:32:19Z INFO  adaptive] L=200 local_extra R@100=0.938900 QPS=19015
+[2026-09-22T02:32:20Z INFO  adaptive] L=224 full_neighbor R@100=0.964540 QPS=15180
+[2026-09-22T02:32:20Z INFO  adaptive] L=224 local_only R@100=0.945110 QPS=17364
+[2026-09-22T02:32:20Z INFO  adaptive] L=224 local_extra R@100=0.947580 QPS=16748
+[2026-09-22T02:32:22Z INFO  adaptive] L=256 full_neighbor R@100=0.971160 QPS=13696
+[2026-09-22T02:32:22Z INFO  adaptive] L=256 local_only R@100=0.953190 QPS=16481
+[2026-09-22T02:32:22Z INFO  adaptive] L=256 local_extra R@100=0.955800 QPS=15755
+[2026-09-22T02:32:24Z INFO  adaptive] L=288 full_neighbor R@100=0.975700 QPS=12630
+[2026-09-22T02:32:24Z INFO  adaptive] L=288 local_only R@100=0.958610 QPS=14918
+[2026-09-22T02:32:24Z INFO  adaptive] L=288 local_extra R@100=0.960970 QPS=14300
+[2026-09-22T02:32:26Z INFO  adaptive] L=320 full_neighbor R@100=0.978540 QPS=11652
+[2026-09-22T02:32:26Z INFO  adaptive] L=320 local_only R@100=0.962630 QPS=13718
+[2026-09-22T02:32:26Z INFO  adaptive] L=320 local_extra R@100=0.964940 QPS=13103
+[2026-09-22T02:32:29Z INFO  adaptive] L=384 full_neighbor R@100=0.983720 QPS=9595
+[2026-09-22T02:32:29Z INFO  adaptive] L=384 local_only R@100=0.970330 QPS=11329
+[2026-09-22T02:32:29Z INFO  adaptive] L=384 local_extra R@100=0.971970 QPS=10977
+[2026-09-22T02:32:32Z INFO  adaptive] L=448 full_neighbor R@100=0.987120 QPS=8403
+[2026-09-22T02:32:32Z INFO  adaptive] L=448 local_only R@100=0.975530 QPS=9893
+[2026-09-22T02:32:32Z INFO  adaptive] L=448 local_extra R@100=0.976980 QPS=9526
+[2026-09-22T02:32:35Z INFO  adaptive] L=512 full_neighbor R@100=0.989390 QPS=7340
+[2026-09-22T02:32:35Z INFO  adaptive] L=512 local_only R@100=0.979230 QPS=8687
+[2026-09-22T02:32:35Z INFO  adaptive] L=512 local_extra R@100=0.980440 QPS=8346
+[2026-09-22T02:32:39Z INFO  adaptive] L=640 full_neighbor R@100=0.992650 QPS=5610
+[2026-09-22T02:32:39Z INFO  adaptive] L=640 local_only R@100=0.984570 QPS=6651
+[2026-09-22T02:32:39Z INFO  adaptive] L=640 local_extra R@100=0.985330 QPS=6387
+[2026-09-22T02:32:45Z INFO  adaptive] L=768 full_neighbor R@100=0.994530 QPS=4550
+[2026-09-22T02:32:45Z INFO  adaptive] L=768 local_only R@100=0.987690 QPS=5403
+[2026-09-22T02:32:45Z INFO  adaptive] L=768 local_extra R@100=0.988460 QPS=5192
+[2026-09-22T02:32:52Z INFO  adaptive] L=1024 full_neighbor R@100=0.996610 QPS=3168
+[2026-09-22T02:32:52Z INFO  adaptive] L=1024 local_only R@100=0.991590 QPS=3778
+[2026-09-22T02:32:52Z INFO  adaptive] L=1024 local_extra R@100=0.992220 QPS=3675
+[2026-09-22T02:33:04Z INFO  adaptive] L=1536 full_neighbor R@100=0.998190 QPS=1866
+[2026-09-22T02:33:04Z INFO  adaptive] L=1536 local_only R@100=0.995250 QPS=2170
+[2026-09-22T02:33:04Z INFO  adaptive] L=1536 local_extra R@100=0.995680 QPS=2123
+[2026-09-22T02:33:23Z INFO  adaptive] L=2048 full_neighbor R@100=0.998870 QPS=1256
+[2026-09-22T02:33:23Z INFO  adaptive] L=2048 local_only R@100=0.996870 QPS=1447
+[2026-09-22T02:33:23Z INFO  adaptive] L=2048 local_extra R@100=0.997160 QPS=1415
+[2026-09-22T02:33:23Z INFO  adaptive] Saved /Users/chanchunhou/ANNS/orion/visualizations/adaptive_runs/20260922_102633_50186/adaptive_gist_k100.json

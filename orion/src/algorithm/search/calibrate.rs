@@ -9,9 +9,124 @@ use crate::Orion;
 use crate::algorithm::search::utils::AlignedQuery;
 use crate::model::Neighbor as DNeighbor;
 use crate::model::scratch::InMemSearchScratch;
-use diskann::common::ANNResult;
-use diskann::model::Vertex;
+use diskann::common::{ANNError, ANNResult};
 use vector::{FullPrecisionDistance, Metric};
+
+/// Default calibration headroom relative to the requested top-k.
+/// This is an empirical policy, not a coverage or recall guarantee.
+pub const CALIBRATION_BEAM_FACTOR: usize = 2;
+
+/// Choose a calibration beam without changing the search-time beam.
+/// Keeps `base_l` unless `CALIBRATION_BEAM_FACTOR * k` is larger.
+/// Multiplication saturates on overflow; calibration rejects the resulting
+/// unrepresentable statistics horizon during parameter validation.
+#[macro_export]
+macro_rules! calibration_search_list_size {
+    ($base_l:expr, $k:expr $(,)?) => {{
+        let base_l: usize = $base_l;
+        let k: usize = $k;
+        base_l.max(k.saturating_mul($crate::algorithm::search::calibrate::CALIBRATION_BEAM_FACTOR))
+    }};
+}
+
+/// Exact scoring used by the full-neighbor calibration walk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CalibrationMetric {
+    #[default]
+    L2,
+    /// Negative dot product, without normalizing the stored vectors.
+    InnerProduct,
+    /// One minus cosine similarity; zero-norm vectors are rejected.
+    Cosine,
+}
+
+impl CalibrationMetric {
+    fn distance<const N: usize>(self, a: &[f32; N], b: &[f32; N]) -> ANNResult<f32>
+    where
+        [f32; N]: FullPrecisionDistance<f32, N>,
+    {
+        let distance = match self {
+            Self::L2 => <[f32; N]>::distance_compare(a, b, Metric::L2),
+            Self::InnerProduct => {
+                // The SIMD IP kernel requires dimensions divisible by four.
+                if N % 4 == 0 {
+                    vector::distance_ip_vector_f32(a, b)
+                } else {
+                    -a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>()
+                }
+            }
+            Self::Cosine => {
+                let mut dot = 0.0f64;
+                let mut norm_a = 0.0f64;
+                let mut norm_b = 0.0f64;
+                for (&x, &y) in a.iter().zip(b) {
+                    let (x, y) = (f64::from(x), f64::from(y));
+                    dot += x * y;
+                    norm_a += x * x;
+                    norm_b += y * y;
+                }
+                if norm_a == 0.0 || norm_b == 0.0 {
+                    return Err(calibration_error(
+                        "metric",
+                        "cosine requires nonzero vectors",
+                    ));
+                }
+                (1.0 - (dot / (norm_a.sqrt() * norm_b.sqrt())).clamp(-1.0, 1.0)) as f32
+            }
+        };
+        if !distance.is_finite() {
+            return Err(calibration_error(
+                "metric",
+                "calibration distance must be finite",
+            ));
+        }
+        Ok(distance)
+    }
+}
+
+/// Calibration target, independent of the lossy search cascade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CalibrationConfig {
+    pub k: usize,
+    pub metric: CalibrationMetric,
+}
+
+impl Default for CalibrationConfig {
+    fn default() -> Self {
+        Self {
+            k: 10,
+            metric: CalibrationMetric::default(),
+        }
+    }
+}
+
+impl CalibrationConfig {
+    fn validate(self, search_list_size: usize, window_size: usize) -> ANNResult<()> {
+        if self.k == 0 || self.k > search_list_size {
+            return Err(calibration_error("k", "require 1 <= k <= search_list_size"));
+        }
+        if !(1..=64).contains(&window_size) {
+            return Err(calibration_error(
+                "window_size",
+                "require 1 <= window_size <= 64",
+            ));
+        }
+        if search_list_size.checked_mul(4).is_none() {
+            return Err(calibration_error(
+                "search_list_size",
+                "calibration horizon overflows",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn calibration_error(parameter: &str, err: &str) -> ANNError {
+    ANNError::IndexConfigError {
+        parameter: parameter.into(),
+        err: err.into(),
+    }
+}
 
 /// Calibrated search parameters.
 #[derive(Debug, Clone, Copy)]
@@ -30,18 +145,21 @@ where
     /// 1. Per-step admission rate → derive `threshold` from the second
     ///    inflection point of the rate curve.
     /// 2. The step at which each final top-k result was admitted →
-    ///    derive `early_exit_limit` from P90 of remaining steps after
-    ///    the last useful admission.
+    ///    derive `early_exit_limit` from P95 of inter-useful-admission gaps.
+    /// `config` selects the top-k target and exact metric. Pass
+    /// `CalibrationConfig::default()` for the legacy top-10 L2 behavior.
     pub fn calibrate(
         &self,
         warmup_queries: &[[f32; N]],
         search_list_size: usize,
         window_size: usize,
+        config: CalibrationConfig,
     ) -> ANNResult<CalibratedParams> {
+        config.validate(search_list_size, window_size)?;
         let entry = self.entry;
         let dataset = &self.dataset;
         let graph = &self.graph;
-        let k = 10usize;
+        let k = config.k;
 
         let mut scratch = InMemSearchScratch::new(search_list_size);
 
@@ -57,13 +175,12 @@ where
 
         for query in warmup_queries {
             let aligned = AlignedQuery(*query);
-            let query_vertex = Vertex::new(&aligned.0, 0);
             scratch.prepare_for_query(search_list_size);
 
             scratch.seen.insert(entry);
             let entry_dist = {
                 let v = dataset.get_vertex(entry)?;
-                v.compare(&query_vertex, Metric::L2)
+                config.metric.distance(&aligned.0, v.vector())?
             };
             scratch.pq.insert(DNeighbor::new(entry, entry_dist));
 
@@ -96,7 +213,7 @@ where
                 for m in 0..n_unseen {
                     let nn = scratch.id_scratch[m];
                     let v = dataset.get_vertex(nn)?;
-                    let dist = query_vertex.compare(&v, Metric::L2);
+                    let dist = config.metric.distance(&aligned.0, v.vector())?;
                     if dist < pq_worst || scratch.pq.size() < search_list_size {
                         admitted = true;
                         admit_step.insert(nn, step);
@@ -231,7 +348,9 @@ where
         let early_exit_limit = gap_p95.max(3);
 
         log::info!(
-            "calibrate result: threshold={:.2}, early_exit_limit={} (gap_p95)",
+            "calibrate result: k={}, metric={:?}, threshold={:.2}, early_exit_limit={} (gap_p95)",
+            config.k,
+            config.metric,
             threshold,
             early_exit_limit,
         );
@@ -262,17 +381,19 @@ impl<const N: usize> Orion<N>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
-    /// Calibrate with full diagnostics for visualization.
+    /// Calibrate with full diagnostics using the same target as `calibrate`.
     pub fn calibrate_with_diagnostics(
         &self,
         warmup_queries: &[[f32; N]],
         search_list_size: usize,
         window_size: usize,
+        config: CalibrationConfig,
     ) -> ANNResult<CalibrationDiagnostics> {
+        config.validate(search_list_size, window_size)?;
         let entry = self.entry;
         let dataset = &self.dataset;
         let graph = &self.graph;
-        let k = 10usize;
+        let k = config.k;
 
         let mut scratch = InMemSearchScratch::new(search_list_size);
 
@@ -284,13 +405,12 @@ where
 
         for query in warmup_queries {
             let aligned = AlignedQuery(*query);
-            let query_vertex = Vertex::new(&aligned.0, 0);
             scratch.prepare_for_query(search_list_size);
 
             scratch.seen.insert(entry);
             let entry_dist = {
                 let v = dataset.get_vertex(entry)?;
-                v.compare(&query_vertex, Metric::L2)
+                config.metric.distance(&aligned.0, v.vector())?
             };
             scratch.pq.insert(DNeighbor::new(entry, entry_dist));
 
@@ -321,7 +441,7 @@ where
                 for m in 0..n_unseen {
                     let nn = scratch.id_scratch[m];
                     let v = dataset.get_vertex(nn)?;
-                    let dist = query_vertex.compare(&v, Metric::L2);
+                    let dist = config.metric.distance(&aligned.0, v.vector())?;
                     if dist < pq_worst || scratch.pq.size() < search_list_size {
                         admitted = true;
                         admit_step.insert(nn, step);
@@ -416,13 +536,12 @@ where
 
             for query in warmup_queries {
                 let aligned = AlignedQuery(*query);
-                let query_vertex = Vertex::new(&aligned.0, 0);
                 scratch.prepare_for_query(search_list_size);
 
                 scratch.seen.insert(entry);
                 let entry_dist = {
                     let v = dataset.get_vertex(entry)?;
-                    v.compare(&query_vertex, Metric::L2)
+                    config.metric.distance(&aligned.0, v.vector())?
                 };
                 scratch.pq.insert(DNeighbor::new(entry, entry_dist));
 
@@ -448,7 +567,7 @@ where
                     for m in 0..scratch.id_scratch.len() {
                         let nn = scratch.id_scratch[m];
                         let v = dataset.get_vertex(nn)?;
-                        let dist = query_vertex.compare(&v, Metric::L2);
+                        let dist = config.metric.distance(&aligned.0, v.vector())?;
                         if dist < pq_worst || scratch.pq.size() < search_list_size {
                             admit_step_map.insert(nn, step);
                         }
@@ -504,4 +623,57 @@ fn percentile(sorted: &[usize], p: usize) -> usize {
     }
     let idx = (sorted.len() * p / 100).min(sorted.len() - 1);
     sorted[idx]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metric_ordering_and_normalization() {
+        let q = [1.0, 0.0, 0.0, 0.0];
+        let near = [1.0, 1.0, 0.0, 0.0];
+        let far = [10.0, 1.0, 0.0, 0.0];
+        assert!(
+            CalibrationMetric::L2.distance(&q, &near).unwrap()
+                < CalibrationMetric::L2.distance(&q, &far).unwrap()
+        );
+        assert_eq!(
+            CalibrationMetric::InnerProduct.distance(&q, &far).unwrap(),
+            -10.0
+        );
+        let scaled = [2.0, 2.0, 0.0, 0.0];
+        assert_eq!(
+            CalibrationMetric::Cosine.distance(&q, &near).unwrap(),
+            CalibrationMetric::Cosine.distance(&q, &scaled).unwrap()
+        );
+        assert!(
+            CalibrationMetric::InnerProduct
+                .distance(&q, &scaled)
+                .unwrap()
+                < CalibrationMetric::InnerProduct.distance(&q, &near).unwrap()
+        );
+        assert_eq!(
+            CalibrationMetric::InnerProduct
+                .distance(&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0])
+                .unwrap(),
+            -32.0
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_metric_inputs() {
+        assert!(
+            CalibrationMetric::Cosine
+                .distance(&[0.0; 4], &[1.0; 4])
+                .is_err()
+        );
+        for metric in [
+            CalibrationMetric::L2,
+            CalibrationMetric::InnerProduct,
+            CalibrationMetric::Cosine,
+        ] {
+            assert!(metric.distance(&[f32::NAN; 4], &[1.0; 4]).is_err());
+        }
+    }
 }

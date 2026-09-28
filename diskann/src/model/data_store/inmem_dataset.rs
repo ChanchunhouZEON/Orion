@@ -14,6 +14,28 @@ use crate::common::{ANNError, ANNResult, AlignedBoxWithSlice};
 use crate::model::Vertex;
 use crate::utils::copy_aligned_data_from_file;
 
+fn checked_capacity(
+    num_points: usize,
+    dimension: usize,
+    index_growth_factor: f32,
+) -> ANNResult<usize> {
+    let minimum = num_points
+        .checked_mul(dimension)
+        .ok_or_else(|| ANNError::log_index_error("dataset size overflow".into()))?;
+    if !index_growth_factor.is_finite() || index_growth_factor < 1.0 {
+        return Err(ANNError::log_index_error(
+            "index growth factor must be finite and >= 1".into(),
+        ));
+    }
+    let grown = (minimum as f64 * index_growth_factor as f64).ceil();
+    if grown >= usize::MAX as f64 {
+        return Err(ANNError::log_index_error(
+            "dataset capacity overflow".into(),
+        ));
+    }
+    Ok((grown as usize).max(minimum))
+}
+
 #[derive(Debug)]
 pub struct InmemDataset<T, const N: usize>
 where
@@ -31,7 +53,7 @@ where
     [T; N]: FullPrecisionDistance<T, N>,
 {
     pub fn new(num_points: usize, index_growth_factor: f32) -> ANNResult<Self> {
-        let capacity = (((num_points * N) as f32) * index_growth_factor) as usize;
+        let capacity = checked_capacity(num_points, N, index_growth_factor)?;
         // Trailing pad: SIMD streaming kernels (`DistanceStream` over
         // `IpF32Distance` / `L2F32Distance`) use `CHUNK_BYTES = 64`,
         // rounding `chunks_per_vert` up to `ceil(N·sizeof(T) / 64)`,
@@ -40,7 +62,9 @@ where
         // chunk's worth of zero-init slots so over-reads land on
         // padded zeros instead of UB. Cost: 64 bytes total.
         let pad_elems = 64 / mem::size_of::<T>().max(1);
-        let alloc_capacity = capacity + pad_elems;
+        let alloc_capacity = capacity
+            .checked_add(pad_elems)
+            .ok_or_else(|| ANNError::log_index_error("dataset padding overflow".into()))?;
 
         Ok(Self {
             data: AlignedBoxWithSlice::new(alloc_capacity, mem::size_of::<T>() * 16)?,
@@ -201,4 +225,18 @@ where
 pub struct DatasetDto<'a, T> {
     pub data: &'a mut [T],
     pub rounded_dim: usize,
+}
+
+#[cfg(test)]
+mod large_capacity_tests {
+    use super::*;
+    #[test]
+    fn exact_capacity_above_f32_integer_precision() {
+        let n = 1_000_000_001usize;
+        assert_eq!(checked_capacity(n, 128, 1.).unwrap(), n * 128);
+        assert!(checked_capacity(n, 128, 1.1).unwrap() >= n * 128);
+        assert!(checked_capacity(usize::MAX, 128, 1.).is_err());
+        assert!(checked_capacity(1, 128, f32::NAN).is_err());
+        assert!(checked_capacity(1, 128, 0.5).is_err());
+    }
 }

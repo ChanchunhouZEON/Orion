@@ -96,7 +96,7 @@ impl OrionSift {
         }
         let calib = self
             .inner
-            .calibrate(&qarrs, search_list_size, window_size)
+            .calibrate(&qarrs, search_list_size, window_size, Default::default())
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         self.epsilon = calib.threshold;
         self.early_exit_limit = calib.early_exit_limit;

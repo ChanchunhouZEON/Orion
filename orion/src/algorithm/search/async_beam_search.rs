@@ -91,7 +91,7 @@ where
     let mut query_vec = query.to_vec();
     pq.preprocess_query(&mut query_vec);
     let pq_dists = pq.populate_chunk_distances(&query_vec);
-    let mut dcc = SearchConvergenceChecker::new(config.window_size, config.epsilon);
+    let mut scc = SearchConvergenceChecker::new(config.window_size, config.epsilon);
 
     // Helper closure: compute PQ distance for a point by its ID
     let pq_dist = |point_id: u32| -> f32 {
@@ -119,7 +119,7 @@ where
     while neighbor_pq.has_notvisited_node() {
         let p_star = neighbor_pq.closest_notvisited();
 
-        let converged = dcc.update(prev_admitted);
+        let converged = scc.update(prev_admitted);
 
         let pq_worst = if neighbor_pq.size() >= config.search_list_size {
             neighbor_pq[neighbor_pq.size() - 1].distance

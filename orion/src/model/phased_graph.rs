@@ -24,8 +24,8 @@ use diskann::common::ANNResult;
 use diskann::common::AlignedBoxWithSlice;
 use std::collections::VecDeque;
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 const CACHE_LINE_BYTES: usize = 64;
 const HEADER_U32: usize = 4;
@@ -127,6 +127,91 @@ impl PhasedGraph {
             });
 
         pg
+    }
+
+    /// Import STAG v3 directly into the final slab, retaining only one node's IDs.
+    /// Counts and IDs are validated before the unsafe slab writer is called.
+    pub fn load_staged<P: AsRef<std::path::Path>>(
+        path: P,
+        expected_nodes: usize,
+        expected_degree: u32,
+    ) -> ANNResult<Self> {
+        use std::io::{Error, ErrorKind};
+        let bad = |message: &str| Error::new(ErrorKind::InvalidData, message);
+        let file = std::fs::File::open(path)?;
+        let file_bytes = file.metadata()?.len();
+        let mut reader = BufReader::with_capacity(8 * 1024 * 1024, file);
+        fn word<R: Read>(r: &mut R) -> std::io::Result<u32> {
+            let mut b = [0; 4];
+            r.read_exact(&mut b)?;
+            Ok(u32::from_le_bytes(b))
+        }
+        if word(&mut reader)? != 0x53544147 || word(&mut reader)? != 3 {
+            return Err(bad("expected STAG v3").into());
+        }
+        let n = word(&mut reader)? as usize;
+        let degree = word(&mut reader)?;
+        let extra = word(&mut reader)? as usize;
+        let entry = word(&mut reader)? as usize;
+        if n == 0 || n != expected_nodes || entry >= n || degree != expected_degree {
+            return Err(bad("staged node count, degree, or entry mismatch").into());
+        }
+        if degree as usize > n || extra > n || file_bytes < 24 + n as u64 * 12 {
+            return Err(bad("invalid staged capacity or truncated records").into());
+        }
+        let max_data = (degree as usize)
+            .checked_add(extra)
+            .ok_or_else(|| bad("degree overflow"))?;
+        let stride = compute_stride(max_data);
+        let total = n
+            .checked_mul(stride)
+            .ok_or_else(|| bad("graph size overflow"))?;
+        let pg = Self {
+            buffer: AlignedBoxWithSlice::new(total, CACHE_LINE_BYTES)?,
+            node_readers: (0..n)
+                .map(|_| AtomicUsize::new(0))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            write_blocked: AtomicBool::new(false),
+            write_queue: Mutex::new(VecDeque::new()),
+            write_queue_capacity: DEFAULT_WRITE_QUEUE_CAPACITY,
+            num_nodes: n,
+            stride,
+            max_degree: degree,
+            base_local_count: 0,
+        };
+        let mut ids = Vec::new();
+        for node in 0..n {
+            let lc = word(&mut reader)? as usize;
+            let rc = word(&mut reader)? as usize;
+            let ec = word(&mut reader)? as usize;
+            let neighbors = lc.checked_add(rc).ok_or_else(|| bad("degree overflow"))?;
+            if neighbors > degree as usize || ec > extra {
+                return Err(bad("staged record exceeds header capacities").into());
+            }
+            let count = neighbors
+                .checked_add(ec)
+                .ok_or_else(|| bad("degree overflow"))?;
+            ids.clear();
+            for _ in 0..count {
+                let id = word(&mut reader)?;
+                if id as usize >= n {
+                    return Err(bad("staged neighbor ID outside graph").into());
+                }
+                ids.push(id);
+            }
+            unsafe {
+                pg.write_node_unchecked(node, &ids[..lc], &ids[lc..neighbors], &ids[neighbors..]);
+            }
+            if node > 0 && node % 10_000_000 == 0 {
+                log::info!("Imported {node}/{n} staged nodes");
+            }
+        }
+        let mut tail = [0];
+        if reader.read(&mut tail)? != 0 {
+            return Err(bad("trailing bytes after staged graph").into());
+        }
+        Ok(pg)
     }
 
     // ── Direct read accessors (zero overhead, no atomics) ───────────────
@@ -313,7 +398,7 @@ impl PhasedGraph {
             std::ptr::write(ptr.add(base + 1), extra.len() as u32);
             std::ptr::write(ptr.add(base + 2), local.len() as u32);
             std::ptr::write(ptr.add(base + 3), 0); // reserved
-            // Data: local | remote | extra
+                                                   // Data: local | remote | extra
             let data_start = base + HEADER_U32;
             std::ptr::copy_nonoverlapping(local.as_ptr(), ptr.add(data_start), local.len());
             std::ptr::copy_nonoverlapping(
@@ -599,5 +684,44 @@ mod tests {
         pg2.write_node(0, &[1], &[], &[9]);
         assert_eq!(pg2.extra_candidates(0), &[9]);
         assert_eq!(pg.extra_candidates(0), &[] as &[u32]);
+    }
+}
+
+#[cfg(test)]
+mod staged_validation_tests {
+    use super::*;
+    #[test]
+    fn streamed_import_rejects_bad_counts_ids_truncation_and_trailing_bytes() {
+        let p = std::env::temp_dir().join(format!("orion-staged-invalid-{}", std::process::id()));
+        let valid = [0x53544147u32, 3, 2, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0];
+        let write = |words: &[u32]| {
+            std::fs::write(
+                &p,
+                words
+                    .iter()
+                    .flat_map(|x| x.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap()
+        };
+        write(&valid);
+        assert!(PhasedGraph::load_staged(&p, 2, 1).is_ok());
+        assert!(PhasedGraph::load_staged(&p, 3, 1).is_err());
+        assert!(PhasedGraph::load_staged(&p, 2, 2).is_err());
+        let mut bad = valid;
+        bad[6] = 2;
+        write(&bad);
+        assert!(PhasedGraph::load_staged(&p, 2, 1).is_err());
+        let mut bad = valid;
+        bad[9] = 2;
+        write(&bad);
+        assert!(PhasedGraph::load_staged(&p, 2, 1).is_err());
+        write(&valid[..13]);
+        assert!(PhasedGraph::load_staged(&p, 2, 1).is_err());
+        let mut bad = valid.to_vec();
+        bad.push(0);
+        write(&bad);
+        assert!(PhasedGraph::load_staged(&p, 2, 1).is_err());
+        std::fs::remove_file(p).unwrap();
     }
 }

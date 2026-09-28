@@ -13,7 +13,7 @@
 //!   * data file paths (`paths.{base, query, groundtruth}`)
 //!   * build parameters (`orion.{alpha, graph_degree, build_l, max_extra,
 //!     window_size}`)
-//!   * search metric (`orion.metric` ∈ `l2` | `mips` | `mips-q`)
+//!   * dataset objective (`metric`: l2, inner-product, or cosine)
 //!   * base-graph source (`base_graph.{source, staged_file}` —
 //!     `rust` = build in-process; `parlayann` = import a `.staged v2`
 //!     export)
@@ -70,9 +70,9 @@ pub struct OrionConfig {
     /// search pipeline reads these to build the prefilter / admission
     /// / rerank stages. Mirrors the `Cascade::default_for_dataset`
     /// mapping in `orion.rs`.
-    pub prefilter: crate::runner::cascade::PrefilterChoice,
-    pub admission: crate::runner::cascade::AdmissionChoice,
-    pub rerank: crate::runner::cascade::RerankChoice,
+    pub prefilter: crate::cascade::PrefilterChoice,
+    pub admission: crate::cascade::AdmissionChoice,
+    pub rerank: crate::cascade::RerankChoice,
 }
 
 #[derive(Clone, Debug)]
@@ -82,11 +82,102 @@ pub struct BaseGraphConfig {
     pub staged_file: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct SweepConfig {
+    pub k: usize,
+    pub threads: usize,
+    pub trials: usize,
+    pub calibration: CalibrationSettings,
+    #[serde(default)]
+    pub profiles: HashMap<String, ProfileDefaults>,
+    pub schedules_by_k: HashMap<usize, HashMap<String, Vec<usize>>>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CalibrationSettings {
+    pub samples: usize,
+    pub base_l: usize,
+    pub diagnostic_l: usize,
+}
+
+impl CalibrationSettings {
+    pub fn search_list_size(&self, k: usize) -> usize {
+        orion::calibration_search_list_size!(self.base_l, k)
+    }
+
+    pub fn diagnostic_search_list_size(&self, k: usize) -> usize {
+        orion::calibration_search_list_size!(self.diagnostic_l, k)
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ProfileDefaults {
+    pub threads: Option<usize>,
+    pub trials: Option<usize>,
+}
+
+#[derive(Clone, Debug, Default, clap::Args)]
+pub struct SweepOverrides {
+    #[arg(long, alias = "ls", value_delimiter = ',')]
+    pub search_list_sizes: Option<Vec<usize>>,
+    #[arg(long)]
+    pub threads: Option<usize>,
+    #[arg(long)]
+    pub trials: Option<usize>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ResolvedSweep {
+    pub k: usize,
+    pub profile: String,
     pub search_list_sizes: Vec<usize>,
     pub threads: usize,
     pub trials: usize,
+    pub calibration_samples: usize,
+    pub calibration_l: usize,
+}
+
+impl SweepConfig {
+    pub fn resolve(
+        &self,
+        profile: &str,
+        k: usize,
+        overrides: &SweepOverrides,
+    ) -> Result<ResolvedSweep, String> {
+        let search_list_sizes = overrides.search_list_sizes.clone().or_else(|| {
+            self.schedules_by_k.get(&k).and_then(|row| row.get(profile)).cloned()
+        }).ok_or_else(|| format!("no sweep.schedules_by_k entry for k={k}, profile={profile}; add one or pass --search-list-sizes"))?;
+        crate::utils::validate_search_list_sizes(k, &search_list_sizes)?;
+        let defaults = self.profiles.get(profile);
+        let threads = overrides
+            .threads
+            .or_else(|| defaults.and_then(|p| p.threads))
+            .unwrap_or(self.threads);
+        let trials = overrides
+            .trials
+            .or_else(|| defaults.and_then(|p| p.trials))
+            .unwrap_or(self.trials);
+        if threads == 0
+            || trials == 0
+            || self.calibration.samples == 0
+            || self.calibration.base_l == 0
+            || self.calibration.diagnostic_l == 0
+        {
+            return Err(
+                "threads, trials, calibration samples, base_l and diagnostic_l must be positive"
+                    .into(),
+            );
+        }
+        Ok(ResolvedSweep {
+            k,
+            profile: profile.into(),
+            search_list_sizes,
+            threads,
+            trials,
+            calibration_samples: self.calibration.samples,
+            calibration_l: self.calibration.search_list_size(k),
+        })
+    }
 }
 
 /// DiskANN baseline config — kept flat since the L2 baseline doesn't
@@ -101,99 +192,103 @@ pub struct DiskANNConfig {
 // ── Raw YAML ↔ struct layer ────────────────────────────────────────────────
 
 #[derive(Deserialize)]
-struct RawRoot {
-    defaults: RawDefaults,
-    datasets: HashMap<String, RawDataset>,
+pub struct RawRoot {
+    pub defaults: RawDefaults,
+    pub datasets: HashMap<String, RawDataset>,
 }
 
 #[derive(Deserialize)]
-struct RawDefaults {
-    diskann: RawDiskANNDefaults,
-    orion: RawOrionDefaults,
-    sweep: RawSweepDefaults,
+pub struct RawDefaults {
+    pub diskann: RawDiskANNDefaults,
+    pub orion: RawOrionDefaults,
+    pub sweep: SweepConfig,
 }
 
 #[derive(Deserialize)]
-struct RawDiskANNDefaults {
-    alpha: f32,
-    graph_degree: u32,
-    build_search_list_size: usize,
+pub struct RawDiskANNDefaults {
+    pub alpha: f32,
+    pub graph_degree: u32,
+    pub build_search_list_size: usize,
 }
 
 #[derive(Deserialize)]
-struct RawOrionDefaults {
-    alpha: f32,
-    graph_degree: u32,
-    build_search_list_size: usize,
-    max_extra: usize,
-    window_size: usize,
-    prefilter: String,
-    admission: String,
-    rerank: String,
+pub struct RawOrionDefaults {
+    pub alpha: f32,
+    pub graph_degree: u32,
+    pub build_search_list_size: usize,
+    pub max_extra: usize,
+    pub window_size: usize,
+    pub prefilter: String,
+    pub admission: String,
+    pub rerank: String,
 }
 
-#[derive(Deserialize)]
-struct RawSweepDefaults {
-    search_list_sizes: Vec<usize>,
-    threads: usize,
-    trials: usize,
+#[derive(Deserialize, Default, Debug)]
+pub struct RawDataset {
+    pub dimension: usize,
+    pub metric: Option<crate::cascade::SearchMetric>,
+    pub paths: Option<RawPaths>,
+    pub base_graph: Option<RawBaseGraph>,
+    pub diskann: Option<RawDiskANNOverride>,
+    pub orion: Option<RawOrionOverride>,
 }
 
-#[derive(Deserialize, Default)]
-struct RawDataset {
-    dimension: usize,
-    paths: Option<RawPaths>,
-    base_graph: Option<RawBaseGraph>,
-    diskann: Option<RawDiskANNOverride>,
-    orion: Option<RawOrionOverride>,
+#[derive(Deserialize, Default, Debug)]
+pub struct RawDiskANNOverride {
+    pub alpha: Option<f32>,
+    pub graph_degree: Option<u32>,
+    pub build_search_list_size: Option<usize>,
 }
 
-#[derive(Deserialize, Default)]
-struct RawDiskANNOverride {
-    alpha: Option<f32>,
-    graph_degree: Option<u32>,
-    build_search_list_size: Option<usize>,
+#[derive(Deserialize, Default, Debug)]
+pub struct RawPaths {
+    pub base: String,
+    pub query: String,
+    pub groundtruth: String,
 }
 
-#[derive(Deserialize, Default)]
-struct RawPaths {
-    base: String,
-    query: String,
-    groundtruth: String,
+#[derive(Deserialize, Default, Debug)]
+pub struct RawBaseGraph {
+    pub source: Option<String>,
+    pub staged_file: Option<String>,
 }
 
-#[derive(Deserialize, Default)]
-struct RawBaseGraph {
-    source: Option<String>,
-    staged_file: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-struct RawOrionOverride {
-    alpha: Option<f32>,
-    graph_degree: Option<u32>,
-    build_search_list_size: Option<usize>,
-    max_extra: Option<usize>,
-    window_size: Option<usize>,
-    prefilter: Option<String>,
-    admission: Option<String>,
-    rerank: Option<String>,
+#[derive(Deserialize, Default, Debug)]
+pub struct RawOrionOverride {
+    pub alpha: Option<f32>,
+    pub graph_degree: Option<u32>,
+    pub build_search_list_size: Option<usize>,
+    pub max_extra: Option<usize>,
+    pub window_size: Option<usize>,
+    pub prefilter: Option<String>,
+    pub admission: Option<String>,
+    pub rerank: Option<String>,
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-const DEFAULT_CONFIG_PATH: &str = "benchmark/configs/sweep.yaml";
+const DEFAULT_CONFIG_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/configs/sweep.yaml");
+
+pub fn load_root() -> &'static RawRoot {
+    static ROOT: std::sync::OnceLock<RawRoot> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let path =
+            std::env::var("ORION_SWEEP_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("Cannot read {path}: {e}"));
+        serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("Invalid YAML in {path}: {e}"))
+    })
+}
+
+pub fn load_sweep_config() -> &'static SweepConfig {
+    &load_root().defaults.sweep
+}
 
 /// Load config for a single dataset by name. Panics on missing dataset
 /// or malformed YAML — the file is a build-time contract, not user
 /// input, so early failure is the right response.
 pub fn load_dataset_config(name: &str) -> DatasetConfig {
-    let path =
-        std::env::var("ORION_SWEEP_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("Cannot read {path}: {e}"));
-    let root: RawRoot =
-        serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("Invalid YAML in {path}: {e}"));
-    resolve_dataset(&root, name)
+    resolve_dataset(load_root(), name)
 }
 
 /// Lookup dataset by the dimension-to-name mapping the harness used
@@ -254,17 +349,17 @@ fn resolve_dataset(root: &RawRoot, name: &str) -> DatasetConfig {
         window_size: ov
             .and_then(|o| o.window_size)
             .unwrap_or(orion_d.window_size),
-        prefilter: parse_cascade_str::<crate::runner::cascade::PrefilterChoice>(
+        prefilter: parse_cascade_str::<crate::cascade::PrefilterChoice>(
             ov.and_then(|o| o.prefilter.as_deref())
                 .unwrap_or(orion_d.prefilter.as_str()),
             "prefilter",
         ),
-        admission: parse_cascade_str::<crate::runner::cascade::AdmissionChoice>(
+        admission: parse_cascade_str::<crate::cascade::AdmissionChoice>(
             ov.and_then(|o| o.admission.as_deref())
                 .unwrap_or(orion_d.admission.as_str()),
             "admission",
         ),
-        rerank: parse_cascade_str::<crate::runner::cascade::RerankChoice>(
+        rerank: parse_cascade_str::<crate::cascade::RerankChoice>(
             ov.and_then(|o| o.rerank.as_deref())
                 .unwrap_or(orion_d.rerank.as_str()),
             "rerank",
@@ -339,11 +434,7 @@ fn resolve_dataset(root: &RawRoot, name: &str) -> DatasetConfig {
             source,
             staged_file,
         },
-        sweep: SweepConfig {
-            search_list_sizes: root.defaults.sweep.search_list_sizes.clone(),
-            threads: root.defaults.sweep.threads,
-            trials: root.defaults.sweep.trials,
-        },
+        sweep: root.defaults.sweep.clone(),
     }
 }
 
@@ -352,7 +443,7 @@ fn resolve_dataset(root: &RawRoot, name: &str) -> DatasetConfig {
 /// `resolve_dataset`) fall back to a Rust in-process build path when
 /// `PA_ROOT` isn't available, instead of forcing every profile invocation
 /// to set it. Unterminated `${...}` is still a malformed-config panic.
-fn try_resolve_placeholders(s: &str) -> Option<String> {
+pub fn try_resolve_placeholders(s: &str) -> Option<String> {
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -396,6 +487,112 @@ fn parse_cascade_str<T: std::str::FromStr<Err = String>>(s: &str, axis: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sweep() -> SweepConfig {
+        serde_yaml::from_str::<RawRoot>(include_str!("../configs/sweep.yaml"))
+            .unwrap()
+            .defaults
+            .sweep
+    }
+
+    #[test]
+    fn default_schedules_preserve_top10_and_support_top100() {
+        let cfg = sweep();
+        let overrides = SweepOverrides::default();
+        let ten = cfg.resolve("sweep", 10, &overrides).unwrap();
+        assert_eq!(
+            ten.search_list_sizes,
+            vec![
+                16, 18, 20, 22, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 72, 80, 90, 100, 114,
+                128, 144, 160, 180, 200, 224, 256, 288, 320, 384, 448, 512, 640, 768, 1024,
+            ]
+        );
+        assert_eq!(
+            (
+                ten.threads,
+                ten.trials,
+                ten.calibration_samples,
+                ten.calibration_l
+            ),
+            (8, 1, 200, 48)
+        );
+        let ablation = cfg.resolve("ablation", 10, &overrides).unwrap();
+        assert_eq!(ablation.trials, 5);
+        assert_eq!(ablation.search_list_sizes.len(), 14);
+        let hundred = cfg.resolve("sweep", 100, &overrides).unwrap();
+        assert_eq!(hundred.calibration_l, 200);
+        assert_eq!(hundred.search_list_sizes[0], 100);
+        for (&k, row) in &cfg.schedules_by_k {
+            for profile in row.keys() {
+                cfg.resolve(profile, k, &overrides).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn cli_overrides_profile_and_yaml_defaults() {
+        let cfg = sweep();
+        let overrides = SweepOverrides {
+            search_list_sizes: Some(vec![64, 128]),
+            threads: Some(2),
+            trials: Some(3),
+        };
+        let resolved = cfg.resolve("ablation", 50, &overrides).unwrap();
+        assert_eq!(resolved.search_list_sizes, vec![64, 128]);
+        assert_eq!(
+            (resolved.threads, resolved.trials, resolved.calibration_l),
+            (2, 3, 100)
+        );
+        assert!(cfg
+            .resolve("sweep", 50, &SweepOverrides::default())
+            .is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_schedules_and_counts() {
+        let cfg = sweep();
+        for ls in [vec![], vec![16, 100], vec![100, 100], vec![200, 100]] {
+            let overrides = SweepOverrides {
+                search_list_sizes: Some(ls),
+                ..Default::default()
+            };
+            assert!(cfg.resolve("sweep", 100, &overrides).is_err());
+        }
+        for overrides in [
+            SweepOverrides {
+                threads: Some(0),
+                ..Default::default()
+            },
+            SweepOverrides {
+                trials: Some(0),
+                ..Default::default()
+            },
+        ] {
+            assert!(cfg.resolve("sweep", 10, &overrides).is_err());
+        }
+        let overrides = SweepOverrides {
+            search_list_sizes: Some(vec![16]),
+            ..Default::default()
+        };
+        assert!(cfg.resolve("sweep", 0, &overrides).is_err());
+    }
+
+    #[test]
+    fn calibration_values_come_from_yaml_settings() {
+        let mut cfg = sweep();
+        cfg.calibration.samples = 300;
+        cfg.calibration.base_l = 256;
+        cfg.calibration.diagnostic_l = 512;
+        let run = cfg
+            .resolve("sweep", 100, &SweepOverrides::default())
+            .unwrap();
+        assert_eq!((run.calibration_samples, run.calibration_l), (300, 256));
+        assert_eq!(cfg.calibration.diagnostic_search_list_size(100), 512);
+        cfg.calibration.samples = 0;
+        assert!(cfg
+            .resolve("sweep", 100, &SweepOverrides::default())
+            .is_err());
+    }
 
     #[test]
     fn placeholder_resolves_pa_root_env() {
