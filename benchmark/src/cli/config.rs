@@ -4,12 +4,13 @@
  */
 
 //! Resolve presets and CLI overrides before loading vectors or running search.
-use crate::config::{
-    load_root, try_resolve_placeholders, RawRoot, ResolvedSweep, SweepOverrides,
-};
-use crate::cascade::{AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric};
-use clap::Parser;
 use super::data::VectorFormat;
+use crate::cascade::{AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric};
+use crate::config::{
+    load_root, try_resolve_placeholders, RawBaseGraph, RawOrionOverride, RawRoot, ResolvedSweep,
+    SweepOverrides,
+};
+use clap::Parser;
 use serde::Serialize;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
@@ -50,7 +51,7 @@ pub struct Args {
     /// Build/import and save graph cache, then exit before calibration/search.
     #[arg(long)]
     pub prepare_only: bool,
-    /// Physical dimension in each fvecs record. Inferred from base header if omitted.
+    /// Physical vector dimension. Inferred from the selected base format if omitted.
     #[arg(long)]
     pub dimension: Option<usize>,
     #[arg(long, value_enum)]
@@ -120,8 +121,9 @@ pub struct ResolvedRunConfig {
     pub legacy_local_pct: usize,
 }
 
+/// Compatibility settings from older shell-based benchmark workflows.
 #[derive(Default)]
-struct Environment {
+struct LegacyEnvironment {
     graph_source: Option<GraphSource>,
     staged_file: Option<PathBuf>,
     pa_root: Option<PathBuf>,
@@ -129,7 +131,7 @@ struct Environment {
     profiling: bool,
 }
 
-impl Environment {
+impl LegacyEnvironment {
     fn read() -> Result<Self, String> {
         Ok(Self {
             graph_source: std::env::var("ORION_GRAPH")
@@ -158,10 +160,8 @@ fn parse_graph_source(s: &str) -> Result<GraphSource, String> {
 }
 
 impl Args {
-    /// Only YAML file is valid under current version. The input standard should be a superset of
-    /// the example config file listed in `configs/sweep.yaml` which means that every element showed
-    /// in the example file is needed. Append a new configuration for frequently used dataset in
-    /// `configs/sweep.yaml` is a recommended option.
+    /// Merge a YAML preset, legacy environment settings, and explicit CLI overrides.
+    /// This resolves settings only; payload loading and export validation happen later.
     pub fn resolve(&self) -> Result<ResolvedRunConfig, String> {
         let custom_root: Option<RawRoot> = self
             .config
@@ -174,12 +174,16 @@ impl Args {
             .transpose()?;
         self.resolve_with(
             custom_root.as_ref().unwrap_or_else(|| load_root()),
-            &Environment::read()?,
+            &LegacyEnvironment::read()?,
         )
     }
 
-    fn resolve_with(&self, root: &RawRoot, env: &Environment) -> Result<ResolvedRunConfig, String> {
-        // May change the default dataset chosen strategy in the future.
+    fn resolve_with(
+        &self,
+        root: &RawRoot,
+        env: &LegacyEnvironment,
+    ) -> Result<ResolvedRunConfig, String> {
+        // Preserve the no-argument SIFT shortcut, but never assign it to custom paths.
         let dataset = self.dataset.clone().or_else(|| {
             if self.base.is_none() && self.query.is_none() && self.groundtruth.is_none() {
                 Some("sift".into())
@@ -187,11 +191,19 @@ impl Args {
                 None
             }
         });
-        let preset = dataset.as_ref().map(|name| root.datasets.get(name)
-            .ok_or_else(|| format!("unknown dataset shortcut {name:?}; add a YAML entry or omit the name and supply paths")))
+        let preset = dataset
+            .as_ref()
+            .map(|name| {
+                root.datasets.get(name).ok_or_else(|| {
+                    format!(
+                        "unknown dataset shortcut {name:?}; add a YAML entry or omit the name and supply paths"
+                    )
+                })
+            })
             .transpose()?;
         let paths = preset.and_then(|p| p.paths.as_ref());
 
+        // Explicit paths override only the corresponding preset path.
         let required_path = |cli: &Option<PathBuf>, default: Option<&String>, flag: &str| {
             cli.clone()
                 .or_else(|| default.map(PathBuf::from))
@@ -205,11 +217,21 @@ impl Args {
             "groundtruth",
         )?;
 
-        let base_format = self.base_format.map(Ok).unwrap_or_else(|| VectorFormat::infer(&base))?;
-        let query_format = self.query_format.map(Ok).unwrap_or_else(|| VectorFormat::infer(&query))?;
-        if self.memory_budget_gib.is_some_and(|x| !x.is_finite() || x <= 0.) {
+        let base_format = self
+            .base_format
+            .map(Ok)
+            .unwrap_or_else(|| VectorFormat::infer(&base))?;
+        let query_format = self
+            .query_format
+            .map(Ok)
+            .unwrap_or_else(|| VectorFormat::infer(&query))?;
+        if self
+            .memory_budget_gib
+            .is_some_and(|x| !x.is_finite() || x <= 0.)
+        {
             return Err("--memory-budget-gib must be finite and positive".into());
         }
+
         let metric = self
             .metric
             .or_else(|| preset.and_then(|p| p.metric))
@@ -218,59 +240,40 @@ impl Args {
             )?;
         let dimension = match self.dimension.or_else(|| preset.map(|p| p.dimension)) {
             Some(d) => d,
-            None => super::data::inspect(&base, base_format)?.dimension,
+            None => super::data::inspect_vector_file(&base, base_format)?.dimension,
         };
         crate::with_supported_dimension!(dimension, |D| Ok::<_, String>(D))?;
 
         let defaults = &root.defaults.orion;
-        let ov = preset.and_then(|p| p.orion.as_ref());
-        let mut cascade = Cascade::default_for_specified_dimension_and_metric(dimension, metric);
-        if let Some(o) = ov {
-            if let Some(v) = &o.prefilter {
-                cascade.prefilter = v.parse()?;
-            }
-            if let Some(v) = &o.admission {
-                cascade.admission = v.parse()?;
-            }
-            if let Some(v) = &o.rerank {
-                cascade.rerank = v.parse()?;
-            }
-        }
-        if let Some(v) = self.prefilter {
-            cascade.prefilter = v;
-        }
-        if let Some(v) = self.admission {
-            cascade.admission = v;
-        }
-        if let Some(v) = self.rerank {
-            cascade.rerank = v;
-        }
-        cascade.validate_cascade_options(metric)?;
+        let dataset_overrides = preset.and_then(|p| p.orion.as_ref());
+        let cascade = self.resolve_cascade(dimension, metric, dataset_overrides)?;
 
+        // Construction settings use CLI > dataset override > global default.
         let alpha = self
             .alpha
-            .or_else(|| ov.and_then(|o| o.alpha))
+            .or_else(|| dataset_overrides.and_then(|o| o.alpha))
             .unwrap_or(defaults.alpha);
         let graph_degree = self
             .graph_degree
-            .or_else(|| ov.and_then(|o| o.graph_degree))
+            .or_else(|| dataset_overrides.and_then(|o| o.graph_degree))
             .unwrap_or(defaults.graph_degree);
         let build_l = self
             .build_l
-            .or_else(|| ov.and_then(|o| o.build_search_list_size))
+            .or_else(|| dataset_overrides.and_then(|o| o.build_search_list_size))
             .unwrap_or(defaults.build_search_list_size);
         let max_extra = self
             .max_extra
-            .or_else(|| ov.and_then(|o| o.max_extra))
+            .or_else(|| dataset_overrides.and_then(|o| o.max_extra))
             .unwrap_or(defaults.max_extra);
         let window_size = self
             .window_size
-            .or_else(|| ov.and_then(|o| o.window_size))
+            .or_else(|| dataset_overrides.and_then(|o| o.window_size))
             .unwrap_or(defaults.window_size);
         let max_points = self
             .max_points
             .or(self.legacy_max_points)
             .unwrap_or(usize::MAX);
+
         if !alpha.is_finite()
             || alpha <= 0.0
             || graph_degree == 0
@@ -285,50 +288,13 @@ impl Args {
             return Err("window-size must be 1..=64 and max-points positive".into());
         }
 
-        let bg = if preset.is_some() {
-            preset.and_then(|p| p.base_graph.as_ref())
-        } else {
-            None
-        };
+        let (graph_source, staged_file, staged_file_explicit) = self.resolve_graph_source(
+            preset.and_then(|dataset| dataset.base_graph.as_ref()),
+            env,
+            max_extra,
+        )?;
 
-        let explicit_source = self
-            .graph_source
-            .or_else(|| self.staged_file.as_ref().map(|_| GraphSource::Parlayann))
-            .or(env.graph_source)
-            .or_else(|| env.staged_file.as_ref().map(|_| GraphSource::Parlayann));
-        let graph_source = explicit_source.unwrap_or(
-            bg.and_then(|b| b.source.as_deref())
-                .map(parse_graph_source)
-                .transpose()?
-                .unwrap_or(GraphSource::Rust),
-        );
-        let staged_file_explicit = self.staged_file.is_some() || env.staged_file.is_some();
-        let pa_root = env
-            .pa_root
-            .as_deref()
-            .unwrap_or(std::path::Path::new("../ParlayANN"));
-        let staged_file = self
-            .staged_file
-            .clone()
-            .or_else(|| env.staged_file.clone())
-            .or_else(|| {
-                bg.and_then(|b| b.staged_file.as_ref())
-                    .and_then(|s| {
-                        try_resolve_placeholders(
-                            &s
-                                .replace("${max_extra}", &max_extra.to_string())
-                                .replace("${PA_ROOT}", &pa_root.to_string_lossy()),
-                        )
-                    })
-                    .map(PathBuf::from)
-            });
-
-        // An export is an import dependency, not a cache-loading dependency.
-        // Validate it only after the runtime cache lookup misses.
-
-        if graph_source == GraphSource::Rust && self.staged_file.is_some() {
-            return Err("--staged-file conflicts with --graph-source rust".into());
-        }
+        // Profiling supplies a trial count only when the CLI did not specify one.
         let mut overrides = self.sweep.clone();
         if overrides.trials.is_none() && env.profiling {
             overrides.trials = root
@@ -349,7 +315,8 @@ impl Args {
             base,
             query,
             groundtruth,
-            base_format, query_format,
+            base_format,
+            query_format,
             memory_budget_gib: self.memory_budget_gib,
             prepare_only: self.prepare_only,
             dimension,
@@ -376,27 +343,108 @@ impl Args {
             legacy_dataset: None,
             legacy_local_pct: env.legacy_local_pct.unwrap_or(60),
         };
+
+        // Derive cache identities only after every effective setting is resolved.
         run.legacy_dataset = run.matching_legacy_preset();
-        run.cache_namespace = run.cache_identity();
+        run.cache_namespace = run.compute_cache_namespace();
 
         Ok(run)
     }
-}
 
-pub fn read_dimension(path: &std::path::Path) -> Result<usize, String> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut bytes = [0; 4];
-    file.read_exact(&mut bytes)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(u32::from_le_bytes(bytes) as usize)
+    /// Select by dimension/metric first, then overlay dataset axes and explicit flags.
+    /// Do not apply global cascade defaults here: unspecified datasets use the selector.
+    fn resolve_cascade(
+        &self,
+        dimension: usize,
+        metric: SearchMetric,
+        dataset_overrides: Option<&RawOrionOverride>,
+    ) -> Result<Cascade, String> {
+        let mut cascade = Cascade::default_for_specified_dimension_and_metric(dimension, metric);
+        if let Some(o) = dataset_overrides {
+            if let Some(v) = &o.prefilter {
+                cascade.prefilter = v.parse()?;
+            }
+            if let Some(v) = &o.admission {
+                cascade.admission = v.parse()?;
+            }
+            if let Some(v) = &o.rerank {
+                cascade.rerank = v.parse()?;
+            }
+        }
+
+        // Explicit axes win over both the selector and the dataset preset.
+        if let Some(v) = self.prefilter {
+            cascade.prefilter = v;
+        }
+        if let Some(v) = self.admission {
+            cascade.admission = v;
+        }
+        if let Some(v) = self.rerank {
+            cascade.rerank = v;
+        }
+
+        cascade.validate_cascade_options(metric)?;
+
+        Ok(cascade)
+    }
+
+    /// Source precedence: CLI source/export, environment source/export, then YAML.
+    /// Resolve the export path without opening it: a cache hit can outlive its export.
+    fn resolve_graph_source(
+        &self,
+        preset_graph: Option<&RawBaseGraph>,
+        env: &LegacyEnvironment,
+        max_extra: usize,
+    ) -> Result<(GraphSource, Option<PathBuf>, bool), String> {
+        let explicit_source = self
+            .graph_source
+            .or_else(|| self.staged_file.as_ref().map(|_| GraphSource::Parlayann))
+            .or(env.graph_source)
+            .or_else(|| env.staged_file.as_ref().map(|_| GraphSource::Parlayann));
+        let graph_source = explicit_source.unwrap_or(
+            preset_graph
+                .and_then(|b| b.source.as_deref())
+                .map(parse_graph_source)
+                .transpose()?
+                .unwrap_or(GraphSource::Rust),
+        );
+
+        let staged_file_explicit = self.staged_file.is_some() || env.staged_file.is_some();
+        let pa_root = env
+            .pa_root
+            .as_deref()
+            .unwrap_or(std::path::Path::new("../ParlayANN"));
+        let staged_file = self
+            .staged_file
+            .clone()
+            .or_else(|| env.staged_file.clone())
+            .or_else(|| {
+                preset_graph
+                    .and_then(|b| b.staged_file.as_ref())
+                    .and_then(|s| {
+                        try_resolve_placeholders(
+                            &s.replace("${max_extra}", &max_extra.to_string())
+                                .replace("${PA_ROOT}", &pa_root.to_string_lossy()),
+                        )
+                    })
+                    .map(PathBuf::from)
+            });
+
+        if graph_source == GraphSource::Rust && self.staged_file.is_some() {
+            return Err("--staged-file conflicts with --graph-source rust".into());
+        }
+        Ok((graph_source, staged_file, staged_file_explicit))
+    }
 }
 
 impl ResolvedRunConfig {
     fn matching_legacy_preset(&self) -> Option<String> {
         // A custom YAML entry called "sift" is not evidence of the old cache's identity.
-        let bundled: RawRoot = serde_yaml::from_str(include_str!("../../configs/sweep.yaml")).ok()?;
-        if self.base_format != VectorFormat::Fvecs { return None; }
+        let bundled: RawRoot =
+            serde_yaml::from_str(include_str!("../../configs/sweep.yaml")).ok()?;
+        if self.base_format != VectorFormat::Fvecs {
+            return None;
+        }
         let name = self.dataset.as_ref()?;
         let preset = bundled.datasets.get(name)?;
         let paths = preset.paths.as_ref()?;
@@ -423,8 +471,8 @@ impl ResolvedRunConfig {
         Some(name.clone())
     }
 
-    fn cache_identity(&self) -> String {
-        fn identity(path: &std::path::Path) -> (PathBuf, Option<u64>, Option<u128>) {
+    fn compute_cache_namespace(&self) -> String {
+        fn base_file_identity(path: &std::path::Path) -> (PathBuf, Option<u64>, Option<u128>) {
             let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| {
                 if path.is_absolute() {
                     path.to_owned()
@@ -442,9 +490,12 @@ impl ResolvedRunConfig {
                 .map(|d| d.as_nanos());
             (absolute, meta.map(|m| m.len()), modified)
         }
-        // Versioned namespace: never interpret a legacy name-only cache as custom data.
+
+        // Keep tuple order, field encoding, and the v3 prefix stable: these bytes
+        // determine existing cache filenames. Query inputs intentionally do not
+        // participate because they do not change the stored graph.
         let descriptor = serde_json::to_vec(&(
-            identity(&self.base),
+            base_file_identity(&self.base),
             self.dimension,
             self.metric,
             self.alpha,
@@ -477,7 +528,7 @@ mod tests {
     fn resolve(args: &[&str]) -> Result<ResolvedRunConfig, String> {
         Args::try_parse_from(args)
             .map_err(|e| e.to_string())?
-            .resolve_with(&root(), &Environment::default())
+            .resolve_with(&root(), &LegacyEnvironment::default())
     }
 
     #[test]
@@ -666,7 +717,7 @@ mod tests {
         );
         let c = Args::try_parse_from(["orion", "new"])
             .unwrap()
-            .resolve_with(&root, &Environment::default())
+            .resolve_with(&root, &LegacyEnvironment::default())
             .unwrap();
         assert_eq!(
             c.cascade,
@@ -677,7 +728,7 @@ mod tests {
     #[test]
     fn cli_graph_source_overrides_legacy_environment() {
         let args = Args::try_parse_from(["orion", "sift", "--graph-source", "rust"]).unwrap();
-        let env = Environment {
+        let env = LegacyEnvironment {
             graph_source: Some(GraphSource::Parlayann),
             staged_file: Some("import.staged".into()),
             ..Default::default()
@@ -694,19 +745,21 @@ mod tests {
     #[test]
     fn cache_identity_includes_metric_and_exact_alpha() {
         let mut c = resolve(&["orion", "sift", "--graph-source", "rust"]).unwrap();
-        let original = c.cache_identity();
+        let original = c.compute_cache_namespace();
         c.alpha += 0.001;
-        assert_ne!(original, c.cache_identity());
+        assert_ne!(original, c.compute_cache_namespace());
         c.metric = SearchMetric::InnerProduct;
-        let ip = c.cache_identity();
+        let ip = c.compute_cache_namespace();
         c.metric = SearchMetric::Cosine;
-        assert_ne!(ip, c.cache_identity());
+        assert_ne!(ip, c.compute_cache_namespace());
     }
 
     #[test]
     fn pa_root_is_optional_and_does_not_identify_the_cache() {
         let args = Args::try_parse_from(["orion", "sift", "--graph-source", "parlayann"]).unwrap();
-        let default = args.resolve_with(&root(), &Environment::default()).unwrap();
+        let default = args
+            .resolve_with(&root(), &LegacyEnvironment::default())
+            .unwrap();
         assert_eq!(default.graph_source, GraphSource::Parlayann);
         assert!(default
             .staged_file
@@ -716,7 +769,7 @@ mod tests {
         let elsewhere = args
             .resolve_with(
                 &root(),
-                &Environment {
+                &LegacyEnvironment {
                     pa_root: Some("/different/checkout".into()),
                     ..Default::default()
                 },
@@ -745,7 +798,9 @@ mod tests {
             "parlayann",
         ])
         .unwrap();
-        let config = args.resolve_with(&root(), &Environment::default()).unwrap();
+        let config = args
+            .resolve_with(&root(), &LegacyEnvironment::default())
+            .unwrap();
         assert_eq!(config.graph_source, GraphSource::Parlayann);
         assert!(config.staged_file.is_none());
         assert!(config.legacy_dataset.is_none());
@@ -768,7 +823,7 @@ mod tests {
             .base = "different.fvecs".into();
         let args = Args::try_parse_from(["orion", "sift"]).unwrap();
         let config = args
-            .resolve_with(&custom_root, &Environment::default())
+            .resolve_with(&custom_root, &LegacyEnvironment::default())
             .unwrap();
         assert!(config.legacy_dataset.is_none());
     }
