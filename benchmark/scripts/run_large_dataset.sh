@@ -13,7 +13,7 @@ TRIALS="${TRIALS:-3}"
 # Stage flags are controlled by this script; reject conflicting passthrough flags.
 for arg in "$@"; do
   case "$arg" in
-    --preflight|--prepare-only|--print-config|--k|--k=*|--threads|--threads=*|--trials|--trials=*)
+    --preflight|--preflight-format|--preflight-format=*|--prepare-only|--print-config|--k|--k=*|--threads|--threads=*|--trials|--trials=*)
       echo "Do not pass stage/k/thread/trial flags; use THREADS and TRIALS variables" >&2; exit 2 ;;
   esac
 done
@@ -33,7 +33,7 @@ case "$(uname -s)" in
   Darwin) time_flags=(-l) ;;
   *) echo "Unsupported timing platform" >&2; exit 2 ;;
 esac
-"$BIN" "$@" --k 100 --threads "$THREADS" --trials "$TRIALS" --preflight > "$RUN_DIR/preflight.json" 2> "$RUN_DIR/preflight.log"
+"$BIN" "$@" --k 100 --threads "$THREADS" --trials "$TRIALS" --preflight --preflight-format json > "$RUN_DIR/preflight.json" 2> "$RUN_DIR/preflight.log"
 /usr/bin/time "${time_flags[@]}" "$BIN" "$@" --threads "$THREADS" --prepare-only \
   > "$RUN_DIR/prepare.stdout" 2> "$RUN_DIR/prepare.log"
 for k in 10 100; do

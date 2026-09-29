@@ -100,8 +100,9 @@ and explain that requirement explicitly.
 
 ## Memory preflight
 
-`--preflight` emits a JSON report and a readable component breakdown without
-loading the base or graph. Exceeding `--memory-budget-gib` returns a nonzero exit
+`--preflight` shows a comfy-table memory breakdown in a terminal without
+loading the base or graph. Redirected stdout remains JSON for scripts. Use
+`--preflight-format table` or `--preflight-format json` to choose explicitly. Exceeding `--memory-budget-gib` returns a nonzero exit
 status but preserves the complete report. It includes:
 
 - base, graph slab, reader counters, and the known L2U8 admission sidecar;
@@ -114,7 +115,28 @@ Unknown entries are not zero. The accounted search lower bound is not a peak-RSS
 prediction; construction/import and search have different memory lifetimes.
 Streaming input counts can remain unknown, while their buffer sizes are bounded.
 
+Known presets support offline planning before any files have been downloaded:
+
 ```bash
-./target/release/orion sift100m --staged-file /data/sift100m.staged \
-  --memory-budget-gib 32 --preflight
+./target/release/orion sift1b --preflight
+./target/release/orion sift1b --preflight --preflight-format table
+./target/release/orion sift1b --preflight --preflight-format json > preflight.json
+./target/release/orion-sweep sift1b --preflight --memory-budget-gib 650
 ```
+
+YAML `num_points` and `num_queries` describe source-file row counts. `max_points`
+is a separate loading limit: SIFT10M/100M share a declared 1B-row base but load
+only their configured prefixes. An explicit `--base` or `--query` discards the
+corresponding preset count; a missing custom base needs its own YAML declaration.
+
+Available vector headers must agree with the declared counts and dimensions.
+Existing cache/export headers determine graph layout; absent graph files use the
+configured degree/extras. Missing files are allowed for planning, but corrupt
+files or conflicting metadata fail. Ordinary search and preparation still
+require their inputs; a successful estimate does not certify file readiness.
+
+The report includes `metadata_sources` and per-component `source` labels. Without
+`--memory-budget-gib` it only reports sizes. With a budget, known accounted bytes
+above the limit fail; a lower estimate is not a guarantee that the run will fit.
+If query count is unknown for a sweep, replay-buffer sizes are `null`, not zero.
+Streaming search still estimates its bounded query batches.

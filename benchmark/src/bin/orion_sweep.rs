@@ -453,12 +453,12 @@ fn execute(args: Args) -> Result<(), String> {
         log::info!("{resolved}");
         return Ok(());
     }
-    log::info!("Run settings: {resolved}");
     if args.preflight {
         let report = cli::resources::preflight_report(&config)?;
-        println!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+        cli::resources::print_report(&report, args.preflight_format)?;
         return cli::resources::enforce_budget(&report);
     }
+    log::info!("Run settings: {resolved}");
     match config.search_plan() {
         SearchPlan::F32Cascade { .. } => {
             let data = LoadedDataset::<f32>::load(&config)?;

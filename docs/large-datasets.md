@@ -100,8 +100,10 @@ cargo build --release -p benchmark --bin orion-sweep
 ```
 
 The 650 GiB budget is an example for a 768 GiB machine, not a validated peak
-requirement. `--preflight` reads headers and resolves graph provenance without
-loading vectors. Its lower bound includes the resident base, graph slab, node
+requirement. `orion sift1b --preflight` can estimate from YAML alone, before
+downloading data or exporting a graph. Available headers validate the declared
+counts and supply the actual graph layout; missing files use configuration
+assumptions labeled in the report. Its lower bound includes the resident base, graph slab, node
 reader counters, and any separate L2U8 admission buffer. Native-u8 reports
 `base_f32_bytes=0` and `l2_u8_admission_bytes=0`; its byte base is counted once.
 Construction, query scratch, allocator overhead, and OS memory need additional

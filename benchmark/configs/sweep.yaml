@@ -82,8 +82,12 @@ defaults:
 # `../ParlayANN`, relative to the repo root). Keep user-specific
 # absolute paths out of this file so the config stays portable.
 
+# Counts describe source files, while max_points limits the loaded prefix.
+# Offline preflight uses these declarations; available file headers validate them.
 datasets:
   sift10m:
+    num_points: 1000000000
+    num_queries: 10000
     dimension: 128
     metric: l2
     # Reuse the BIGANN base file; the export and GT must match this exact prefix.
@@ -106,6 +110,8 @@ datasets:
       admission: native-l2-u8
       rerank: none
   sift100m:
+    num_points: 1000000000
+    num_queries: 10000
     dimension: 128
     metric: l2
     # Reuse the BIGANN base file; the export and GT must match this exact prefix.
@@ -128,6 +134,8 @@ datasets:
       admission: native-l2-u8
       rerank: none
   sift1b:
+    num_points: 1000000000
+    num_queries: 10000
     dimension: 128
     metric: l2
     # Reuse the BIGANN base file; the export and GT must match this exact prefix.
@@ -150,6 +158,8 @@ datasets:
       admission: native-l2-u8
       rerank: none
   sift:
+    num_points: 1000000
+    num_queries: 10000
     dimension: 128
     metric: l2
     paths:
@@ -171,6 +181,8 @@ datasets:
       admission: l2-u8
       rerank: f32
   glove25:
+    num_points: 1183514
+    num_queries: 10000
     dimension: 32
     metric: inner-product
     paths:
@@ -194,6 +206,8 @@ datasets:
       admission: mips-i8
       rerank: ip-f32
   glove100:
+    num_points: 1183514
+    num_queries: 10000
     dimension: 100
     metric: inner-product
     paths:
@@ -216,6 +230,8 @@ datasets:
       admission: mips-i8
       rerank: ip-f32
   gist:
+    num_points: 1000000
+    num_queries: 1000
     dimension: 960
     metric: l2
     paths:
@@ -243,6 +259,8 @@ datasets:
       admission: l2-kt
       rerank: f32
   deep10m:
+    num_points: 10000000
+    num_queries: 10000
     dimension: 128
     metric: l2
     paths:
@@ -269,6 +287,8 @@ datasets:
       admission: l2-u8
       rerank: f32
   fashion-mnist:
+    num_points: 60000
+    num_queries: 10000
     dimension: 784
     metric: l2
     paths:
@@ -293,6 +313,8 @@ datasets:
       admission: l2-kt
       rerank: f32
   msmarco_bert_1M:
+    num_points: 1000000
+    num_queries: 10000
     dimension: 768
     metric: inner-product
     paths:
@@ -322,6 +344,8 @@ datasets:
       admission: mips-i8
       rerank: ip-f32
   wiki_ada_1M:
+    num_points: 1000000
+    num_queries: 10000
     dimension: 1536
     metric: inner-product
     paths:

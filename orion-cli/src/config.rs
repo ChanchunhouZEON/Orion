@@ -225,6 +225,9 @@ pub struct RawOrionDefaults {
 
 #[derive(Deserialize, Default, Debug)]
 pub struct RawDataset {
+    /// Declared source-file counts for offline resource planning.
+    pub num_points: Option<usize>,
+    pub num_queries: Option<usize>,
     pub max_points: Option<usize>,
     pub dimension: usize,
     pub metric: Option<crate::cascade::SearchMetric>,
