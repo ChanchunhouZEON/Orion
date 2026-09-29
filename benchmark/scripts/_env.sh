@@ -24,7 +24,7 @@ setup_python_env() {
   # Candidate interpreters. User-provided $PY wins; otherwise scan a
   # small ordered list. PATH `python3` first so an active virtualenv
   # is honored without ceremony.
-  local candidates
+  local cand candidates
   if [[ -n "${PY:-}" ]]; then
     candidates=("$PY")
   else

@@ -14,14 +14,21 @@ in ParlayANN's `.bin` gt format:
 
 import argparse
 import numpy as np
+from benchmark_support import exact_top_k
 
 
 def read_fbin(path):
-    with open(path, "rb") as f:
-        hdr = np.frombuffer(f.read(8), dtype=np.uint32)
-        n, d = int(hdr[0]), int(hdr[1])
-        arr = np.frombuffer(f.read(), dtype=np.float32).reshape(n, d)
-    return arr
+    """Map validated little-endian fbin input without copying the whole base."""
+    from pathlib import Path
+    import struct
+    with open(path, "rb") as stream:
+        header = stream.read(8)
+    if len(header) != 8:
+        raise ValueError(f"{path}: missing fbin header")
+    n, d = struct.unpack("<II", header)
+    if not n or not d or Path(path).stat().st_size != 8 + n * d * 4:
+        raise ValueError(f"{path}: invalid fbin shape or payload length")
+    return np.memmap(path, dtype="<f4", mode="r", offset=8, shape=(n, d))
 
 
 def main():
@@ -32,6 +39,7 @@ def main():
     ap.add_argument("-k", type=int, default=100)
     ap.add_argument("--chunk", type=int, default=8192,
                     help="Base rows per distance-matrix chunk")
+    ap.add_argument("--metric", choices=("l2", "ip", "cos"), default="l2")
     args = ap.parse_args()
 
     base = read_fbin(args.base_fbin)
@@ -40,46 +48,12 @@ def main():
     nq = query.shape[0]
     print(f"base: {nb} × {d}   query: {nq} × {d}   k={args.k}")
 
-    # ‖a − b‖² = ‖a‖² + ‖b‖² − 2 a·b. Keeps a chunked matmul kernel fast.
-    base_norm2 = (base * base).sum(axis=1)
-    q_norm2 = (query * query).sum(axis=1)
-
-    top_ids = np.zeros((nq, args.k), dtype=np.uint32)
-    top_d = np.full((nq, args.k), np.inf, dtype=np.float32)
-
-    for s in range(0, nb, args.chunk):
-        e = min(s + args.chunk, nb)
-        chunk = base[s:e]                                       # [c, d]
-        # d² = q_norm² + b_norm² − 2 q·b  (shape [nq, c])
-        cross = query @ chunk.T
-        d2 = q_norm2[:, None] + base_norm2[None, s:e] - 2.0 * cross
-
-        # Merge this chunk's distances against the running top-k.
-        # `cur` concatenates old top-k with this chunk's distances, then
-        # argpartition picks the new top-k.
-        cur_d = np.concatenate([top_d, d2], axis=1)
-        cur_ids = np.concatenate(
-            [top_ids, np.broadcast_to(np.arange(s, e, dtype=np.uint32),
-                                      (nq, e - s))],
-            axis=1,
-        )
-        idx = np.argpartition(cur_d, args.k, axis=1)[:, : args.k]
-        # Advanced-index back into cur_d and cur_ids
-        rows = np.arange(nq)[:, None]
-        top_d = cur_d[rows, idx]
-        top_ids = cur_ids[rows, idx]
-        if (s // args.chunk) % 4 == 0:
-            print(f"  processed {e}/{nb}")
-
-    # Sort each row's top-k by distance ascending.
-    order = np.argsort(top_d, axis=1)
-    top_d = np.take_along_axis(top_d, order, axis=1)
-    top_ids = np.take_along_axis(top_ids, order, axis=1)
+    top_ids, top_d = exact_top_k(base, query, args.k, args.metric, args.chunk)
 
     with open(args.out, "wb") as f:
-        f.write(np.array([nq, args.k], dtype=np.uint32).tobytes())
-        f.write(top_ids.astype(np.uint32, copy=False).tobytes())
-        f.write(top_d.astype(np.float32, copy=False).tobytes())
+        f.write(np.array([nq, args.k], dtype="<u4").tobytes())
+        f.write(top_ids.astype("<u4", copy=False).tobytes())
+        f.write(top_d.astype("<f4", copy=False).tobytes())
     print(f"wrote {args.out}: {nq} × {args.k}")
 
 

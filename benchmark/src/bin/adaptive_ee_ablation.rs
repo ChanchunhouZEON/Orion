@@ -1,14 +1,13 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Same-graph 2x2 neighbor-switching / early-exit experiment.
-#[path = "../runner/cascade.rs"]
-mod cascade;
-#[path = "../cli/mod.rs"]
-mod cli;
-#[path = "../config.rs"]
-mod config;
-#[path = "../runner/parlayann_bridge.rs"]
-mod parlayann_bridge;
-#[path = "../utils.rs"]
-mod utils;
+use orion_cli::cascade;
+use orion_cli::cli;
+use orion_cli::with_supported_dimension;
+use orion_cli::utils;
 
 use clap::Parser;
 use orion::algorithm::search::diagnostics::{NeighborMode, NoopObserver, PhaseWork, SynergyTrace};
@@ -79,13 +78,18 @@ fn run<const N: usize>(
 where
     [f32; N]: vector::FullPrecisionDistance<f32, N>,
 {
+    if config.prepare_only {
+        cli::index::load_index::<N>(config, &mut data)?;
+        return Ok(());
+    }
+    let ground_truth = data.ground_truth.take().ok_or("this diagnostic requires --groundtruth; ordinary orion search does not")?;
     let settings = &config.sweep;
     let output = args
         .output
         .clone()
         .unwrap_or_else(
             || PathBuf::from(format!("visualizations/adaptive_ee_ablation_{}_k{}.json",
-               config.dataset.as_deref().unwrap_or("custom"), settings.k, )));
+               config.dataset.as_str(), settings.k, )));
 
     if output.exists() {
         return Err(format!("Refusing to overwrite {}", output.display()));
@@ -103,15 +107,16 @@ where
         .iter()
         .map(|q| q.as_slice().try_into().expect("validated dimension"))
         .collect();
-    if queries.is_empty() || settings.k == 0 || data.ground_truth.len() != queries.len()
-        || data.ground_truth.iter().any(|gt| gt.len() < settings.k)
+    if queries.is_empty() || settings.k == 0 || ground_truth.len() != queries.len()
+        || ground_truth.iter().any(|gt| gt.len() < settings.k)
     {
         return Err("Nonempty queries and at least k ground-truth targets per query are required".into());
     }
 
 
     let idx = cli::index::load_index::<N>(config, &mut data)?;
-    if config.prepare_only { return Ok(()); }
+
+
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(settings.threads)
@@ -126,9 +131,9 @@ where
     let ee_limit = args.ee_limit.unwrap_or(calib.early_exit_limit);
     log::info!("Shared calibration: threshold={}, EE limit={ee_limit}", calib.threshold);
 
-    let pf = cascade::build_prefilter(&idx, config.cascade.prefilter, config.cascade.admission);
-    let ad = cascade::build_admission(&idx, config.cascade.admission);
-    let rr = cascade::build_rerank(&idx, config.cascade.rerank);
+    let pf = cascade::build_prefilter(&idx, config.search_plan().cascade().prefilter, config.search_plan().cascade().admission);
+    let ad = cascade::build_admission(&idx, config.search_plan().cascade().admission).map_err(|e| e.to_string())?;
+    let rr = cascade::build_rerank(&idx, config.search_plan().cascade().rerank);
 
     let count =
         if args.diagnostic_queries == 0 { queries.len() }
@@ -146,7 +151,7 @@ where
         let mut arms = Vec::new();
         for arm in ARMS {
             let rows: Result<Vec<Value>, String> = pool.install(|| sample.par_iter().map(|&qi| {
-                let truth = &data.ground_truth[qi][..settings.k];
+                let truth = &ground_truth[qi][..settings.k];
                 let mut trace = SynergyTrace::default();
                 let ids = idx
                     .search_unified_observed(
@@ -165,7 +170,7 @@ where
                     return Err(format!("Observer changed results: query={qi}, L={l}, arm={}", arm.name));
                 }
 
-                let rerank = if config.cascade.rerank == cascade::RerankChoice::None { 0 }
+                let rerank = if config.search_plan().cascade().rerank == cascade::RerankChoice::None { 0 }
                     else { trace.rerank_candidates };
 
                 Ok(json!({
@@ -258,7 +263,7 @@ where
                 let start = Instant::now();
                 let ids = batch(ARMS[a])?;
                 qps[a].push(queries.len() as f64 / start.elapsed().as_secs_f64());
-                recalls[a] = ids.iter().zip(&data.ground_truth)
+                recalls[a] = ids.iter().zip(&ground_truth)
                     .map(|(ids, gt)|
                         recall(ids, &gt[..settings.k]))
                     .sum::<f64>() / queries.len() as f64;
@@ -363,7 +368,7 @@ fn execute(args: AdaptiveEeAblationArgs) -> Result<(), String> {
     if matches!(args.ee_limit, Some(0 | usize::MAX)) {
         return Err("ee-limit must be in [1, usize::MAX)".into());
     }
-    let config = args.run.resolve()?;
+    let config = args.run.resolve_for_sweep()?;
     if args.run.print_config {
         println!("{}", serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?);
         return Ok(());

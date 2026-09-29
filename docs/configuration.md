@@ -63,7 +63,7 @@ When `base_graph.source: parlayann`, the `orion.{R, α, L_build, max_extra}` par
 
 ### `metric` field vs the cascade
 
-The per-dataset `orion.metric` field carries the legacy 4-way enum (`l2 / l2-q / mips / mips-q`) consumed by the `build-profile` / `memory-profile` harnesses inside the `benchmark` binary. The production `orion` bin **does not read this field** — it picks the search-time triple from `Cascade::default_for_dataset` in `benchmark/src/bin/orion.rs`, which can be overridden per-invocation via `--prefilter / --admission / --rerank`. See [Per-dataset default cascade](#per-dataset-default-cascade) for the production mapping.
+The per-dataset `orion.metric` field carries the legacy 4-way enum (`l2 / l2-q / mips / mips-q`) consumed by the `build-profile` / `memory-profile` harnesses inside the `benchmark` binary. The production `orion` bin **does not read this field** — it picks the search-time triple from `Cascade::default_for_specified_dimension_and_metric` in `orion-cli/src/cascade.rs`, which can be overridden per-invocation via `--prefilter / --admission / --rerank`. See [Per-dataset default cascade](#per-dataset-default-cascade) for the production mapping.
 
 ### Auto-Calibration
 

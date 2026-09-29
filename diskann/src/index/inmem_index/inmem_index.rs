@@ -125,7 +125,7 @@ where
     }
 
     fn build_with_data_populated(&mut self) -> ANNResult<()> {
-        println!(
+        log::info!(
             "Starting index build with {} points...",
             self.num_active_pts
         );
@@ -169,6 +169,14 @@ where
             self.start = self.dataset.calculate_medoid_point_id()?;
         }
 
+        // Establish an edge to the entry before parallel insertion. Otherwise
+        // the entry can be processed while the graph is still empty, leaving
+        // only itself in the candidate pool and producing an empty prune list.
+        let seed = visit_order.iter().copied().find(|&id| id != self.start);
+        if let Some(seed) = seed {
+            self.insert_vertex_id(seed)?;
+        }
+
         let timer = Timer::new();
 
         let range = visit_order.len();
@@ -178,7 +186,9 @@ where
             0..range,
             self.configuration.index_write_parameter.num_threads,
             |idx| {
-                self.insert_vertex_id(visit_order[idx])?;
+                if Some(visit_order[idx]) != seed && seed.is_some() {
+                    self.insert_vertex_id(visit_order[idx])?;
+                }
                 logger.vertex_processed()?;
 
                 Ok(())
@@ -188,7 +198,7 @@ where
         self.cleanup_graph(&visit_order)?;
 
         if self.num_active_pts > 0 {
-            println!("{}", timer.elapsed_seconds_for_step("Link time: "));
+            log::info!("{}", timer.elapsed_seconds_for_step("Link time: "));
         }
 
         Ok(())
@@ -439,7 +449,7 @@ where
 
     fn cleanup_graph(&mut self, visit_order: &Vec<u32>) -> ANNResult<()> {
         if self.num_active_pts > 0 {
-            println!("Starting final cleanup..");
+            log::info!("Starting final cleanup..");
         }
 
         execute_with_rayon(
@@ -638,7 +648,7 @@ where
             }
         }
 
-        println!(
+        log::info!(
             "Index built with degree: max: {} avg: {} min: {} count(deg<2): {}",
             max,
             (total as f32) / ((self.num_active_pts + self.configuration.num_frozen_pts) as f32),
@@ -648,7 +658,7 @@ where
 
         match self.delete_set.read() {
             Ok(guard) => {
-                println!(
+                log::info!(
                     "Number of soft deleted vertices {}, soft deleted percentage: {}",
                     guard.len(),
                     (guard.len() as f32)

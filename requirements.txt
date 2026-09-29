@@ -5,7 +5,7 @@
 #
 # Then point the wrapper scripts at the resulting interpreter:
 #
-#   PY=/path/to/python3 bash benchmark/scripts/run_cascade_ablation.sh
+#   PY=/path/to/python3 bash benchmark/scripts/run_ablations.sh
 #
 # (Default `PY` is whatever `python3` resolves to on $PATH.)
 

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+orion-cli = { path = "../orion-cli" }
 adsampling = { path = "../adsampling" }
 diskann = { path = "../diskann" }
 platform = { path = "../platform" }
@@ -24,3 +25,7 @@ log = { workspace = true }
 env_logger = { workspace = true }
 comfy-table = { workspace = true }
 serde_yaml = "0.9"
+
+[[bin]]
+name = "orion-sweep"
+path = "src/bin/orion_sweep.rs"

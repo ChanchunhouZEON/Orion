@@ -138,6 +138,7 @@ dependencies = [
  "log",
  "ndarray",
  "orion",
+ "orion-cli",
  "platform",
  "rand",
  "rayon",
@@ -893,6 +894,24 @@ dependencies = [
  "serde",
  "thiserror",
  "tokio",
+ "vector",
+]
+
+[[package]]
+name = "orion-cli"
+version = "0.1.0"
+dependencies = [
+ "byteorder",
+ "clap",
+ "diskann",
+ "env_logger",
+ "libc",
+ "log",
+ "orion",
+ "rayon",
+ "serde",
+ "serde_json",
+ "serde_yaml",
  "vector",
 ]
 

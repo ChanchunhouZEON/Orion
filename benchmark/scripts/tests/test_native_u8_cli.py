@@ -1,4 +1,4 @@
-"""Optional real CLI coverage; set ORION_BINARY to a freshly built executable."""
+"""Optional real CLI coverage; set ORION_BINARY to the freshly built orion-sweep executable."""
 import json
 import os
 from pathlib import Path
@@ -54,10 +54,26 @@ class NativeByteCliTests(unittest.TestCase):
         result = self.run_cli("sift10m")
         log = result.stdout + result.stderr
         self.assertIn('"vector_storage": "u8"', log)
+        self.assertIn('"admission": "NativeL2U8"', log)
         self.assertIn('"rerank": "None"', log)
         self.assertRegex(log, r"R@1=1\.0000")
         self.assertRegex(log, r"f32=0\)")
         self.assertEqual(list((self.root / "cache").glob("*.qds*")), [])
+
+    def test_explicit_f32_cascade_still_runs(self):
+        result = self.run_cli("sift10m", "--vector-storage", "f32",
+                              "--admission", "l2-u8", "--rerank", "f32")
+        log = result.stdout + result.stderr
+        self.assertIn('"admission": "L2U8"', log)
+        self.assertIn('"vector_storage": "f32"', log)
+        self.assertRegex(log, r"R@1=1\.0000")
+
+    def test_storage_and_admission_mismatches_fail_before_loading(self):
+        for override in [("--vector-storage", "f32"), ("--admission", "l2-u8")]:
+            with self.subTest(override=override):
+                result = self.run_cli("sift10m", *override, success=False)
+                self.assertIn("native-l2-u8", result.stderr)
+                self.assertFalse((self.root / "cache").exists())
 
     def test_incompatible_override_fails_before_loading(self):
         result = self.run_cli("sift100m", "--rerank", "f32", success=False)

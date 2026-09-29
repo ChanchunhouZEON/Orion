@@ -9,41 +9,24 @@
 # cost (~6 min); subsequent runs of the same config hit the cache.
 
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR/../.."
-
-source "$SCRIPT_DIR/_env.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 setup_python_env || exit 1
-BIN=./target/release/benchmark
+BIN="${BIN:-$(binary_path benchmark)}"
 
 DATASET="${DATASET:-gist}"
 case "$DATASET" in
-  sift)
-    BASE=data/sift/sift_base.fvecs
-    QRY=data/sift/sift_query.fvecs
-    GT=data/sift/sift_groundtruth.ivecs ;;
-  glove25)
-    BASE=data/glove25_norm/glove-25-angular_base.fvecs
-    QRY=data/glove25_norm/glove-25-angular_query.fvecs
-    GT=data/glove25_norm/glove-25-angular_groundtruth.ivecs ;;
-  glove100)
-    BASE=data/glove100_norm/glove-100-angular_base.fvecs
-    QRY=data/glove100_norm/glove-100-angular_query.fvecs
-    GT=data/glove100_norm/glove-100-angular_groundtruth.ivecs ;;
-  gist)
-    BASE=data/gist/gist_base.fvecs
-    QRY=data/gist/gist_query.fvecs
-    GT=data/gist/gist_groundtruth.ivecs ;;
-  *) echo "unknown DATASET=$DATASET (use sift|glove25|glove100|gist)" >&2; exit 1 ;;
+  sift|glove25|glove100|gist) ;;
+  *) echo "ADS panel supports sift, glove25, glove100 and gist" >&2; exit 2 ;;
 esac
+paths_for "$DATASET"
 
 echo "── building benchmark binary ──"
-cargo build --release --bin benchmark 2>&1 | tail -2
+build_binary benchmark
 
 echo "── ads-comparison: $DATASET ──"
-$BIN --base "$BASE" --query "$QRY" --groundtruth "$GT" --algorithms ads-comparison
+"$BIN" --base "$BASE" --query "$QRY" --groundtruth "$GT" --algorithms ads-comparison
 
 echo "── rendering ads_comparison.png ──"
-$PY visualizations/plot_ads.py
+"$PY" visualizations/plot_ads.py
 
 echo "all done"

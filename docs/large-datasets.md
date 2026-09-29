@@ -1,6 +1,6 @@
 # Large datasets on the in-memory Orion path
 
-The standalone `orion` executable supports a native-u8 search path for SIFT.
+The standalone `orion` executable (from the `orion-cli` crate) supports a native-u8 search path for SIFT.
 The `sift10m`, `sift100m`, and `sift1b` presets store original byte coordinates
 in one 64-byte-aligned allocation, transferred to the index without a copy.
 Admission computes exact squared L2 directly from this buffer. No quantized
@@ -11,6 +11,10 @@ Other presets retain f32 storage. The shared f32 CLI path used by `orion`,
 `adaptive`, `adaptive_ee_ablation`, and `matched_state` also transfers its base
 allocation without copying. The latter three diagnostics currently require f32
 storage and reject a native-u8 configuration before loading the dataset.
+
+See [CLI and Query Inputs](cli.md) for anonymous datasets, optional GT, query streams,
+and detailed memory reports. Repeated experiments use `orion-sweep`; ordinary
+`orion` searches each query once.
 
 ## Inputs and prerequisites
 
@@ -29,7 +33,7 @@ ivecs. With `--vector-storage f32`, byte coordinates are converted directly into
 the final f32 allocation. With `--vector-storage u8`, both base and queries must
 use bvecs or u8bin; the base stays in original byte coordinates. This path
 currently requires dimension 128, L2, a ParlayANN graph, `--prefilter none`,
-`--admission l2-u8`, and `--rerank none`. Queries use a small f32 interface buffer
+`--admission native-l2-u8`, and `--rerank none`. Queries use a small f32 interface buffer
 and are checked before conversion to bytes; no full f32 base is materialized. File lengths, dimensions,
 per-record headers, and GT IDs are validated. File addressing uses 64-bit sizes;
 node IDs remain u32, with u32::MAX reserved as a sentinel.
@@ -60,14 +64,24 @@ All three read `bigann_base.bvecs` and `bigann_query.bvecs` from that directory.
 Each requires its own graph matching the loaded prefix. Defaults are R=64,
 extra=16, original-u8 admission, no prefilter, and no final rerank. CLI options
 override preset values. To compare the previous f32 storage and reranking path,
-pass both `--vector-storage f32 --rerank f32`; its memory requirements are higher.
+pass both `--vector-storage f32 --admission l2-u8 --rerank f32`; its memory requirements are higher.
 Native-u8 and f32 use separate cache namespaces.
+
+The admission names are explicit: `native-l2-u8` scores original bytes exactly,
+whereas `l2-u8` scores an affine-quantized sidecar of an f32 base. Existing custom
+native-u8 configurations must change their admission to `native-l2-u8`.
+Configuration resolution produces a validated `SearchPlan` before loading:
+`orion-cli/src/cli/plan.rs` owns compatibility and storage accounting, and `orion-cli/src/cli/execution.rs`
+owns the standalone sweep's typed index/admission adapters. Both representations
+share calibration, the search loop, timing, and reporting.
+
 
 Run from the repository root. Build on the target machine with its supported
 instruction set; do not copy a native binary between incompatible CPUs.
 
 ```bash
-cargo build --release -p benchmark --bin orion
+cargo build --release -p orion-cli --bin orion
+cargo build --release -p benchmark --bin orion-sweep
 
 # The preset points to data/sift1b/{bigann_base.bvecs,bigann_query.bvecs,idx_1000M.ivecs}.
 # Override each path as needed. The PA export must already exist on a cache miss.
@@ -79,9 +93,9 @@ cargo build --release -p benchmark --bin orion
   --cache-dir /path/to/orion/cache/graphs/dir --memory-budget-gib 650 --prepare-only
 
 # Subsequent calls reuse the graph; the original staged export is not required.
-./target/release/orion sift1b --cache-dir /path/to/orion/cache/graphs/dir \
+./target/release/orion-sweep sift1b --cache-dir /path/to/orion/cache/graphs/dir \
   --memory-budget-gib 650 --k 10 --threads 32 --trials 3
-./target/release/orion sift1b --cache-dir /path/to/orion/cache/graphs/dir \
+./target/release/orion-sweep sift1b --cache-dir /path/to/orion/cache/graphs/dir \
   --memory-budget-gib 650 --k 100 --threads 32 --trials 3
 ```
 
@@ -121,7 +135,7 @@ multi-file transaction or mid-import checkpoint: after a failed publication,
 inspect the incomplete cache and use a fresh `--cache-dir` for a retry. Do not
 run multiple writers against the same cache. Complete caches can be reused.
 
-`benchmark/scripts/run_large_dataset.sh` wraps preflight, preparation and
+`benchmark/scripts/run_large_dataset.sh` uses `orion-sweep` and wraps preflight, preparation and
 k=10/100 sweeps, collecting per-stage `/usr/bin/time` logs, resolved settings,
 source revision/dirty state and executable SHA-256 in a new run directory.
 It expects a prebuilt executable and existing input/export files. On Linux,
@@ -155,9 +169,9 @@ search recall, zero f32 search comparisons, and absence of admission sidecars:
 ```bash
 cargo test -p vector --offline
 cargo test -p orion --offline
-cargo test -p benchmark --bin orion --offline
-cargo build -p benchmark --bin orion --offline
-ORION_BINARY="$PWD/target/debug/orion" python3 -m unittest discover \
+cargo test -p orion-cli --offline
+cargo build -p benchmark --bin orion-sweep --offline
+ORION_BINARY="$PWD/target/debug/orion-sweep" python3 -m unittest discover \
   -s benchmark/scripts/tests -v
 ```
 

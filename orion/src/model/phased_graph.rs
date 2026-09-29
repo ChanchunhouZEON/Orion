@@ -509,22 +509,22 @@ impl PhasedGraph {
         let total_local: usize = (0..n).map(|i| self.local_count(i)).sum();
         let total_rerank: usize = (0..n).map(|i| self.rerank_count(i)).sum();
 
-        println!("PhasedGraph ({} nodes):", n);
-        println!(
+        log::info!("PhasedGraph ({} nodes):", n);
+        log::info!(
             "  R={}, base_local={}, stride={} u32",
             self.max_degree, self.base_local_count, self.stride
         );
-        println!("  Avg degree:       {:.1}", total_deg as f64 / n as f64);
-        println!(
+        log::info!("  Avg degree:       {:.1}", total_deg as f64 / n as f64);
+        log::info!(
             "  Avg local:        {:.1} (base + promoted)",
             total_local as f64 / n as f64
         );
-        println!("  Avg extra:        {:.1}", total_extra as f64 / n as f64);
-        println!(
+        log::info!("  Avg extra:        {:.1}", total_extra as f64 / n as f64);
+        log::info!(
             "  Avg rerank:       {:.1} (local+extra)",
             total_rerank as f64 / n as f64
         );
-        println!(
+        log::info!(
             "  Memory:           {:.1} MB",
             (self.buffer.len() * 4) as f64 / 1_048_576.0,
         );

@@ -27,7 +27,7 @@ all `nprobe`). The full Milvus server (via docker / loopback gRPC)
 would work but loses the in-process framing, so it's not part of
 this panel.
 
-The per-dataset metric is read from `DATASET_PATHS[ds]["metric"]`:
+The per-dataset metric is read from `dataset_paths(ds)["metric"]`:
   * `l2`   — Euclidean; matches SIFT / GIST / Deep10M / Fashion-MNIST.
   * `cos`  — Cosine; matches GloVe / Wiki-ada / any unit-norm angular.
   * `ip`   — raw dot product; matches MS-MARCO BERT (non-unit-norm).
@@ -44,45 +44,18 @@ import argparse
 import json
 import os
 import shutil
-import struct
 import tempfile
 import time
 from pathlib import Path
 
 import numpy as np
 
+from benchmark_support import read_fvecs, read_ivecs, recall_at_k, ROOT
+from benchmark_support import BASELINE_DATASETS, dataset_paths, evaluation_ground_truth, binary_path
+
+
 
 # ── fvecs / ivecs readers (vectorised; copies from additional_baselines.py) ──
-
-def read_fvecs(path, max_n=0):
-    with open(path, "rb") as f:
-        dim = struct.unpack("i", f.read(4))[0]
-    record_floats = 1 + dim
-    raw = np.fromfile(path, dtype=np.float32)
-    total = raw.size // record_floats
-    n = min(total, max_n) if max_n > 0 else total
-    return raw[: n * record_floats].reshape(n, record_floats)[:, 1:].copy(), n, dim
-
-
-def read_ivecs(path, max_n=0):
-    with open(path, "rb") as f:
-        dim = struct.unpack("i", f.read(4))[0]
-    record_ints = 1 + dim
-    raw = np.fromfile(path, dtype=np.int32)
-    total = raw.size // record_ints
-    n = min(total, max_n) if max_n > 0 else total
-    return raw[: n * record_ints].reshape(n, record_ints)[:, 1:].copy()
-
-
-def recall_at_k(results, gt, k):
-    n = min(len(results), len(gt))
-    total = 0.0
-    for i in range(n):
-        gt_set = set(int(x) for x in gt[i][:k])
-        hits = sum(1 for r in results[i][:k] if int(r) in gt_set)
-        total += hits / k
-    return total / n
-
 
 def faiss_vectors(vectors, metric):
     vectors = np.array(vectors, dtype=np.float32, order="C", copy=True)
@@ -380,55 +353,10 @@ def run_usearch(base, queries, gt, k, ef_list, *, metric, threads, trials):
 
 # ── Dataset paths ───────────────────────────────────────────────────────────
 
-DATASET_PATHS = {
-    "sift": {
-        "base": "data/sift/sift_base.fvecs",
-        "query": "data/sift/sift_query.fvecs",
-        "gt": "data/sift/sift_groundtruth.ivecs",
-        "metric": "l2",
-    },
-    "glove25": {
-        "base": "data/glove25_norm/glove-25-angular_base.fvecs",
-        "query": "data/glove25_norm/glove-25-angular_query.fvecs",
-        "gt": "data/glove25_norm/glove-25-angular_groundtruth.ivecs",
-        "metric": "cos",
-    },
-    "glove100": {
-        "base": "data/glove100_norm/glove-100-angular_base.fvecs",
-        "query": "data/glove100_norm/glove-100-angular_query.fvecs",
-        "gt": "data/glove100_norm/glove-100-angular_groundtruth.ivecs",
-        "metric": "cos",
-    },
-    "gist": {
-        "base": "data/gist/gist_base.fvecs",
-        "query": "data/gist/gist_query.fvecs",
-        "gt": "data/gist/gist_groundtruth.ivecs",
-        "metric": "l2",
-    },
-    "deep10m": {
-        "base": "data/deep10m/deep10m_base.fvecs",
-        "query": "data/deep10m/deep10m_query.fvecs",
-        "gt": "data/deep10m/deep10m_groundtruth.ivecs",
-        "metric": "l2",
-    },
-    "msmarco_bert_1M": {
-        "base": "data/msmarco_bert_1M/msmarco_bert_1M_base.fvecs",
-        "query": "data/msmarco_bert_1M/msmarco_bert_1M_query.fvecs",
-        "gt": "data/msmarco_bert_1M/msmarco_bert_1M_groundtruth.ivecs",
-        "metric": "ip",
-    },
-    "wiki_ada_1M": {
-        "base": "data/wiki_ada_1M/wiki_ada_1M_base.fvecs",
-        "query": "data/wiki_ada_1M/wiki_ada_1M_query.fvecs",
-        "gt": "data/wiki_ada_1M/wiki_ada_1M_groundtruth.ivecs",
-        "metric": "cos",
-    },
-}
-
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", required=True, choices=list(DATASET_PATHS.keys()))
+    ap.add_argument("--dataset", required=True, choices=BASELINE_DATASETS)
     ap.add_argument(
         "--max-points", type=int, default=0,
         help="0 = full dataset.",
@@ -446,6 +374,7 @@ def main():
         help="Comma-separated subset of {lancedb, usearch, faiss}. Default all.",
     )
     args = ap.parse_args()
+    os.chdir(ROOT)
     selected = [s.strip() for s in args.engines.split(",")]
     if not set(selected) <= {"lancedb", "usearch", "faiss"}:
         ap.error("Unknown engine; choose lancedb, usearch, faiss")
@@ -467,7 +396,7 @@ def main():
               "NUMEXPR_NUM_THREADS"):
         os.environ[k] = t
 
-    paths = DATASET_PATHS[args.dataset]
+    paths = dataset_paths(args.dataset)
     metric = paths["metric"]
     # ef ladder for HNSW (LanceDB + USearch). Mirrors the `hnswlib`
     # row in the existing baseline panel so the three HNSW lanes are
@@ -492,20 +421,7 @@ def main():
     gt = read_ivecs(paths["gt"])
     if not nq or args.k > n or queries.shape[1] != dim:
         ap.error("Empty queries, k exceeds base count, or mismatched dimensions")
-    if (gt.shape[0] != nq or gt.shape[1] < args.k or
-            np.any(gt < 0) or np.any(gt >= n)):
-        print(f"Recomputing ground truth for {n} points...")
-        from scipy.spatial.distance import cdist
-        gt = np.empty((nq, args.k), dtype=np.int32)
-        # Bound the distance matrix to approximately 64 MiB, not nq * n.
-        batch = max(1, min(nq, (64 * 1024 * 1024) // (8 * n)))
-        for start in range(0, nq, batch):
-            q = queries[start:start + batch]
-            if metric == "ip":
-                dists = -(q @ base.T)
-            else:
-                dists = cdist(q, base, metric={"l2": "sqeuclidean", "cos": "cosine"}[metric])
-            gt[start:start + len(q)] = np.argsort(dists, axis=1)[:, :args.k]
+    gt = evaluation_ground_truth(base, queries, gt, args.k, paths["metric"])
     print(f"  {n} base, {nq} queries, dim={dim}\n")
 
     suffix = "" if args.k == 10 else f"_k{args.k}"

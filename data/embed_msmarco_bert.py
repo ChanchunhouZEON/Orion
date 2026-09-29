@@ -28,30 +28,8 @@ from pathlib import Path
 import numpy as np
 
 
-def write_fvecs(path: str, arr: np.ndarray) -> None:
-    """`.fvecs`: per-row [u32 dim][dim × f32]."""
-    n, dim = arr.shape
-    arr = np.ascontiguousarray(arr, dtype=np.float32)
-    out = np.empty((n, dim + 1), dtype=np.float32)
-    out.view(np.uint32)[:, 0] = dim
-    out[:, 1:] = arr
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "wb") as fo:
-        fo.write(out.tobytes())
-    print(f"  → {path}  ({n} × {dim}, {out.nbytes/1024/1024:.1f} MB)")
+from vector_io import write_fvecs, write_ivecs
 
-
-def write_ivecs(path: str, ids: np.ndarray) -> None:
-    """`.ivecs`: per-row [u32 K][K × i32]."""
-    n, k = ids.shape
-    ids = np.ascontiguousarray(ids, dtype=np.int32)
-    out = np.empty((n, k + 1), dtype=np.int32)
-    out[:, 0] = k
-    out[:, 1:] = ids
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "wb") as fo:
-        fo.write(out.tobytes())
-    print(f"  → {path}  ({n} queries × top-{k})")
 
 
 def load_texts(split_name: str, sample_n: int, seed: int, text_col: str, id_col: str):

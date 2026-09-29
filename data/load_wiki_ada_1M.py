@@ -69,11 +69,12 @@ def ensure_shard(local_dir: Path, shard_name: str) -> Path:
     url = SHARD_URL.format(repo=REPO, name=quote(shard_name))
     print(f"[shard] downloading {shard_name} from {REPO}")
     local_dir.mkdir(parents=True, exist_ok=True)
-    rc = os.system(
-        f"curl -L --fail --progress-bar -C - -o {dst!s} {url!r}"
-    )
-    if rc != 0:
-        raise RuntimeError(f"curl failed (rc={rc}) for {shard_name}")
+    # A partial download is resumable but must never look like a completed shard.
+    import subprocess
+    partial = dst.with_suffix(dst.suffix + ".partial")
+    subprocess.run(["curl", "-L", "--fail", "--progress-bar", "-C", "-",
+                    "-o", str(partial), url], check=True)
+    partial.replace(dst)
     return dst
 
 
@@ -106,29 +107,8 @@ def stream_records(shard_path: Path):
             yield text, emb
 
 
-def write_fvecs(path: Path, arr: np.ndarray) -> None:
-    """`.fvecs`: per-row [u32 dim][dim × f32]."""
-    n, dim = arr.shape
-    arr = np.ascontiguousarray(arr, dtype=np.float32)
-    out = np.empty((n, dim + 1), dtype=np.float32)
-    out.view(np.uint32)[:, 0] = dim
-    out[:, 1:] = arr
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as fo:
-        fo.write(out.tobytes())
-    print(f"  → {path}  ({n} × {dim}, {out.nbytes/1024/1024:.1f} MB)")
+from vector_io import write_fvecs, write_ivecs
 
-
-def write_ivecs(path: Path, ids: np.ndarray) -> None:
-    n, k = ids.shape
-    ids = np.ascontiguousarray(ids, dtype=np.int32)
-    out = np.empty((n, k + 1), dtype=np.int32)
-    out[:, 0] = k
-    out[:, 1:] = ids
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as fo:
-        fo.write(out.tobytes())
-    print(f"  → {path}  ({n} queries × top-{k})")
 
 
 def collect_embeddings(shard_paths, n_target: int) -> tuple[list[str], np.ndarray]:

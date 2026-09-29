@@ -120,7 +120,10 @@ def main():
     parser.add_argument("--query", "--query-fvecs", dest="query", required=True)
     parser.add_argument("--base-format", choices=[x for x in FORMATS if x != "ivecs"])
     parser.add_argument("--query-format", choices=[x for x in FORMATS if x != "ivecs"])
-    parser.add_argument("--gt-ivecs", required=True)
+    gt_args = parser.add_mutually_exclusive_group(required=True)
+    gt_args.add_argument("--gt-ivecs")
+    gt_args.add_argument("--skip-groundtruth", action="store_true",
+                         help="Convert vectors only; caller must generate matching GT")
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--max-base-points", type=int, default=0)
     parser.add_argument("--chunk-bytes", type=int, default=DEFAULT_CHUNK_BYTES)
@@ -142,7 +145,8 @@ def main():
     suffix = "u8bin" if FORMATS[base_format][0] == 1 else "fbin"
 
     # Validate small GT before spending hours on a large base conversion.
-    convert_ground_truth(args.gt_ivecs, out / "gt.bin", query_count, base_count, args.chunk_bytes)
+    if args.gt_ivecs:
+        convert_ground_truth(args.gt_ivecs, out / "gt.bin", query_count, base_count, args.chunk_bytes)
     convert_vectors(args.query, out / ("query." + suffix), query_format, chunk_bytes=args.chunk_bytes)
     convert_vectors(args.base, out / ("base." + suffix), base_format,
                     args.max_base_points, args.chunk_bytes)

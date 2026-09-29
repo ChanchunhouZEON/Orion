@@ -1,5 +1,30 @@
 # Code Structure
 
+The standalone executable and shared runtime now live in `orion-cli`:
+
+```text
+orion-cli/src/
+  main.rs                  # One-pass search and preparation; JSONL output
+  lib.rs                   # Shared runtime API, independent of benchmark
+  config.rs                # Embedded YAML presets and shared settings
+  cascade.rs               # Stage selection and f32 dispatch
+  parlayann_bridge.rs      # STAG import
+  cli/
+    config.rs / plan.rs    # Resolve options into one validated execution plan
+    data.rs               # Base ownership and replayable experiment inputs
+    query.rs              # QuerySource + Read-based decoding + optional GT
+    execution.rs          # SearchBackend implementations
+    index.rs / cache.rs   # Build/import and cache provenance
+    resources.rs          # Component-level memory report and budget checks
+benchmark/src/bin/
+  orion_sweep.rs           # orion-sweep: repeated L/trial experiments
+```
+
+The benchmark's configuration/cascade/utility modules re-export shared runtime
+code; they no longer own duplicate CLI implementations. The older tree below
+also describes the engine and remaining benchmark tools.
+
+
 [← Back to main README](../README.md)
 
 

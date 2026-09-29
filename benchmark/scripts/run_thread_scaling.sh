@@ -10,28 +10,17 @@
 # `visualizations/plot_threads.py` into `thread_scaling.png`.
 
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-BIN=./target/release/benchmark
+BIN="${BIN:-$(binary_path benchmark)}"
 
-paths_for() {
-  case "$1" in
-    sift)
-      BASE=data/sift/sift_base.fvecs
-      QRY=data/sift/sift_query.fvecs
-      GT=data/sift/sift_groundtruth.ivecs ;;
-    gist)
-      BASE=data/gist/gist_base.fvecs
-      QRY=data/gist/gist_query.fvecs
-      GT=data/gist/gist_groundtruth.ivecs ;;
-    *) echo "unknown dataset: $1" >&2; exit 1 ;;
-  esac
-}
+
+[[ -x "$BIN" ]] || build_binary benchmark
 
 for ds in sift gist; do
   paths_for "$ds"
   echo "═══ $ds : thread-sweep ═══"
-  $BIN --base "$BASE" --query "$QRY" --groundtruth "$GT" \
+  "$BIN" --base "$BASE" --query "$QRY" --groundtruth "$GT" \
        --algorithms thread-sweep
   echo "DONE: $ds thread-sweep"
 done

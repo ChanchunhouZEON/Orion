@@ -127,7 +127,8 @@ macro_rules! search_orion {
             $self.prefilter,
             $self.admission,
         );
-        let ad = crate::runner::cascade::build_admission::<$N>($idx, $self.admission);
+        let ad = crate::runner::cascade::build_admission::<$N>($idx, $self.admission)
+            .expect("f32 OrionRunner does not support native-l2-u8 admission");
         let rr = crate::runner::cascade::build_rerank::<$N>($idx, $self.rerank);
         $idx.search_unified(
             &q,

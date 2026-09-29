@@ -28,6 +28,7 @@
 # pushing to GH Actions for actual binary execution.
 
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 # Belt-and-suspenders for the QEMU core-leak issue (see Dockerfile.ci
 # notes block). Even if the caller forgot `--ulimit core=0`, the
@@ -85,9 +86,9 @@ phase_diskann_check() {
 
 phase_build_benchmark() {
     banner "Phase 5: cargo build -p benchmark --release --bin benchmark"
-    time cargo build -p benchmark --release --bin benchmark
+    time cargo build --release -p benchmark -p orion-cli --bins
     # Verify the produced ELF is actually x86_64.
-    file ./target-linux/release/benchmark || true
+    file "$(binary_path benchmark)" "$(binary_path orion)" "$(binary_path orion-sweep)"
 }
 
 phase_sift_smoke_note() {

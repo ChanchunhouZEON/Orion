@@ -9,14 +9,12 @@ mod metrics;
 mod report;
 mod runner;
 mod utils;
-#[allow(dead_code)]
-mod cli;
-use runner::parlayann_bridge;
+#[allow(unused_imports)]
+#[allow(unused_imports)]
 
 use clap::Parser;
 use dataset::Dataset;
 use runner::common::AlgorithmRunner;
-use runner::cascade;
 use std::path::PathBuf;
 
 // `OrionConfig` + `load_orion_config` used to live here; they have
@@ -673,7 +671,7 @@ fn run_thread_sweep(dataset: &Dataset, k: usize, overrides: &config::SweepOverri
     // on each worker so they all stay on P-cores.
     let sample_qps = |runner: &dyn runner::common::AlgorithmRunner,
                       pool: &rayon::ThreadPool|
-     -> (Vec<f64>, f64) {
+                      -> (Vec<f64>, f64) {
         let mut samples = Vec::with_capacity(trials);
         let mut recall = 0.0f64;
         // Real-query warmup inside the pool — primes prefetchers,
@@ -1599,7 +1597,7 @@ fn run_cliff_profile(dataset: &Dataset) {
         false,
         16,
     )
-    .expect("build failed");
+        .expect("build failed");
     let phased = PhasedGraph::build_from_partitions(&result.partitions, 16, 4);
     let graph = &phased;
 
@@ -2991,7 +2989,8 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
                     crate::runner::cascade::AdmissionChoice::MipsI16 => {
                         let _ = idx.ensure_quantized_dataset_mips_i16();
                     }
-                    crate::runner::cascade::AdmissionChoice::AdsF32 => {}
+                    crate::runner::cascade::AdmissionChoice::AdsF32
+                    | crate::runner::cascade::AdmissionChoice::NativeL2U8 => {}
                 }
                 match ocfg.prefilter {
                     PrefilterChoice::None => {}

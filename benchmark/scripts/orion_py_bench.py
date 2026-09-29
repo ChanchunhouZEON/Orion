@@ -11,24 +11,27 @@ overhead — the same overhead USearch's Python binding adds to
 USearch's QPS numbers we use elsewhere in the panel.
 
 Usage:
-  RAYON_NUM_THREADS=8 python orion_py_bench_bench.py
+  RAYON_NUM_THREADS=8 python benchmark/scripts/orion_py_bench.py
 """
 
 import json
 import os
-import struct
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
 
+from benchmark_support import read_fvecs, read_ivecs, recall_at_k, ROOT
+
+
 # Match the Rust sweep ladder verbatim (benchmark/configs/sweep.yaml,
 # `search_list_sizes` line). 14 of the 17 entries — drop the tail
 # (512/768/1024) since calibration drifts on extreme L and the
 # comparison signal lives in the mid-band.
 SEARCH_LIST_SIZES = [16, 20, 24, 32, 40, 48, 56, 64, 80, 100, 128, 160, 200, 256]
-CACHE_PATH = "cache/orion_parlayann/sift_n1000000_r64_l128_a1_15_ex16_pct60.bin"
+# Cache filenames now include a resolved-config fingerprint; do not guess one.
+CACHE_PATH = os.environ.get("ORION_CACHE_PATH")
 DATA_DIR = "data/sift"
 REF_SWEEP = "visualizations/sweep_orion_vs_parlayann_sift.json"
 OUT_PATH = "visualizations/orion_py_bench_sift.json"
@@ -38,35 +41,10 @@ WINDOW_SIZE = 8
 CALIB_SAMPLE = 200
 
 
-def read_fvecs(path):
-    with open(path, "rb") as f:
-        dim = struct.unpack("i", f.read(4))[0]
-    record = 1 + dim
-    raw = np.fromfile(path, dtype=np.float32)
-    n = raw.size // record
-    return raw[: n * record].reshape(n, record)[:, 1:].copy(), n, dim
-
-
-def read_ivecs(path):
-    with open(path, "rb") as f:
-        dim = struct.unpack("i", f.read(4))[0]
-    record = 1 + dim
-    raw = np.fromfile(path, dtype=np.int32)
-    n = raw.size // record
-    return raw[: n * record].reshape(n, record)[:, 1:].copy()
-
-
-def recall_at_k(ids, gt, k):
-    n = min(len(ids), len(gt))
-    tot = 0.0
-    for i in range(n):
-        gt_set = set(int(x) for x in gt[i][:k])
-        hits = sum(1 for r in ids[i][:k] if int(r) in gt_set)
-        tot += hits / k
-    return tot / n
-
-
 def main():
+    os.chdir(ROOT)
+    if not CACHE_PATH:
+        raise SystemExit("Set ORION_CACHE_PATH to the SIFT f32 cache produced by orion-sweep")
     import orion_py as sdp
 
     print(f"rayon threads: {sdp.OrionSift.rayon_threads()}")
