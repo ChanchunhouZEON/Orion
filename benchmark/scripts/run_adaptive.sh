@@ -11,12 +11,12 @@ Environment (paths are relative to the Orion repository root):
   K_VALUES             Space-separated k values (default: "10 100")
   THREADS              Query threads (default: 8)
   TRIALS               Timing trials per arm (default: 5)
-  DIAGNOSTIC_QUERIES   Diagnostic sample count; 0 = all (default: 1000)
+  DIAGNOSTIC_QUERIES   Diagnostic sample count; 0 = all (default: 0)
   GRAPH_SOURCE         parlayann or rust (default: parlayann)
   CONFIG               Optional YAML file; otherwise use normal config resolution
   SEARCH_LIST_SIZES    Optional comma-separated L override; otherwise per-k YAML
   RECALL_TARGETS       Comma-separated targets (default: 0.9,0.95,0.99)
-  COOLDOWN_S           Idle before each benchmark (default: 30)
+  COOLDOWN_S           Idle before each benchmark (default: 1)
   OUT_DIR              Result directory (default: timestamped visualizations run)
   DETAIL_L             Optional detail-panel L; otherwise largest measured L
   PY                   Python interpreter (uses scripts/_env.sh)
@@ -47,9 +47,7 @@ if [[ "$DRY_RUN" == 1 && "$PLOT_ONLY" == 1 ]]; then
   exit 2
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-cd "$ROOT"
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 DATASETS="${DATASETS:-sift gist}"
 K_VALUES="${K_VALUES:-10 100}"
 THREADS="${THREADS:-8}"
@@ -70,7 +68,7 @@ BUILD=1
 if [[ -n "${ADAPTIVE_BIN:-}" ]]; then
   BUILD=0
 else
-  ADAPTIVE_BIN="$BUILD_DIR/release/adaptive"
+  ADAPTIVE_BIN="$(binary_path adaptive)"
 fi
 [[ "$ADAPTIVE_BIN" = /* ]] || ADAPTIVE_BIN="$ROOT/$ADAPTIVE_BIN"
 [[ "$OUT_DIR" = /* ]] || OUT_DIR="$ROOT/$OUT_DIR"
@@ -106,7 +104,6 @@ common=(--graph-source "$GRAPH_SOURCE" --threads "$THREADS" --trials "$TRIALS"
 [[ -z "${SEARCH_LIST_SIZES:-}" ]] || common+=(--search-list-sizes "$SEARCH_LIST_SIZES")
 
 if [[ "$DRY_RUN" == 0 ]]; then
-  source "$SCRIPT_DIR/_env.sh"
   setup_python_env matplotlib numpy
 else
   PY="${PY:-python3}"
@@ -123,7 +120,7 @@ if [[ "$PLOT_ONLY" == 0 ]]; then
   if [[ "$BUILD" == 1 ]]; then
     show cargo build --release -p benchmark --bin adaptive --target-dir "$BUILD_DIR"
     if [[ "$DRY_RUN" == 0 ]]; then
-      cargo build --release -p benchmark --bin adaptive --target-dir "$BUILD_DIR"
+      build_binary adaptive
     fi
   fi
   if [[ "$DRY_RUN" == 0 ]]; then

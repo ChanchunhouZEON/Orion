@@ -22,7 +22,7 @@ Every search request runs through a **three-axis cascade** where each axis is se
                        (hops 0..=2)      (every neighbour, optional)   (every visited, every hop)            (once, post-convergence)
 ```
 
-CLI surface: `--prefilter <none|jl|jl-hadamard|rabitq> --admission <l2-u8|l2-u16|l2-kt|mips-i8|mips-i16> --rerank <f32|ip-f32|u16>`. Per-dataset defaults (`Cascade::default_for_dataset`, `benchmark/src/bin/orion.rs`) pick the production triple automatically. **None of the per-stage optimisations depend on the metric** — the same beam loop, prefetch shape, PQ machinery, and admission datasets run whether the cascade is `none → l2-u8 → f32` or `jl → mips-i16 → ip-f32`.
+CLI surface: `--prefilter <none|jl|jl-hadamard|rabitq> --admission <l2-u8|l2-u16|l2-kt|mips-i8|mips-i16> --rerank <f32|ip-f32|u16>`. Per-dataset defaults (`Cascade::default_for_specified_dimension_and_metric`, `orion-cli/src/cascade.rs`) pick the production triple automatically. **None of the per-stage optimisations depend on the metric** — the same beam loop, prefetch shape, PQ machinery, and admission datasets run whether the cascade is `none → l2-u8 → f32` or `jl → mips-i16 → ip-f32`.
 
 Sub-sections below walk the stages in execution order; the **shared kernels** (`DistanceStream`, NEON distance functions, `Neighbor` PQ) used by every stage are factored out at the end.
 

@@ -1,31 +1,23 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Orion sweep driver: resolve config, load data, dispatch a compiled dimension.
 
 use std::time::Instant;
 
-// Pull parlayann_bridge in directly — it's a standalone module (only
-// std + rayon deps) so `#[path]` import keeps it accessible from this
-// bin without touching the crate's `runner` module graph.
-#[path = "../runner/parlayann_bridge.rs"]
-mod parlayann_bridge;
-
-#[path = "../utils.rs"]
-mod utils;
-
-// Cascade dispatch lives in the runner module (next to the runners
-// that consume the same orion-dispatch primitives). Imported via
-// `#[path]` because the bin is not a benchmark-lib consumer.
-#[path = "../runner/cascade.rs"]
-mod cascade;
-
-#[path = "../config.rs"]
-mod config;
+use orion_cli::utils;
 
 use clap::Parser;
-#[path = "../cli/mod.rs"]
-mod cli;
-use cli::config::{Args, ResolvedRunConfig, VectorStorageKind};
+use cli::config::{Args, ResolvedRunConfig};
 use cli::data::LoadedDataset;
-use orion::algorithm::search::calibrate::CalibrationElement;
+use cli::plan::SearchPlan;
+use execution::SearchBackend;
+use orion_cli::cli;
+use orion_cli::cli::execution;
+use orion_cli::cli::execution::{F32CascadeBackend, NativeU8L2Backend};
+use orion_cli::with_supported_dimension;
 
 /// Promote the calling thread to the highest QoS tier (`USER_INTERACTIVE`,
 /// 0x21) so macOS keeps it on a P-core and at the highest DVFS step
@@ -161,155 +153,17 @@ macro_rules! log_search_metrics {
     };
 }
 
-/// Storage-specific hooks used by the common QPS-recall sweep.
-///
-/// The benchmark driver keeps timing, calibration, sweep control, and reporting
-/// identical across resident vector representations. Implementations of this
-/// trait provide only the operations that depend on the resident element type:
-///
-/// - loading the corresponding [`Orion`](orion::Orion) index,
-/// - pinning(mlocking) storage-specific search stage sidecars,
-/// - dispatching the batch-search implementation.
-///
-/// This keeps the benchmark procedure shared between `f32` and native `u8`
-/// storage while allowing each representation to use its own index and search
-/// pipeline.
-trait SweepElement: cli::data::BaseElement + CalibrationElement {
-    /// Loads or constructs an index whose resident base representation is `Self`.
-    ///
-    /// The implementation may select a storage-specific loading path, but ownership
-    /// of the base allocation is transferred from `data` rather than copied.
-    fn load<const N: usize>(
-        config: &ResolvedRunConfig,
-        data: &mut LoadedDataset<Self>,
-    ) -> Result<orion::Orion<N, Self>, String>
-    where
-        [Self; N]: vector::FullPrecisionDistance<Self, N>;
-
-    /// Pins any representation-specific search sidecar before the sweep begins.
-    ///
-    /// Implementations may use this hook to mlock cascade stage sidecars(auxiliary
-    /// dataset used in these stages). It is intentionally allowed to be a no-op
-    /// when the resident auxiliary sidecar has been pinned elsewhere(if it is the original
-    /// dataset itself, it will be pinned with queries in main `run` function).
-    fn pin<const N: usize>(index: &orion::Orion<N, Self>, config: &ResolvedRunConfig)
-    where
-        [Self; N]: vector::FullPrecisionDistance<Self, N>;
-
-    /// Executes one batch-search point of the sweep.
-    ///
-    /// `beam` is the current search-list width selected by the sweep, while
-    /// `calibration` contains the thresholds determined during calibration.
-    ///
-    /// The returned neighbor IDs are consumed by the common benchmark path for
-    /// recall calculation and reporting.
-    fn search<const N: usize>(
-        index: &orion::Orion<N, Self>,
-        queries: &[[f32; N]],
-        config: &ResolvedRunConfig,
-        beam: usize,
-        calibration: orion::CalibratedParams,
-    ) -> diskann::common::ANNResult<Vec<Vec<u32>>>
-    where
-        [Self; N]: vector::FullPrecisionDistance<Self, N>;
-}
-
-/// Sweep implementation for the conventional `f32` resident representation.
-///
-/// This path uses the configured cascade directly, including any prefilter,
-/// admission sidecar, and rerank stage selected by [`ResolvedRunConfig`].
-impl SweepElement for f32 {
-    fn load<const N: usize>(
-        config: &ResolvedRunConfig,
-        data: &mut LoadedDataset<Self>,
-    ) -> Result<orion::Orion<N>, String> {
-        cli::index::load_index(config, data)
-    }
-
-    fn pin<const N: usize>(index: &orion::Orion<N>, config: &ResolvedRunConfig) {
-        cascade::pin_cascade(
-            index,
-            config.cascade.prefilter,
-            config.cascade.admission,
-            config.cascade.rerank,
-        );
-    }
-
-    fn search<const N: usize>(
-        index: &orion::Orion<N>,
-        queries: &[[f32; N]],
-        config: &ResolvedRunConfig,
-        beam: usize,
-        calibration: orion::CalibratedParams,
-    ) -> diskann::common::ANNResult<Vec<Vec<u32>>> {
-        cascade::search_batch_compose(
-            index,
-            queries,
-            config.sweep.k,
-            beam,
-            config.window_size,
-            calibration.threshold,
-            calibration.early_exit_limit,
-            config.cascade.prefilter,
-            config.cascade.admission,
-            config.cascade.rerank,
-        )
-    }
-}
-
-/// Sweep implementation for native `u8` resident storage.
-///
-/// The base vectors remain in their original byte representation. Exact L2
-/// admission is performed directly over the resident bytes, so this path does
-/// not require a quantized admission sidecar or an `f32` rerank stage.
-impl SweepElement for u8 {
-    fn load<const N: usize>(
-        config: &ResolvedRunConfig,
-        data: &mut LoadedDataset<Self>,
-    ) -> Result<orion::Orion<N, u8>, String> {
-        cli::index::load_u8_index(config, data)
-    }
-
-    fn pin<const N: usize>(_index: &orion::Orion<N, u8>, _config: &ResolvedRunConfig) {
-        // The common pin below covers the shared byte base; there is no sidecar.
-    }
-
-    fn search<const N: usize>(
-        index: &orion::Orion<N, u8>,
-        queries: &[[f32; N]],
-        config: &ResolvedRunConfig,
-        beam: usize,
-        calibration: orion::CalibratedParams,
-    ) -> diskann::common::ANNResult<Vec<Vec<u32>>> {
-        use orion::algorithm::search::stage::{
-            admission::NativeU8Admission, prefilter::NoPrefilter, rerank::NoRerank,
-        };
-        let admission = NativeU8Admission::new(&index.dataset);
-        index.search_batch_unified(
-            queries,
-            config.sweep.k,
-            beam,
-            config.window_size,
-            calibration.threshold,
-            calibration.early_exit_limit,
-            None::<&NoPrefilter>,
-            &admission,
-            &NoRerank,
-        )
-    }
-}
-
-fn run_sweep<const N: usize, T: SweepElement>(
+fn run_sweep<const N: usize, B: SearchBackend>(
     config: &ResolvedRunConfig,
-    mut data: LoadedDataset<T>,
+    mut data: LoadedDataset<B::Element>,
 ) -> Result<(), String>
 where
-    [T; N]: vector::FullPrecisionDistance<T, N>,
+    [B::Element; N]: vector::FullPrecisionDistance<B::Element, N>,
 {
     let run = &config.sweep;
     let k = run.k;
     let num_threads = run.threads;
-    let idx = T::load::<N>(config, &mut data)?;
+    let idx = B::load_index::<N>(config, &mut data)?;
     if config.prepare_only {
         return Ok(());
     }
@@ -329,7 +183,7 @@ where
     // would also trigger these via `ensure_*`, but we kick them
     // here so the build/load latency is logged separately from
     // the timed sweep's setup.
-    log::info!("Cascade: {}", config.cascade.label());
+    log::info!("Cascade: {}", config.search_plan().cascade().label());
 
     // Calibrate on the full graph with the cascade's exact metric
     // and top-k target, including unnormalized MIPS datasets.
@@ -350,7 +204,7 @@ where
     let early_exit_limit = calib.early_exit_limit;
     log::info!(
         "Calibrated ({}): threshold={:.2}, early_exit_limit={}",
-        config.cascade.label(),
+        config.search_plan().cascade().label(),
         threshold,
         early_exit_limit
     );
@@ -409,7 +263,7 @@ where
         config.graph_degree,
         config.alpha,
         config.window_size,
-        config.cascade.label()
+        config.search_plan().cascade().label()
     );
 
     // Per-cascade sidecars + mlock pins. `pin_cascade` walks the
@@ -417,12 +271,12 @@ where
     // each tier's sidecar via the orion accessor, and pins the
     // byte ranges. Idempotent — safe to call before warmup and
     // before the timed sweep.
-    T::pin(&idx, config);
+    B::pin_search_storage(&idx, config);
     // Both storage paths pin their resident base, graph slab and query batch.
     // Native u8 owns only this one base buffer, with no f32 or quantized copy.
     {
         let ds_bytes_ptr = idx.dataset.data.as_ptr() as *const u8;
-        let ds_bytes_len = idx.dataset.data.len() * std::mem::size_of::<T>();
+        let ds_bytes_len = idx.dataset.data.len() * config.search_plan().storage().element_bytes;
         mlock_bytes("resident base", ds_bytes_ptr, ds_bytes_len);
         let pg = idx.graph.buffer_bytes();
         mlock_bytes("pgraph slab", pg.as_ptr(), pg.len());
@@ -440,7 +294,7 @@ where
     // due to lingering cold-cache + DVFS-ramp jitter.
     for _ in 0..1 {
         let _warm =
-            pool.install(|| T::search(&idx, &queries_arr, config, warmup_l, calib).unwrap());
+            pool.install(|| B::search_batch(&idx, &queries_arr, config, warmup_l, calib).unwrap());
         drop(_warm);
     }
     // Reset the per-phase atomic counters so the warmup's stats
@@ -464,18 +318,19 @@ where
 
     for &l in ls {
         let mut samples = Vec::with_capacity(trials);
-        let mut recall = 0.0f64;
+        let mut recall = None;
         for _ in 0..trials {
             // PA-style 40 MB cache flush before each timed region — every
             // trial observes cold L1/L2/SLC so graph + vector loads match
             // the "first query" conditions PA reports.
             utils::flush_cache();
             let t = Instant::now();
-            let results = pool.install(|| T::search(&idx, &queries_arr, config, l, calib).unwrap());
+            let results = pool.install(|| B::search_batch(&idx, &queries_arr, config, l, calib).unwrap());
             let wall = t.elapsed();
             samples.push(queries_arr.len() as f64 / wall.as_secs_f64());
-            recall = mean_recall(&results, gt, k);
+            recall = gt.as_ref().map(|truth| mean_recall(&results, truth, k));
         }
+        let recall = recall.map(|v| format!("{v:.4}")).unwrap_or_else(|| "n/a".into());
         samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let qps = samples[trials / 2];
         // Visit / per-phase instrumentation (mips_q path only):
@@ -540,7 +395,7 @@ where
             log_search_metrics!(
                 " L="           (l,             l,             ">4")
                 "  R@"          (k,             k,             "")
-                "="             (recall,        recall,        ".4")
+                "="             (recall,        recall,        "")
                 "  QPS="        (qps,           qps,           ".0")
 
                 "  visits="     (visits,        avg_v,         ".0")
@@ -570,7 +425,7 @@ where
             log_search_metrics!(
                 " L="           (l,             l,             ">4")
                 "  R@"          (k,             k,             "")
-                "="             (recall,        recall,        ".4")
+                "="             (recall,        recall,        "")
                 "  QPS="        (qps,           qps,           ".0")
             );
         }
@@ -592,7 +447,7 @@ fn mean_recall(results: &[Vec<u32>], gt: &[Vec<u32>], k: usize) -> f64 {
 }
 
 fn execute(args: Args) -> Result<(), String> {
-    let config = args.resolve()?;
+    let config = args.resolve_for_sweep()?;
     let resolved = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     if args.print_config {
         log::info!("{resolved}");
@@ -600,22 +455,19 @@ fn execute(args: Args) -> Result<(), String> {
     }
     log::info!("Run settings: {resolved}");
     if args.preflight {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&cli::resources::preflight_report(&config)?)
-                .map_err(|e| e.to_string())?
-        );
-        return Ok(());
+        let report = cli::resources::preflight_report(&config)?;
+        println!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+        return cli::resources::enforce_budget(&report);
     }
-    match config.vector_storage {
-        VectorStorageKind::F32 => {
+    match config.search_plan() {
+        SearchPlan::F32Cascade { .. } => {
             let data = LoadedDataset::<f32>::load(&config)?;
-            with_supported_dimension!(config.dimension, |D| run_sweep::<D, f32>(&config, data))
+            with_supported_dimension!(config.dimension, |D| run_sweep::<D, F32CascadeBackend>(&config, data))
         }
-        VectorStorageKind::U8 => {
+        SearchPlan::NativeU8L2 => {
             let data = LoadedDataset::<u8>::load(&config)?;
             // Resolution restricts native byte mode to SIFT's physical dimension.
-            run_sweep::<128, u8>(&config, data)
+            run_sweep::<128, NativeU8L2Backend>(&config, data)
         }
     }
 }

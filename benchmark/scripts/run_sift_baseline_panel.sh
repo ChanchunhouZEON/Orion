@@ -11,19 +11,16 @@
 # Output: `visualizations/baseline_sift.json` with seven series.
 
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR/../.."
-
-source "$SCRIPT_DIR/_env.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 setup_python_env || exit 1
 
 # --max-points 0 — full SIFT 1M (no subset, no GT recomputation).
 # --threads 8   — matches `sweep.yaml` defaults.sweep.threads, so the
 #                 Rust series (Orion / DiskANN / PA) are head-to-head.
-$PY benchmark/scripts/baseline_comparison.py \
+"$PY" benchmark/scripts/baseline_comparison.py \
     --dataset sift --max-points 0 --threads 8 --trials 5 --no-rust
 
-$PY benchmark/scripts/additional_baselines.py \
+"$PY" benchmark/scripts/additional_baselines.py \
     --dataset sift --max-points 0 --threads 8 --trials 5
 
 echo "all done"

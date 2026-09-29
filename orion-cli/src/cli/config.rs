@@ -71,13 +71,14 @@ pub enum VectorStorageKind {
 ///
 /// `Args` represents unresolved user input. Code that loads data or constructs an
 /// index should normally operate on [`ResolvedRunConfig`] instead.
-#[derive(Debug, Parser)]
-#[command(name = "orion", about = "Configurable Orion QPS-recall sweep")]
+#[derive(Debug, Clone, Parser)]
+#[command(name = "orion", about = "Shared Orion input and search configuration")]
 pub struct Args {
+    #[arg(skip)]
+    single_search: bool,
     /// Optional dataset preset name defined in the sweep configuration.
     ///
-    /// When omitted together with all explicit dataset paths, the bundled `sift`
-    /// preset is selected for backward compatibility.
+    /// Omit the preset (or use `anonymous`) to resolve defaults from metric and dimension.
     pub dataset: Option<String>,
     /// Legacy positional limit retained for compatibility with older benchmark scripts.
     ///
@@ -89,8 +90,14 @@ pub struct Args {
     pub base: Option<PathBuf>,
     #[arg(long)]
     pub query: Option<PathBuf>,
+    /// Maximum query vectors buffered from a stream per search batch.
+    #[arg(long, default_value_t = 1024)]
+    pub query_batch_size: usize,
     #[arg(long)]
     pub groundtruth: Option<PathBuf>,
+    /// Disable preset ground truth and report search metrics without recall.
+    #[arg(long, conflicts_with = "groundtruth")]
+    pub no_groundtruth: bool,
     #[arg(long, value_enum)]
     pub base_format: Option<VectorFormat>,
     #[arg(long, value_enum)]
@@ -167,19 +174,23 @@ pub struct Args {
 /// settings intentionally do not participate in that identity.
 #[derive(Debug, Serialize)]
 pub struct ResolvedRunConfig {
-    /// Logical dataset preset name, if this run originated from one.
-    pub dataset: Option<String>,
+    /// Preset name, or "anonymous" for explicit inputs without a preset.
+    pub dataset: String,
     pub base: PathBuf,
-    pub query: PathBuf,
-    pub groundtruth: PathBuf,
+    pub query: Option<PathBuf>,
+    pub groundtruth: Option<PathBuf>,
+    pub query_batch_size: usize,
+    pub replay_queries: bool,
     pub base_format: VectorFormat,
     pub query_format: VectorFormat,
-    pub vector_storage: VectorStorageKind,
+    // Executable interpretation of the public, serialized run settings.
+    // Constructed only after compatibility validation; consumers use the accessor.
+    #[serde(flatten)]
+    search_plan: super::plan::SearchPlan,
     pub memory_budget_gib: Option<f64>,
     pub prepare_only: bool,
     pub dimension: usize,
     pub metric: SearchMetric,
-    pub cascade: Cascade,
     pub alpha: f32,
     pub graph_degree: u32,
     pub build_l: usize,
@@ -281,6 +292,19 @@ impl Args {
         )
     }
 
+    pub fn resolve_search(&self) -> Result<ResolvedRunConfig, String> {
+        let mut args = self.clone();
+        args.single_search = true;
+        args.resolve()
+    }
+
+    /// Experimental sweeps materialize queries so trials can replay identical inputs.
+    pub fn resolve_for_sweep(&self) -> Result<ResolvedRunConfig, String> {
+        let mut config = self.resolve()?;
+        config.replay_queries = true;
+        Ok(config)
+    }
+
     /// Resolves configuration against an explicit preset root and legacy environment.
     ///
     /// This helper exists primarily so configuration resolution can be tested without
@@ -301,24 +325,14 @@ impl Args {
         root: &RawRoot,
         env: &LegacyEnvironment,
     ) -> Result<ResolvedRunConfig, String> {
-        // Preserve the no-argument SIFT shortcut, but never assign it to custom paths.
-        let dataset = self.dataset.clone().or_else(|| {
-            if self.base.is_none() && self.query.is_none() && self.groundtruth.is_none() {
-                Some("sift".into())
-            } else {
-                None
-            }
-        });
-        let preset = dataset
-            .as_ref()
-            .map(|name| {
-                root.datasets.get(name).ok_or_else(|| {
-                    format!(
-                        "unknown dataset shortcut {name:?}; add a YAML entry or omit the name and supply paths"
-                    )
-                })
-            })
-            .transpose()?;
+        // A preset is optional. Anonymous runs still use metric/dimension defaults.
+        let preset_name = self.dataset.as_deref().filter(|name| *name != "anonymous");
+        let dataset = preset_name.unwrap_or("anonymous").to_owned();
+        let preset = preset_name.map(|name| {
+            root.datasets.get(name).ok_or_else(|| format!(
+                "unknown dataset shortcut {name:?}; omit the name for an anonymous dataset"
+            ))
+        }).transpose()?;
         let paths = preset.and_then(|p| p.paths.as_ref());
 
         // Explicit paths override only the corresponding preset path.
@@ -328,12 +342,14 @@ impl Args {
                 .ok_or_else(|| format!("--{flag} is required without a dataset preset"))
         };
         let base = required_path(&self.base, paths.map(|p| &p.base), "base")?;
-        let query = required_path(&self.query, paths.map(|p| &p.query), "query")?;
-        let groundtruth = required_path(
-            &self.groundtruth,
-            paths.map(|p| &p.groundtruth),
-            "groundtruth",
-        )?;
+        let query = self.query.clone().or_else(|| paths.map(|p| PathBuf::from(&p.query)));
+        if query.is_none() && !self.prepare_only {
+            return Err("--query is required for search (use --prepare-only to build without queries)".into());
+        }
+        let groundtruth = if self.no_groundtruth { None } else {
+            self.groundtruth.clone()
+                .or_else(|| paths.and_then(|p| p.groundtruth.as_ref()).map(PathBuf::from))
+        };
 
         let base_format = self
             .base_format
@@ -342,13 +358,15 @@ impl Args {
         let query_format = self
             .query_format
             .map(Ok)
-            .unwrap_or_else(|| VectorFormat::infer(&query))?;
+            .unwrap_or_else(|| query.as_deref().map(VectorFormat::infer).unwrap_or(Ok(base_format)))?;
         if self
             .memory_budget_gib
             .is_some_and(|x| !x.is_finite() || x <= 0.)
         {
             return Err("--memory-budget-gib must be finite and positive".into());
         }
+
+        if self.query_batch_size == 0 { return Err("--query-batch-size must be positive".into()); }
 
         let metric = self
             .metric
@@ -425,38 +443,15 @@ impl Args {
             max_extra,
         )?;
 
-        // Native u8 storage is currently a deliberately narrow execution path.
-        // It exists for SIFT-style 128-dimensional L2 data and reuses an imported
-        // ParlayANN graph because the native Rust graph builder still operates on f32.
-        if vector_storage == VectorStorageKind::U8 {
-            if dimension != 128 || metric != SearchMetric::L2 {
-                return Err(
-                    "native u8 storage currently requires 128-dimensional L2 vectors".into(),
-                );
-            }
-            if !matches!(base_format, VectorFormat::Bvecs | VectorFormat::U8bin)
-                || !matches!(query_format, VectorFormat::Bvecs | VectorFormat::U8bin)
-            {
-                return Err(
-                    "native u8 requires bvecs/u8bin base and queries; it does not quantize floats"
-                        .into(),
-                );
-            }
-            if cascade.prefilter != PrefilterChoice::None
-                || cascade.admission != AdmissionChoice::L2U8
-                || cascade.rerank != RerankChoice::None
-            {
-                return Err(
-                    "native u8 requires --prefilter none --admission l2-u8 --rerank none".into(),
-                );
-            }
-            if graph_source != GraphSource::Parlayann {
-                return Err(
-                    "native u8 uses a ParlayANN STAG export/cache; the Rust builder remains f32"
-                        .into(),
-                );
-            }
-        }
+        let search_plan = super::plan::SearchPlan::resolve(
+            vector_storage,
+            dimension,
+            metric,
+            base_format,
+            query_format,
+            cascade,
+            graph_source,
+        )?;
 
         // Profiling supplies a trial count only when the CLI did not specify one.
         let mut overrides = self.sweep.clone();
@@ -467,6 +462,15 @@ impl Args {
                 .profiles
                 .get("profiling")
                 .and_then(|p| p.trials);
+        }
+        let k = self.k.unwrap_or(root.defaults.sweep.k);
+        if self.single_search {
+            if overrides.trials.is_some_and(|trials| trials != 1)
+                || overrides.search_list_sizes.as_ref().is_some_and(|ls| ls.len() != 1) {
+                return Err("ordinary search consumes queries once; use orion-sweep for multiple L values or trials".into());
+            }
+            overrides.search_list_sizes.get_or_insert_with(|| vec![k.max(64)]);
+            overrides.trials = Some(1);
         }
         let sweep = root.defaults.sweep.resolve(
             "sweep",
@@ -479,14 +483,15 @@ impl Args {
             base,
             query,
             groundtruth,
+            query_batch_size: self.query_batch_size,
+            replay_queries: false,
             base_format,
             query_format,
-            vector_storage,
+            search_plan,
             memory_budget_gib: self.memory_budget_gib,
             prepare_only: self.prepare_only,
             dimension,
             metric,
-            cascade,
             alpha,
             graph_degree,
             build_l,
@@ -621,6 +626,10 @@ impl Args {
 }
 
 impl ResolvedRunConfig {
+    pub fn search_plan(&self) -> super::plan::SearchPlan {
+        self.search_plan
+    }
+
     /// Returns the bundled legacy preset whose historical cache identity exactly
     /// matches this resolved configuration.
     ///
@@ -632,12 +641,12 @@ impl ResolvedRunConfig {
     fn matching_legacy_preset(&self) -> Option<String> {
         // A custom YAML entry called "sift" is not evidence of the old cache's identity.
         let bundled: RawRoot =
-            serde_yaml::from_str(include_str!("../../configs/sweep.yaml")).ok()?;
-        if self.base_format != VectorFormat::Fvecs || self.vector_storage != VectorStorageKind::F32
+            serde_yaml::from_str(crate::config::DEFAULT_CONFIG).ok()?;
+        if self.base_format != VectorFormat::Fvecs || self.search_plan().storage().kind != VectorStorageKind::F32
         {
             return None;
         }
-        let name = self.dataset.as_ref()?;
+        let name = &self.dataset;
         let preset = bundled.datasets.get(name)?;
         let paths = preset.paths.as_ref()?;
         let ov = preset.orion.as_ref();
@@ -720,7 +729,7 @@ impl ResolvedRunConfig {
         }
         // Preserve all historical f32 identities; native storage gets its own
         // namespace so a stale quantized sidecar cannot be mistaken for raw bytes.
-        if self.vector_storage == VectorStorageKind::U8 {
+        if self.search_plan().storage().kind == VectorStorageKind::U8 {
             "native-u8-v1".hash(&mut hash);
         }
         format!("v3_{:016x}", hash.finish())
@@ -731,7 +740,7 @@ impl ResolvedRunConfig {
 mod tests {
     use super::*;
     fn root() -> RawRoot {
-        serde_yaml::from_str(include_str!("../../configs/sweep.yaml")).unwrap()
+        serde_yaml::from_str(crate::config::DEFAULT_CONFIG).unwrap()
     }
     fn resolve(args: &[&str]) -> Result<ResolvedRunConfig, String> {
         Args::try_parse_from(args)
@@ -747,14 +756,14 @@ mod tests {
             ("sift1b", 1_000_000_000, "idx_1000M.ivecs"),
         ] {
             let config = resolve(&["orion", name]).unwrap();
-            assert_eq!(config.vector_storage, VectorStorageKind::U8);
+            assert_eq!(config.search_plan().storage().kind, VectorStorageKind::U8);
             assert_eq!(config.max_points, count);
             assert_eq!(config.base_format, VectorFormat::Bvecs);
             assert_eq!(config.query_format, VectorFormat::Bvecs);
-            assert!(config.groundtruth.ends_with(groundtruth));
-            assert_eq!(config.cascade.prefilter, PrefilterChoice::None);
-            assert_eq!(config.cascade.admission, AdmissionChoice::L2U8);
-            assert_eq!(config.cascade.rerank, RerankChoice::None);
+            assert!(config.groundtruth.as_ref().unwrap().ends_with(groundtruth));
+            assert_eq!(config.search_plan().cascade().prefilter, PrefilterChoice::None);
+            assert_eq!(config.search_plan().cascade().admission, AdmissionChoice::NativeL2U8);
+            assert_eq!(config.search_plan().cascade().rerank, RerankChoice::None);
             assert_eq!(config.graph_source, GraphSource::Parlayann);
             assert!(config.staged_file.unwrap().to_string_lossy().contains(name));
         }
@@ -769,8 +778,33 @@ mod tests {
     #[test]
     fn native_storage_is_validated_and_has_a_distinct_cache_identity() {
         let native = resolve(&["orion", "sift10m"]).unwrap();
-        let float = resolve(&["orion", "sift10m", "--vector-storage", "f32"]).unwrap();
+        let float = resolve(&[
+            "orion",
+            "sift10m",
+            "--vector-storage",
+            "f32",
+            "--admission",
+            "l2-u8",
+        ])
+        .unwrap();
         assert_ne!(native.cache_namespace, float.cache_namespace);
+        assert_eq!(
+            native.search_plan(),
+            super::super::plan::SearchPlan::NativeU8L2
+        );
+        assert_eq!(native.search_plan().cascade(), native.search_plan().cascade());
+        assert_eq!(float.search_plan().cascade(), float.search_plan().cascade());
+        assert!(resolve(&["orion", "sift10m", "--vector-storage", "f32"])
+            .unwrap_err()
+            .contains("native-l2-u8 requires --vector-storage u8"));
+        assert!(resolve(&["orion", "sift10m", "--admission", "l2-u8"])
+            .unwrap_err()
+            .contains("--admission native-l2-u8"));
+        assert_eq!(native.search_plan().storage().element_bytes, 1);
+        assert!(!native.search_plan().storage().has_l2_u8_sidecar);
+        assert_eq!(float.search_plan().storage().element_bytes, 4);
+        assert!(float.search_plan().storage().has_l2_u8_sidecar);
+
         assert!(resolve(&["orion", "sift10m", "--rerank", "f32"]).is_err());
         assert!(resolve(&["orion", "sift10m", "--admission", "l2-u16"]).is_err());
         assert!(resolve(&["orion", "sift10m", "--prefilter", "jl"]).is_err());
@@ -871,7 +905,7 @@ mod tests {
                 "{name}"
             );
             assert_eq!(
-                c.cascade,
+                c.search_plan().cascade(),
                 Cascade {
                     prefilter: pre,
                     admission,
@@ -900,8 +934,8 @@ mod tests {
             "100",
         ])
         .unwrap();
-        assert!(c.dataset.is_none());
-        assert_eq!(c.cascade.admission, AdmissionChoice::L2Kt);
+        assert_eq!(c.dataset, "anonymous");
+        assert_eq!(c.search_plan().cascade().admission, AdmissionChoice::L2Kt);
         assert_eq!(c.sweep.calibration_l, 200);
         assert_eq!(c.graph_source, GraphSource::Rust);
     }
@@ -923,8 +957,8 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(b.alpha, 1.3);
-        assert_eq!(b.cascade.prefilter, PrefilterChoice::Jl);
-        assert_eq!(b.cascade.admission, a.cascade.admission);
+        assert_eq!(b.search_plan().cascade().prefilter, PrefilterChoice::Jl);
+        assert_eq!(b.search_plan().cascade().admission, a.search_plan().cascade().admission);
         assert_ne!(a.cache_namespace, b.cache_namespace);
         let c = resolve(&["orion", "sift", "--graph-source", "rust", "--k", "100"]).unwrap();
         assert_eq!(a.cache_namespace, c.cache_namespace);
@@ -969,7 +1003,7 @@ mod tests {
             .resolve_with(&root, &LegacyEnvironment::default())
             .unwrap();
         assert_eq!(
-            c.cascade,
+            c.search_plan().cascade(),
             Cascade::default_for_specified_dimension_and_metric(960, SearchMetric::L2)
         );
     }

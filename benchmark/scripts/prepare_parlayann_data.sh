@@ -19,175 +19,31 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 DATASET="${DATASET:-sift}"
 
-ROOT="$(git rev-parse --show-toplevel)"
-cd "$ROOT"
-
-source "$SCRIPT_DIR/_env.sh"
+source "$SCRIPT_DIR/_common.sh"
 setup_python_env numpy || exit 1
 
 LOCAL_PCT="${LOCAL_PCT:-60}"
 
-case "$DATASET" in
-    sift)
-        BASE_FVECS="data/sift/sift_base.fvecs"
-        QUERY_FVECS="data/sift/sift_query.fvecs"
-        GT_IVECS="data/sift/sift_groundtruth.ivecs"
-        MAX_POINTS=""           # full 1M
-        PA_DIR_NAME="sift1m"
-        # PA's published SIFT recipe (`-R 64 -L 128 -alpha 1.15
-        # -num_passes 2 -quantize_bits 8 -verbose`). L=128 (was 100) +
-        # α=1.15 (was 1.2) + the second build pass tighten the graph
-        # vs our prior `-L 100 -α 1.2 -num_passes 1` config — visibly
-        # higher recall per visited node at the same search L.
-        PA_R=64; PA_L=128; PA_ALPHA=1.15; MAX_EXTRA="${MAX_EXTRA:-16}"
-        PA_NUM_PASSES="${PA_NUM_PASSES:-2}"
-        PA_QUANTIZE_BITS="${PA_QUANTIZE_BITS:-8}"
-        PA_VERBOSE="${PA_VERBOSE:-1}"
-        PA_DIST_FUNC="${PA_DIST_FUNC:-Euclidian}"
-        ;;
-    glove25)
-        BASE_FVECS="data/glove25/glove-25-angular_base.fvecs"
-        QUERY_FVECS="data/glove25/glove-25-angular_query.fvecs"
-        GT_IVECS="data/glove25/glove-25-angular_groundtruth.ivecs"
-        MAX_POINTS=""
-        PA_DIR_NAME="glove25"
-        PA_R=100; PA_L=200; PA_ALPHA=1; MAX_EXTRA="${MAX_EXTRA:-16}"
-        PA_NUM_PASSES="${PA_NUM_PASSES:-2}"
-        PA_NORMALIZE="${PA_NORMALIZE:-1}"
-        PA_QUANTIZE_BITS="${PA_QUANTIZE_BITS:-8}"
-        PA_DIST_FUNC="${PA_DIST_FUNC:-mips}"
-        ;;
-    glove100)
-        BASE_FVECS="data/glove100/glove-100-angular_base.fvecs"
-        QUERY_FVECS="data/glove100/glove-100-angular_query.fvecs"
-        GT_IVECS="data/glove100/glove-100-angular_groundtruth.ivecs"
-        MAX_POINTS=""
-        PA_DIR_NAME="glove100"
-        # Match our `glove100_aligned` build recipe (R=100 L=200 α=1.0 on
-        # normalized vectors) *plus* PA's `-num_passes 2` — the second
-        # pass re-inserts each vertex against the pass-1 graph so
-        # neighbour selection is seeded with real connectivity instead
-        # of the near-empty state pass 1 starts from. This is the single
-        # biggest graph-quality lever PA uses on GloVe-100 that we were
-        # missing.
-        PA_R=100; PA_L=200; PA_ALPHA=1.0; MAX_EXTRA="${MAX_EXTRA:-16}"
-        # `${VAR:-default}` so env overrides (e.g. `PA_NUM_PASSES=1` for
-        # the 1-pass comparison run) take precedence over the defaults.
-        PA_NUM_PASSES="${PA_NUM_PASSES:-2}"
-        PA_NORMALIZE="${PA_NORMALIZE:-1}"
-        PA_QUANTIZE_BITS="${PA_QUANTIZE_BITS:-8}"
-        PA_DIST_FUNC="${PA_DIST_FUNC:-mips}"
-        ;;
-    gist)
-        # GIST 1M — ParlayANN-aligned recipe from
-        # `../ParlayANN/algorithms/vamana/scripts/gist`:
-        #   BUILD_ARGS="-R 100 -L 200 -alpha 1.1 -num_passes 2"
-        # the exported `.staged` and downstream PhasedGraph cache
-        # match the public PA reference for apples-to-apples.
-        BASE_FVECS="data/gist/gist_base.fvecs"
-        QUERY_FVECS="data/gist/gist_query.fvecs"
-        GT_IVECS="data/gist/gist_groundtruth.ivecs"
-        MAX_POINTS=""           # full 1M
-        PA_DIR_NAME="gist"
-        PA_R=100; PA_L=200; PA_ALPHA=1.1; MAX_EXTRA="${MAX_EXTRA:-16}"
-        PA_DIST_FUNC="${PA_DIST_FUNC:-Euclidian}"
-        ;;
-    deep10m)
-        # Yandex Deep10M (96-dim CNN features, L2 ground truth) — PA's
-        # `vamana/scripts/deep10M` recipe verbatim:
-        #   BUILD_ARGS="-R 64 -L 128 -alpha 1.05 -num_passes 2 -quantize_bits 8"
-        # The raw .fvecs must already be present at the paths below —
-        # download from Yandex Deep1B (first 10M) or BigANN benchmark.
-        # `convert.py` zero-pads D=96 → D=128 to match the rust-side
-        # monomorphisation.
-        BASE_FVECS="data/deep10m/deep10m_base.fvecs"
-        QUERY_FVECS="data/deep10m/deep10m_query.fvecs"
-        GT_IVECS="data/deep10m/deep10m_groundtruth.ivecs"
-        MAX_POINTS=""           # full 10M
-        PA_DIR_NAME="deep10M"
-        PA_R=64; PA_L=128; PA_ALPHA=1.05; MAX_EXTRA="${MAX_EXTRA:-16}"
-        PA_NUM_PASSES="${PA_NUM_PASSES:-2}"
-        PA_QUANTIZE_BITS="${PA_QUANTIZE_BITS:-8}"
-        PA_VERBOSE="${PA_VERBOSE:-1}"
-        PA_DIST_FUNC="${PA_DIST_FUNC:-Euclidian}"
-        ;;
-    fashion-mnist)
-        # Fashion-MNIST — 60K × 784-D image vectors (28×28 flattened),
-        # L2. PA's recipe (`vamana/scripts/fashion` verbatim):
-        #   BUILD_ARGS="-R 40 -L 80 -alpha 1.1 -num_passes 2 -quantize_bits 8"
-        #   QUERY_ARGS="-quantize_bits 8"
-        #   TYPE_ARGS="-data_type float -dist_func Euclidian -file_type bin"
-        BASE_FVECS="data/fashion-mnist/fashion-mnist-784-euclidean_base.fvecs"
-        QUERY_FVECS="data/fashion-mnist/fashion-mnist-784-euclidean_query.fvecs"
-        GT_IVECS="data/fashion-mnist/fashion-mnist-784-euclidean_groundtruth.ivecs"
-        MAX_POINTS=""           # full 60K
-        PA_DIR_NAME="fashion-mnist-784-euclidean"
-        PA_R=40; PA_L=80; PA_ALPHA=1.1; MAX_EXTRA="${MAX_EXTRA:-16}"
-        PA_NUM_PASSES="${PA_NUM_PASSES:-2}"
-        PA_QUANTIZE_BITS="${PA_QUANTIZE_BITS:-8}"
-        PA_VERBOSE="${PA_VERBOSE:-1}"
-        PA_DIST_FUNC="${PA_DIST_FUNC:-Euclidian}"
-        ;;
-    msmarco_bert_1M)
-        # MS-MARCO BERT 1M — 1M passages embedded with sentence-
-        # transformers/msmarco-bert-base-dot-v5 (D=768, dot-product).
-        # Vectors are emitted by `data/embed_msmarco_bert.py`. PA's
-        # recipe (`vamana/scripts/msmarco_websearch`):
-        #   BUILD_ARGS="-R 64 -L 128 -alpha 1 -num_passes 1 -quantize_bits 8"
-        #   TYPE_ARGS="-data_type float -dist_func mips -file_type bin"
-        BASE_FVECS="data/msmarco_bert_1M/msmarco_bert_1M_base.fvecs"
-        QUERY_FVECS="data/msmarco_bert_1M/msmarco_bert_1M_query.fvecs"
-        GT_IVECS="data/msmarco_bert_1M/msmarco_bert_1M_groundtruth.ivecs"
-        MAX_POINTS=""           # full 1M
-        PA_DIR_NAME="MSMarcoBert1M"
-        PA_R=64; PA_L=128; PA_ALPHA=1.0; MAX_EXTRA="${MAX_EXTRA:-16}"
-        PA_NUM_PASSES="${PA_NUM_PASSES:-1}"
-        PA_QUANTIZE_BITS="${PA_QUANTIZE_BITS:-8}"
-        PA_VERBOSE="${PA_VERBOSE:-1}"
-        PA_DIST_FUNC="${PA_DIST_FUNC:-mips}"
-        ;;
-    wiki_ada_1M)
-        # Wikipedia ada-002 1M — 1M passages × 1536-D OpenAI ada-002
-        # embeddings, sourced from nlpkevinl/wikipedia_openai_embeddings
-        # via `data/load_wiki_ada_1M.py`. ada-002 outputs are unit-norm
-        # so MIPS == cosine natively. Build recipe: high-D shape
-        # (R=100 L=200 α=1.05) with `-dist_func mips` since the metric
-        # is dot-product, not L2.
-        BASE_FVECS="data/wiki_ada_1M/wiki_ada_1M_base.fvecs"
-        QUERY_FVECS="data/wiki_ada_1M/wiki_ada_1M_query.fvecs"
-        GT_IVECS="data/wiki_ada_1M/wiki_ada_1M_groundtruth.ivecs"
-        MAX_POINTS=""           # full 1M
-        PA_DIR_NAME="WikiAda1M"
-        PA_R=100; PA_L=200; PA_ALPHA=1.05; MAX_EXTRA="${MAX_EXTRA:-16}"
-        PA_NUM_PASSES="${PA_NUM_PASSES:-2}"
-        PA_QUANTIZE_BITS="${PA_QUANTIZE_BITS:-}"
-        PA_VERBOSE="${PA_VERBOSE:-1}"
-        PA_DIST_FUNC="${PA_DIST_FUNC:-mips}"
-        ;;
-    *)
-        echo "Unknown DATASET=$DATASET" >&2
-        exit 2
-        ;;
-esac
+source "$SCRIPT_DIR/_parlay.sh"
+load_parlay_recipe "$DATASET"
+MAX_POINTS="${MAX_POINTS:-$DEFAULT_MAX_POINTS}"
+MAX_EXTRA="${MAX_EXTRA:-$DEFAULT_MAX_EXTRA}"
+PA_R="${PA_R:-$PA_BUILD_R}"
+PA_L="${PA_L:-$PA_BUILD_L}"
+PA_ALPHA="${PA_ALPHA:-$PA_BUILD_ALPHA}"
+PA_NUM_PASSES="${PA_NUM_PASSES:-$PA_BUILD_PASSES}"
+PA_QUANTIZE_BITS="${PA_QUANTIZE_BITS-$PA_BUILD_QBITS}"
+PA_VERBOSE="${PA_VERBOSE:-1}"
+PA_NORMALIZE="${PA_NORMALIZE:-${PA_NORMALIZE_FLAG:+1}}"
+
 
 # ParlayANN checkout. Defaults to the recommended sibling clone
 # (`../ParlayANN`); override on the command line for any other layout:
 #   PA_ROOT=/path/to/ParlayANN DATASET=glove100 bash $0
-PA_ROOT="${PA_ROOT:-../ParlayANN}"
-# Resolve PA_ROOT to an absolute path. The PA build invokes its
-# `neighbors` binary via `cd "$PA_VAMANA" && ./neighbors ...`, so any
-# relative paths derived from PA_ROOT (`PA_OUT_DIR/base.fbin`,
-# `GRAPH_OUT`, ...) would break after the cd. Resolving once here
-# means the caller can hand in either `../ParlayANN` or
-# `/abs/path/to/ParlayANN` interchangeably.
-if [ ! -d "$PA_ROOT" ]; then
-    echo "ERROR: PA_ROOT='$PA_ROOT' is not a directory" >&2
-    echo "  set PA_ROOT to your ParlayANN checkout, e.g. PA_ROOT=/path/to/ParlayANN bash $0" >&2
-    exit 2
-fi
-PA_ROOT="$(cd "$PA_ROOT" && pwd)"
+resolve_parlay_root
 PA_OUT_DIR="$PA_ROOT/data/$PA_DIR_NAME"
 PA_VAMANA="$PA_ROOT/algorithms/vamana"
+[[ -x "$PA_VAMANA/neighbors" ]] || { echo "Build $PA_VAMANA/neighbors first" >&2; exit 2; }
 # `LOCAL_PCT` is the top-X% partition cutoff (% of per-node degree)
 # fed to PA's `-local_pct`. Defaults to 60. Including it in the
 # stub keeps generated artifacts disambiguated when sweeping the
@@ -212,24 +68,28 @@ echo "═══ Step 1/3: convert fvecs → fbin ($DATASET) ═══"
 CONVERT_ARGS=(
     --base-fvecs "$BASE_FVECS"
     --query-fvecs "$QUERY_FVECS"
-    --gt-ivecs "$GT_IVECS"
     --out-dir "$PA_OUT_DIR"
 )
-if [ -n "$MAX_POINTS" ]; then
-    CONVERT_ARGS+=(--max-base-points "$MAX_POINTS")
+if [[ -n "$MAX_POINTS" && "$MAX_POINTS" != 0 ]]; then
+    CONVERT_ARGS+=(--max-base-points "$MAX_POINTS" --skip-groundtruth)
+else
+    CONVERT_ARGS+=(--gt-ivecs "$GT_IVECS")
 fi
 "$PY" "$ROOT/benchmark/scripts/parlayann_convert.py" "${CONVERT_ARGS[@]}"
 
 # When the base is truncated, the passed-through gt.bin uses IDs from
 # the original larger set — invalid against our smaller base. Recompute
 # brute-force to get correct top-k against the truncated base.
-if [ -n "$MAX_POINTS" ]; then
+if [[ -n "$MAX_POINTS" && "$MAX_POINTS" != 0 ]]; then
+    GT_METRIC=l2
+    if [[ "$PA_DIST_FUNC" = mips ]]; then GT_METRIC=ip; fi
+    if [[ "${PA_NORMALIZE:-0}" = 1 ]]; then GT_METRIC=cos; fi
     echo "═══ Step 2/3: brute-force recompute gt against truncated base ═══"
     "$PY" "$ROOT/benchmark/scripts/compute_gt_brute.py" \
         --base-fbin "$PA_OUT_DIR/base.fbin" \
         --query-fbin "$PA_OUT_DIR/query.fbin" \
         --out "$PA_OUT_DIR/gt.bin" \
-        -k 100
+        --metric "$GT_METRIC" -k 100
 else
     echo "═══ Step 2/3: gt passed through from original .ivecs ═══"
 fi
@@ -238,28 +98,28 @@ PA_NUM_PASSES="${PA_NUM_PASSES:-1}"
 # `PA_NORMALIZE=1` tells `./neighbors` to L2-normalize base+queries before
 # building — needed for angular datasets where our `glove*_aligned`
 # orion config reads pre-normalized fvecs.
-PA_NORMALIZE_FLAG=""
+PA_NORMALIZE_FLAG=()
 if [ "${PA_NORMALIZE:-0}" = "1" ]; then
-    PA_NORMALIZE_FLAG="-normalize"
+    PA_NORMALIZE_FLAG=(-normalize)
 fi
 # `PA_QUANTIZE_BITS=N` adds `-quantize_bits N` (PA's u8/u16 quantized
 # rerank sidecar). Empty = omit. Mirrors PA's published per-dataset
 # recipe (e.g. SIFT uses `-quantize_bits 8`).
-PA_QUANTIZE_FLAG=""
+PA_QUANTIZE_FLAG=()
 if [ -n "${PA_QUANTIZE_BITS:-}" ]; then
-    PA_QUANTIZE_FLAG="-quantize_bits ${PA_QUANTIZE_BITS}"
+    PA_QUANTIZE_FLAG=(-quantize_bits "$PA_QUANTIZE_BITS")
 fi
-PA_VERBOSE_FLAG=""
+PA_VERBOSE_FLAG=()
 if [ "${PA_VERBOSE:-0}" = "1" ]; then
-    PA_VERBOSE_FLAG="-verbose"
+    PA_VERBOSE_FLAG=(-verbose)
 fi
 
 echo "═══ Step 3/3: ParlayANN build → $ORION_OUT  (R=$PA_R L=$PA_L α=$PA_ALPHA passes=$PA_NUM_PASSES normalize=${PA_NORMALIZE:-0} qbits=${PA_QUANTIZE_BITS:-none} ex=$MAX_EXTRA pct=$LOCAL_PCT) ═══"
 echo "                                graph → $GRAPH_OUT (for PA's own search re-runs)"
 (cd "$PA_VAMANA" && PARLAY_NUM_THREADS=8 ./neighbors \
     -R "$PA_R" -L "$PA_L" -alpha "$PA_ALPHA" -num_passes "$PA_NUM_PASSES" \
-    -data_type float -dist_func "$PA_DIST_FUNC" $PA_NORMALIZE_FLAG \
-    $PA_QUANTIZE_FLAG $PA_VERBOSE_FLAG \
+    -data_type float -dist_func "$PA_DIST_FUNC" ${PA_NORMALIZE_FLAG[@]+"${PA_NORMALIZE_FLAG[@]}"} -file_type bin \
+    ${PA_QUANTIZE_FLAG[@]+"${PA_QUANTIZE_FLAG[@]}"} ${PA_VERBOSE_FLAG[@]+"${PA_VERBOSE_FLAG[@]}"} \
     -max_extra "$MAX_EXTRA" -local_pct "$LOCAL_PCT" \
     -base_path "$PA_OUT_DIR/base.fbin" \
     -query_path "$PA_OUT_DIR/query.fbin" \

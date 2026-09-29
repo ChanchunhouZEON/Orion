@@ -1,14 +1,12 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Deterministic-prefix replay and local geometric audits; no timing claims.
-#[path = "../runner/cascade.rs"]
-mod cascade;
-#[path = "../cli/mod.rs"]
-mod cli;
-#[path = "../config.rs"]
-mod config;
-#[path = "../runner/parlayann_bridge.rs"]
-mod parlayann_bridge;
-#[path = "../utils.rs"]
-mod utils;
+use orion_cli::cascade;
+use orion_cli::cli;
+use orion_cli::with_supported_dimension;
 
 use clap::{Parser, ValueEnum};
 use diskann::model::InmemDataset;
@@ -30,7 +28,10 @@ enum Track {
 }
 
 #[derive(Parser)]
-#[command(name = "matched_state", about = "Matched-state L2 diagnostics (EE disabled; no QPS timing)")]
+#[command(
+    name = "matched_state",
+    about = "Matched-state L2 diagnostics (EE disabled; no QPS timing)"
+)]
 struct Args {
     #[command(flatten)]
     run: cli::config::Args,
@@ -100,50 +101,50 @@ fn summarize(rows: &[Value]) -> Value {
         "coverage_violated",
         "coverage_not_applicable",
     ]
-    .into_iter()
-    .map(|group| {
-        let selected: Vec<_> = rows
-            .iter()
-            .filter(|r| match group {
-                "all" => true,
-                "no_switch" => r["checkpoint"].is_null(),
-                "coverage_holds" => r["sampled_local_coverage_holds"] == true,
-                "coverage_violated" => r["sampled_local_coverage_holds"] == false,
-                _ => !r["checkpoint"].is_null() && r["sampled_local_coverage_holds"].is_null(),
-            })
-            .collect();
-        let branches: Vec<_> = (0..3)
-            .map(|i| {
-                let mut means = serde_json::Map::new();
-                for key in [
-                    "recall",
-                    "before_ndc",
-                    "after_ndc",
-                    "total_stage_ndc",
-                    "after_expansions",
-                ] {
-                    means.insert(
-                        key.into(),
-                        if selected.is_empty() {
-                            Value::Null
-                        } else {
-                            json!(
+        .into_iter()
+        .map(|group| {
+            let selected: Vec<_> = rows
+                .iter()
+                .filter(|r| match group {
+                    "all" => true,
+                    "no_switch" => r["checkpoint"].is_null(),
+                    "coverage_holds" => r["sampled_local_coverage_holds"] == true,
+                    "coverage_violated" => r["sampled_local_coverage_holds"] == false,
+                    _ => !r["checkpoint"].is_null() && r["sampled_local_coverage_holds"].is_null(),
+                })
+                .collect();
+            let branches: Vec<_> = (0..3)
+                .map(|i| {
+                    let mut means = serde_json::Map::new();
+                    for key in [
+                        "recall",
+                        "before_ndc",
+                        "after_ndc",
+                        "total_stage_ndc",
+                        "after_expansions",
+                    ] {
+                        means.insert(
+                            key.into(),
+                            if selected.is_empty() {
+                                Value::Null
+                            } else {
+                                json!(
                                 selected
                                     .iter()
                                     .map(|r| r["branches"][i][key].as_f64().unwrap())
                                     .sum::<f64>()
                                     / selected.len() as f64
                             )
-                        },
-                    );
-                }
-                // Corresponding neighbor mode for `i`
-                json!({"mode": NeighborMode::ALL[i].name(), "means": means})
-            })
-            .collect();
-        json!({"group": group, "query_count": selected.len(), "branches": branches})
-    })
-    .collect();
+                            },
+                        );
+                    }
+                    // Corresponding neighbor mode for `i`
+                    json!({"mode": NeighborMode::ALL[i].name(), "means": means})
+                })
+                .collect();
+            json!({"group": group, "query_count": selected.len(), "branches": branches})
+        })
+        .collect();
     json!(groups)
 }
 
@@ -306,6 +307,11 @@ fn run<const N: usize>(
     config: &cli::config::ResolvedRunConfig,
     mut data: cli::data::LoadedDataset,
 ) -> Result<(), String> {
+    if config.prepare_only {
+        cli::index::load_index::<N>(config, &mut data)?;
+        return Ok(());
+    }
+    let ground_truth = data.ground_truth.take().ok_or("this diagnostic requires --groundtruth; ordinary orion search does not")?;
     let settings = &config.sweep;
     let queries: Vec<[f32; N]> = data
         .queries
@@ -318,7 +324,7 @@ fn run<const N: usize>(
     let out = args.output.clone().unwrap_or_else(|| {
         PathBuf::from(format!(
             "visualizations/matched_state_{}_k{}.json",
-            config.dataset.as_deref().unwrap_or("custom"),
+            config.dataset.as_str(),
             settings.k
         ))
     });
@@ -326,7 +332,8 @@ fn run<const N: usize>(
         return Err(format!("Refusing to overwrite {}", out.display()));
     }
     let idx = cli::index::load_index::<N>(config, &mut data)?;
-    if config.prepare_only { return Ok(()); }
+
+
     let calib = idx
         .calibrate(
             &queries[..settings.calibration_samples.min(queries.len())],
@@ -355,23 +362,23 @@ fn run<const N: usize>(
         let pf: Option<Box<dyn PrefilterStage<N> + '_>> = if exact {
             None
         } else {
-            cascade::build_prefilter(&idx, config.cascade.prefilter, config.cascade.admission)
+            cascade::build_prefilter(&idx, config.search_plan().cascade().prefilter, config.search_plan().cascade().admission)
         };
         let ad: Box<dyn AdmissionStage<N> + '_> = if exact {
             Box::new(ExactAdmission(&idx.dataset))
         } else {
-            cascade::build_admission(&idx, config.cascade.admission)
+            cascade::build_admission(&idx, config.search_plan().cascade().admission).map_err(|e| e.to_string())?
         };
         let rr: Box<dyn RerankStage<N> + '_> = if exact {
             Box::new(NoRerank)
         } else {
-            cascade::build_rerank(&idx, config.cascade.rerank)
+            cascade::build_rerank(&idx, config.search_plan().cascade().rerank)
         };
         for &l in &args.diagnostic_ls {
             let mut rows = Vec::new();
             for &qi in &sample {
                 let q = &queries[qi];
-                let truth = &data.ground_truth[qi][..settings.k];
+                let truth = &ground_truth[qi][..settings.k];
                 let mut traces = Vec::new();
                 let mut returned = Vec::new();
                 for mode in NeighborMode::ALL {
@@ -438,19 +445,19 @@ fn run<const N: usize>(
                             &traces[i],
                             &returned[i],
                             mode,
-                            !exact && config.cascade.rerank != cascade::RerankChoice::None,
+                            !exact && config.search_plan().cascade().rerank != cascade::RerankChoice::None,
                             radius,
                         )
                     })
                     .collect();
                 let remote_followup: Vec<_> = checkpoint.as_ref().map(|cp| cp["zones"]["remote"].as_array().unwrap()
                     .iter().filter(|v| v["already_seen"] == false).map(|v| {
-                        let id = v["id"].as_u64().unwrap() as u32;
-                        json!({"id": id, "admitted_later_full": traces[0].admitted_after_switch.contains(&id),
+                    let id = v["id"].as_u64().unwrap() as u32;
+                    json!({"id": id, "admitted_later_full": traces[0].admitted_after_switch.contains(&id),
                             "retained_later_full": traces[0].retained_after_switch.contains(&id),
                             "expanded_later_full": traces[0].tail_nodes.iter().any(|n| n.0 == id),
                             "returned_full": returned[0].contains(&id)})
-                    }).collect()).unwrap_or_default();
+                }).collect()).unwrap_or_default();
                 let lost: Vec<_> = truth
                     .iter()
                     .copied()
@@ -516,7 +523,7 @@ fn run<const N: usize>(
 }
 
 fn execute(args: Args) -> Result<(), String> {
-    let config = args.run.resolve()?;
+    let config = args.run.resolve_for_sweep()?;
     if config.metric != cascade::SearchMetric::L2 {
         return Err("Geometric audit currently requires L2".into());
     }

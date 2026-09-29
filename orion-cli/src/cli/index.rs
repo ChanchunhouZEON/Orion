@@ -1,27 +1,32 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Resolve graph provenance, transfer the base allocation, then load/build/import.
 use super::{
     cache::CachePlan,
     config::{GraphSource, ResolvedRunConfig},
-    data::{BaseElement, LoadedDataset},
+    data::{BaseElement, LoadedBase},
 };
 use crate::parlayann_bridge;
 use diskann::model::InmemDataset;
 use orion::{build_diskann_index, Orion};
 use std::{path::Path, time::Instant};
 
-/// Leaves query vectors and ground truth in `data`, but consumes its base allocation.
+/// Consumes the base allocation. Query and evaluation inputs are owned separately.
 /// Check the export path/header before transferring ownership of the allocation.
 /// The graph payload itself is validated later, during streaming import.
 pub fn load_index<const N: usize>(
     config: &ResolvedRunConfig,
-    data: &mut LoadedDataset,
+    data: &mut LoadedBase,
 ) -> Result<Orion<N>, String> {
     load_index_impl(config, data, build_in_process::<N>)
 }
 
 pub fn load_u8_index<const N: usize>(
     config: &ResolvedRunConfig,
-    data: &mut LoadedDataset<u8>,
+    data: &mut LoadedBase<u8>,
 ) -> Result<Orion<N, u8>, String> {
     load_index_impl(config, data, |_, _| {
         Err("native u8 construction requires a ParlayANN STAG export".into())
@@ -30,7 +35,7 @@ pub fn load_u8_index<const N: usize>(
 
 fn load_index_impl<const N: usize, T: BaseElement>(
     config: &ResolvedRunConfig,
-    data: &mut LoadedDataset<T>,
+    data: &mut LoadedBase<T>,
     build: impl FnOnce(&ResolvedRunConfig, InmemDataset<T, N>) -> Result<Orion<N, T>, String>,
 ) -> Result<Orion<N, T>, String>
 where
@@ -159,6 +164,7 @@ where
 #[cfg(test)]
 mod large_input_tests {
     use super::*;
+    use super::super::data::LoadedDataset;
     use clap::Parser;
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -340,6 +346,17 @@ mod large_input_tests {
         assert!(data.base.is_none());
         assert_eq!(ptr, index.dataset.data.as_ptr());
         assert_eq!(index.entry, old.entry_point);
+        // Even callers that bypass CLI resolution cannot run native admission
+        // against an f32 index or silently allocate a quantized replacement.
+        {
+            let rejected = crate::cascade::build_admission(
+                &index,
+                crate::cascade::AdmissionChoice::NativeL2U8,
+            );
+            assert!(
+                matches!(rejected, Err(error) if error.to_string().contains("requires a native u8 index"))
+            );
+        }
         for (i, (l, r, e)) in old.partitions.iter().enumerate() {
             assert_eq!(index.graph.local_neighbors(i), l);
             assert_eq!(index.graph.remote_neighbors(i), r);

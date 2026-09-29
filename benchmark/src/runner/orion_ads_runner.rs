@@ -117,7 +117,7 @@ macro_rules! search_orion_ads {
         let ad = crate::runner::cascade::build_admission::<$N>(
             $orion,
             crate::runner::cascade::AdmissionChoice::AdsF32,
-        );
+        ).expect("ADS uses supported f32 admission");
         let rr = crate::runner::cascade::build_rerank::<$N>(
             $orion,
             crate::runner::cascade::RerankChoice::F32,

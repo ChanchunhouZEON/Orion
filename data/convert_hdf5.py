@@ -11,20 +11,7 @@ import sys
 import os
 
 
-def write_fvecs(filename, vecs):
-    with open(filename, "wb") as f:
-        for vec in vecs:
-            dim = np.array([len(vec)], dtype=np.int32)
-            dim.tofile(f)
-            vec.astype(np.float32).tofile(f)
-
-
-def write_ivecs(filename, vecs):
-    with open(filename, "wb") as f:
-        for vec in vecs:
-            dim = np.array([len(vec)], dtype=np.int32)
-            dim.tofile(f)
-            vec.astype(np.int32).tofile(f)
+from vector_io import write_fvecs, write_ivecs
 
 
 SUPPORTED_DIMS = [25, 32, 100, 104, 128, 256, 784, 960]

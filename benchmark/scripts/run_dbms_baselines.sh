@@ -17,11 +17,8 @@
 #          dataset via plot_baseline_comparison.py --all.
 
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR/../.."
-
-source "$SCRIPT_DIR/_env.sh"
-setup_python_env numpy || exit 1
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+setup_python_env || exit 1
 
 # All 7 headline datasets (matches what plot_dataset_all.py considers
 # the public set; fashion-mnist is excluded from the panel by design).
@@ -37,16 +34,16 @@ NEED_BASELINE_FILL="${NEED_BASELINE_FILL:-$DATASETS}"
 run_phase1() {
   local ds=$1
   echo "── phase 1 (dbms_baselines): $ds ──"
-  $PY benchmark/scripts/dbms_baselines.py \
+  "$PY" benchmark/scripts/dbms_baselines.py \
        --dataset "$ds" --max-points 0 --threads 8 --trials 3
 }
 
 run_phase2_baseline() {
   local ds=$1
   echo "── phase 2 (baseline_comparison + additional_baselines): $ds ──"
-  $PY benchmark/scripts/baseline_comparison.py \
+  "$PY" benchmark/scripts/baseline_comparison.py \
        --dataset "$ds" --max-points 0 --threads 8 --trials 3 --no-rust
-  $PY benchmark/scripts/additional_baselines.py \
+  "$PY" benchmark/scripts/additional_baselines.py \
        --dataset "$ds" --max-points 0 --threads 8 --trials 3
 }
 
@@ -64,6 +61,6 @@ done
 
 # ── Phase 3: render every panel + a combined grid ────────────────────────
 echo "── phase 3: render panels ──"
-$PY visualizations/plot_baseline_comparison.py --all || true
+"$PY" visualizations/plot_baseline_comparison.py --all
 
 echo "all done"

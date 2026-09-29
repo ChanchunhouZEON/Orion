@@ -71,12 +71,10 @@ pub fn build_diskann_index(
     );
 
     let mut index: Box<dyn ANNInmemIndex<f32>> =
-        create_inmem_index::<f32>(config).expect("Failed to create diskann index");
+        create_inmem_index::<f32>(config)?;
 
     let graph_start = Instant::now();
-    index
-        .build_from_data(flat_data, num_points)
-        .expect("Failed to build diskann index");
+    index.build_from_data(flat_data, num_points)?;
     let graph_build_time = graph_start.elapsed();
 
     let entry_point = index.start_node();

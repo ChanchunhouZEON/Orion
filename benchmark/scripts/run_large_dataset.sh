@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Example:
-# BIN=./target/release/orion RUN_DIR=/data/runs/sift1b-001 \
+# BIN=./target/release/orion-sweep RUN_DIR=/data/runs/sift1b-001 \
 #   bash benchmark/scripts/run_large_dataset.sh sift1b \
 #   --staged-file /data/graph.staged --cache-dir /data/cache --memory-budget-gib 1800
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 : "${RUN_DIR:?Set RUN_DIR to a new directory for logs}"
-BIN="${BIN:-./target/release/orion}"
+BIN="${BIN:-$(binary_path orion-sweep)}"
 THREADS="${THREADS:-32}"
 TRIALS="${TRIALS:-3}"
-[[ -x "$BIN" ]] || { echo "Build the orion executable first: $BIN" >&2; exit 2; }
+[[ -x "$BIN" ]] || { echo "Build the orion-sweep executable first: $BIN" >&2; exit 2; }
 # Stage flags are controlled by this script; reject conflicting passthrough flags.
 for arg in "$@"; do
   case "$arg" in
@@ -32,8 +33,8 @@ case "$(uname -s)" in
   Darwin) time_flags=(-l) ;;
   *) echo "Unsupported timing platform" >&2; exit 2 ;;
 esac
-"$BIN" "$@" --preflight > "$RUN_DIR/preflight.json" 2> "$RUN_DIR/preflight.log"
-/usr/bin/time "${time_flags[@]}" "$BIN" "$@" --prepare-only \
+"$BIN" "$@" --k 100 --threads "$THREADS" --trials "$TRIALS" --preflight > "$RUN_DIR/preflight.json" 2> "$RUN_DIR/preflight.log"
+/usr/bin/time "${time_flags[@]}" "$BIN" "$@" --threads "$THREADS" --prepare-only \
   > "$RUN_DIR/prepare.stdout" 2> "$RUN_DIR/prepare.log"
 for k in 10 100; do
   /usr/bin/time "${time_flags[@]}" "$BIN" "$@" --k "$k" --threads "$THREADS" --trials "$TRIALS" \

@@ -1,14 +1,13 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! EE-disabled same-graph neighbor-policy experiment.
-#[path = "../runner/cascade.rs"]
-mod cascade;
-#[path = "../cli/mod.rs"]
-mod cli;
-#[path = "../config.rs"]
-mod config;
-#[path = "../runner/parlayann_bridge.rs"]
-mod parlayann_bridge;
-#[path = "../utils.rs"]
-mod utils;
+use orion_cli::cascade;
+use orion_cli::cli;
+use orion_cli::with_supported_dimension;
+use orion_cli::utils;
 
 use clap::Parser;
 use orion::algorithm::search::diagnostics::{NeighborMode, NoopObserver, SearchTrace};
@@ -61,8 +60,14 @@ fn run<const N: usize>(
 where
     [f32; N]: vector::FullPrecisionDistance<f32, N>,
 {
+    if config.prepare_only {
+        cli::index::load_index::<N>(config, &mut data)?;
+        return Ok(());
+    }
+    let ground_truth = data.ground_truth.take().ok_or("this diagnostic requires --groundtruth; ordinary orion search does not")?;
     let idx = cli::index::load_index::<N>(config, &mut data)?;
-    if config.prepare_only { return Ok(()); }
+
+
     let queries: Vec<[f32; N]> = data
         .queries
         .iter()
@@ -92,9 +97,9 @@ where
         })
         .map_err(|e| e.to_string())?;
 
-    let pf = cascade::build_prefilter(&idx, config.cascade.prefilter, config.cascade.admission);
-    let ad = cascade::build_admission(&idx, config.cascade.admission);
-    let rr = cascade::build_rerank(&idx, config.cascade.rerank);
+    let pf = cascade::build_prefilter(&idx, config.search_plan().cascade().prefilter, config.search_plan().cascade().admission);
+    let ad = cascade::build_admission(&idx, config.search_plan().cascade().admission).map_err(|e| e.to_string())?;
+    let rr = cascade::build_rerank(&idx, config.search_plan().cascade().rerank);
     let count = if args.diagnostic_queries == 0 {
         queries.len()
     } else {
@@ -131,7 +136,7 @@ where
                 sample
                     .par_iter()
                     .map(|&qi| {
-                        let truth = &data.ground_truth[qi][..settings.k];
+                        let truth = &ground_truth[qi][..settings.k];
 
                         let mut trace = SearchTrace::new(truth);
 
@@ -157,7 +162,7 @@ where
                             ));
                         }
 
-                        let rerank_ndc = if config.cascade.rerank == cascade::RerankChoice::None {
+                        let rerank_ndc = if config.search_plan().cascade().rerank == cascade::RerankChoice::None {
                             0
                         } else {
                             trace.rerank_candidates
@@ -257,7 +262,7 @@ where
                 qps[arm].push(queries.len() as f64 / elapsed);
                 recalls[arm] = ids
                     .iter()
-                    .zip(&data.ground_truth)
+                    .zip(&ground_truth)
                     .map(|(ids, gt)| recall(ids, &gt[..settings.k]))
                     .sum::<f64>()
                     / queries.len() as f64;
@@ -294,7 +299,7 @@ where
     let out = args.output.clone().unwrap_or_else(|| {
         PathBuf::from(format!(
             "visualizations/adaptive_{}_k{}.json",
-            config.dataset.as_deref().unwrap_or("custom"),
+            config.dataset.as_str(),
             settings.k
         ))
     });
@@ -372,7 +377,7 @@ fn execute(args: AdaptiveArgs) -> Result<(), String> {
     {
         return Err("recall-targets must be finite values in (0, 1]".into());
     }
-    let config = args.run.resolve()?;
+    let config = args.run.resolve_for_sweep()?;
     if args.run.print_config {
         println!(
             "{}",

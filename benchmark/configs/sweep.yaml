@@ -23,7 +23,7 @@ defaults:
     # blocks below override what their workload needs. Mirrors the
     # `Cascade::default_for_dataset` mapping in `orion.rs`.
     #   prefilter: none | jl | jl-hadamard | rabitq
-    #   admission: l2-u8 | l2-u16 | l2-kt | mips-i8 | mips-i16 | ads-f32
+    #   admission: native-l2-u8 | l2-u8 | l2-u16 | l2-kt | mips-i8 | mips-i16 | ads-f32
     #   rerank:    f32 | ip-f32 | u16 | none
     prefilter: none
     admission: l2-u8
@@ -103,7 +103,7 @@ datasets:
       # Original bytes are shared by admission and final ranking: no f32 base or sidecar.
       vector_storage: u8
       prefilter: none
-      admission: l2-u8
+      admission: native-l2-u8
       rerank: none
   sift100m:
     dimension: 128
@@ -125,7 +125,7 @@ datasets:
       # Original bytes are shared by admission and final ranking: no f32 base or sidecar.
       vector_storage: u8
       prefilter: none
-      admission: l2-u8
+      admission: native-l2-u8
       rerank: none
   sift1b:
     dimension: 128
@@ -147,7 +147,7 @@ datasets:
       # Original bytes are shared by admission and final ranking: no f32 base or sidecar.
       vector_storage: u8
       prefilter: none
-      admission: l2-u8
+      admission: native-l2-u8
       rerank: none
   sift:
     dimension: 128
