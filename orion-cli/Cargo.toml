@@ -8,6 +8,7 @@ name = "orion"
 path = "src/main.rs"
 
 [dependencies]
+comfy-table = { workspace = true }
 diskann = { path = "../diskann" }
 orion = { path = "../orion" }
 vector = { path = "../vector" }

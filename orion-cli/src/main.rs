@@ -323,22 +323,17 @@ fn execute(mut command: Command) -> Result<(), String> {
         return Ok(());
     }
 
-    log::info!("Run settings: {resolved}");
 
     // Preflight resolves resource requirements without starting the actual run.
     if command.run.preflight {
         let report = resources::preflight_report(&config)?;
 
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report)
-                .map_err(|e| e.to_string())?
-        );
-
-        log::info!("{}", resources::format_report(&report));
+        resources::print_report(&report, command.run.preflight_format)?;
 
         return resources::enforce_budget(&report);
     }
+
+    log::info!("Run settings: {resolved}");
 
     // Dispatch to the concrete vector representation and compile-time
     // dimensionality selected by the resolved search plan.

@@ -63,6 +63,15 @@ pub enum VectorStorageKind {
     U8,
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum, Default)]
+pub enum PreflightFormat {
+    /// Table for a terminal, JSON when stdout is redirected.
+    #[default]
+    Auto,
+    Table,
+    Json,
+}
+
 /// Command-line configuration accepted by the Orion benchmark executable.
 ///
 /// Most fields are optional because their effective values may come from a dataset
@@ -108,9 +117,12 @@ pub struct Args {
     /// the selected cascade and graph source.
     #[arg(long, value_enum)]
     pub vector_storage: Option<VectorStorageKind>,
-    /// Print input and resident-memory lower bounds without loading base or graph.
+    /// Estimate memory from preset metadata or available headers; no payload loading.
     #[arg(long)]
     pub preflight: bool,
+    /// Preflight presentation (auto: terminal table, redirected JSON).
+    #[arg(long, value_enum, default_value = "auto", requires = "preflight")]
+    pub preflight_format: PreflightFormat,
     /// Reject configurations whose known resident components exceed this budget.
     ///
     /// The value is expressed in GiB and is only a lower-bound check; temporary
@@ -179,6 +191,9 @@ pub struct ResolvedRunConfig {
     pub base: PathBuf,
     pub query: Option<PathBuf>,
     pub groundtruth: Option<PathBuf>,
+    /// Preset source counts; discarded when the corresponding input is overridden.
+    pub num_points: Option<usize>,
+    pub num_queries: Option<usize>,
     pub query_batch_size: usize,
     pub replay_queries: bool,
     pub base_format: VectorFormat,
@@ -478,11 +493,19 @@ impl Args {
             &overrides,
         )?;
 
+        let num_points = if self.base.is_none() { preset.and_then(|p| p.num_points) } else { None };
+        let num_queries = if self.query.is_none() { preset.and_then(|p| p.num_queries) } else { None };
+        if num_points == Some(0) || num_queries == Some(0) {
+            return Err("preset num_points and num_queries must be positive when provided".into());
+        }
+
         let mut run = ResolvedRunConfig {
             dataset,
             base,
             query,
             groundtruth,
+            num_points,
+            num_queries,
             query_batch_size: self.query_batch_size,
             replay_queries: false,
             base_format,
