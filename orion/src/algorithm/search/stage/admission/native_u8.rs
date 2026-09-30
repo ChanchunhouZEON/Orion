@@ -52,26 +52,26 @@ impl<const N: usize> AdmissionSession for NativeU8Session<'_, N> {
 
     unsafe fn admit_stream(
         &self,
-        ids: &[u32],
-        output: *mut Neighbor,
+        id_scratch: &[u32],
+        out: *mut Neighbor,
         cutoff: f32,
         lookahead_lines: usize,
     ) -> usize {
-        let mut written = 0;
+        let mut w = 0;
         unsafe {
             vector::DistanceStream::<vector::L2U8Distance, N>::new(
                 self.dataset.data.as_ptr(),
                 N,
                 N,
                 self.query.as_ptr(),
-                ids,
+                id_scratch,
                 lookahead_lines,
             )
             .run(|id, distance| {
-                output.add(written).write(Neighbor::new(id, distance));
-                written += (distance < cutoff) as usize;
+                out.add(w).write(Neighbor::new(id, distance));
+                w += (distance < cutoff) as usize;
             });
         }
-        written
+        w
     }
 }
