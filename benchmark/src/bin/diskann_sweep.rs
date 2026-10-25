@@ -13,15 +13,19 @@
 //! ```text
 //! diskann_sweep <dataset> [--metric l2|cosine] [--max-points N]
 //!                         [--search-list-sizes L1,L2,...]
+//!                         [--k K] [--trials N] [--threads N]
+//!                         [--base FILE] [--query FILE] [--ground-truth FILE]
+//!                         [--cache-dir DIR] [--prepare-only]
+//!
+//! Large SIFT presets accept bvecs/u8bin inputs and stream-convert to f32.
+//! Temporary fbin files live in --cache-dir (allow 512 GB for SIFT1B),
+//! alongside the saved index; they are removed after the build or on unwind.
 //! ```
 //!
-//! Per-dataset build params (`R`, `L_build`, `α`) match
-//! `orion`'s defaults verbatim so the three engines
-//! (DiskANN / Orion / ParlayANN) all build the same graph
-//! topology. Metric defaults: L2 for SIFT/Deep10M/GIST/Fashion-MNIST,
-//! Cosine for GloVe/MSMarco-BERT/Wiki-ada (DiskANN's `vector::Metric`
-//! ships only L2 + Cosine, so raw-MIPS workloads get the
-//! Cosine-on-raw approximation).
+//! This baseline builds an independent Vamana graph using the recorded
+//! dataset recipe; matching build parameters do not imply identical topology.
+//! The implemented distance backend uses L2, with normalized inputs for
+//! angular workloads, including the normalized MS-MARCO dataset.
 //!
 //! ## Output format
 //!
@@ -33,58 +37,19 @@ mod utils;
 
 use diskann::index::{create_inmem_index, ANNInmemIndex};
 use diskann::model::{IndexConfiguration, IndexWriteParametersBuilder};
-use std::io::Write;
+#[path = "diskann_sweep_support/input.rs"]
+mod input;
+use orion_cli::cli::data::{inspect_vector_file, VectorFormat};
+use std::path::Path;
 use std::time::Instant;
 use vector::Metric;
 
-const K: usize = 10;
-const TRIALS: usize = 1;
+const DEFAULT_K: usize = 10;
 const NUM_THREADS: usize = 8;
 const DEFAULT_L_SCHEDULE: &[usize] = &[
     16, 18, 20, 22, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 72, 80, 90, 100, 114, 128, 144,
     160, 180, 200, 224, 256, 288, 320, 384, 448, 512, 640, 768, 1024,
 ];
-
-fn load_fvecs(path: &str, max_points: usize) -> (Vec<f32>, usize, usize) {
-    use std::io::Read;
-    let mut f = std::fs::File::open(path).unwrap_or_else(|_| panic!("Cannot open {path}"));
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf).unwrap();
-    let dim = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
-    let record_bytes = 4 + dim * 4;
-    let total = buf.len() / record_bytes;
-    let n = total.min(max_points);
-    let mut data = Vec::with_capacity(n * dim);
-    for i in 0..n {
-        let base = i * record_bytes + 4;
-        for d in 0..dim {
-            let off = base + d * 4;
-            data.push(f32::from_le_bytes(buf[off..off + 4].try_into().unwrap()));
-        }
-    }
-    (data, n, dim)
-}
-
-fn load_ivecs(path: &str) -> (Vec<Vec<u32>>, usize) {
-    use std::io::Read;
-    let mut f = std::fs::File::open(path).unwrap_or_else(|_| panic!("Cannot open {path}"));
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf).unwrap();
-    let k = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
-    let record_bytes = 4 + k * 4;
-    let n = buf.len() / record_bytes;
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let base = i * record_bytes + 4;
-        let mut row = Vec::with_capacity(k);
-        for j in 0..k {
-            let off = base + j * 4;
-            row.push(u32::from_le_bytes(buf[off..off + 4].try_into().unwrap()));
-        }
-        out.push(row);
-    }
-    (out, n)
-}
 
 fn mean_recall(results: &[Vec<u32>], gt: &[Vec<u32>], k: usize) -> f64 {
     use std::collections::HashSet;
@@ -112,10 +77,7 @@ fn metric_default_for_dataset(_dataset: &str) -> Metric {
 /// DiskANN. The intended ranking on these datasets is cosine / MIPS;
 /// DiskANN only ships an L2 kernel, but L2 on unit-norm vectors gives
 /// cosine ranking — so we normalise the input and let DiskANN use L2.
-/// (Note: this gives cosine, not raw MIPS — on the raw-MIPS-GT
-/// datasets like msmarco_bert_1M the resulting recall will be capped
-/// by the cosine-vs-MIPS ranking gap, since GT was computed as raw
-/// dot product.)
+/// The MS-MARCO experiment uses normalized inputs; keep that ranking unchanged.
 fn should_normalize_for_diskann(dataset: &str) -> bool {
     matches!(
         dataset,
@@ -139,17 +101,86 @@ fn l2_normalize_in_place(data: &mut [f32], dim: usize) {
     });
 }
 
-fn parse_args() -> (String, usize, Option<Metric>, Vec<usize>) {
+fn validate_search(k: usize, trials: usize, sizes: &[usize]) {
+    assert!(k > 0 && trials > 0, "k and trials must be positive");
+    assert!(!sizes.is_empty(), "empty search schedule");
+    assert!(
+        sizes.iter().all(|&l| l >= k && l <= u32::MAX as usize),
+        "require k <= L <= u32::MAX"
+    );
+    assert!(
+        sizes.windows(2).all(|w| w[0] < w[1]),
+        "L must be strictly increasing"
+    );
+}
+
+#[derive(Default)]
+struct InputOptions {
+    base: Option<String>,
+    query: Option<String>,
+    ground_truth: Option<String>,
+    cache_dir: Option<String>,
+    threads: Option<usize>,
+    prepare_only: bool,
+}
+
+fn parse_args() -> (
+    String,
+    usize,
+    Option<Metric>,
+    Vec<usize>,
+    usize,
+    usize,
+    InputOptions,
+) {
     let args: Vec<String> = std::env::args().collect();
     let mut dataset = "sift".to_string();
     let mut max_points: usize = usize::MAX;
     let mut metric_override: Option<Metric> = None;
     let mut search_list_sizes: Option<Vec<usize>> = None;
+    let mut k = DEFAULT_K;
+    let mut trials = 1;
+    let mut input = InputOptions::default();
     let mut i = 1;
     let mut seen_positional = false;
     while i < args.len() {
         let a = &args[i];
         match a.as_str() {
+            "--prepare-only" => input.prepare_only = true,
+            "--base" | "--query" | "--ground-truth" | "--cache-dir" | "--threads" => {
+                i += 1;
+                let value = args
+                    .get(i)
+                    .unwrap_or_else(|| panic!("{a} needs a value"))
+                    .clone();
+                match a.as_str() {
+                    "--base" => input.base = Some(value),
+                    "--query" => input.query = Some(value),
+                    "--ground-truth" => input.ground_truth = Some(value),
+                    "--cache-dir" => input.cache_dir = Some(value),
+                    _ => {
+                        let threads: usize = value.parse().expect("invalid thread count");
+                        assert!(threads > 0 && threads <= u32::MAX as usize);
+                        input.threads = Some(threads);
+                    }
+                }
+            }
+            "--k" => {
+                i += 1;
+                k = args
+                    .get(i)
+                    .expect("--k needs a value")
+                    .parse()
+                    .expect("invalid k");
+            }
+            "--trials" => {
+                i += 1;
+                trials = args
+                    .get(i)
+                    .expect("--trials needs a value")
+                    .parse()
+                    .expect("invalid trials");
+            }
             "--metric" => {
                 i += 1;
                 let v = args.get(i).expect("--metric needs a value").to_lowercase();
@@ -187,49 +218,52 @@ fn parse_args() -> (String, usize, Option<Metric>, Vec<usize>) {
         }
         i += 1;
     }
+    let sizes = search_list_sizes.unwrap_or_else(|| {
+        let mut sizes: Vec<usize> = DEFAULT_L_SCHEDULE
+            .iter()
+            .copied()
+            .filter(|&l| l >= k)
+            .collect();
+        if !sizes.contains(&k) && k > DEFAULT_K {
+            sizes.insert(0, k);
+        }
+        sizes
+    });
+    validate_search(k, trials, &sizes);
     (
         dataset,
         max_points,
         metric_override,
-        search_list_sizes.unwrap_or_else(|| DEFAULT_L_SCHEDULE.to_vec()),
+        sizes,
+        k,
+        trials,
+        input,
     )
-}
-
-/// Write a flat `[f32]` slab as DiskANN's expected on-disk format:
-/// `[i32 num_points][i32 dimension][f32 × num_points × dimension]`.
-fn write_diskann_bin(
-    data: &[f32],
-    num_points: usize,
-    dimension: usize,
-) -> std::io::Result<std::path::PathBuf> {
-    let dir = std::env::temp_dir();
-    let path = dir.join(format!(
-        "diskann_sweep_{}_{}.bin",
-        std::process::id(),
-        num_points
-    ));
-    let mut file = std::fs::File::create(&path)?;
-    file.write_all(&(num_points as i32).to_le_bytes())?;
-    file.write_all(&(dimension as i32).to_le_bytes())?;
-    let bytes = unsafe {
-        std::slice::from_raw_parts(
-            data.as_ptr() as *const u8,
-            data.len() * std::mem::size_of::<f32>(),
-        )
-    };
-    file.write_all(bytes)?;
-    file.flush()?;
-    Ok(path)
 }
 
 fn main() {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .try_init();
-    let (dataset, max_points, metric_override, search_list_sizes) = parse_args();
+    let (dataset, max_points, metric_override, search_list_sizes, k, trials, options) =
+        parse_args();
 
     // (cache_key, base_path, query_path, gt_path, dim, alpha, R, L_build)
     let (cache_key, base_path, query_path, gt_path, _dim, alpha, r, build_l) =
         match dataset.as_str() {
+            "sift10m" | "sift100m" | "sift1b" => (
+                dataset.as_str(),
+                "data/sift1b/bigann_base.bvecs",
+                "data/sift1b/bigann_query.bvecs",
+                match dataset.as_str() {
+                    "sift10m" => "data/sift1b/idx_10M.ivecs",
+                    "sift100m" => "data/sift1b/idx_100M.ivecs",
+                    _ => "data/sift1b/idx_1B.ivecs",
+                },
+                128usize,
+                1.15f32,
+                64u32,
+                128usize,
+            ),
             "sift" => (
                 "sift",
                 "data/sift/sift_base.fvecs",
@@ -314,6 +348,10 @@ fn main() {
         };
 
     let metric = metric_override.unwrap_or_else(|| metric_default_for_dataset(&dataset));
+    assert!(
+        matches!(metric, Metric::L2),
+        "DiskANN f32 supports L2 only; normalized presets use L2"
+    );
     let metric_tag = match metric {
         Metric::L2 => "l2",
         Metric::Cosine => "cos",
@@ -323,35 +361,49 @@ fn main() {
         max_points
     );
 
-    let (mut data, n, dim) = load_fvecs(base_path, max_points);
-    let (mut qdata, nq, _) = load_fvecs(query_path, usize::MAX);
-    let (gt, ngt) = load_ivecs(gt_path);
-    assert_eq!(nq, ngt, "query count ≠ groundtruth count");
+    let base_path = Path::new(options.base.as_deref().unwrap_or(base_path));
+    let query_path = Path::new(options.query.as_deref().unwrap_or(query_path));
+    let gt_path = Path::new(options.ground_truth.as_deref().unwrap_or(gt_path));
+    let format = VectorFormat::infer(base_path).expect("base format");
+    let header = inspect_vector_file(base_path, format).expect("base metadata");
+    let preset_limit = match dataset.as_str() {
+        "sift10m" => 10_000_000,
+        "sift100m" => 100_000_000,
+        "sift1b" => 1_000_000_000,
+        _ => usize::MAX,
+    };
+    let n = header.count.min(max_points).min(preset_limit);
+    let dim = header.dimension;
+    assert!(
+        n > 0 && n <= i32::MAX as usize,
+        "DiskANN requires 0 < N <= i32::MAX"
+    );
+    let normalize = should_normalize_for_diskann(&dataset);
+    let threads = options.threads.unwrap_or(NUM_THREADS);
 
-    if should_normalize_for_diskann(&dataset) {
-        println!(
-            "L2-normalising {n} base + {nq} query vectors (DiskANN approximates cosine ranking via L2 on unit-norm input)"
-        );
-        l2_normalize_in_place(&mut data, dim);
-        l2_normalize_in_place(&mut qdata, dim);
-    }
-
-    let queries: Vec<Vec<f32>> = (0..nq)
-        .map(|i| qdata[i * dim..(i + 1) * dim].to_vec())
-        .collect();
-    println!("Loaded {n} base, {nq} queries.");
+    // Only the small query set is resident in the driver. Base coordinates are
+    // streamed into a build file, then loaded once into the index's allocation.
+    let (queries, gt) = if options.prepare_only {
+        (Vec::new(), Vec::new())
+    } else {
+        input::load_queries(query_path, gt_path, dim, n, k, normalize)
+            .expect("query/ground-truth input")
+    };
+    let nq = queries.len();
+    println!("Base: {n} × {dim} f32; {nq} queries; {threads} threads");
 
     // Cache stub mirrors the orion paths so disk usage is comparable.
     let alpha_tag = format!("{:.2}", alpha).replace('.', "_");
-    let cache_dir = std::path::PathBuf::from("cache/diskann");
-    std::fs::create_dir_all(&cache_dir).ok();
+    let cache_dir =
+        std::path::PathBuf::from(options.cache_dir.as_deref().unwrap_or("cache/diskann"));
+    std::fs::create_dir_all(&cache_dir).expect("create cache directory");
     let cache_path = cache_dir.join(format!(
         "{cache_key}_n{n}_r{r}_l{build_l}_a{alpha_tag}_{metric_tag}.bin"
     ));
     let cache_data_path = cache_path.with_extension("bin.data");
 
     // ── Build or load DiskANN ────────────────────────────────────────
-    let num_threads = NUM_THREADS as u32;
+    let num_threads = threads as u32;
     let write_params = IndexWriteParametersBuilder::new(build_l as u32, r)
         .with_alpha(alpha)
         .with_num_threads(num_threads)
@@ -359,12 +411,32 @@ fn main() {
     let config =
         IndexConfiguration::new(metric, dim, dim, n, false, 0, false, 0, 1.0, write_params);
 
+    // A manifest commits the cache only after both index files are saved.
+    // Old/unidentified caches are rebuilt rather than silently reused.
+    let manifest_path = cache_path.with_extension("manifest.json");
+    let identity =
+        input::cache_identity(base_path, n, dim, normalize, r, build_l, alpha, metric_tag)
+            .expect("base identity");
+    let cache_valid = cache_path.exists()
+        && cache_data_path.exists()
+        && std::fs::read(&manifest_path).ok().as_deref() == Some(identity.as_slice());
+    let build_input = if cache_valid {
+        None
+    } else {
+        // Convert before allocating the graph: conversion buffers never overlap
+        // with construction scratch, and a failed conversion cannot consume TBs.
+        Some(
+            input::BuildInput::prepare(base_path, format, n, dim, normalize, &cache_dir)
+                .expect("stream base conversion"),
+        )
+    };
+
     let mut index: Box<dyn ANNInmemIndex<f32>> =
         create_inmem_index(config).expect("create_inmem_index failed");
 
     println!("DiskANN (R={r}, L_build={build_l}, α={alpha:.2}, metric={metric_tag})...",);
     let t_build = Instant::now();
-    if cache_path.exists() && cache_data_path.exists() {
+    if cache_valid {
         index
             .load(cache_path.to_str().unwrap(), n)
             .expect("DiskANN cache load failed");
@@ -373,29 +445,31 @@ fn main() {
             t_build.elapsed().as_secs_f32()
         );
     } else {
-        let temp_data = write_diskann_bin(&data, n, dim).expect("temp data write failed");
+        if manifest_path.exists() {
+            std::fs::remove_file(&manifest_path).expect("invalidate old cache manifest");
+        }
+        let build_input = build_input.expect("build input");
         index
-            .build(temp_data.to_str().unwrap(), n)
+            .build(build_input.path().to_str().unwrap(), n)
             .expect("DiskANN build failed");
+        // Build has loaded the vectors into the index. Release the owned
+        // conversion before save writes another full vector copy to disk.
+        // Borrowed source fbin files are preserved by BuildInput::drop.
+        drop(build_input);
         index
             .save(cache_path.to_str().unwrap())
             .expect("DiskANN cache save failed");
-        std::fs::remove_file(&temp_data).ok();
+        std::fs::write(&manifest_path, &identity).expect("commit cache manifest");
         println!("DiskANN built in {:.2}s", t_build.elapsed().as_secs_f32());
     }
 
-    // Pin queries (consistency with orion's mlock setup).
-    utils::set_thread_qos_user_interactive();
-    if let Some(first) = queries.first() {
-        let qbytes = queries
-            .iter()
-            .map(|q| q.len() * std::mem::size_of::<f32>())
-            .sum::<usize>();
-        utils::mlock_bytes("queries", first.as_ptr() as *const u8, qbytes);
+    if options.prepare_only {
+        return;
     }
+    utils::set_thread_qos_user_interactive();
 
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(NUM_THREADS)
+        .num_threads(threads)
         .start_handler(|_| utils::set_thread_qos_user_interactive())
         .build()
         .expect("rayon pool build failed");
@@ -408,8 +482,10 @@ fn main() {
             queries
                 .par_iter()
                 .map(|q| {
-                    let mut ids = vec![0u32; K];
-                    let _ = index.search(q, K, max_l as u32, &mut ids);
+                    let mut ids = vec![0u32; k];
+                    index
+                        .search(q, k, max_l as u32, &mut ids)
+                        .expect("warmup search failed");
                     ids
                 })
                 .collect::<Vec<_>>()
@@ -419,9 +495,9 @@ fn main() {
     println!("═══ DiskANN sweep (R={r}, α={alpha:.2}, metric={metric_tag}) ═══",);
 
     for &l in &search_list_sizes {
-        let mut samples = Vec::with_capacity(TRIALS);
+        let mut samples = Vec::with_capacity(trials);
         let mut recall = 0.0f64;
-        for _ in 0..TRIALS {
+        for _ in 0..trials {
             utils::flush_cache();
             let t = Instant::now();
             let results: Vec<Vec<u32>> = {
@@ -430,8 +506,10 @@ fn main() {
                     queries
                         .par_iter()
                         .map(|q| {
-                            let mut ids = vec![0u32; K];
-                            let _ = index.search(q, K, l as u32, &mut ids);
+                            let mut ids = vec![0u32; k];
+                            index
+                                .search(q, k, l as u32, &mut ids)
+                                .expect("search failed");
                             ids
                         })
                         .collect()
@@ -439,11 +517,31 @@ fn main() {
             };
             let wall = t.elapsed();
             let qps = nq as f64 / wall.as_secs_f64();
-            recall = mean_recall(&results, &gt, K);
+            recall = mean_recall(&results, &gt, k);
             samples.push(qps);
         }
         samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let qps_med = samples[samples.len() / 2];
-        println!("  L={:>4}  R@10={:.4}  QPS={:.0}", l, recall, qps_med);
+        println!("  L={:>4}  R@{}={:.6}  QPS={:.0}", l, k, recall, qps_med);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn recall_uses_requested_k() {
+        assert_eq!(mean_recall(&[vec![1, 9]], &[vec![1, 2, 3]], 2), 0.5);
+        let ids: Vec<u32> = (0..100).collect();
+        assert_eq!(mean_recall(&[ids.clone()], &[ids], 100), 1.0);
+    }
+    #[test]
+    fn accepts_larger_k() {
+        validate_search(100, 5, &[100, 128, 2048]);
+    }
+    #[test]
+    #[should_panic]
+    fn rejects_short_beam() {
+        validate_search(100, 5, &[64, 128]);
     }
 }

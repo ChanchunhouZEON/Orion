@@ -38,6 +38,9 @@ pub trait SearchObserver {
     fn entry(&mut self, _id: u32) {}
     fn expansion(&mut self, _converged: bool, _ids: &[u32]) {}
     fn prefilter(&mut self, _threshold_evaluations: usize, _candidate_evaluations: usize) {}
+    /// Actual per-expansion filter outcome; absent cutoff means the stage was bypassed.
+    fn prefilter_outcome(&mut self, _cutoff: Option<f32>, _admission_cutoff: Option<f32>,
+        _tested: usize, _rejected: usize) {}
     fn admission(&mut self, _evaluations: usize, _admitted: &[Neighbor]) {}
     fn rerank(&mut self, _candidates: usize) {}
     fn early_exit(&mut self) {}

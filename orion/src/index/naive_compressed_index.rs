@@ -99,7 +99,7 @@ where
         let query_vertex = Vertex::new(query, 0);
 
         let pool = self.inmem_scratch_pool.get_or_init(|| {
-            InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
+            InMemScratchPool::for_workers(rayon::current_num_threads(), search_list_size)
         });
 
         let mut guard = pool.acquire();
@@ -180,7 +180,7 @@ where
         epsilon: f32,
     ) -> diskann::common::ANNResult<Vec<Vec<u32>>> {
         self.inmem_scratch_pool.get_or_init(|| {
-            InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
+            InMemScratchPool::for_workers(rayon::current_num_threads(), search_list_size)
         });
 
         let results: Vec<Vec<u32>> = queries

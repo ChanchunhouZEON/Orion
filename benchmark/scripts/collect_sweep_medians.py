@@ -39,29 +39,29 @@ from pathlib import Path
 
 
 ORION_RE = re.compile(
-    r"\bL=\s*(\d+)\s+R@10=([0-9.]+)\s+QPS=(\d+)"
+    r"\bL=\s*(\d+)\s+R@(\d+)=([0-9.]+)\s+QPS=(\d+)"
 )
 PA_RE = re.compile(
-    r"^For\s+10@10\s+recall\s*=\s*([0-9.]+),\s*QPS\s*=\s*([0-9.eE+-]+)"
+    r"^For\s+(\d+)@(\d+)\s+recall\s*=\s*([0-9.]+),\s*QPS\s*=\s*([0-9.eE+-]+)"
 )
 
 
-def parse_orion(path: Path) -> list[tuple[float, float]]:
+def parse_orion(path: Path, k: int = 10) -> list[tuple[float, float]]:
     out = []
     for line in path.read_text().splitlines():
         m = ORION_RE.search(line)
-        if m:
-            _L, r, q = m.group(1), float(m.group(2)), float(m.group(3))
+        if m and int(m.group(2)) == k:
+            _L, r, q = m.group(1), float(m.group(3)), float(m.group(4))
             out.append((r, q))
     return out
 
 
-def parse_pa(path: Path) -> list[tuple[float, float]]:
+def parse_pa(path: Path, k: int = 10) -> list[tuple[float, float]]:
     out = []
     for line in path.read_text().splitlines():
         m = PA_RE.match(line)
-        if m:
-            r, q = float(m.group(1)), float(m.group(2))
+        if m and int(m.group(1)) == k and int(m.group(2)) == k:
+            r, q = float(m.group(3)), float(m.group(4))
             out.append((r, q))
     return out
 
@@ -91,14 +91,15 @@ def main():
     ap.add_argument("--out", required=True, help="Output JSON path")
     ap.add_argument("--dataset", default="sift")
     ap.add_argument("--num-points", type=int, default=1_000_000)
+    ap.add_argument("--k", type=int, default=10)
     args = ap.parse_args()
 
-    if args.num_runs <= 0 or args.num_points <= 0:
+    if args.num_runs <= 0 or args.num_points <= 0 or args.k <= 0:
         ap.error("num-runs and num-points must be positive")
     tmpdir = Path(args.tmpdir)
 
-    orion_runs = [parse_orion(tmpdir / f"orion_{i}.out") for i in range(1, args.num_runs + 1)]
-    pa_runs = [parse_pa(tmpdir / f"pa_{i}.out") for i in range(1, args.num_runs + 1)]
+    orion_runs = [parse_orion(tmpdir / f"orion_{i}.out", args.k) for i in range(1, args.num_runs + 1)]
+    pa_runs = [parse_pa(tmpdir / f"pa_{i}.out", args.k) for i in range(1, args.num_runs + 1)]
 
     # DiskANN files are optional — older two-engine sweeps don't write them.
     diskann_paths = [tmpdir / f"diskann_{i}.out" for i in range(1, args.num_runs + 1)]
@@ -106,7 +107,7 @@ def main():
     if not have_diskann and any(p.exists() for p in diskann_paths):
         ap.error("Incomplete DiskANN runs")
     diskann_runs = (
-        [parse_orion(p) for p in diskann_paths] if have_diskann else []
+        [parse_orion(p, args.k) for p in diskann_paths] if have_diskann else []
     )
 
     orion_med = median_by_slot(orion_runs)
@@ -117,7 +118,7 @@ def main():
         "dataset": args.dataset,
         "num_points": args.num_points,
         "num_runs": args.num_runs,
-        "k": 10,
+        "k": args.k,
         "threads": 8,
         "orion_runs": orion_runs,
         "orion": orion_med,

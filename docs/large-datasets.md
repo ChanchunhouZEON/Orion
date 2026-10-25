@@ -179,3 +179,82 @@ ORION_BINARY="$PWD/target/debug/orion-sweep" python3 -m unittest discover \
 
 These are small-fixture correctness tests; no SIFT10M, SIFT100M, or SIFT1B search
 has been run as part of this integration.
+
+## DiskANN f32 baseline: bounded-memory input
+
+`diskann_sweep` accepts `sift10m`, `sift100m`, and `sift1b`. These remain
+**f32 DiskANN** experiments: bvecs/u8bin coordinates are widened during a
+streaming conversion, preserving their exact values. The driver never holds
+an entire base allocation. Conversion uses batches of 8,192 rows; queries
+remain resident for repeated sweeps. Existing normalized dataset recipes are
+unchanged.
+
+```bash
+./diskann_sweep sift1b \
+  --base /data/bigann_base.bvecs \
+  --query /data/bigann_query.bvecs \
+  --ground-truth /data/idx_1B.ivecs \
+  --cache-dir /data/cache/diskann-sift1b \
+  --threads 32 --k 100 --trials 3 --search-list-sizes 100,128,256,512,1024
+```
+
+Use `--prepare-only` to build/cache without queries or GT. For SIFT100M,
+select `sift100m` and supply `idx_100M.ivecs`; its default prefix limit is
+100 million rows. Smaller `--max-points` runs need their own matching GT.
+Input paths infer formats from `.fvecs`, `.bvecs`, `.fbin`, or `.u8bin`.
+
+A complete fbin requiring no normalization is passed directly to the index.
+Other inputs are converted before index allocation, into `--cache-dir` rather
+than `/tmp` (which may be RAM-backed). After a successful build, the temporary
+conversion is removed before saving the index; unwinding also attempts cleanup.
+An existing source fbin is never deleted. Abrupt termination can leave a
+`diskann-build-<pid>.fbin` file. Do not share a cache directory between
+concurrent builds.
+
+For 1B × 128, removing the duplicate f32 base saves 476.84 GiB. The remaining
+index still allocates vectors, graph adjacency, and (in this build) neighbor
+distances. Graph growth, allocator overhead and construction scratch are not
+bounded by this driver; 2 TB capacity is not a measured peak guarantee. Run
+one engine/task at a time and record `/usr/bin/time -v` maximum RSS. No full
+1B construction has been validated locally.
+
+For a fresh SIFT1B build, conversion needs approximately 512 GB of temporary
+fbin storage. Successful cleanup releases it before save writes approximately
+512 GB of index vectors and up to 260 GB of degree-64 graph data. These phases
+therefore need approximately max(512, 512 + 260) = 772 GB of additional disk
+space, plus filesystem headroom, rather than their combined 1.3 TB. This excludes
+source data, existing indices, other engines' outputs, and abandoned temporary
+files. Cleanup failures are reported and can leave the conversion occupying
+space. A direct fbin input avoids the temporary conversion altogether.
+
+Cache hits inspect base shape and metadata but do not decode its payload.
+A manifest records canonical source path, size, mtime, prefix count,
+normalization and build recipe. Legacy caches without a manifest are rebuilt.
+This is not a content checksum: in-place data replacement preserving metadata
+requires cache removal. Keep immutable inputs and separate experiment caches.
+
+Validation:
+
+```bash
+cargo test -p benchmark --bin diskann_sweep
+DISKANN_BINARY=./target/debug/diskann_sweep \
+  python3 benchmark/scripts/tests/check_diskann_streaming.py
+```
+
+### Linux x86 verification and SIMD alignment
+
+The f32/f16 AVX2 distance API accepts ordinary array references, which are not
+necessarily SIMD-aligned. Its loads must therefore be unaligned, and dimensions
+not divisible by eight require a scalar tail. The fixed implementation includes
+an explicitly misaligned regression fixture. This addresses a concrete source
+of SIGSEGV in the f32 distance used by ADSampling tests; confirm the rebuilt
+`vector-tests` on the allocated compute node before a large experiment.
+
+The repository now pins Rust 1.92. The earlier Rust 1.86 limitation no longer
+describes the current build: Rust 1.92 supports the AVX-512 intrinsics and
+`target_feature` configuration used here. Selecting the toolchain alone does
+not enable AVX-512; the x86 build must also enable the kernel's required target
+features (including AVX512F/BW/DQ/VL and VPOPCNTDQ for the deployed bundle).
+These compile-time-selected paths require compatible compute nodes. Check
+generated assembly and run the vector regression tests on the target machine;
+do not infer the active kernel solely from the toolchain version.

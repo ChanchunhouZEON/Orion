@@ -47,7 +47,7 @@ impl<'a, const N: usize> RerankStage<N> for U16Rerank<'a, N> {
         let _ = pq_entries;
 
         let beam_n = scratch.pq.size();
-        let num_check = (k * rerank_factor).min(beam_n);
+        let num_check = k.saturating_mul(rerank_factor).min(beam_n);
         if num_check == 0 {
             return Vec::new();
         }

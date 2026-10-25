@@ -330,7 +330,7 @@ where
             samples.push(queries_arr.len() as f64 / wall.as_secs_f64());
             recall = gt.as_ref().map(|truth| mean_recall(&results, truth, k));
         }
-        let recall = recall.map(|v| format!("{v:.4}")).unwrap_or_else(|| "n/a".into());
+        let recall = recall.map(|v| format!("{v:.6}")).unwrap_or_else(|| "n/a".into());
         samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let qps = samples[trials / 2];
         // Visit / per-phase instrumentation (mips_q path only):

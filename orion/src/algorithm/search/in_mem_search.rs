@@ -30,10 +30,52 @@ use super::{
     RAW_VISIT_COUNT, SETUP_NS, VISIT_COUNT,
 };
 
-/// PA's `-rerank_factor 2` shape — top `k · 2` PQ entries get the
-/// truth pass at end of beam. Constant here (rather than per-recipe)
-/// because every concrete recipe we ship uses the same factor.
-const RERANK_FACTOR: usize = 2;
+fn parse_rerank_factor(value: Option<&str>) -> Result<usize, &'static str> {
+    match value {
+        None => Ok(2),
+        Some(value) => value
+            .parse::<usize>()
+            .ok()
+            .filter(|&factor| factor > 0)
+            .ok_or("ORION_RERANK_FACTOR must be a positive integer"),
+    }
+}
+
+/// Process-wide experiment override; the production default remains two.
+fn rerank_factor() -> usize {
+    use std::sync::OnceLock;
+    static FACTOR: OnceLock<usize> = OnceLock::new();
+    *FACTOR.get_or_init(|| {
+        let value = std::env::var("ORION_RERANK_FACTOR");
+        let factor = match value {
+            Ok(ref value) => parse_rerank_factor(Some(value)),
+            Err(std::env::VarError::NotPresent) => parse_rerank_factor(None),
+            Err(_) => Err("ORION_RERANK_FACTOR must be valid Unicode"),
+        }
+        .expect("invalid rerank factor");
+        log::info!("Rerank factor={factor} (budget=min(k*factor, beam size))");
+        factor
+    })
+}
+
+#[cfg(test)]
+mod rerank_factor_tests {
+    use super::parse_rerank_factor;
+
+    #[test]
+    fn default_and_explicit_factors() {
+        assert_eq!(parse_rerank_factor(None), Ok(2));
+        assert_eq!(parse_rerank_factor(Some("2")), Ok(2));
+        assert_eq!(parse_rerank_factor(Some("6")), Ok(6));
+    }
+
+    #[test]
+    fn invalid_factors_are_not_silently_defaulted() {
+        for value in ["0", "-1", "", "1.5", "six"] {
+            assert!(parse_rerank_factor(Some(value)).is_err());
+        }
+    }
+}
 
 /// Peel hops at search start — fixed warm-up window that bypasses
 /// DCC, early-exit, and the prefilter. Default `3` matches the
@@ -121,6 +163,13 @@ where
         }
         let n = scratch.id_scratch.len();
         observer.expansion(false, &scratch.id_scratch);
+        observer.prefilter_outcome(
+            None,
+            (scratch.pq.size() >= search_list_size)
+                .then(|| scratch.pq[scratch.pq.size() - 1].distance),
+            0,
+            0,
+        );
         if n == 0 {
             return Some((0, 0));
         }
@@ -185,7 +234,7 @@ where
     ///   stream cmov-compacts admits into the per-hop staging buffer.
     ///
     /// * **Rerank** runs once at end of beam over the top
-    ///   `k · RERANK_FACTOR` PQ entries.
+    ///   `k * rerank_factor` PQ entries (default factor two).
     ///
     /// # Generic monomorphisation
     ///
@@ -268,7 +317,7 @@ where
 
         // ── Scratch pool ─────────────────────────────────────────
         let pool = self.inmem_scratch_pool.get_or_init(|| {
-            InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
+            InMemScratchPool::for_workers(rayon::current_num_threads(), search_list_size)
         });
         let mut guard = pool.acquire();
         let scratch = guard.scratch();
@@ -395,6 +444,7 @@ where
             // state the back turns over rarely so most hops do zero
             // recomputation work.
             let frontier_full = scratch.pq.size() >= search_list_size;
+            let mut observed_prefilter_cutoff = None;
             if let Some(ps) = p_session.as_deref() {
                 if frontier_full {
                     let pq_size = scratch.pq.size();
@@ -414,6 +464,7 @@ where
                         * prefilter_slack();
 
                     observer.prefilter(0, scratch.id_scratch.len());
+                    observed_prefilter_cutoff = Some(threshold);
                     unsafe {
                         ps.filter_compact(&mut scratch.id_scratch, threshold, lookahead_lines);
                     }
@@ -421,6 +472,16 @@ where
             }
 
             // ── Admission ─────────────────────────────────────────
+            observer.prefilter_outcome(
+                observed_prefilter_cutoff,
+                frontier_full.then_some(pq_worst),
+                if observed_prefilter_cutoff.is_some() {
+                    raw_unseen as usize
+                } else {
+                    0
+                },
+                raw_unseen as usize - scratch.id_scratch.len(),
+            );
             let n_unseen = scratch.id_scratch.len();
             let admit_cutoff = pq_worst;
 
@@ -506,8 +567,9 @@ where
         // future flexibility, but current impls read directly from
         // `scratch.pq` (the unified loop guarantees `scratch.pq`
         // holds the post-search entries here).
-        observer.rerank(scratch.pq.size().min(k.saturating_mul(RERANK_FACTOR)));
-        Ok(rerank.rerank(query, &[], k, RERANK_FACTOR, scratch))
+        let factor = rerank_factor();
+        observer.rerank(scratch.pq.size().min(k.saturating_mul(factor)));
+        Ok(rerank.rerank(query, &[], k, factor, scratch))
     }
 
     /// Parallel batch wrapper. Mirrors the `search_batch_*` shape on
@@ -533,7 +595,7 @@ where
         R: ?Sized + RerankStage<N> + Sync,
     {
         self.inmem_scratch_pool.get_or_init(|| {
-            InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
+            InMemScratchPool::for_workers(rayon::current_num_threads(), search_list_size)
         });
 
         let n = queries.len();

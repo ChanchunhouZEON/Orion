@@ -191,27 +191,27 @@ pub struct DiskANNConfig {
 
 // ── Raw YAML ↔ struct layer ────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct RawRoot {
     pub defaults: RawDefaults,
     pub datasets: HashMap<String, RawDataset>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct RawDefaults {
     pub diskann: RawDiskANNDefaults,
     pub orion: RawOrionDefaults,
     pub sweep: SweepConfig,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct RawDiskANNDefaults {
     pub alpha: f32,
     pub graph_degree: u32,
     pub build_search_list_size: usize,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct RawOrionDefaults {
     pub alpha: f32,
     pub graph_degree: u32,

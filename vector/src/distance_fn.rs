@@ -536,7 +536,7 @@ use std::arch::x86_64::*;
 impl DistanceFn for L2U8Distance {
     type Storage = u8;
     /// 16 i32 lanes — `_mm512_madd_epi16` produces these directly,
-    /// no further widen needed (Σ at D=960 maxes ≈ 6.2 M, within i32).
+    /// no further widen needed (Σ at D=960 maxes at 62,424,000, within i32).
     type Acc = __m512i;
     const CHUNK_BYTES: usize = 64;
 

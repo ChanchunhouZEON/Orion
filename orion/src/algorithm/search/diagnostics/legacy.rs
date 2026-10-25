@@ -103,7 +103,7 @@ where
         let query_vertex = Vertex::new(&aligned.0, 0);
 
         let pool = self.inmem_scratch_pool.get_or_init(|| {
-            InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
+            InMemScratchPool::for_workers(rayon::current_num_threads(), search_list_size)
         });
 
         let mut guard = pool.acquire();
@@ -223,7 +223,7 @@ where
         let graph = &self.graph;
 
         let pool = self.inmem_scratch_pool.get_or_init(|| {
-            InMemScratchPool::new(rayon::current_num_threads() + 5, search_list_size)
+            InMemScratchPool::for_workers(rayon::current_num_threads(), search_list_size)
         });
 
         let mut stats = SearchProfileStats::default();

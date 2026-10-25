@@ -36,6 +36,8 @@ set -euo pipefail
 
 DATASET="${DATASET:-sift}"
 NUM_RUNS="${NUM_RUNS:-3}"
+K="${K:-10}"
+[[ "$K" =~ ^[1-9][0-9]*$ ]] || { echo 'K must be positive' >&2; exit 2; }
 # 60s is the quick-iteration default — enough for steady-state runs
 # but not for the first run after a hot build. When you need the
 # tightest CV (for final JSON / plot numbers), use `COOLDOWN_S=180`:
@@ -74,7 +76,7 @@ setup_python_env json
 resolve_parlay_root
 # Explicit CLI flags take precedence over legacy environment variable names.
 orion_run() {
-    "$ORION_BIN" "$DATASET" --staged-file "$ORION_FILE" --max-extra "$MAX_EXTRA" --k 10 --threads 8
+    "$ORION_BIN" "$DATASET" --staged-file "$ORION_FILE" --max-extra "$MAX_EXTRA" --k "$K" --threads 8
 }
 
 load_parlay_recipe "$DATASET"
@@ -104,7 +106,9 @@ PA_DIR="${PA_DIR:-$PA_ROOT/algorithms/vamana}"
 PA_DIR="$(cd "$PA_DIR" && pwd)"
 [[ -x "$PA_DIR/neighbors" ]] || { echo "Build $PA_DIR/neighbors first" >&2; exit 2; }
 
-OUT_JSON="${OUT_JSON:-visualizations/sweep_orion_vs_parlayann_${DATASET}.json}"
+K_SUFFIX=""
+[[ "$K" == 10 ]] || K_SUFFIX="_k${K}"
+OUT_JSON="${OUT_JSON:-visualizations/sweep_orion_vs_parlayann_${DATASET}${K_SUFFIX}.json}"
 
 REQUIRED_FILES=("$ORION_FILE" "$PA_BASE" "$PA_QUERY" "$PA_GT")
 for f in "${REQUIRED_FILES[@]}"; do
@@ -168,7 +172,7 @@ sleep "$COOLDOWN_S"
 # MS-MARCO inputs are normalized in this workflow, so cosine preserves IP ranking.
 for i in $(seq 1 "$NUM_RUNS"); do
     echo "── DiskANN run $i/$NUM_RUNS ──"
-    "$DISKANN_BIN" "$DATASET"  2>&1 \
+    "$DISKANN_BIN" "$DATASET" --k "$K" 2>&1 \
         | tee "$RUN_TMP_DIR/diskann_$i.out" \
         | grep -E "^  L=|^DiskANN|^═══"
     if [ "$i" -lt "$NUM_RUNS" ]; then
@@ -223,6 +227,7 @@ for i in $(seq 1 "$NUM_RUNS"); do
     echo "── ParlayANN run $i/$NUM_RUNS (query-only) ──"
     (cd "$PA_DIR" && PARLAY_NUM_THREADS=8 ./neighbors \
         "${PA_QUERY_ARGS[@]}" \
+        -k "$K" \
         -data_type float -dist_func "$PA_DIST_FUNC" $PA_NORMALIZE_FLAG -file_type bin \
         -base_path "$PA_BASE" \
         -query_path "$PA_QUERY" \
@@ -230,7 +235,7 @@ for i in $(seq 1 "$NUM_RUNS"); do
         -graph_path "$PA_GRAPH_OUT" \
         -res_path "$RUN_TMP_DIR/pa_$i.csv" 2>&1) \
         | tee "$RUN_TMP_DIR/pa_$i.out" \
-        | grep -E "^For 10@10 recall"
+        | grep -E "^For ${K}@${K} recall"
     if [ "$i" -lt "$NUM_RUNS" ]; then
         echo "── cooldown ${COOLDOWN_S}s ──"
         sleep "$COOLDOWN_S"
@@ -244,6 +249,7 @@ echo "═══ Parsing → $OUT_JSON ═══"
     --num-runs "$NUM_RUNS" \
     --dataset "$DATASET" \
     --num-points "$PA_POINT_COUNT" \
+    --k "$K" \
     --out "$OUT_JSON"
 
 echo "Done. Result: $OUT_JSON"

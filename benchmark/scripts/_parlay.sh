@@ -147,23 +147,22 @@ case "$DATASET" in
     wiki_ada_1M)
         # OpenAI ada-002 + Wikipedia 1M (sourced from
         # nlpkevinl/wikipedia_openai_embeddings via load_wiki_ada_1M.py).
-        # Build recipe: high-D shape (R=100 L=200 α=1.05 num_passes=2)
-        # with `-dist_func mips` since ada-002 embeddings are
-        # dot-product / cosine, not L2. ada-002 outputs are unit-norm
-        # so MIPS == cosine ranking natively.
+        # Adapt PA's wikipedia_cohere MIPS recipe to normalized ada-002.
+        # This is not an official ada-002 preset. Keep its artifacts
+        # separate from the earlier OpenAIArXiv-derived L2/IP mix.
         BASE_FVECS="data/wiki_ada_1M/wiki_ada_1M_base.fvecs"
         QUERY_FVECS="data/wiki_ada_1M/wiki_ada_1M_query.fvecs"
         GT_IVECS="data/wiki_ada_1M/wiki_ada_1M_groundtruth.ivecs"
-        PA_DIR_NAME="WikiAda1M"
+        PA_DIR_NAME="WikiAda1M_mips_r64_l128_a098_p1_q8"
         DEFAULT_MAX_POINTS=""
-        PA_BUILD_R=100
-        PA_BUILD_L=200
-        PA_BUILD_ALPHA=1.05
-        PA_BUILD_PASSES=2
-        PA_BUILD_QBITS=""
+        PA_BUILD_R=64
+        PA_BUILD_L=128
+        PA_BUILD_ALPHA=0.98
+        PA_BUILD_PASSES=1
+        PA_BUILD_QBITS=8
         PA_DIST_FUNC="mips"
         PA_NORMALIZE_FLAG=""        # ada-002 outputs are already unit-norm
-        PA_QUERY_ARGS=(-quantize_bits 16 -quantize_mode 5 -verbose -rerank_factor 2)
+        PA_QUERY_ARGS=(-quantize_bits 16 -quantize_mode 5 -verbose -rerank_factor 6)
         DEFAULT_MAX_EXTRA=16
         ;;
     *)

@@ -44,10 +44,8 @@ where
     /// quantized datasets `.qds` / `.qdm8` / `.qdm16` / `.qrbq`) is
     /// derived by `path.with_extension(...)`. Empty `PathBuf` means
     /// "in-memory only, do not persist."
-    #[allow(dead_code)]
     pub cache_base_path: PathBuf,
 
-    #[allow(dead_code)]
     pub is_save: bool,
 
     // PQ relevant

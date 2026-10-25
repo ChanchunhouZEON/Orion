@@ -149,6 +149,13 @@ pub struct InMemScratchPool {
 }
 
 impl InMemScratchPool {
+    /// Reserve 60% extra scratch slots, rounded up, for concurrent workers.
+    /// Keep this policy at pool creation; checkout and return stay unchanged.
+    pub fn for_workers(num_threads: usize, search_list_size: usize) -> Self {
+        let spare = (num_threads * 3).div_ceil(5);
+        Self::new(num_threads + spare, search_list_size)
+    }
+
     pub fn new(num_threads: usize, search_list_size: usize) -> Self {
         let pool = Arc::new(ArrayQueue::new(num_threads));
         for _ in 0..num_threads {
