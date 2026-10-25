@@ -561,9 +561,9 @@ unsafe fn signed_sum_avx512<const N: usize>(
     let mut acc0 = _mm512_setzero_ps();
     let mut acc1 = _mm512_setzero_ps();
 
-    let pair_chunks = pairs / 2;
+    // p counts 16-dimensional pairs, not two-pair iterations.
     let mut p = 0usize;
-    while p < pair_chunks {
+    while p + 1 < pairs {
         // Pair 0: bytes [2p..2p+2], dims [16p..16p+16].
         let b0 = (*code.add(2 * p) as u16) | ((*code.add(2 * p + 1) as u16) << 8);
         let q0 = _mm512_loadu_ps(rotated_q.add(16 * p));
@@ -583,7 +583,7 @@ unsafe fn signed_sum_avx512<const N: usize>(
         p += 2;
     }
     // Odd-pair tail.
-    let mut t = pair_chunks * 2;
+    let mut t = p;
     while t < pairs {
         let b = (*code.add(2 * t) as u16) | ((*code.add(2 * t + 1) as u16) << 8);
         let q = _mm512_loadu_ps(rotated_q.add(16 * t));
@@ -960,7 +960,29 @@ mod tests {
     }
 
     #[test]
-    fn neon_signed_sum_matches_scalar() {
+    fn signed_sum_visits_every_dimension() {
+        // Exact integer sums isolate missing blocks from reduction round-off.
+        fn check<const D: usize>() {
+            let query = [1.0_f32; D];
+            for (bits, expected) in [(0_u8, -(D as f32)), (255_u8, D as f32)] {
+                let code = vec![bits; rabitq_code_stride(D)];
+                assert_eq!(signed_sum_dispatch::<D>(&code, &query), expected, "D={D}");
+            }
+        }
+        check::<1>();
+        check::<16>();
+        check::<32>();
+        check::<48>();
+        check::<64>();
+        check::<80>();
+        check::<127>();
+        check::<128>();
+        check::<129>();
+        check::<960>();
+    }
+
+    #[test]
+    fn simd_signed_sum_matches_scalar() {
         // Exercise the dispatch path against the scalar reference on
         // representative production sizes (SIFT D=128, GIST D=960).
         // Both kernels operate on the same bit code and rotated query;
@@ -988,11 +1010,18 @@ mod tests {
             let tol = (D as f32).sqrt() * 1e-5 * r.abs().max(1.0);
             assert!(
                 (s - r).abs() < tol,
-                "D={D}: neon={s} scalar={r} diff={} tol={tol}",
+                "D={D}: simd={s} scalar={r} diff={} tol={tol}",
                 (s - r).abs(),
             );
         }
 
+        check::<16>(42);
+        check::<32>(42);
+        check::<48>(42);
+        check::<64>(42);
+        check::<80>(42);
+        check::<127>(42);
+        check::<129>(42);
         check::<SIFT>(42);
         check::<SIFT>(7);
         check::<GIST>(42);
