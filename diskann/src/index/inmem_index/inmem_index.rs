@@ -1002,7 +1002,7 @@ where
 
 impl<T, const N: usize> ANNInmemIndex<T> for InmemIndex<T, N>
 where
-    T: Default + Copy + Sync + Send + Into<f32> + 'static,
+    T: Default + Copy + Sync + Send + Into<f32> + bytemuck::Pod + 'static,
     [T; N]: FullPrecisionDistance<T, N>,
 {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {

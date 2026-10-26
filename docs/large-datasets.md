@@ -38,6 +38,11 @@ and are checked before conversion to bytes; no full f32 base is materialized. Fi
 per-record headers, and GT IDs are validated. File addressing uses 64-bit sizes;
 node IDs remain u32, with u32::MAX reserved as a sentinel.
 
+Native-u8 `.u8bin` base payloads load directly into the final aligned allocation
+in requests of up to 8 MiB, without a per-vector staging buffer. Prefix limits
+and the zeroed SIMD tail are preserved. Other formats retain their decoding and
+per-record validation paths; this changes neither file formats nor threading.
+
 Use an existing **STAG v3** ParlayANN export for the exact base order and count.
 The shared importer streams one node at a time into the final PhasedGraph slab,
 validating counts, neighbor IDs, entry range, truncation, and trailing bytes.
@@ -210,6 +215,12 @@ conversion is removed before saving the index; unwinding also attempts cleanup.
 An existing source fbin is never deleted. Abrupt termination can leave a
 `diskann-build-<pid>.fbin` file. Do not share a cache directory between
 concurrent builds.
+
+DiskANN reads packed binary coordinates directly into its dataset in requests
+of up to 8 MiB when file dimension equals resident stride (including SIFT128).
+Padded dimensions reuse one block buffer, copy coordinates into aligned rows,
+and zero each row's padding. Both construction input and saved `.data` reloads
+use this path; malformed lengths and destination bounds are checked before read.
 
 For 1B × 128, removing the duplicate f32 base saves 476.84 GiB. The remaining
 index still allocates vectors, graph adjacency, and (in this build) neighbor

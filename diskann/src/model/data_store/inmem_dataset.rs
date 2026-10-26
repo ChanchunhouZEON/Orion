@@ -78,7 +78,10 @@ where
         &self.data
     }
 
-    pub fn build_from_file(&mut self, filename: &str, num_points_to_load: usize) -> ANNResult<()> {
+    pub fn build_from_file(&mut self, filename: &str, num_points_to_load: usize) -> ANNResult<()>
+    where
+        T: bytemuck::Pod,
+    {
         println!(
             "Loading {} vectors from file {} into dataset...",
             num_points_to_load, filename
@@ -91,11 +94,10 @@ where
         Ok(())
     }
 
-    pub fn append_from_file(
-        &mut self,
-        filename: &str,
-        num_points_to_append: usize,
-    ) -> ANNResult<()> {
+    pub fn append_from_file(&mut self, filename: &str, num_points_to_append: usize) -> ANNResult<()>
+    where
+        T: bytemuck::Pod,
+    {
         println!(
             "Appending {} vectors from file {} into dataset...",
             num_points_to_append, filename

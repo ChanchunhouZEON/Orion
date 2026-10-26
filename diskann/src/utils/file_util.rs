@@ -38,34 +38,87 @@ pub fn load_ids_to_delete_from_file(file_name: &str) -> ANNResult<(usize, Vec<u3
     Ok((num_ids, ids))
 }
 
-pub fn copy_aligned_data_from_file<T: Default + Copy>(
+// Keep each IO request bounded even when the resident dataset is hundreds of GB.
+const DATASET_READ_BYTES: usize = 8 * 1024 * 1024;
+
+/// Read packed coordinates into their final aligned rows. Pod guarantees that
+/// every input bit pattern is valid, including a partially filled buffer on IO
+/// failure; no unaligned byte-buffer-to-T cast is needed.
+pub fn copy_aligned_data_from_file<T: Default + bytemuck::Pod>(
     bin_file: &str,
     dataset_dto: DatasetDto<T>,
     pts_offset: usize,
 ) -> ANNResult<(usize, usize)> {
+    use std::io::{Error, ErrorKind};
+    let invalid = |message| Error::new(ErrorKind::InvalidData, message);
     let mut reader = File::open(bin_file)?;
-
-    let npts = reader.read_i32::<LittleEndian>()? as usize;
-    let dim = reader.read_i32::<LittleEndian>()? as usize;
-    let rounded_dim = dataset_dto.rounded_dim;
-    let offset = pts_offset * rounded_dim;
-
-    for i in 0..npts {
-        let data_slice =
-            &mut dataset_dto.data[offset + i * rounded_dim..offset + i * rounded_dim + dim];
-        let mut buf = vec![0u8; dim * mem::size_of::<T>()];
-        reader.read_exact(&mut buf)?;
-
-        let ptr = buf.as_ptr() as *const T;
-        let temp_slice = unsafe { std::slice::from_raw_parts(ptr, dim) };
-        data_slice.copy_from_slice(temp_slice);
-
-        (i * rounded_dim + dim..i * rounded_dim + rounded_dim).for_each(|j| {
-            dataset_dto.data[j] = T::default();
-        });
+    let npts = reader.read_i32::<LittleEndian>()?;
+    let dim = reader.read_i32::<LittleEndian>()?;
+    if npts < 0 || dim <= 0 || dim as usize > dataset_dto.rounded_dim {
+        return Err(invalid("invalid dataset count/dimension or destination stride").into());
     }
-
+    let (npts, dim) = (npts as usize, dim as usize);
+    let element_bytes = mem::size_of::<T>();
+    if element_bytes == 0 || (!cfg!(target_endian = "little") && element_bytes > 1) {
+        return Err(invalid("binary dataset requires nonzero little-endian elements").into());
+    }
+    let expected_bytes = (npts as u64)
+        .checked_mul(dim as u64)
+        .and_then(|n| n.checked_mul(element_bytes as u64))
+        .and_then(|n| n.checked_add(8))
+        .ok_or_else(|| invalid("dataset file size overflow"))?;
+    if reader.metadata()?.len() != expected_bytes {
+        return Err(invalid("dataset header/file length mismatch").into());
+    }
+    let stride = dataset_dto.rounded_dim;
+    let start = pts_offset
+        .checked_mul(stride)
+        .ok_or_else(|| invalid("dataset offset overflow"))?;
+    let end = npts
+        .checked_mul(stride)
+        .and_then(|n| start.checked_add(n))
+        .ok_or_else(|| invalid("dataset destination size overflow"))?;
+    let destination = dataset_dto
+        .data
+        .get_mut(start..end)
+        .ok_or_else(|| invalid("dataset exceeds destination capacity"))?;
+    read_aligned_payload(&mut reader, destination, dim, stride)?;
     Ok((npts, dim))
+}
+
+fn read_aligned_payload<R: Read, T: Default + bytemuck::Pod>(
+    reader: &mut R,
+    destination: &mut [T],
+    dim: usize,
+    stride: usize,
+) -> std::io::Result<()> {
+    if dim == stride {
+        // SIFT128/f32 and native u8 land directly in resident storage. There is
+        // no staging allocation or extra memcpy, including the final short block.
+        for block in bytemuck::cast_slice_mut::<T, u8>(destination).chunks_mut(DATASET_READ_BYTES) {
+            reader.read_exact(block)?;
+        }
+    } else {
+        // Padded dimensions require unpacking. Reuse one block for the entire
+        // file rather than allocating and reading a temporary for every vector.
+        if destination.is_empty() {
+            return Ok(());
+        }
+        let rows_per_block = (DATASET_READ_BYTES / mem::size_of::<T>() / dim)
+            .max(1)
+            .min(destination.len() / stride);
+        let mut packed = vec![T::default(); rows_per_block * dim];
+        for block in destination.chunks_mut(rows_per_block * stride) {
+            let rows = block.len() / stride;
+            let packed = &mut packed[..rows * dim];
+            reader.read_exact(bytemuck::cast_slice_mut(packed))?;
+            for (row, values) in block.chunks_exact_mut(stride).zip(packed.chunks_exact(dim)) {
+                row[..dim].copy_from_slice(values);
+                row[dim..].fill(T::default());
+            }
+        }
+    }
+    Ok(())
 }
 
 #[inline]
@@ -174,3 +227,131 @@ macro_rules! save_bin {
 save_bin!(save_bin_f32, f32, write_f32);
 save_bin!(save_bin_u64, u64, write_u64);
 save_bin!(save_bin_u32, u32, write_u32);
+
+#[cfg(test)]
+mod dataset_read_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    struct Input(std::path::PathBuf);
+    impl Input {
+        fn new(count: i32, dim: i32, payload: &[u8]) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "diskann-block-load-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let mut file = File::create(&path).unwrap();
+            file.write_all(&count.to_le_bytes()).unwrap();
+            file.write_all(&dim.to_le_bytes()).unwrap();
+            file.write_all(payload).unwrap();
+            Self(path)
+        }
+        fn load<T: Default + bytemuck::Pod>(
+            &self,
+            data: &mut [T],
+            stride: usize,
+            offset: usize,
+        ) -> ANNResult<(usize, usize)> {
+            copy_aligned_data_from_file(
+                self.0.to_str().unwrap(),
+                DatasetDto {
+                    data,
+                    rounded_dim: stride,
+                },
+                offset,
+            )
+        }
+    }
+    impl Drop for Input {
+        fn drop(&mut self) {
+            fs::remove_file(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn packed_f32_crosses_block_boundary_and_preserves_surrounding_storage() {
+        let rows = DATASET_READ_BYTES / (128 * 4) + 3;
+        let values: Vec<f32> = (0..rows * 128).map(|i| (i % 997) as f32 - 498.5).collect();
+        let file = Input::new(rows as i32, 128, bytemuck::cast_slice(&values));
+        let mut output = vec![-999.; (rows + 2) * 128 + 16];
+        assert_eq!(file.load(&mut output, 128, 2).unwrap(), (rows, 128));
+        assert_eq!(&output[..256], &[-999.; 256]);
+        assert_eq!(&output[256..256 + values.len()], values.as_slice());
+        assert_eq!(&output[256 + values.len()..], &[-999.; 16]);
+    }
+
+    #[test]
+    fn padded_rows_cross_block_boundary_and_zero_padding_at_append_offset() {
+        let rows = DATASET_READ_BYTES / (3 * 4) + 2;
+        let values: Vec<f32> = (0..rows * 3).map(|i| (i % 101) as f32).collect();
+        let file = Input::new(rows as i32, 3, bytemuck::cast_slice(&values));
+        let mut output = vec![-1.; (rows + 2) * 4];
+        file.load(&mut output, 4, 1).unwrap();
+        assert_eq!(&output[..4], &[-1.; 4]);
+        assert_eq!(&output[output.len() - 4..], &[-1.; 4]);
+        for (row, expected) in output[4..4 + rows * 4]
+            .chunks_exact(4)
+            .zip(values.chunks_exact(3))
+        {
+            assert_eq!(&row[..3], expected);
+            assert_eq!(row[3], 0.);
+        }
+    }
+
+    #[test]
+    fn byte_and_half_coordinates_preserve_bits() {
+        let file = Input::new(2, 3, &[0, 128, 255, 19, 37, 91]);
+        let mut output = [77u8; 8];
+        file.load(&mut output, 4, 0).unwrap();
+        assert_eq!(output, [0, 128, 255, 0, 19, 37, 91, 0]);
+        let values = [half::f16::from_f32(-1.5), half::f16::from_f32(0.25)];
+        let file = Input::new(1, 2, bytemuck::cast_slice(&values));
+        let mut output = [half::f16::ZERO; 2];
+        file.load(&mut output, 2, 0).unwrap();
+        assert_eq!(output, values);
+    }
+
+    #[test]
+    fn malformed_shape_length_capacity_and_offset_fail_before_writing() {
+        for (count, dim, payload, stride, offset) in [
+            (-1, 2, vec![], 2, 0),
+            (1, 0, vec![], 2, 0),
+            (1, 3, vec![1, 2, 3], 2, 0),
+            (2, 2, vec![1, 2, 3], 2, 0), // truncated
+            (1, 2, vec![1, 2, 3], 2, 0), // trailing byte
+            (3, 2, vec![1; 6], 2, 0),    // destination too small
+            (1, 2, vec![1, 2], 2, usize::MAX),
+        ] {
+            let file = Input::new(count, dim, &payload);
+            let mut output = [99u8; 4];
+            assert!(file.load(&mut output, stride, offset).is_err());
+            assert_eq!(output, [99; 4]);
+        }
+    }
+
+    #[test]
+    fn packed_reader_uses_block_requests_and_propagates_short_reads() {
+        struct Requests(Vec<usize>);
+        impl Read for Requests {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.0.push(buffer.len());
+                buffer.fill(13);
+                Ok(buffer.len())
+            }
+        }
+        let mut output = vec![0u8; DATASET_READ_BYTES + 128];
+        let mut reader = Requests(Vec::new());
+        read_aligned_payload(&mut reader, &mut output, 128, 128).unwrap();
+        assert_eq!(reader.0, [DATASET_READ_BYTES, 128]);
+        assert!(output.iter().all(|v| *v == 13));
+        let mut truncated = std::io::Cursor::new([1u8; 127]);
+        assert_eq!(
+            read_aligned_payload(&mut truncated, &mut output[..128], 128, 128)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+    }
+}

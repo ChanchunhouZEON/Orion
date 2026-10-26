@@ -134,7 +134,7 @@ where
 /// Create Index<T, N> based on configuration
 pub fn create_inmem_index<T>(config: IndexConfiguration) -> ANNResult<Box<dyn ANNInmemIndex<T>>>
 where
-    T: Default + Copy + Sync + Send + Into<f32> + 'static,
+    T: Default + Copy + Sync + Send + Into<f32> + bytemuck::Pod + 'static,
     [T; DIM_32]: FullPrecisionDistance<T, DIM_32>,
     [T; DIM_100]: FullPrecisionDistance<T, DIM_100>,
     [T; DIM_104]: FullPrecisionDistance<T, DIM_104>,

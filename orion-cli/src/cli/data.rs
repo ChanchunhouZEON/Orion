@@ -190,6 +190,12 @@ Default + Copy + Send + Sync + Into<f32>
     /// Resident storage representation selected by this element type.
     const STORAGE: VectorStorageKind;
 
+    /// Exposes resident bytes only when they are already native u8 coordinates.
+    /// Other representations must retain the decoding/conversion path.
+    fn native_bytes_mut(_data: &mut [Self]) -> Option<&mut [u8]> {
+        None
+    }
+
     /// Converts one byte-encoded coordinate into resident storage.
     fn from_byte(value: u8) -> Self;
 
@@ -226,6 +232,10 @@ impl BaseElement for f32 {
 impl BaseElement for u8 {
     const STORAGE: VectorStorageKind = VectorStorageKind::U8;
 
+    fn native_bytes_mut(data: &mut [Self]) -> Option<&mut [u8]> {
+        Some(data)
+    }
+
     fn from_byte(value: u8) -> Self {
         value
     }
@@ -252,18 +262,30 @@ impl BaseElement for u8 {
 /// This allows callers to load only a requested dataset prefix without scanning
 /// or allocating the remainder of the file.
 ///
-/// Only one encoded row is buffered at a time, so temporary decoding memory is
-/// `O(dimension)` regardless of the number of vectors being loaded.
+/// Native u8bin payloads are read in blocks directly into resident storage.
+/// Other formats reuse one encoded row plus the fixed IO buffer.
 fn read_vectors_into<T: BaseElement>(
     path: &Path,
     format: VectorFormat,
     dimension: usize,
     output: &mut [T],
 ) -> Result<(), String> {
+    if dimension == 0 || output.len() % dimension != 0 {
+        return Err("invalid output vector shape".into());
+    }
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if format == VectorFormat::U8bin {
+        if let Some(bytes) = T::native_bytes_mut(output) {
+            // The caller has validated the header and total length. Read only
+            // the requested prefix, leaving the resident SIMD tail untouched.
+            file.seek(SeekFrom::Start(8)).map_err(|e| e.to_string())?;
+            return read_native_bytes(&mut file, bytes).map_err(|e| e.to_string());
+        }
+    }
     let mut reader = BufReader::with_capacity(
         VECTOR_READ_BUFFER_BYTES,
-        std::fs::File::open(path)
-            .map_err(|e| e.to_string())?,
+        file,
     );
 
     // File-header formats store `[count, dimension]` once at the beginning.
@@ -323,6 +345,13 @@ fn read_vectors_into<T: BaseElement>(
         }
     }
 
+    Ok(())
+}
+
+fn read_native_bytes<R: Read>(reader: &mut R, output: &mut [u8]) -> std::io::Result<()> {
+    for block in output.chunks_mut(VECTOR_READ_BUFFER_BYTES) {
+        reader.read_exact(block)?;
+    }
     Ok(())
 }
 
@@ -664,6 +693,67 @@ mod format_tests {
             std::fs::remove_file(p).unwrap();
         }
     }
+    #[test]
+    fn native_u8bin_crosses_blocks_and_preserves_prefix_and_simd_tail() {
+        let p = path();
+        // Deliberately split a vector at the IO block boundary.
+        let dimension = 3;
+        let rows = VECTOR_READ_BUFFER_BYTES / dimension + 3;
+        let payload: Vec<u8> = (0..rows * dimension).map(|i| (i % 251) as u8).collect();
+        let mut file = Vec::new();
+        file.extend((rows as u32).to_le_bytes());
+        file.extend((dimension as u32).to_le_bytes());
+        file.extend_from_slice(&payload);
+        std::fs::write(&p, &file).unwrap();
+        let shape = inspect_vector_file(&p, VectorFormat::U8bin).unwrap();
+        assert_eq!((shape.count, shape.dimension), (rows, dimension));
+        for count in [rows - 1, rows] {
+            let length = count * dimension;
+            let mut output = vec![255u8; length + SIMD_ALIGNMENT_BYTES];
+            read_vectors_into(&p, VectorFormat::U8bin, dimension, &mut output[..length]).unwrap();
+            assert_eq!(&output[..length], &payload[..length]);
+            assert!(output[length..].iter().all(|v| *v == 255));
+        }
+        // A file truncated after metadata inspection still fails at read_exact.
+        std::fs::write(&p, &file[..file.len() - 1]).unwrap();
+        assert!(inspect_vector_file(&p, VectorFormat::U8bin).is_err());
+        let mut output = vec![0u8; payload.len()];
+        assert!(read_vectors_into(&p, VectorFormat::U8bin, dimension, &mut output).is_err());
+        std::fs::remove_file(p).unwrap();
+    }
+
+    #[test]
+    fn native_u8bin_uses_block_requests_and_f32_still_widens() {
+        struct Requests(Vec<usize>);
+        impl Read for Requests {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.0.push(buffer.len());
+                buffer.fill(251);
+                Ok(buffer.len())
+            }
+        }
+        let mut reader = Requests(Vec::new());
+        let mut output = vec![0u8; VECTOR_READ_BUFFER_BYTES + 128];
+        read_native_bytes(&mut reader, &mut output).unwrap();
+        assert_eq!(reader.0, [VECTOR_READ_BUFFER_BYTES, 128]);
+        assert!(output.iter().all(|v| *v == 251));
+
+        let p = path();
+        let mut file = Vec::new();
+        file.extend(1u32.to_le_bytes());
+        file.extend(3u32.to_le_bytes());
+        file.extend([0, 128, 255]);
+        std::fs::write(&p, &file).unwrap();
+        let mut floats = [0f32; 3];
+        read_vectors_into(&p, VectorFormat::U8bin, 3, &mut floats).unwrap();
+        assert_eq!(floats, [0., 128., 255.]);
+        let mut bytes = [0u8; 3];
+        read_vectors_into(&p, VectorFormat::U8bin, 3, &mut bytes).unwrap();
+        assert_eq!(bytes, [0, 128, 255]);
+        assert!(read_vectors_into(&p, VectorFormat::U8bin, 2, &mut bytes).is_err());
+        std::fs::remove_file(p).unwrap();
+    }
+
     #[test]
     fn sparse_billion_header_does_not_allocate_or_truncate_to_u32_bytes() {
         use std::io::Write;
