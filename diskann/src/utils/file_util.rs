@@ -7,8 +7,9 @@
  */
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use platform::buffered_io::{FILE_WRITE_BYTES, write_in_blocks};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::mem;
 use std::path::Path;
 
@@ -148,7 +149,7 @@ pub fn save_data_in_base_dimensions<T: Default + Copy>(
     aligned_dim: usize,
     offset: usize,
 ) -> ANNResult<usize> {
-    let mut writer = open_file_to_write(filename)?;
+    let mut writer = BufWriter::with_capacity(FILE_WRITE_BYTES, open_file_to_write(filename)?);
     let npts_i32 = npts as i32;
     let ndims_i32 = ndims as i32;
     let bytes_written = 2 * std::mem::size_of::<u32>() + npts * ndims * (std::mem::size_of::<T>());
@@ -157,15 +158,24 @@ pub fn save_data_in_base_dimensions<T: Default + Copy>(
     writer.write_all(&npts_i32.to_le_bytes())?;
     writer.write_all(&ndims_i32.to_le_bytes())?;
     let data_ptr = data.as_ptr() as *const u8;
-    for i in 0..npts {
-        let middle_offset = i * aligned_dim * std::mem::size_of::<T>();
-        let middle_slice = unsafe {
-            std::slice::from_raw_parts(
-                data_ptr.add(middle_offset),
-                ndims * std::mem::size_of::<T>(),
-            )
+    if ndims == aligned_dim {
+        // Packed datasets (including SIFT128) can be streamed without a loop
+        // over vectors or an intermediate dataset-sized copy.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(data_ptr, npts * ndims * std::mem::size_of::<T>())
         };
-        writer.write_all(middle_slice)?;
+        write_in_blocks(&mut writer, bytes)?;
+    } else {
+        for i in 0..npts {
+            let middle_offset = i * aligned_dim * std::mem::size_of::<T>();
+            let middle_slice = unsafe {
+                std::slice::from_raw_parts(
+                    data_ptr.add(middle_offset),
+                    ndims * std::mem::size_of::<T>(),
+                )
+            };
+            write_in_blocks(&mut writer, middle_slice)?;
+        }
     }
     writer.flush()?;
     Ok(bytes_written)
@@ -234,6 +244,25 @@ mod dataset_read_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn dataset_save_keeps_packed_format_and_omits_alignment_padding() {
+        let file = Input::new(0, 1, &[]);
+        let count = FILE_WRITE_BYTES / 128 + 1;
+        let mut packed: Vec<u8> = (0..count * 128).map(|i| (i % 251) as u8).collect();
+        save_data_in_base_dimensions(file.0.to_str().unwrap(), &mut packed, count, 128, 128, 0)
+            .unwrap();
+        let saved = std::fs::read(&file.0).unwrap();
+        assert_eq!(&saved[..4], &(count as u32).to_le_bytes());
+        assert_eq!(&saved[4..8], &128u32.to_le_bytes());
+        assert_eq!(&saved[8..], packed);
+
+        let file = Input::new(0, 1, &[]);
+        let mut padded = [1f32, 2., 99., 99., 3., 4., 99., 99.];
+        save_data_in_base_dimensions(file.0.to_str().unwrap(), &mut padded, 2, 2, 4, 0).unwrap();
+        let saved = std::fs::read(&file.0).unwrap();
+        assert_eq!(&saved[8..], bytemuck::cast_slice(&[1f32, 2., 3., 4.]));
+    }
     struct Input(std::path::PathBuf);
     impl Input {
         fn new(count: i32, dim: i32, payload: &[u8]) -> Self {

@@ -23,6 +23,7 @@
 
 use diskann::common::ANNResult;
 use diskann::common::AlignedBoxWithSlice;
+use platform::buffered_io::{FILE_WRITE_BYTES, write_in_blocks};
 use std::collections::VecDeque;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -445,7 +446,7 @@ impl PhasedGraph {
 
     pub fn save<P: AsRef<std::path::Path>>(&self, path: P) -> ANNResult<()> {
         let f = std::fs::File::create(path)?;
-        let mut w = BufWriter::new(f);
+        let mut w = BufWriter::with_capacity(FILE_WRITE_BYTES, f);
         // File header: [num_nodes, max_degree, stride, base_local_count]
         let header: [u32; 4] = [
             self.num_nodes as u32,
@@ -459,7 +460,9 @@ impl PhasedGraph {
         let data_bytes = unsafe {
             std::slice::from_raw_parts(self.buffer.as_ptr() as *const u8, self.buffer.len() * 4)
         };
-        w.write_all(data_bytes)?;
+        // Keep the 16-byte header in the first full block rather than flushing
+        // it separately before BufWriter's large-slice bypass.
+        write_in_blocks(&mut w, data_bytes)?;
         w.flush()?;
         Ok(())
     }

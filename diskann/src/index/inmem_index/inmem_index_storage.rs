@@ -7,6 +7,7 @@
  */
 use byteorder::{LittleEndian, ReadBytesExt};
 use num_traits::ToBytes;
+use platform::buffered_io::FILE_WRITE_BYTES;
 #[allow(unused_imports)]
 use std::collections::HashSet as StdHashSet;
 use std::fs::File;
@@ -118,7 +119,7 @@ where
 
     pub fn save_graph(&mut self, graph_file: &str) -> ANNResult<u64> {
         let file: File = File::create(graph_file)?;
-        let mut out = BufWriter::new(file);
+        let mut out = BufWriter::with_capacity(FILE_WRITE_BYTES, file);
 
         let file_offset: u64 = 0;
         out.seek(SeekFrom::Start(file_offset))?;

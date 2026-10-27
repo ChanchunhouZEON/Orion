@@ -889,6 +889,7 @@ dependencies = [
  "log",
  "memmap2",
  "ndarray",
+ "platform",
  "rand",
  "rayon",
  "serde",
