@@ -26,12 +26,45 @@ impl<T> AlignedBoxWithSlice<T> {
         let layout = Layout::from_size_align(allocsize, alignment)
             .map_err(ANNError::log_mem_alloc_layout_error)?;
 
+        #[cfg(target_os = "linux")]
+        let layout = if allocsize >= platform::memory::HUGE_PAGE_ALIGNMENT {
+            // Keep the requested length, but make large allocations eligible
+            // for THP from their first page. Drop uses this same Layout.
+            Layout::from_size_align(
+                allocsize,
+                alignment.max(platform::memory::HUGE_PAGE_ALIGNMENT),
+            )
+            .map_err(ANNError::log_mem_alloc_layout_error)?
+        } else {
+            layout
+        };
+
         let val = unsafe {
-            let mem = std::alloc::alloc_zeroed(layout);
+            #[cfg(target_os = "linux")]
+            let use_huge_pages = allocsize >= platform::memory::HUGE_PAGE_ALIGNMENT;
+            #[cfg(not(target_os = "linux"))]
+            let use_huge_pages = false;
+
+            // For large Linux buffers, advise before zeroing. alloc_zeroed
+            // could otherwise fault in ordinary pages before the hint arrives.
+            let mem = if use_huge_pages {
+                std::alloc::alloc(layout)
+            } else {
+                std::alloc::alloc_zeroed(layout)
+            };
             if mem.is_null() {
                 return Err(ANNError::log_index_error(format!(
                     "allocation failed: {allocsize} bytes"
                 )));
+            }
+            if use_huge_pages {
+                #[cfg(target_os = "linux")]
+                if let Err(error) = platform::memory::advise_huge_pages(mem, allocsize) {
+                    log::warn!(
+                        "THP advice failed for {allocsize} bytes: {error}; using ordinary pages"
+                    );
+                }
+                std::ptr::write_bytes(mem, 0, allocsize);
             }
             let ptr = mem as *mut T;
             let slice = std::slice::from_raw_parts_mut(ptr, capacity);
@@ -130,6 +163,24 @@ impl<T> DerefMut for AlignedBoxWithSlice<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn large_allocation_preserves_length_zeroing_and_alignment() {
+        // An odd size exercises the unadvised partial final page as well.
+        let size = platform::memory::HUGE_PAGE_ALIGNMENT + 17;
+        let mut data = AlignedBoxWithSlice::<u8>::new(size, 64).unwrap();
+        assert_eq!(data.len(), size);
+        assert_eq!(
+            data.as_ptr().addr() % platform::memory::HUGE_PAGE_ALIGNMENT,
+            0
+        );
+        assert!(data.iter().all(|&value| value == 0));
+        data[0] = 7;
+        data[size - 1] = 9;
+        assert_eq!((data[0], data[size - 1]), (7, 9));
+        drop(data); // Must free with the upgraded allocation layout.
+    }
 
     #[test]
     fn create_alignedvec_works_32() {

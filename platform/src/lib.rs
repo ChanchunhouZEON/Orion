@@ -17,6 +17,7 @@ pub mod buffered_io;
 pub mod file_handle;
 pub mod graph_mmap;
 pub mod io_context;
+pub mod memory;
 pub mod mmap_search;
 
 pub use aligned_io::AlignedRead;
