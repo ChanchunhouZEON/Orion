@@ -27,7 +27,7 @@ use crate::config::{
     SweepOverrides,
 };
 use clap::Parser;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
@@ -35,7 +35,7 @@ use std::path::PathBuf;
 ///
 /// The graph can either be constructed by DiskANN native Rust builder or imported
 /// from a ParlayANN-generated staged graph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum GraphSource {
     /// Construct the graph using DiskANN native Rust implementation with extra
@@ -43,6 +43,17 @@ pub enum GraphSource {
     Rust,
 
     /// Import a graph produced by ParlayANN.
+    #[value(alias = "pa")]
+    Parlayann,
+}
+
+/// User policy, kept separate from the concrete source used in cache identities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum GraphSourcePolicy {
+    /// Prefer a PA cache/export, then use the Rust builder for f32 storage.
+    Auto,
+    Rust,
     #[value(alias = "pa")]
     Parlayann,
 }
@@ -153,8 +164,9 @@ pub struct Args {
     pub max_extra: Option<usize>,
     #[arg(long)]
     pub window_size: Option<usize>,
+    /// Default auto: PA cache/export first, then Rust (f32 only). Explicit sources are strict.
     #[arg(long, value_enum)]
-    pub graph_source: Option<GraphSource>,
+    pub graph_source: Option<GraphSourcePolicy>,
     #[arg(long)]
     pub staged_file: Option<PathBuf>,
     /// Separate cache location for an alternate graph built from the same vectors.
@@ -212,6 +224,9 @@ pub struct ResolvedRunConfig {
     pub max_extra: usize,
     pub window_size: usize,
     pub graph_source: GraphSource,
+    pub graph_source_policy: GraphSourcePolicy,
+    /// Why automatic selection chose this source; explicit policies stay strict.
+    pub graph_selection_reason: &'static str,
     pub staged_file: Option<PathBuf>,
     pub max_points: usize,
     pub sweep: ResolvedSweep,
@@ -238,7 +253,7 @@ pub struct ResolvedRunConfig {
 /// in configuration resolution only when no higher-precedence CLI value is present.
 #[derive(Default)]
 struct LegacyEnvironment {
-    graph_source: Option<GraphSource>,
+    graph_source: Option<GraphSourcePolicy>,
     staged_file: Option<PathBuf>,
     pa_root: Option<PathBuf>,
     legacy_local_pct: Option<usize>,
@@ -268,12 +283,13 @@ impl LegacyEnvironment {
 }
 
 /// Parses a legacy graph-source spelling accepted outside Clap's `ValueEnum`.
-fn parse_graph_source(s: &str) -> Result<GraphSource, String> {
+fn parse_graph_source(s: &str) -> Result<GraphSourcePolicy, String> {
     match s.to_ascii_lowercase().as_str() {
-        "rust" => Ok(GraphSource::Rust),
-        "pa" | "parlayann" => Ok(GraphSource::Parlayann),
+        "auto" => Ok(GraphSourcePolicy::Auto),
+        "rust" => Ok(GraphSourcePolicy::Rust),
+        "pa" | "parlayann" => Ok(GraphSourcePolicy::Parlayann),
         _ => Err(format!(
-            "unknown graph source {s:?}; expected rust or parlayann"
+            "unknown graph source {s:?}; expected auto, rust or parlayann"
         )),
     }
 }
@@ -343,11 +359,15 @@ impl Args {
         // A preset is optional. Anonymous runs still use metric/dimension defaults.
         let preset_name = self.dataset.as_deref().filter(|name| *name != "anonymous");
         let dataset = preset_name.unwrap_or("anonymous").to_owned();
-        let preset = preset_name.map(|name| {
-            root.datasets.get(name).ok_or_else(|| format!(
-                "unknown dataset shortcut {name:?}; omit the name for an anonymous dataset"
-            ))
-        }).transpose()?;
+        let preset = preset_name
+            .map(|name| {
+                root.datasets.get(name).ok_or_else(|| {
+                    format!(
+                        "unknown dataset shortcut {name:?}; omit the name for an anonymous dataset"
+                    )
+                })
+            })
+            .transpose()?;
         let paths = preset.and_then(|p| p.paths.as_ref());
 
         // Explicit paths override only the corresponding preset path.
@@ -357,23 +377,36 @@ impl Args {
                 .ok_or_else(|| format!("--{flag} is required without a dataset preset"))
         };
         let base = required_path(&self.base, paths.map(|p| &p.base), "base")?;
-        let query = self.query.clone().or_else(|| paths.map(|p| PathBuf::from(&p.query)));
+        let query = self
+            .query
+            .clone()
+            .or_else(|| paths.map(|p| PathBuf::from(&p.query)));
         if query.is_none() && !self.prepare_only {
-            return Err("--query is required for search (use --prepare-only to build without queries)".into());
+            return Err(
+                "--query is required for search (use --prepare-only to build without queries)"
+                    .into(),
+            );
         }
-        let groundtruth = if self.no_groundtruth { None } else {
-            self.groundtruth.clone()
-                .or_else(|| paths.and_then(|p| p.groundtruth.as_ref()).map(PathBuf::from))
+        let groundtruth = if self.no_groundtruth {
+            None
+        } else {
+            self.groundtruth.clone().or_else(|| {
+                paths
+                    .and_then(|p| p.groundtruth.as_ref())
+                    .map(PathBuf::from)
+            })
         };
 
         let base_format = self
             .base_format
             .map(Ok)
             .unwrap_or_else(|| VectorFormat::infer(&base))?;
-        let query_format = self
-            .query_format
-            .map(Ok)
-            .unwrap_or_else(|| query.as_deref().map(VectorFormat::infer).unwrap_or(Ok(base_format)))?;
+        let query_format = self.query_format.map(Ok).unwrap_or_else(|| {
+            query
+                .as_deref()
+                .map(VectorFormat::infer)
+                .unwrap_or(Ok(base_format))
+        })?;
         if self
             .memory_budget_gib
             .is_some_and(|x| !x.is_finite() || x <= 0.)
@@ -381,7 +414,9 @@ impl Args {
             return Err("--memory-budget-gib must be finite and positive".into());
         }
 
-        if self.query_batch_size == 0 { return Err("--query-batch-size must be positive".into()); }
+        if self.query_batch_size == 0 {
+            return Err("--query-batch-size must be positive".into());
+        }
 
         let metric = self
             .metric
@@ -452,12 +487,18 @@ impl Args {
             return Err("window-size must be 1..=64 and max-points positive".into());
         }
 
-        let (graph_source, staged_file, staged_file_explicit) = self.resolve_graph_source(
+        let (graph_source_policy, staged_file, staged_file_explicit) = self.resolve_graph_source(
             preset.and_then(|dataset| dataset.base_graph.as_ref()),
             env,
             max_extra,
         )?;
 
+        // Auto starts with a PA candidate. Resolve its cache identity before
+        // probing availability; policy itself must never enter the cache key.
+        let graph_source = match graph_source_policy {
+            GraphSourcePolicy::Rust => GraphSource::Rust,
+            GraphSourcePolicy::Auto | GraphSourcePolicy::Parlayann => GraphSource::Parlayann,
+        };
         let search_plan = super::plan::SearchPlan::resolve(
             vector_storage,
             dimension,
@@ -481,10 +522,16 @@ impl Args {
         let k = self.k.unwrap_or(root.defaults.sweep.k);
         if self.single_search {
             if overrides.trials.is_some_and(|trials| trials != 1)
-                || overrides.search_list_sizes.as_ref().is_some_and(|ls| ls.len() != 1) {
+                || overrides
+                    .search_list_sizes
+                    .as_ref()
+                    .is_some_and(|ls| ls.len() != 1)
+            {
                 return Err("ordinary search consumes queries once; use orion-sweep for multiple L values or trials".into());
             }
-            overrides.search_list_sizes.get_or_insert_with(|| vec![k.max(64)]);
+            overrides
+                .search_list_sizes
+                .get_or_insert_with(|| vec![k.max(64)]);
             overrides.trials = Some(1);
         }
         let sweep = root.defaults.sweep.resolve(
@@ -493,8 +540,16 @@ impl Args {
             &overrides,
         )?;
 
-        let num_points = if self.base.is_none() { preset.and_then(|p| p.num_points) } else { None };
-        let num_queries = if self.query.is_none() { preset.and_then(|p| p.num_queries) } else { None };
+        let num_points = if self.base.is_none() {
+            preset.and_then(|p| p.num_points)
+        } else {
+            None
+        };
+        let num_queries = if self.query.is_none() {
+            preset.and_then(|p| p.num_queries)
+        } else {
+            None
+        };
         if num_points == Some(0) || num_queries == Some(0) {
             return Err("preset num_points and num_queries must be positive when provided".into());
         }
@@ -521,6 +576,8 @@ impl Args {
             max_extra,
             window_size,
             graph_source,
+            graph_source_policy,
+            graph_selection_reason: "explicit source",
             staged_file,
             max_points,
             sweep,
@@ -540,6 +597,9 @@ impl Args {
         // Derive cache identities only after every effective setting is resolved.
         run.legacy_dataset = run.matching_legacy_preset();
         run.cache_namespace = run.compute_cache_namespace();
+        if graph_source_policy == GraphSourcePolicy::Auto {
+            run.select_automatic_graph(self.cache_dir.is_some())?;
+        }
 
         Ok(run)
     }
@@ -590,34 +650,34 @@ impl Args {
         Ok(cascade)
     }
 
-    /// Resolves the graph implementation and optional staged graph path.
-    ///
-    /// Graph-source precedence is:
-    ///
-    /// 1. explicit CLI source or staged-file selection,
-    /// 2. legacy environment settings,
-    /// 3. dataset preset,
-    /// 4. native Rust builder.
-    ///
-    /// The staged file is resolved but not opened here because an existing cache may
-    /// remain valid even when its original staged export is no longer available.
+    /// CLI > legacy environment > YAML > auto. An explicitly supplied staged
+    /// path requests PA strictly, including alongside `--graph-source auto`.
+    /// Header/cache probing happens after the candidate configuration is complete.
     fn resolve_graph_source(
         &self,
         preset_graph: Option<&RawBaseGraph>,
         env: &LegacyEnvironment,
         max_extra: usize,
-    ) -> Result<(GraphSource, Option<PathBuf>, bool), String> {
+    ) -> Result<(GraphSourcePolicy, Option<PathBuf>, bool), String> {
         let explicit_source = self
             .graph_source
-            .or_else(|| self.staged_file.as_ref().map(|_| GraphSource::Parlayann))
+            .or_else(|| {
+                self.staged_file
+                    .as_ref()
+                    .map(|_| GraphSourcePolicy::Parlayann)
+            })
             .or(env.graph_source)
-            .or_else(|| env.staged_file.as_ref().map(|_| GraphSource::Parlayann));
-        let graph_source = explicit_source.unwrap_or(
+            .or_else(|| {
+                env.staged_file
+                    .as_ref()
+                    .map(|_| GraphSourcePolicy::Parlayann)
+            });
+        let mut graph_source = explicit_source.unwrap_or(
             preset_graph
                 .and_then(|b| b.source.as_deref())
                 .map(parse_graph_source)
                 .transpose()?
-                .unwrap_or(GraphSource::Rust),
+                .unwrap_or(GraphSourcePolicy::Auto),
         );
 
         let staged_file_explicit = self.staged_file.is_some() || env.staged_file.is_some();
@@ -641,14 +701,79 @@ impl Args {
                     .map(PathBuf::from)
             });
 
-        if graph_source == GraphSource::Rust && self.staged_file.is_some() {
+        if graph_source == GraphSourcePolicy::Rust && self.staged_file.is_some() {
             return Err("--staged-file conflicts with --graph-source rust".into());
+        }
+        if graph_source == GraphSourcePolicy::Auto && staged_file_explicit {
+            graph_source = GraphSourcePolicy::Parlayann;
         }
         Ok((graph_source, staged_file, staged_file_explicit))
     }
 }
 
 impl ResolvedRunConfig {
+    /// Only absence allows fallback. Invalid PA caches/exports and permission
+    /// errors are surfaced instead of quietly changing the experiment's graph.
+    fn select_automatic_graph(&mut self, custom_cache_dir: bool) -> Result<(), String> {
+        use super::cache::CachePlan;
+
+        let count = match self.num_points {
+            Some(n) => Some(n),
+            None => match std::fs::metadata(&self.base) {
+                Ok(_) => {
+                    Some(super::data::inspect_vector_file(&self.base, self.base_format)?.count)
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(format!("{}: {e}", self.base.display())),
+            },
+        }
+        .map(|n| n.min(self.max_points));
+
+        if let Some(n) = count {
+            let cache = CachePlan::resolve(self, n).map_err(|error| {
+                format!(
+                    "automatic PA cache lookup failed in {}: {error}; no Rust graph was substituted",
+                    self.cache_dir.display()
+                )
+            })?;
+            if cache.is_hit {
+                self.graph_selection_reason = "PA cache available";
+                return Ok(());
+            }
+        }
+        if let Some(path) = CachePlan::available_staged_export(self)? {
+            if let Some(n) = count {
+                CachePlan::resolve_staged_export(self, n)?;
+            }
+            self.staged_file = Some(path);
+            self.graph_selection_reason = "PA staged export available";
+            return Ok(());
+        }
+        if self.search_plan().storage().kind == VectorStorageKind::U8 {
+            // Offline preflight can still estimate this configuration. Execution
+            // will report the missing PA input before allocating the dataset.
+            self.graph_selection_reason =
+                "native u8 requires a PA cache or staged export; no Rust fallback";
+            return Ok(());
+        }
+
+        self.graph_source = GraphSource::Rust;
+        if !custom_cache_dir {
+            self.cache_dir = PathBuf::from("cache/orion");
+        }
+        self.cache_namespace = self.compute_cache_namespace();
+        self.graph_selection_reason = if count
+            .map(|n| CachePlan::resolve(self, n).map(|cache| cache.is_hit))
+            .transpose()?
+            .unwrap_or(false)
+        {
+            "PA unavailable; Rust cache available"
+        } else {
+            "PA unavailable; Rust build required"
+        };
+        Ok(())
+    }
+
     pub fn search_plan(&self) -> super::plan::SearchPlan {
         self.search_plan
     }
@@ -663,9 +788,9 @@ impl ResolvedRunConfig {
     /// This prevents custom configurations from accidentally reusing legacy caches.
     fn matching_legacy_preset(&self) -> Option<String> {
         // A custom YAML entry called "sift" is not evidence of the old cache's identity.
-        let bundled: RawRoot =
-            serde_yaml::from_str(crate::config::DEFAULT_CONFIG).ok()?;
-        if self.base_format != VectorFormat::Fvecs || self.search_plan().storage().kind != VectorStorageKind::F32
+        let bundled: RawRoot = serde_yaml::from_str(crate::config::DEFAULT_CONFIG).ok()?;
+        if self.base_format != VectorFormat::Fvecs
+            || self.search_plan().storage().kind != VectorStorageKind::F32
         {
             return None;
         }
@@ -774,7 +899,7 @@ mod tests {
     #[test]
     fn large_sift_presets_select_native_bytes_and_exact_prefixes() {
         for (name, count, groundtruth) in [
-            ("sift10m", 10_000_000, "idx_10M.ivecs"),
+            ("sift10m", 10_000_000, "groundtruth.10M.ivecs"),
             ("sift100m", 100_000_000, "idx_100M.ivecs"),
             ("sift1b", 1_000_000_000, "idx_1000M.ivecs"),
         ] {
@@ -784,8 +909,14 @@ mod tests {
             assert_eq!(config.base_format, VectorFormat::Bvecs);
             assert_eq!(config.query_format, VectorFormat::Bvecs);
             assert!(config.groundtruth.as_ref().unwrap().ends_with(groundtruth));
-            assert_eq!(config.search_plan().cascade().prefilter, PrefilterChoice::None);
-            assert_eq!(config.search_plan().cascade().admission, AdmissionChoice::NativeL2U8);
+            assert_eq!(
+                config.search_plan().cascade().prefilter,
+                PrefilterChoice::None
+            );
+            assert_eq!(
+                config.search_plan().cascade().admission,
+                AdmissionChoice::NativeL2U8
+            );
             assert_eq!(config.search_plan().cascade().rerank, RerankChoice::None);
             assert_eq!(config.graph_source, GraphSource::Parlayann);
             assert!(config.staged_file.unwrap().to_string_lossy().contains(name));
@@ -815,7 +946,10 @@ mod tests {
             native.search_plan(),
             super::super::plan::SearchPlan::NativeU8L2
         );
-        assert_eq!(native.search_plan().cascade(), native.search_plan().cascade());
+        assert_eq!(
+            native.search_plan().cascade(),
+            native.search_plan().cascade()
+        );
         assert_eq!(float.search_plan().cascade(), float.search_plan().cascade());
         assert!(resolve(&["orion", "sift10m", "--vector-storage", "f32"])
             .unwrap_err()
@@ -913,9 +1047,9 @@ mod tests {
             (
                 "wiki_ada_1M",
                 1536,
-                1.05,
-                100,
-                200,
+                0.98,
+                64,
+                128,
                 PrefilterChoice::Jl,
                 AdmissionChoice::MipsI8,
                 RerankChoice::IpF32,
@@ -981,7 +1115,10 @@ mod tests {
         .unwrap();
         assert_eq!(b.alpha, 1.3);
         assert_eq!(b.search_plan().cascade().prefilter, PrefilterChoice::Jl);
-        assert_eq!(b.search_plan().cascade().admission, a.search_plan().cascade().admission);
+        assert_eq!(
+            b.search_plan().cascade().admission,
+            a.search_plan().cascade().admission
+        );
         assert_ne!(a.cache_namespace, b.cache_namespace);
         let c = resolve(&["orion", "sift", "--graph-source", "rust", "--k", "100"]).unwrap();
         assert_eq!(a.cache_namespace, c.cache_namespace);
@@ -1035,7 +1172,7 @@ mod tests {
     fn cli_graph_source_overrides_legacy_environment() {
         let args = Args::try_parse_from(["orion", "sift", "--graph-source", "rust"]).unwrap();
         let env = LegacyEnvironment {
-            graph_source: Some(GraphSource::Parlayann),
+            graph_source: Some(GraphSourcePolicy::Parlayann),
             staged_file: Some("import.staged".into()),
             ..Default::default()
         };

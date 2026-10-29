@@ -1,0 +1,966 @@
+{
+  "study": "20261027-165719-orion-parlay-thp-8t-n2qinxh_",
+  "platform": "Intel Xeon Platinum 8358P / Ubuntu 22.04 / glibc 2.35",
+  "cpus": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "threads": 8,
+  "trials": 3,
+  "order": [
+    "orion",
+    "parlay"
+  ],
+  "binary_sha256": "6464e25879a08cc0b1913070fb780a65865616ba52ed2d50e1c1f7a042eca6cd",
+  "method": "Fastest measured median QPS meeting each recall threshold; no interpolation. Original Parlay tie-aware recall versus Orion ID recall. Single-pass timing; no minimum-one-second loop.",
+  "source": {
+    "file": "medians.json",
+    "sha256": "6102ba0d4cbf4a69b428718cd4174c12c1061f7495d3abc3722fc54f53d52233"
+  },
+  "points": [
+    {
+      "engine": "orion",
+      "key": "L=16",
+      "trials": 3,
+      "recall": 0.74599,
+      "qps": 86290.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=24",
+      "trials": 3,
+      "recall": 0.8133,
+      "qps": 71844.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=32",
+      "trials": 3,
+      "recall": 0.85301,
+      "qps": 60652.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=40",
+      "trials": 3,
+      "recall": 0.88022,
+      "qps": 52861.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=48",
+      "trials": 3,
+      "recall": 0.89854,
+      "qps": 46744.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=56",
+      "trials": 3,
+      "recall": 0.91279,
+      "qps": 42369.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=64",
+      "trials": 3,
+      "recall": 0.92439,
+      "qps": 38681.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=72",
+      "trials": 3,
+      "recall": 0.93288,
+      "qps": 35442.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=80",
+      "trials": 3,
+      "recall": 0.93998,
+      "qps": 32695.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=96",
+      "trials": 3,
+      "recall": 0.95064,
+      "qps": 27952.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=112",
+      "trials": 3,
+      "recall": 0.95799,
+      "qps": 33897.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=128",
+      "trials": 3,
+      "recall": 0.96394,
+      "qps": 30746.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=144",
+      "trials": 3,
+      "recall": 0.96843,
+      "qps": 28151.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=160",
+      "trials": 3,
+      "recall": 0.97208,
+      "qps": 26072.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=176",
+      "trials": 3,
+      "recall": 0.97478,
+      "qps": 24550.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=192",
+      "trials": 3,
+      "recall": 0.9771,
+      "qps": 23099.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=224",
+      "trials": 3,
+      "recall": 0.98065,
+      "qps": 20916.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=256",
+      "trials": 3,
+      "recall": 0.98326,
+      "qps": 19095.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=288",
+      "trials": 3,
+      "recall": 0.98535,
+      "qps": 17293.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=320",
+      "trials": 3,
+      "recall": 0.98698,
+      "qps": 16764.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=384",
+      "trials": 3,
+      "recall": 0.98938,
+      "qps": 13804.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=448",
+      "trials": 3,
+      "recall": 0.99096,
+      "qps": 12788.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=512",
+      "trials": 3,
+      "recall": 0.99213,
+      "qps": 11320.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=640",
+      "trials": 3,
+      "recall": 0.99373,
+      "qps": 9039.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=768",
+      "trials": 3,
+      "recall": 0.99494,
+      "qps": 8047.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=896",
+      "trials": 3,
+      "recall": 0.99576,
+      "qps": 7015.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=1024",
+      "trials": 3,
+      "recall": 0.99636,
+      "qps": 6274.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=1280",
+      "trials": 3,
+      "recall": 0.99708,
+      "qps": 5778.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=1536",
+      "trials": 3,
+      "recall": 0.99757,
+      "qps": 4695.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "orion",
+      "key": "L=2048",
+      "trials": 3,
+      "recall": 0.99817,
+      "qps": 3540.0,
+      "min_qps": null,
+      "max_qps": null,
+      "source": "engine-reported median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=10/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.66993,
+      "qps": 104817.0,
+      "min_qps": 100212.0,
+      "max_qps": 105057.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=11/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.68875,
+      "qps": 100577.0,
+      "min_qps": 100497.0,
+      "max_qps": 101976.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=12/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.70497,
+      "qps": 97269.6,
+      "min_qps": 96797.9,
+      "max_qps": 97699.2,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=13/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.71979,
+      "qps": 93761.1,
+      "min_qps": 93683.8,
+      "max_qps": 94142.5,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=14/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.73189,
+      "qps": 90241.3,
+      "min_qps": 88866.8,
+      "max_qps": 90379.1,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=15/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.74483,
+      "qps": 86086.7,
+      "min_qps": 85970.5,
+      "max_qps": 86960.3,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=16/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.75568,
+      "qps": 83144.2,
+      "min_qps": 82622.8,
+      "max_qps": 83146.3,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=17/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.7735,
+      "qps": 76512.3,
+      "min_qps": 76293.9,
+      "max_qps": 76905.3,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=18/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.78276,
+      "qps": 73833.4,
+      "min_qps": 73424.7,
+      "max_qps": 74155.4,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=19/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.79145,
+      "qps": 71330.7,
+      "min_qps": 70125.2,
+      "max_qps": 71690.2,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=20/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.80024,
+      "qps": 67808.6,
+      "min_qps": 67806.3,
+      "max_qps": 67925.6,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=22/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.8147,
+      "qps": 63000.5,
+      "min_qps": 62800.3,
+      "max_qps": 63175.6,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=24/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.82729,
+      "qps": 72414.4,
+      "min_qps": 71948.1,
+      "max_qps": 72609.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=26/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.84328,
+      "qps": 67795.7,
+      "min_qps": 67792.9,
+      "max_qps": 67962.9,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=28/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.85255,
+      "qps": 65240.1,
+      "min_qps": 65171.2,
+      "max_qps": 65518.8,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=30/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.86054,
+      "qps": 62900.2,
+      "min_qps": 62831.4,
+      "max_qps": 62933.1,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=32/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.86753,
+      "qps": 60404.3,
+      "min_qps": 60230.4,
+      "max_qps": 60751.1,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=34/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.8773,
+      "qps": 57650.8,
+      "min_qps": 57265.2,
+      "max_qps": 57696.4,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=36/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.88339,
+      "qps": 55333.6,
+      "min_qps": 55311.3,
+      "max_qps": 55342.5,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=38/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.8887,
+      "qps": 53429.1,
+      "min_qps": 53418.2,
+      "max_qps": 53636.6,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=40/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.89347,
+      "qps": 51844.9,
+      "min_qps": 51828.0,
+      "max_qps": 51984.2,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=45/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.90619,
+      "qps": 46981.7,
+      "min_qps": 46799.8,
+      "max_qps": 47028.3,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=50/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.91674,
+      "qps": 42025.8,
+      "min_qps": 41967.6,
+      "max_qps": 42226.9,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=55/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.92369,
+      "qps": 43477.5,
+      "min_qps": 43440.1,
+      "max_qps": 43736.3,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=60/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.93139,
+      "qps": 41070.6,
+      "min_qps": 41043.3,
+      "max_qps": 41103.4,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=65/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.93785,
+      "qps": 38541.6,
+      "min_qps": 38516.2,
+      "max_qps": 38663.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=70/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.94207,
+      "qps": 36565.3,
+      "min_qps": 36523.9,
+      "max_qps": 36696.3,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=80/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.95033,
+      "qps": 33085.9,
+      "min_qps": 33066.6,
+      "max_qps": 33182.4,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=90/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.95717,
+      "qps": 29939.4,
+      "min_qps": 29885.4,
+      "max_qps": 30062.4,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=100/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.96179,
+      "qps": 27458.6,
+      "min_qps": 27409.9,
+      "max_qps": 27471.5,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=120/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.96932,
+      "qps": 24557.2,
+      "min_qps": 24554.4,
+      "max_qps": 24712.9,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=140/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.97489,
+      "qps": 21616.2,
+      "min_qps": 21596.2,
+      "max_qps": 21618.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=160/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.97896,
+      "qps": 19377.4,
+      "min_qps": 19352.5,
+      "max_qps": 19378.7,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=180/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.98219,
+      "qps": 17472.4,
+      "min_qps": 17470.3,
+      "max_qps": 17495.4,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=200/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.98455,
+      "qps": 15939.7,
+      "min_qps": 15931.6,
+      "max_qps": 15945.8,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=225/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.98669,
+      "qps": 14282.0,
+      "min_qps": 14261.7,
+      "max_qps": 14290.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=250/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.98832,
+      "qps": 13331.7,
+      "min_qps": 13309.1,
+      "max_qps": 13338.9,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=275/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.98974,
+      "qps": 12262.8,
+      "min_qps": 12262.7,
+      "max_qps": 12279.3,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=300/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.99095,
+      "qps": 11329.9,
+      "min_qps": 11327.1,
+      "max_qps": 11347.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=375/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.99313,
+      "qps": 9236.62,
+      "min_qps": 9227.88,
+      "max_qps": 9248.99,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=500/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.99545,
+      "qps": 6900.6,
+      "min_qps": 6900.14,
+      "max_qps": 6908.73,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=750/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.99755,
+      "qps": 5194.98,
+      "min_qps": 4805.21,
+      "max_qps": 5222.12,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=1000/k=10/limit=1000000000",
+      "trials": 3,
+      "recall": 0.99831,
+      "qps": 3917.97,
+      "min_qps": 3912.58,
+      "max_qps": 3923.39,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=10/k=10/limit=10",
+      "trials": 3,
+      "recall": 0.06628,
+      "qps": 212875.0,
+      "min_qps": 203260.0,
+      "max_qps": 213844.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=11/k=10/limit=11",
+      "trials": 3,
+      "recall": 0.13488,
+      "qps": 186002.0,
+      "min_qps": 181327.0,
+      "max_qps": 186130.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=12/k=10/limit=12",
+      "trials": 3,
+      "recall": 0.22594,
+      "qps": 166287.0,
+      "min_qps": 165382.0,
+      "max_qps": 170999.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=13/k=10/limit=13",
+      "trials": 3,
+      "recall": 0.31409,
+      "qps": 151332.0,
+      "min_qps": 150353.0,
+      "max_qps": 152828.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=14/k=10/limit=14",
+      "trials": 3,
+      "recall": 0.36918,
+      "qps": 145031.0,
+      "min_qps": 144928.0,
+      "max_qps": 148019.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=15/k=10/limit=15",
+      "trials": 3,
+      "recall": 0.41943,
+      "qps": 138479.0,
+      "min_qps": 137798.0,
+      "max_qps": 140394.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=16/k=10/limit=16",
+      "trials": 3,
+      "recall": 0.46359,
+      "qps": 133950.0,
+      "min_qps": 131796.0,
+      "max_qps": 134354.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=17/k=10/limit=17",
+      "trials": 3,
+      "recall": 0.50276,
+      "qps": 127747.0,
+      "min_qps": 126826.0,
+      "max_qps": 128005.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=18/k=10/limit=18",
+      "trials": 3,
+      "recall": 0.53655,
+      "qps": 111350.0,
+      "min_qps": 106820.0,
+      "max_qps": 116117.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=19/k=10/limit=19",
+      "trials": 3,
+      "recall": 0.56705,
+      "qps": 104435.0,
+      "min_qps": 104124.0,
+      "max_qps": 104656.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=20/k=10/limit=20",
+      "trials": 3,
+      "recall": 0.59419,
+      "qps": 100952.0,
+      "min_qps": 100315.0,
+      "max_qps": 101398.0,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=21/k=10/limit=21",
+      "trials": 3,
+      "recall": 0.61803,
+      "qps": 96555.9,
+      "min_qps": 95854.3,
+      "max_qps": 96833.5,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=22/k=10/limit=22",
+      "trials": 3,
+      "recall": 0.63931,
+      "qps": 93604.0,
+      "min_qps": 93558.5,
+      "max_qps": 94029.1,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=23/k=10/limit=23",
+      "trials": 3,
+      "recall": 0.65866,
+      "qps": 92149.8,
+      "min_qps": 92020.0,
+      "max_qps": 92552.3,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=24/k=10/limit=24",
+      "trials": 3,
+      "recall": 0.67651,
+      "qps": 89410.2,
+      "min_qps": 88143.0,
+      "max_qps": 89857.8,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=25/k=10/limit=25",
+      "trials": 3,
+      "recall": 0.69301,
+      "qps": 86502.2,
+      "min_qps": 85524.2,
+      "max_qps": 86998.9,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=26/k=10/limit=26",
+      "trials": 3,
+      "recall": 0.70778,
+      "qps": 84114.2,
+      "min_qps": 84073.9,
+      "max_qps": 84126.9,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=28/k=10/limit=28",
+      "trials": 3,
+      "recall": 0.73384,
+      "qps": 79360.7,
+      "min_qps": 78945.3,
+      "max_qps": 79748.6,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=30/k=10/limit=30",
+      "trials": 3,
+      "recall": 0.75742,
+      "qps": 75829.4,
+      "min_qps": 75617.8,
+      "max_qps": 75882.3,
+      "source": "raw-trial median"
+    },
+    {
+      "engine": "parlay",
+      "key": "Q=35/k=10/limit=35",
+      "trials": 3,
+      "recall": 0.80106,
+      "qps": 67176.8,
+      "min_qps": 66947.9,
+      "max_qps": 67207.5,
+      "source": "raw-trial median"
+    }
+  ],
+  "orion_pages_kib": {
+    "Size": 507837356,
+    "Rss": 500014848,
+    "Anonymous": 500011676,
+    "AnonHugePages": 499998720,
+    "Locked": 0
+  },
+  "thp_fraction_of_anonymous": 0.9999740886050829
+}

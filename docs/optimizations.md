@@ -2,6 +2,13 @@
 
 [← Back to main README](../README.md)
 
+Implementation notes below include historical measurements and tuning rationales.
+For current CLI policy, compiled defaults versus experiment overrides, and dated
+performance evidence, use [Configuration](configuration.md) and
+[Benchmarks](benchmarks.md). Native-u8 search, block I/O and Linux THP are covered
+in [Large datasets](large-datasets.md); historical gains here are not universal
+claims for the current binary.
+
 
 ### Memory Efficiency
 

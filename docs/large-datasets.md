@@ -59,13 +59,14 @@ working dataset and partitions. Measure construction separately.
 
 `benchmark/configs/sweep.yaml` defines these native-u8 defaults:
 
-| Preset | Base prefix | Ground truth under `data/sift1b/` |
-| --- | ---: | --- |
-| `sift10m` | 10,000,000 | `idx_10M.ivecs` |
-| `sift100m` | 100,000,000 | `idx_100M.ivecs` |
-| `sift1b` | 1,000,000,000 | `idx_1000M.ivecs` |
+| Preset | Loaded points | Default base | Ground truth |
+| --- | ---: | --- | --- |
+| `sift10m` | 10,000,000 | `data/sift10m/base.10M.bvecs` | `data/sift10m/groundtruth.10M.ivecs` |
+| `sift100m` | 100,000,000 | `data/sift1b/bigann_base.bvecs` | `data/sift1b/idx_100M.ivecs` |
+| `sift1b` | 1,000,000,000 | `data/sift1b/bigann_base.bvecs` | `data/sift1b/idx_1000M.ivecs` |
 
-All three read `bigann_base.bvecs` and `bigann_query.bvecs` from that directory.
+SIFT10M uses `data/sift10m/query.public.10K.bvecs`; larger presets use
+`data/sift1b/bigann_query.bvecs`. Override these paths for remote deployments.
 Each requires its own graph matching the loaded prefix. Defaults are R=64,
 extra=16, original-u8 admission, no prefilter, and no final rerank. CLI options
 override preset values. To compare the previous f32 storage and reranking path,
@@ -269,3 +270,24 @@ features (including AVX512F/BW/DQ/VL and VPOPCNTDQ for the deployed bundle).
 These compile-time-selected paths require compatible compute nodes. Check
 generated assembly and run the vector regression tests on the target machine;
 do not infer the active kernel solely from the toolchain version.
+
+## Storage and large pages
+
+The shared [platform block writer](../platform/src/buffered_io.rs) combines small
+headers and payloads into 8 MiB writes. Orion graph caches and DiskANN save paths
+use this utility without making Orion's writer depend on DiskANN's writer.
+File formats remain unchanged. Large reads/writes describe request size, not
+parallel I/O; do not infer additional reader/writer threads from block size.
+
+For the standard SIFT1B graph, the `.pgraph` logical size is 384,000,000,016 bytes.
+Reserve roughly 400 GB for this graph cache alone, in addition to base, STAG,
+other engines' caches and temporary files. Actual filesystem allocation and user
+quota can differ from file length and filesystem-wide free space. Block writes
+fixed observed small-write allocation amplification on the tested Lustre system;
+this is not a universal filesystem compression guarantee.
+
+Large Linux allocations use best-effort THP advice through the shared allocator.
+Check actual page coverage, not just whether the advice call succeeded. See
+[Platforms](platforms.md) for details and [Benchmarks](benchmarks.md#sift1b-on-x86)
+for the measured SIFT1B run. Native-u8 automatic graph selection still requires
+PA; it never widens the base and falls back to Rust.

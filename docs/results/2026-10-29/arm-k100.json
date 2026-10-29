@@ -1,0 +1,3029 @@
+{
+  "study": "six-datasets-k100-20261027",
+  "platform": "Apple Silicon / macOS / AArch64; CPU model not recorded in this study manifest",
+  "source_commit": "80054cf42be3ccc1b863884efb715e681d5756c8",
+  "binaries": {
+    "orion-sweep": "9584f6dea316f50946cd99bb1fedc286f15651658459ca20c275335c04fc2348",
+    "parlay-neighbors": "15ba28c428e71adab22c72b0ef5baa1cdd1dcfff6eb2f7cded051f79374a6baf"
+  },
+  "environment": {
+    "ORION_GRAPH": "parlayann",
+    "ORION_RERANK_FACTOR": "2",
+    "ORION_DSTREAM_LA_Q": "32",
+    "ORION_DSTREAM_LA_TRUTH": "32",
+    "ORION_DSTREAM_SINK_BURST": "32",
+    "ORION_DSTREAM_BURST_TRIGGER_LINES": "8",
+    "ORION_DSTREAM_BURST_AHEAD_VECTORS": "4",
+    "RAYON_NUM_THREADS": "8",
+    "PARLAY_NUM_THREADS": "8"
+  },
+  "threads": 8,
+  "trials": 3,
+  "method": "Linear QPS interpolation on measured Pareto frontiers; no extrapolation. Original Parlay timing; both GT files have exactly 100 identical IDs per query. Final duplicated PA configuration retains six samples.",
+  "source": {
+    "file": "analysis.json",
+    "sha256": "f004d16199437dd014b001f3ff0290cc2dec2401ef1bd2665ed49958e4b28684"
+  },
+  "datasets": {
+    "sift": {
+      "same_recall": [
+        {
+          "recall": 0.8,
+          "orion": null,
+          "parlay": {
+            "qps": 151426.55395944614,
+            "bracket": [
+              {
+                "L": 100,
+                "limit": 28,
+                "recall": 0.78418,
+                "qps": 156340.0,
+                "measurements": 3,
+                "min_qps": 155190.0,
+                "max_qps": 156651.0
+              },
+              {
+                "L": 100,
+                "limit": 30,
+                "recall": 0.803463,
+                "qps": 150351.0,
+                "measurements": 3,
+                "min_qps": 150308.0,
+                "max_qps": 150600.0
+              }
+            ]
+          },
+          "ratio": null
+        },
+        {
+          "recall": 0.9,
+          "orion": null,
+          "parlay": {
+            "qps": 114593.10923526894,
+            "bracket": [
+              {
+                "L": 100,
+                "limit": 35,
+                "recall": 0.842581,
+                "qps": 138234.0,
+                "measurements": 3,
+                "min_qps": 137933.0,
+                "max_qps": 138927.0
+              },
+              {
+                "L": 100,
+                "limit": 1000000,
+                "recall": 0.985154,
+                "qps": 79533.0,
+                "measurements": 3,
+                "min_qps": 76603.7,
+                "max_qps": 79893.3
+              }
+            ]
+          },
+          "ratio": null
+        },
+        {
+          "recall": 0.95,
+          "orion": null,
+          "parlay": {
+            "qps": 94006.81309224048,
+            "bracket": [
+              {
+                "L": 100,
+                "limit": 35,
+                "recall": 0.842581,
+                "qps": 138234.0,
+                "measurements": 3,
+                "min_qps": 137933.0,
+                "max_qps": 138927.0
+              },
+              {
+                "L": 100,
+                "limit": 1000000,
+                "recall": 0.985154,
+                "qps": 79533.0,
+                "measurements": 3,
+                "min_qps": 76603.7,
+                "max_qps": 79893.3
+              }
+            ]
+          },
+          "ratio": null
+        },
+        {
+          "recall": 0.97,
+          "orion": {
+            "qps": 103771.75741710297,
+            "bracket": [
+              {
+                "L": 128,
+                "recall": 0.969104,
+                "qps": 105269
+              },
+              {
+                "L": 144,
+                "recall": 0.973688,
+                "qps": 97609
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 85772.29463502907,
+            "bracket": [
+              {
+                "L": 100,
+                "limit": 35,
+                "recall": 0.842581,
+                "qps": 138234.0,
+                "measurements": 3,
+                "min_qps": 137933.0,
+                "max_qps": 138927.0
+              },
+              {
+                "L": 100,
+                "limit": 1000000,
+                "recall": 0.985154,
+                "qps": 79533.0,
+                "measurements": 3,
+                "min_qps": 76603.7,
+                "max_qps": 79893.3
+              }
+            ]
+          },
+          "ratio": 1.2098517109593916
+        },
+        {
+          "recall": 0.98,
+          "orion": {
+            "qps": 86777.4439102564,
+            "bracket": [
+              {
+                "L": 160,
+                "recall": 0.977549,
+                "qps": 91631
+              },
+              {
+                "L": 180,
+                "recall": 0.981293,
+                "qps": 84217
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 81655.03540642338,
+            "bracket": [
+              {
+                "L": 100,
+                "limit": 35,
+                "recall": 0.842581,
+                "qps": 138234.0,
+                "measurements": 3,
+                "min_qps": 137933.0,
+                "max_qps": 138927.0
+              },
+              {
+                "L": 100,
+                "limit": 1000000,
+                "recall": 0.985154,
+                "qps": 79533.0,
+                "measurements": 3,
+                "min_qps": 76603.7,
+                "max_qps": 79893.3
+              }
+            ]
+          },
+          "ratio": 1.0627323039949361
+        },
+        {
+          "recall": 0.99,
+          "orion": {
+            "qps": 64733.197850512974,
+            "bracket": [
+              {
+                "L": 256,
+                "recall": 0.989421,
+                "qps": 66518
+              },
+              {
+                "L": 288,
+                "recall": 0.991468,
+                "qps": 60208
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 68790.00861207233,
+            "bracket": [
+              {
+                "L": 100,
+                "limit": 1000000,
+                "recall": 0.985154,
+                "qps": 79533.0,
+                "measurements": 3,
+                "min_qps": 76603.7,
+                "max_qps": 79893.3
+              },
+              {
+                "L": 120,
+                "limit": 1000000,
+                "recall": 0.990356,
+                "qps": 68000.8,
+                "measurements": 3,
+                "min_qps": 67972.2,
+                "max_qps": 68011.0
+              }
+            ]
+          },
+          "ratio": 0.9410261629063468
+        }
+      ],
+      "historical": {
+        "directory": "visualizations/larger_result_sets/20261009_ee_enabled_k10_k100",
+        "config_differences": {},
+        "pairs": [
+          {
+            "L": 100,
+            "old": {
+              "L": 100,
+              "recall": 0.953774,
+              "qps": 120600
+            },
+            "new": {
+              "L": 100,
+              "recall": 0.953774,
+              "qps": 116137
+            },
+            "ratio": 0.9629933665008292,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 112,
+            "old": {
+              "L": 112,
+              "recall": 0.962921,
+              "qps": 111932
+            },
+            "new": {
+              "L": 112,
+              "recall": 0.962921,
+              "qps": 114932
+            },
+            "ratio": 1.0268019869206304,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 128,
+            "old": {
+              "L": 128,
+              "recall": 0.969104,
+              "qps": 103637
+            },
+            "new": {
+              "L": 128,
+              "recall": 0.969104,
+              "qps": 105269
+            },
+            "ratio": 1.0157472717272789,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 144,
+            "old": {
+              "L": 144,
+              "recall": 0.973688,
+              "qps": 95956
+            },
+            "new": {
+              "L": 144,
+              "recall": 0.973688,
+              "qps": 97609
+            },
+            "ratio": 1.0172266455458752,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 160,
+            "old": {
+              "L": 160,
+              "recall": 0.977549,
+              "qps": 89433
+            },
+            "new": {
+              "L": 160,
+              "recall": 0.977549,
+              "qps": 91631
+            },
+            "ratio": 1.0245770576856417,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 180,
+            "old": {
+              "L": 180,
+              "recall": 0.981293,
+              "qps": 82664
+            },
+            "new": {
+              "L": 180,
+              "recall": 0.981293,
+              "qps": 84217
+            },
+            "ratio": 1.0187868963514952,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 200,
+            "old": {
+              "L": 200,
+              "recall": 0.9842,
+              "qps": 76920
+            },
+            "new": {
+              "L": 200,
+              "recall": 0.9842,
+              "qps": 77296
+            },
+            "ratio": 1.004888195527821,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 224,
+            "old": {
+              "L": 224,
+              "recall": 0.986795,
+              "qps": 71621
+            },
+            "new": {
+              "L": 224,
+              "recall": 0.986795,
+              "qps": 71471
+            },
+            "ratio": 0.9979056421999134,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 256,
+            "old": {
+              "L": 256,
+              "recall": 0.989421,
+              "qps": 65572
+            },
+            "new": {
+              "L": 256,
+              "recall": 0.989421,
+              "qps": 66518
+            },
+            "ratio": 1.0144268895260171,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 288,
+            "old": {
+              "L": 288,
+              "recall": 0.991468,
+              "qps": 60490
+            },
+            "new": {
+              "L": 288,
+              "recall": 0.991468,
+              "qps": 60208
+            },
+            "ratio": 0.9953380724086626,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 320,
+            "old": {
+              "L": 320,
+              "recall": 0.992896,
+              "qps": 55958
+            },
+            "new": {
+              "L": 320,
+              "recall": 0.992896,
+              "qps": 57161
+            },
+            "ratio": 1.0214982665570607,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 384,
+            "old": {
+              "L": 384,
+              "recall": 0.994876,
+              "qps": 47778
+            },
+            "new": {
+              "L": 384,
+              "recall": 0.994876,
+              "qps": 47785
+            },
+            "ratio": 1.0001465109464607,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 448,
+            "old": {
+              "L": 448,
+              "recall": 0.996222,
+              "qps": 41794
+            },
+            "new": {
+              "L": 448,
+              "recall": 0.996222,
+              "qps": 42736
+            },
+            "ratio": 1.0225391204479113,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 512,
+            "old": {
+              "L": 512,
+              "recall": 0.997091,
+              "qps": 34945
+            },
+            "new": {
+              "L": 512,
+              "recall": 0.997091,
+              "qps": 37419
+            },
+            "ratio": 1.0707969666618973,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 640,
+            "old": {
+              "L": 640,
+              "recall": 0.998106,
+              "qps": 29994
+            },
+            "new": {
+              "L": 640,
+              "recall": 0.998106,
+              "qps": 31066
+            },
+            "ratio": 1.0357404814296192,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 768,
+            "old": {
+              "L": 768,
+              "recall": 0.998705,
+              "qps": 25328
+            },
+            "new": {
+              "L": 768,
+              "recall": 0.998705,
+              "qps": 25194
+            },
+            "ratio": 0.9947094125078964,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 1024,
+            "old": {
+              "L": 1024,
+              "recall": 0.999324,
+              "qps": 19580
+            },
+            "new": {
+              "L": 1024,
+              "recall": 0.999324,
+              "qps": 19802
+            },
+            "ratio": 1.011338100102145,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 1536,
+            "old": {
+              "L": 1536,
+              "recall": 0.999705,
+              "qps": 12529
+            },
+            "new": {
+              "L": 1536,
+              "recall": 0.999705,
+              "qps": 12593
+            },
+            "ratio": 1.0051081490941016,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 2048,
+            "old": {
+              "L": 2048,
+              "recall": 0.999795,
+              "qps": 9079
+            },
+            "new": {
+              "L": 2048,
+              "recall": 0.999795,
+              "qps": 9276
+            },
+            "ratio": 1.021698424936667,
+            "recall_delta": 0.0
+          }
+        ],
+        "geomean_qps_ratio": 1.0135928643543282,
+        "max_abs_recall_delta": 0.0
+      }
+    },
+    "glove25": {
+      "same_recall": [
+        {
+          "recall": 0.8,
+          "orion": null,
+          "parlay": {
+            "qps": 130628.9002835522,
+            "bracket": [
+              {
+                "L": 100,
+                "limit": 35,
+                "recall": 0.767278,
+                "qps": 139719.0,
+                "measurements": 3,
+                "min_qps": 138483.0,
+                "max_qps": 139893.0
+              },
+              {
+                "L": 100,
+                "limit": 1183514,
+                "recall": 0.937617,
+                "qps": 92399.2,
+                "measurements": 3,
+                "min_qps": 89040.9,
+                "max_qps": 92586.6
+              }
+            ]
+          },
+          "ratio": null
+        },
+        {
+          "recall": 0.9,
+          "orion": null,
+          "parlay": {
+            "qps": 102849.11996313234,
+            "bracket": [
+              {
+                "L": 100,
+                "limit": 35,
+                "recall": 0.767278,
+                "qps": 139719.0,
+                "measurements": 3,
+                "min_qps": 138483.0,
+                "max_qps": 139893.0
+              },
+              {
+                "L": 100,
+                "limit": 1183514,
+                "recall": 0.937617,
+                "qps": 92399.2,
+                "measurements": 3,
+                "min_qps": 89040.9,
+                "max_qps": 92586.6
+              }
+            ]
+          },
+          "ratio": null
+        },
+        {
+          "recall": 0.95,
+          "orion": {
+            "qps": 137797.02227722778,
+            "bracket": [
+              {
+                "L": 128,
+                "recall": 0.947651,
+                "qps": 140533
+              },
+              {
+                "L": 144,
+                "recall": 0.954923,
+                "qps": 132063
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 87194.42050374448,
+            "bracket": [
+              {
+                "L": 100,
+                "limit": 1183514,
+                "recall": 0.937617,
+                "qps": 92399.2,
+                "measurements": 3,
+                "min_qps": 89040.9,
+                "max_qps": 92586.6
+              },
+              {
+                "L": 120,
+                "limit": 1183514,
+                "recall": 0.971801,
+                "qps": 78031.1,
+                "measurements": 3,
+                "min_qps": 77603.0,
+                "max_qps": 78572.5
+              }
+            ]
+          },
+          "ratio": 1.5803421994336235
+        },
+        {
+          "recall": 0.97,
+          "orion": {
+            "qps": 103552.79269385929,
+            "bracket": [
+              {
+                "L": 180,
+                "recall": 0.966083,
+                "qps": 109876
+              },
+              {
+                "L": 200,
+                "recall": 0.970545,
+                "qps": 102673
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 78788.09005675172,
+            "bracket": [
+              {
+                "L": 100,
+                "limit": 1183514,
+                "recall": 0.937617,
+                "qps": 92399.2,
+                "measurements": 3,
+                "min_qps": 89040.9,
+                "max_qps": 92586.6
+              },
+              {
+                "L": 120,
+                "limit": 1183514,
+                "recall": 0.971801,
+                "qps": 78031.1,
+                "measurements": 3,
+                "min_qps": 77603.0,
+                "max_qps": 78572.5
+              }
+            ]
+          },
+          "ratio": 1.3143203829318535
+        },
+        {
+          "recall": 0.98,
+          "orion": {
+            "qps": 83140.32041728764,
+            "bracket": [
+              {
+                "L": 256,
+                "recall": 0.979116,
+                "qps": 85957
+              },
+              {
+                "L": 288,
+                "recall": 0.982471,
+                "qps": 75267
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 68444.69530736745,
+            "bracket": [
+              {
+                "L": 120,
+                "limit": 1183514,
+                "recall": 0.971801,
+                "qps": 78031.1,
+                "measurements": 3,
+                "min_qps": 77603.0,
+                "max_qps": 78572.5
+              },
+              {
+                "L": 140,
+                "limit": 1183514,
+                "recall": 0.980325,
+                "qps": 68064.7,
+                "measurements": 3,
+                "min_qps": 66695.1,
+                "max_qps": 68669.1
+              }
+            ]
+          },
+          "ratio": 1.2147080214752353
+        },
+        {
+          "recall": 0.99,
+          "orion": {
+            "qps": 57311.9984520125,
+            "bracket": [
+              {
+                "L": 384,
+                "recall": 0.988916,
+                "qps": 60478
+              },
+              {
+                "L": 448,
+                "recall": 0.9915,
+                "qps": 52931
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 50384.38995037219,
+            "bracket": [
+              {
+                "L": 180,
+                "limit": 1183514,
+                "recall": 0.988407,
+                "qps": 53435.4,
+                "measurements": 3,
+                "min_qps": 51999.6,
+                "max_qps": 53873.5
+              },
+              {
+                "L": 200,
+                "limit": 1183514,
+                "recall": 0.990825,
+                "qps": 48804.3,
+                "measurements": 3,
+                "min_qps": 48765.7,
+                "max_qps": 48939.7
+              }
+            ]
+          },
+          "ratio": 1.1374951350698876
+        }
+      ],
+      "historical": {
+        "directory": "visualizations/larger_result_sets/20261009_ee_enabled_k10_k100",
+        "config_differences": {},
+        "pairs": [
+          {
+            "L": 100,
+            "old": {
+              "L": 100,
+              "recall": 0.912941,
+              "qps": 168664
+            },
+            "new": {
+              "L": 100,
+              "recall": 0.912941,
+              "qps": 168697
+            },
+            "ratio": 1.000195655267277,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 112,
+            "old": {
+              "L": 112,
+              "recall": 0.935512,
+              "qps": 156448
+            },
+            "new": {
+              "L": 112,
+              "recall": 0.935512,
+              "qps": 156305
+            },
+            "ratio": 0.9990859582736756,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 128,
+            "old": {
+              "L": 128,
+              "recall": 0.947651,
+              "qps": 143731
+            },
+            "new": {
+              "L": 128,
+              "recall": 0.947651,
+              "qps": 140533
+            },
+            "ratio": 0.9777501026222596,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 144,
+            "old": {
+              "L": 144,
+              "recall": 0.954923,
+              "qps": 132450
+            },
+            "new": {
+              "L": 144,
+              "recall": 0.954923,
+              "qps": 132063
+            },
+            "ratio": 0.9970781426953568,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 160,
+            "old": {
+              "L": 160,
+              "recall": 0.960421,
+              "qps": 123016
+            },
+            "new": {
+              "L": 160,
+              "recall": 0.960421,
+              "qps": 120767
+            },
+            "ratio": 0.9817178253235351,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 180,
+            "old": {
+              "L": 180,
+              "recall": 0.966083,
+              "qps": 110696
+            },
+            "new": {
+              "L": 180,
+              "recall": 0.966083,
+              "qps": 109876
+            },
+            "ratio": 0.9925923249259232,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 200,
+            "old": {
+              "L": 200,
+              "recall": 0.970545,
+              "qps": 102780
+            },
+            "new": {
+              "L": 200,
+              "recall": 0.970545,
+              "qps": 102673
+            },
+            "ratio": 0.9989589414282934,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 224,
+            "old": {
+              "L": 224,
+              "recall": 0.974734,
+              "qps": 95113
+            },
+            "new": {
+              "L": 224,
+              "recall": 0.974734,
+              "qps": 95316
+            },
+            "ratio": 1.0021343034075259,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 256,
+            "old": {
+              "L": 256,
+              "recall": 0.979116,
+              "qps": 86021
+            },
+            "new": {
+              "L": 256,
+              "recall": 0.979116,
+              "qps": 85957
+            },
+            "ratio": 0.9992559956289743,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 288,
+            "old": {
+              "L": 288,
+              "recall": 0.982471,
+              "qps": 78895
+            },
+            "new": {
+              "L": 288,
+              "recall": 0.982471,
+              "qps": 75267
+            },
+            "ratio": 0.9540148298371253,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 320,
+            "old": {
+              "L": 320,
+              "recall": 0.985138,
+              "qps": 72186
+            },
+            "new": {
+              "L": 320,
+              "recall": 0.985138,
+              "qps": 70041
+            },
+            "ratio": 0.970285096833181,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 384,
+            "old": {
+              "L": 384,
+              "recall": 0.988916,
+              "qps": 60339
+            },
+            "new": {
+              "L": 384,
+              "recall": 0.988916,
+              "qps": 60478
+            },
+            "ratio": 1.0023036510383003,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 448,
+            "old": {
+              "L": 448,
+              "recall": 0.9915,
+              "qps": 53076
+            },
+            "new": {
+              "L": 448,
+              "recall": 0.9915,
+              "qps": 52931
+            },
+            "ratio": 0.9972680684301756,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 512,
+            "old": {
+              "L": 512,
+              "recall": 0.993218,
+              "qps": 47029
+            },
+            "new": {
+              "L": 512,
+              "recall": 0.993218,
+              "qps": 46954
+            },
+            "ratio": 0.9984052393204194,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 640,
+            "old": {
+              "L": 640,
+              "recall": 0.995567,
+              "qps": 37566
+            },
+            "new": {
+              "L": 640,
+              "recall": 0.995567,
+              "qps": 38310
+            },
+            "ratio": 1.0198051429484107,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 768,
+            "old": {
+              "L": 768,
+              "recall": 0.996986,
+              "qps": 27993
+            },
+            "new": {
+              "L": 768,
+              "recall": 0.996986,
+              "qps": 31245
+            },
+            "ratio": 1.1161719001178867,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 1024,
+            "old": {
+              "L": 1024,
+              "recall": 0.99835,
+              "qps": 21920
+            },
+            "new": {
+              "L": 1024,
+              "recall": 0.99835,
+              "qps": 23447
+            },
+            "ratio": 1.069662408759124,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 1536,
+            "old": {
+              "L": 1536,
+              "recall": 0.999368,
+              "qps": 14312
+            },
+            "new": {
+              "L": 1536,
+              "recall": 0.999368,
+              "qps": 14618
+            },
+            "ratio": 1.021380659586361,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 2048,
+            "old": {
+              "L": 2048,
+              "recall": 0.999693,
+              "qps": 10312
+            },
+            "new": {
+              "L": 2048,
+              "recall": 0.999693,
+              "qps": 10503
+            },
+            "ratio": 1.018522110162917,
+            "recall_delta": 0.0
+          }
+        ],
+        "geomean_qps_ratio": 1.0055632511645973,
+        "max_abs_recall_delta": 0.0
+      }
+    },
+    "glove100": {
+      "same_recall": [
+        {
+          "recall": 0.8,
+          "orion": {
+            "qps": 90824.28571428568,
+            "bracket": [
+              {
+                "L": 100,
+                "recall": 0.783508,
+                "qps": 96763
+              },
+              {
+                "L": 112,
+                "recall": 0.802128,
+                "qps": 90058
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 55565.69207573283,
+            "bracket": [
+              {
+                "L": 100,
+                "limit": 35,
+                "recall": 0.588416,
+                "qps": 93269.7,
+                "measurements": 3,
+                "min_qps": 92663.8,
+                "max_qps": 93336.7
+              },
+              {
+                "L": 100,
+                "limit": 1183514,
+                "recall": 0.809509,
+                "qps": 53871.2,
+                "measurements": 3,
+                "min_qps": 52556.3,
+                "max_qps": 54864.3
+              }
+            ]
+          },
+          "ratio": 1.634538909197737
+        },
+        {
+          "recall": 0.9,
+          "orion": {
+            "qps": 38449.10641607257,
+            "bracket": [
+              {
+                "L": 288,
+                "recall": 0.894747,
+                "qps": 39881
+              },
+              {
+                "L": 320,
+                "recall": 0.902462,
+                "qps": 37778
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 25598.972927919538,
+            "bracket": [
+              {
+                "L": 200,
+                "limit": 1183514,
+                "recall": 0.891969,
+                "qps": 26312.1,
+                "measurements": 3,
+                "min_qps": 25113.1,
+                "max_qps": 28756.0
+              },
+              {
+                "L": 225,
+                "limit": 1183514,
+                "recall": 0.902707,
+                "qps": 25358.6,
+                "measurements": 3,
+                "min_qps": 24737.7,
+                "max_qps": 25804.4
+              }
+            ]
+          },
+          "ratio": 1.5019784787591235
+        },
+        {
+          "recall": 0.95,
+          "orion": {
+            "qps": 17833.31829700965,
+            "bracket": [
+              {
+                "L": 640,
+                "recall": 0.944048,
+                "qps": 20301
+              },
+              {
+                "L": 768,
+                "recall": 0.95194,
+                "qps": 17029
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 14421.971621457258,
+            "bracket": [
+              {
+                "L": 375,
+                "limit": 1183514,
+                "recall": 0.940324,
+                "qps": 16731.1,
+                "measurements": 3,
+                "min_qps": 14691.9,
+                "max_qps": 16818.7
+              },
+              {
+                "L": 500,
+                "limit": 1183514,
+                "recall": 0.956766,
+                "qps": 12807.3,
+                "measurements": 3,
+                "min_qps": 12702.1,
+                "max_qps": 12871.2
+              }
+            ]
+          },
+          "ratio": 1.236538163095324
+        },
+        {
+          "recall": 0.97,
+          "orion": {
+            "qps": 10096.188046647252,
+            "bracket": [
+              {
+                "L": 1024,
+                "recall": 0.963187,
+                "qps": 12781
+              },
+              {
+                "L": 1536,
+                "recall": 0.975535,
+                "qps": 7915
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 9882.554361338809,
+            "bracket": [
+              {
+                "L": 500,
+                "limit": 1183514,
+                "recall": 0.956766,
+                "qps": 12807.3,
+                "measurements": 3,
+                "min_qps": 12702.1,
+                "max_qps": 12871.2
+              },
+              {
+                "L": 750,
+                "limit": 1183514,
+                "recall": 0.974334,
+                "qps": 8924.73,
+                "measurements": 3,
+                "min_qps": 8895.26,
+                "max_qps": 8944.43
+              }
+            ]
+          },
+          "ratio": 1.021617253748099
+        },
+        {
+          "recall": 0.98,
+          "orion": {
+            "qps": 6449.613036177696,
+            "bracket": [
+              {
+                "L": 1536,
+                "recall": 0.975535,
+                "qps": 7915
+              },
+              {
+                "L": 2048,
+                "recall": 0.982086,
+                "qps": 5765
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 7498.413364222888,
+            "bracket": [
+              {
+                "L": 750,
+                "limit": 1183514,
+                "recall": 0.974334,
+                "qps": 8924.73,
+                "measurements": 3,
+                "min_qps": 8895.26,
+                "max_qps": 8944.43
+              },
+              {
+                "L": 1000,
+                "limit": 1183514,
+                "recall": 0.982859,
+                "qps": 6778.71,
+                "measurements": 6,
+                "min_qps": 6154.96,
+                "max_qps": 6865.76
+              }
+            ]
+          },
+          "ratio": 0.860130366638718
+        },
+        {
+          "recall": 0.99,
+          "orion": null,
+          "parlay": null,
+          "ratio": null
+        }
+      ],
+      "historical": {
+        "directory": "visualizations/larger_result_sets/20261009_ee_enabled_k10_k100",
+        "config_differences": {},
+        "pairs": [
+          {
+            "L": 100,
+            "old": {
+              "L": 100,
+              "recall": 0.783508,
+              "qps": 96662
+            },
+            "new": {
+              "L": 100,
+              "recall": 0.783508,
+              "qps": 96763
+            },
+            "ratio": 1.0010448780285945,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 112,
+            "old": {
+              "L": 112,
+              "recall": 0.802128,
+              "qps": 87513
+            },
+            "new": {
+              "L": 112,
+              "recall": 0.802128,
+              "qps": 90058
+            },
+            "ratio": 1.029081393621519,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 128,
+            "old": {
+              "L": 128,
+              "recall": 0.818097,
+              "qps": 78137
+            },
+            "new": {
+              "L": 128,
+              "recall": 0.818097,
+              "qps": 78335
+            },
+            "ratio": 1.0025340107759448,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 144,
+            "old": {
+              "L": 144,
+              "recall": 0.830806,
+              "qps": 70583
+            },
+            "new": {
+              "L": 144,
+              "recall": 0.830806,
+              "qps": 70812
+            },
+            "ratio": 1.003244407293541,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 160,
+            "old": {
+              "L": 160,
+              "recall": 0.841867,
+              "qps": 64209
+            },
+            "new": {
+              "L": 160,
+              "recall": 0.841867,
+              "qps": 64308
+            },
+            "ratio": 1.001541839928982,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 180,
+            "old": {
+              "L": 180,
+              "recall": 0.853625,
+              "qps": 58529
+            },
+            "new": {
+              "L": 180,
+              "recall": 0.853625,
+              "qps": 59118
+            },
+            "ratio": 1.0100633873806146,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 200,
+            "old": {
+              "L": 200,
+              "recall": 0.863577,
+              "qps": 53593
+            },
+            "new": {
+              "L": 200,
+              "recall": 0.863577,
+              "qps": 55954
+            },
+            "ratio": 1.0440542608176442,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 224,
+            "old": {
+              "L": 224,
+              "recall": 0.8736,
+              "qps": 49119
+            },
+            "new": {
+              "L": 224,
+              "recall": 0.8736,
+              "qps": 50881
+            },
+            "ratio": 1.0358720657993852,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 256,
+            "old": {
+              "L": 256,
+              "recall": 0.885338,
+              "qps": 43781
+            },
+            "new": {
+              "L": 256,
+              "recall": 0.885338,
+              "qps": 45622
+            },
+            "ratio": 1.0420502044265778,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 288,
+            "old": {
+              "L": 288,
+              "recall": 0.894747,
+              "qps": 39902
+            },
+            "new": {
+              "L": 288,
+              "recall": 0.894747,
+              "qps": 39881
+            },
+            "ratio": 0.9994737105909478,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 320,
+            "old": {
+              "L": 320,
+              "recall": 0.902462,
+              "qps": 36562
+            },
+            "new": {
+              "L": 320,
+              "recall": 0.902462,
+              "qps": 37778
+            },
+            "ratio": 1.0332585744762322,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 384,
+            "old": {
+              "L": 384,
+              "recall": 0.915317,
+              "qps": 31429
+            },
+            "new": {
+              "L": 384,
+              "recall": 0.915317,
+              "qps": 32881
+            },
+            "ratio": 1.0461993700085908,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 448,
+            "old": {
+              "L": 448,
+              "recall": 0.924929,
+              "qps": 27183
+            },
+            "new": {
+              "L": 448,
+              "recall": 0.924929,
+              "qps": 28725
+            },
+            "ratio": 1.0567266306147225,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 512,
+            "old": {
+              "L": 512,
+              "recall": 0.932716,
+              "qps": 22098
+            },
+            "new": {
+              "L": 512,
+              "recall": 0.932716,
+              "qps": 25057
+            },
+            "ratio": 1.1339035206806045,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 640,
+            "old": {
+              "L": 640,
+              "recall": 0.944048,
+              "qps": 19581
+            },
+            "new": {
+              "L": 640,
+              "recall": 0.944048,
+              "qps": 20301
+            },
+            "ratio": 1.0367703385935345,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 768,
+            "old": {
+              "L": 768,
+              "recall": 0.95194,
+              "qps": 16142
+            },
+            "new": {
+              "L": 768,
+              "recall": 0.95194,
+              "qps": 17029
+            },
+            "ratio": 1.0549498203444432,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 1024,
+            "old": {
+              "L": 1024,
+              "recall": 0.963187,
+              "qps": 12211
+            },
+            "new": {
+              "L": 1024,
+              "recall": 0.963187,
+              "qps": 12781
+            },
+            "ratio": 1.0466792236508067,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 1536,
+            "old": {
+              "L": 1536,
+              "recall": 0.975535,
+              "qps": 7578
+            },
+            "new": {
+              "L": 1536,
+              "recall": 0.975535,
+              "qps": 7915
+            },
+            "ratio": 1.0444708366323567,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 2048,
+            "old": {
+              "L": 2048,
+              "recall": 0.982086,
+              "qps": 5618
+            },
+            "new": {
+              "L": 2048,
+              "recall": 0.982086,
+              "qps": 5765
+            },
+            "ratio": 1.0261658953364186,
+            "recall_delta": 0.0
+          }
+        ],
+        "geomean_qps_ratio": 1.0336779968440868,
+        "max_abs_recall_delta": 0.0
+      }
+    },
+    "gist": {
+      "same_recall": [
+        {
+          "recall": 0.8,
+          "orion": null,
+          "parlay": {
+            "qps": 24144.406525792416,
+            "bracket": [
+              {
+                "L": 140,
+                "limit": 1000000,
+                "recall": 0.79805,
+                "qps": 24459.4,
+                "measurements": 3,
+                "min_qps": 24448.1,
+                "max_qps": 24576.7
+              },
+              {
+                "L": 160,
+                "limit": 1000000,
+                "recall": 0.81414,
+                "qps": 21860.3,
+                "measurements": 3,
+                "min_qps": 21257.1,
+                "max_qps": 22166.1
+              }
+            ]
+          },
+          "ratio": null
+        },
+        {
+          "recall": 0.9,
+          "orion": {
+            "qps": 31496.253246753244,
+            "bracket": [
+              {
+                "L": 144,
+                "recall": 0.89531,
+                "qps": 32781
+              },
+              {
+                "L": 160,
+                "recall": 0.90609,
+                "qps": 29828
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 10931.541180193597,
+            "bracket": [
+              {
+                "L": 375,
+                "limit": 1000000,
+                "recall": 0.89451,
+                "qps": 11401.3,
+                "measurements": 3,
+                "min_qps": 11379.2,
+                "max_qps": 11517.8
+              },
+              {
+                "L": 500,
+                "limit": 1000000,
+                "recall": 0.92137,
+                "qps": 9102.99,
+                "measurements": 3,
+                "min_qps": 9090.83,
+                "max_qps": 9186.03
+              }
+            ]
+          },
+          "ratio": 2.8812271506436797
+        },
+        {
+          "recall": 0.95,
+          "orion": {
+            "qps": 17847.178494623673,
+            "bracket": [
+              {
+                "L": 288,
+                "recall": 0.94797,
+                "qps": 18626
+              },
+              {
+                "L": 320,
+                "recall": 0.95262,
+                "qps": 16842
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 6117.35650349651,
+            "bracket": [
+              {
+                "L": 750,
+                "limit": 1000000,
+                "recall": 0.94815,
+                "qps": 6258.06,
+                "measurements": 3,
+                "min_qps": 3801.82,
+                "max_qps": 6660.85
+              },
+              {
+                "L": 1000,
+                "limit": 1000000,
+                "recall": 0.96388,
+                "qps": 5061.7,
+                "measurements": 6,
+                "min_qps": 4995.23,
+                "max_qps": 5137.95
+              }
+            ]
+          },
+          "ratio": 2.917465817861477
+        },
+        {
+          "recall": 0.97,
+          "orion": {
+            "qps": 11078.233576642353,
+            "bracket": [
+              {
+                "L": 448,
+                "recall": 0.9669,
+                "qps": 12144
+              },
+              {
+                "L": 512,
+                "recall": 0.97101,
+                "qps": 10731
+              }
+            ]
+          },
+          "parlay": null,
+          "ratio": null
+        },
+        {
+          "recall": 0.98,
+          "orion": {
+            "qps": 7682.377934272305,
+            "bracket": [
+              {
+                "L": 640,
+                "recall": 0.97755,
+                "qps": 8893
+              },
+              {
+                "L": 768,
+                "recall": 0.98181,
+                "qps": 6788
+              }
+            ]
+          },
+          "parlay": null,
+          "ratio": null
+        },
+        {
+          "recall": 0.99,
+          "orion": {
+            "qps": 3755.742187500009,
+            "bracket": [
+              {
+                "L": 1024,
+                "recall": 0.98724,
+                "qps": 4884
+              },
+              {
+                "L": 1536,
+                "recall": 0.99236,
+                "qps": 2791
+              }
+            ]
+          },
+          "parlay": null,
+          "ratio": null
+        }
+      ],
+      "historical": {
+        "directory": "visualizations/larger_result_sets/20261009_ee_enabled_k10_k100",
+        "config_differences": {},
+        "pairs": [
+          {
+            "L": 100,
+            "old": {
+              "L": 100,
+              "recall": 0.85121,
+              "qps": 33520
+            },
+            "new": {
+              "L": 100,
+              "recall": 0.85121,
+              "qps": 43659
+            },
+            "ratio": 1.3024761336515513,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 112,
+            "old": {
+              "L": 112,
+              "recall": 0.8686,
+              "qps": 34615
+            },
+            "new": {
+              "L": 112,
+              "recall": 0.8686,
+              "qps": 39531
+            },
+            "ratio": 1.1420193557706197,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 128,
+            "old": {
+              "L": 128,
+              "recall": 0.88297,
+              "qps": 31421
+            },
+            "new": {
+              "L": 128,
+              "recall": 0.88297,
+              "qps": 35735
+            },
+            "ratio": 1.137296712389803,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 144,
+            "old": {
+              "L": 144,
+              "recall": 0.89531,
+              "qps": 28345
+            },
+            "new": {
+              "L": 144,
+              "recall": 0.89531,
+              "qps": 32781
+            },
+            "ratio": 1.1565002645969307,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 160,
+            "old": {
+              "L": 160,
+              "recall": 0.90609,
+              "qps": 26095
+            },
+            "new": {
+              "L": 160,
+              "recall": 0.90609,
+              "qps": 29828
+            },
+            "ratio": 1.143054224947308,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 180,
+            "old": {
+              "L": 180,
+              "recall": 0.91637,
+              "qps": 23293
+            },
+            "new": {
+              "L": 180,
+              "recall": 0.91637,
+              "qps": 26622
+            },
+            "ratio": 1.1429184733610955,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 200,
+            "old": {
+              "L": 200,
+              "recall": 0.92506,
+              "qps": 21487
+            },
+            "new": {
+              "L": 200,
+              "recall": 0.92506,
+              "qps": 24861
+            },
+            "ratio": 1.1570251780146135,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 224,
+            "old": {
+              "L": 224,
+              "recall": 0.9342,
+              "qps": 20057
+            },
+            "new": {
+              "L": 224,
+              "recall": 0.9342,
+              "qps": 22912
+            },
+            "ratio": 1.1423443186917286,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 256,
+            "old": {
+              "L": 256,
+              "recall": 0.94274,
+              "qps": 18258
+            },
+            "new": {
+              "L": 256,
+              "recall": 0.94274,
+              "qps": 20631
+            },
+            "ratio": 1.1299704239237593,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 288,
+            "old": {
+              "L": 288,
+              "recall": 0.94797,
+              "qps": 16774
+            },
+            "new": {
+              "L": 288,
+              "recall": 0.94797,
+              "qps": 18626
+            },
+            "ratio": 1.110408966257303,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 320,
+            "old": {
+              "L": 320,
+              "recall": 0.95262,
+              "qps": 15630
+            },
+            "new": {
+              "L": 320,
+              "recall": 0.95262,
+              "qps": 16842
+            },
+            "ratio": 1.0775431861804223,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 384,
+            "old": {
+              "L": 384,
+              "recall": 0.96118,
+              "qps": 13221
+            },
+            "new": {
+              "L": 384,
+              "recall": 0.96118,
+              "qps": 14335
+            },
+            "ratio": 1.084259889569624,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 448,
+            "old": {
+              "L": 448,
+              "recall": 0.9669,
+              "qps": 11628
+            },
+            "new": {
+              "L": 448,
+              "recall": 0.9669,
+              "qps": 12144
+            },
+            "ratio": 1.04437564499484,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 512,
+            "old": {
+              "L": 512,
+              "recall": 0.97101,
+              "qps": 10365
+            },
+            "new": {
+              "L": 512,
+              "recall": 0.97101,
+              "qps": 10731
+            },
+            "ratio": 1.0353111432706223,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 640,
+            "old": {
+              "L": 640,
+              "recall": 0.97755,
+              "qps": 8274
+            },
+            "new": {
+              "L": 640,
+              "recall": 0.97755,
+              "qps": 8893
+            },
+            "ratio": 1.0748126661832245,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 768,
+            "old": {
+              "L": 768,
+              "recall": 0.98181,
+              "qps": 6596
+            },
+            "new": {
+              "L": 768,
+              "recall": 0.98181,
+              "qps": 6788
+            },
+            "ratio": 1.0291085506367494,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 1024,
+            "old": {
+              "L": 1024,
+              "recall": 0.98724,
+              "qps": 4736
+            },
+            "new": {
+              "L": 1024,
+              "recall": 0.98724,
+              "qps": 4884
+            },
+            "ratio": 1.03125,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 1536,
+            "old": {
+              "L": 1536,
+              "recall": 0.99236,
+              "qps": 2777
+            },
+            "new": {
+              "L": 1536,
+              "recall": 0.99236,
+              "qps": 2791
+            },
+            "ratio": 1.0050414115952466,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 2048,
+            "old": {
+              "L": 2048,
+              "recall": 0.99495,
+              "qps": 1847
+            },
+            "new": {
+              "L": 2048,
+              "recall": 0.99495,
+              "qps": 1619
+            },
+            "ratio": 0.8765565782349757,
+            "recall_delta": 0.0
+          }
+        ],
+        "geomean_qps_ratio": 1.0926118540523255,
+        "max_abs_recall_delta": 0.0
+      }
+    },
+    "deep10m": {
+      "same_recall": [
+        {
+          "recall": 0.8,
+          "orion": null,
+          "parlay": {
+            "qps": 103864.6558797273,
+            "bracket": [
+              {
+                "L": 100,
+                "limit": 35,
+                "recall": 0.732216,
+                "qps": 121057.0,
+                "measurements": 3,
+                "min_qps": 120922.0,
+                "max_qps": 121193.0
+              },
+              {
+                "L": 100,
+                "limit": 10000000,
+                "recall": 0.929368,
+                "qps": 71052.5,
+                "measurements": 3,
+                "min_qps": 39022.9,
+                "max_qps": 71086.3
+              }
+            ]
+          },
+          "ratio": null
+        },
+        {
+          "recall": 0.9,
+          "orion": null,
+          "parlay": {
+            "qps": 78501.23070524263,
+            "bracket": [
+              {
+                "L": 100,
+                "limit": 35,
+                "recall": 0.732216,
+                "qps": 121057.0,
+                "measurements": 3,
+                "min_qps": 120922.0,
+                "max_qps": 121193.0
+              },
+              {
+                "L": 100,
+                "limit": 10000000,
+                "recall": 0.929368,
+                "qps": 71052.5,
+                "measurements": 3,
+                "min_qps": 39022.9,
+                "max_qps": 71086.3
+              }
+            ]
+          },
+          "ratio": null
+        },
+        {
+          "recall": 0.95,
+          "orion": {
+            "qps": 68808.28183780449,
+            "bracket": [
+              {
+                "L": 160,
+                "recall": 0.943977,
+                "qps": 74913
+              },
+              {
+                "L": 180,
+                "recall": 0.950463,
+                "qps": 68339
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 61940.13511205077,
+            "bracket": [
+              {
+                "L": 100,
+                "limit": 10000000,
+                "recall": 0.929368,
+                "qps": 71052.5,
+                "measurements": 3,
+                "min_qps": 39022.9,
+                "max_qps": 71086.3
+              },
+              {
+                "L": 120,
+                "limit": 10000000,
+                "recall": 0.953018,
+                "qps": 60607.2,
+                "measurements": 3,
+                "min_qps": 60485.8,
+                "max_qps": 60713.1
+              }
+            ]
+          },
+          "ratio": 1.110883625186305
+        },
+        {
+          "recall": 0.97,
+          "orion": {
+            "qps": 51213.584850264226,
+            "bracket": [
+              {
+                "L": 288,
+                "recall": 0.969899,
+                "qps": 51315
+              },
+              {
+                "L": 320,
+                "recall": 0.973305,
+                "qps": 47895
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 45649.072943221356,
+            "bracket": [
+              {
+                "L": 160,
+                "limit": 10000000,
+                "recall": 0.969237,
+                "qps": 46262.7,
+                "measurements": 3,
+                "min_qps": 45781.5,
+                "max_qps": 46852.9
+              },
+              {
+                "L": 180,
+                "limit": 10000000,
+                "recall": 0.974415,
+                "qps": 42098.4,
+                "measurements": 3,
+                "min_qps": 40993.9,
+                "max_qps": 42104.4
+              }
+            ]
+          },
+          "ratio": 1.121897588456266
+        },
+        {
+          "recall": 0.98,
+          "orion": {
+            "qps": 39272.04232062782,
+            "bracket": [
+              {
+                "L": 384,
+                "recall": 0.978425,
+                "qps": 41454
+              },
+              {
+                "L": 448,
+                "recall": 0.981993,
+                "qps": 36511
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 36227.60438596496,
+            "bracket": [
+              {
+                "L": 200,
+                "limit": 10000000,
+                "recall": 0.978249,
+                "qps": 37799.8,
+                "measurements": 3,
+                "min_qps": 37730.4,
+                "max_qps": 37988.9
+              },
+              {
+                "L": 225,
+                "limit": 10000000,
+                "recall": 0.982125,
+                "qps": 34319.6,
+                "measurements": 3,
+                "min_qps": 34235.9,
+                "max_qps": 34423.2
+              }
+            ]
+          },
+          "ratio": 1.0840364132893732
+        },
+        {
+          "recall": 0.99,
+          "orion": {
+            "qps": 24030.257928118397,
+            "bracket": [
+              {
+                "L": 640,
+                "recall": 0.988561,
+                "qps": 26458
+              },
+              {
+                "L": 768,
+                "recall": 0.990926,
+                "qps": 22468
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 25429.76761931985,
+            "bracket": [
+              {
+                "L": 300,
+                "limit": 10000000,
+                "recall": 0.988827,
+                "qps": 27071.8,
+                "measurements": 3,
+                "min_qps": 27048.0,
+                "max_qps": 27097.2
+              },
+              {
+                "L": 375,
+                "limit": 10000000,
+                "recall": 0.992326,
+                "qps": 22173.7,
+                "measurements": 3,
+                "min_qps": 22156.4,
+                "max_qps": 22207.5
+              }
+            ]
+          },
+          "ratio": 0.944965690911851
+        }
+      ],
+      "historical": {
+        "directory": "visualizations/larger_result_sets/20261009_ee_enabled_k10_k100",
+        "config_differences": {},
+        "pairs": [
+          {
+            "L": 100,
+            "old": {
+              "L": 100,
+              "recall": 0.904346,
+              "qps": 90945
+            },
+            "new": {
+              "L": 100,
+              "recall": 0.904346,
+              "qps": 100871
+            },
+            "ratio": 1.109142888559019,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 112,
+            "old": {
+              "L": 112,
+              "recall": 0.91932,
+              "qps": 81351
+            },
+            "new": {
+              "L": 112,
+              "recall": 0.91932,
+              "qps": 96905
+            },
+            "ratio": 1.1911961746014186,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 128,
+            "old": {
+              "L": 128,
+              "recall": 0.929687,
+              "qps": 67144
+            },
+            "new": {
+              "L": 128,
+              "recall": 0.929687,
+              "qps": 88247
+            },
+            "ratio": 1.3142946503038246,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 144,
+            "old": {
+              "L": 144,
+              "recall": 0.937425,
+              "qps": 77325
+            },
+            "new": {
+              "L": 144,
+              "recall": 0.937425,
+              "qps": 79742
+            },
+            "ratio": 1.0312576786291627,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 160,
+            "old": {
+              "L": 160,
+              "recall": 0.943977,
+              "qps": 71975
+            },
+            "new": {
+              "L": 160,
+              "recall": 0.943977,
+              "qps": 74913
+            },
+            "ratio": 1.0408197290725947,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 180,
+            "old": {
+              "L": 180,
+              "recall": 0.950463,
+              "qps": 65997
+            },
+            "new": {
+              "L": 180,
+              "recall": 0.950463,
+              "qps": 68339
+            },
+            "ratio": 1.0354864615058261,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 200,
+            "old": {
+              "L": 200,
+              "recall": 0.95554,
+              "qps": 59424
+            },
+            "new": {
+              "L": 200,
+              "recall": 0.95554,
+              "qps": 65098
+            },
+            "ratio": 1.0954833064081853,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 224,
+            "old": {
+              "L": 224,
+              "recall": 0.96055,
+              "qps": 57198
+            },
+            "new": {
+              "L": 224,
+              "recall": 0.96055,
+              "qps": 60444
+            },
+            "ratio": 1.0567502360222385,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 256,
+            "old": {
+              "L": 256,
+              "recall": 0.965729,
+              "qps": 52582
+            },
+            "new": {
+              "L": 256,
+              "recall": 0.965729,
+              "qps": 55302
+            },
+            "ratio": 1.0517287284622114,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 288,
+            "old": {
+              "L": 288,
+              "recall": 0.969899,
+              "qps": 48432
+            },
+            "new": {
+              "L": 288,
+              "recall": 0.969899,
+              "qps": 51315
+            },
+            "ratio": 1.0595267591674926,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 320,
+            "old": {
+              "L": 320,
+              "recall": 0.973305,
+              "qps": 45127
+            },
+            "new": {
+              "L": 320,
+              "recall": 0.973305,
+              "qps": 47895
+            },
+            "ratio": 1.0613380016398166,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 384,
+            "old": {
+              "L": 384,
+              "recall": 0.978425,
+              "qps": 38577
+            },
+            "new": {
+              "L": 384,
+              "recall": 0.978425,
+              "qps": 41454
+            },
+            "ratio": 1.0745781164942843,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 448,
+            "old": {
+              "L": 448,
+              "recall": 0.981993,
+              "qps": 33516
+            },
+            "new": {
+              "L": 448,
+              "recall": 0.981993,
+              "qps": 36511
+            },
+            "ratio": 1.089360305525719,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 512,
+            "old": {
+              "L": 512,
+              "recall": 0.984869,
+              "qps": 27549
+            },
+            "new": {
+              "L": 512,
+              "recall": 0.984869,
+              "qps": 32475
+            },
+            "ratio": 1.1788086681912229,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 640,
+            "old": {
+              "L": 640,
+              "recall": 0.988561,
+              "qps": 25659
+            },
+            "new": {
+              "L": 640,
+              "recall": 0.988561,
+              "qps": 26458
+            },
+            "ratio": 1.03113917144082,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 768,
+            "old": {
+              "L": 768,
+              "recall": 0.990926,
+              "qps": 21144
+            },
+            "new": {
+              "L": 768,
+              "recall": 0.990926,
+              "qps": 22468
+            },
+            "ratio": 1.062618236852062,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 1024,
+            "old": {
+              "L": 1024,
+              "recall": 0.993842,
+              "qps": 16370
+            },
+            "new": {
+              "L": 1024,
+              "recall": 0.993842,
+              "qps": 16717
+            },
+            "ratio": 1.0211973121563835,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 1536,
+            "old": {
+              "L": 1536,
+              "recall": 0.996539,
+              "qps": 10544
+            },
+            "new": {
+              "L": 1536,
+              "recall": 0.996539,
+              "qps": 10793
+            },
+            "ratio": 1.0236153262518968,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 2048,
+            "old": {
+              "L": 2048,
+              "recall": 0.997607,
+              "qps": 7831
+            },
+            "new": {
+              "L": 2048,
+              "recall": 0.997607,
+              "qps": 7880
+            },
+            "ratio": 1.0062571829906781,
+            "recall_delta": 0.0
+          }
+        ],
+        "geomean_qps_ratio": 1.078489304782398,
+        "max_abs_recall_delta": 0.0
+      }
+    },
+    "msmarco_bert_1M": {
+      "same_recall": [
+        {
+          "recall": 0.8,
+          "orion": {
+            "qps": 61724.982521780956,
+            "bracket": [
+              {
+                "L": 100,
+                "recall": 0.799018,
+                "qps": 61863
+              },
+              {
+                "L": 112,
+                "recall": 0.836436,
+                "qps": 56604
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 31014.491386195088,
+            "bracket": [
+              {
+                "L": 120,
+                "limit": 1000000,
+                "recall": 0.783105,
+                "qps": 33877.1,
+                "measurements": 3,
+                "min_qps": 33853.9,
+                "max_qps": 33943.4
+              },
+              {
+                "L": 140,
+                "limit": 1000000,
+                "recall": 0.8094,
+                "qps": 29421.8,
+                "measurements": 3,
+                "min_qps": 29389.4,
+                "max_qps": 29425.9
+              }
+            ]
+          },
+          "ratio": 1.9901981223285663
+        },
+        {
+          "recall": 0.9,
+          "orion": {
+            "qps": 44611.81623611205,
+            "bracket": [
+              {
+                "L": 144,
+                "recall": 0.892822,
+                "qps": 46472
+              },
+              {
+                "L": 160,
+                "recall": 0.907493,
+                "qps": 42670
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 16629.870800276873,
+            "bracket": [
+              {
+                "L": 300,
+                "limit": 1000000,
+                "recall": 0.894744,
+                "qps": 17255.1,
+                "measurements": 3,
+                "min_qps": 17198.0,
+                "max_qps": 17319.4
+              },
+              {
+                "L": 375,
+                "limit": 1000000,
+                "recall": 0.913525,
+                "qps": 15021.0,
+                "measurements": 3,
+                "min_qps": 14979.2,
+                "max_qps": 15053.9
+              }
+            ]
+          },
+          "ratio": 2.6826315593124934
+        },
+        {
+          "recall": 0.95,
+          "orion": {
+            "qps": 25835.631565720065,
+            "bracket": [
+              {
+                "L": 288,
+                "recall": 0.946997,
+                "qps": 27256
+              },
+              {
+                "L": 320,
+                "recall": 0.950976,
+                "qps": 25374
+              }
+            ]
+          },
+          "parlay": {
+            "qps": 9730.228478508197,
+            "bracket": [
+              {
+                "L": 500,
+                "limit": 1000000,
+                "recall": 0.934021,
+                "qps": 12307.6,
+                "measurements": 3,
+                "min_qps": 12294.6,
+                "max_qps": 12316.0
+              },
+              {
+                "L": 750,
+                "limit": 1000000,
+                "recall": 0.954238,
+                "qps": 9046.65,
+                "measurements": 3,
+                "min_qps": 9034.84,
+                "max_qps": 9058.19
+              }
+            ]
+          },
+          "ratio": 2.65519269385965
+        },
+        {
+          "recall": 0.97,
+          "orion": {
+            "qps": 14052.371900826476,
+            "bracket": [
+              {
+                "L": 640,
+                "recall": 0.969623,
+                "qps": 14351
+              },
+              {
+                "L": 768,
+                "recall": 0.972769,
+                "qps": 11859
+              }
+            ]
+          },
+          "parlay": null,
+          "ratio": null
+        },
+        {
+          "recall": 0.98,
+          "orion": {
+            "qps": 6680.571711177066,
+            "bracket": [
+              {
+                "L": 1024,
+                "recall": 0.976686,
+                "qps": 9121
+              },
+              {
+                "L": 1536,
+                "recall": 0.98073,
+                "qps": 6143
+              }
+            ]
+          },
+          "parlay": null,
+          "ratio": null
+        },
+        {
+          "recall": 0.99,
+          "orion": null,
+          "parlay": null,
+          "ratio": null
+        }
+      ],
+      "historical": {
+        "directory": "visualizations/larger_result_sets/20261009_ee_enabled_k10_k100",
+        "config_differences": {},
+        "pairs": [
+          {
+            "L": 100,
+            "old": {
+              "L": 100,
+              "recall": 0.799018,
+              "qps": 51288
+            },
+            "new": {
+              "L": 100,
+              "recall": 0.799018,
+              "qps": 61863
+            },
+            "ratio": 1.2061885821244736,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 112,
+            "old": {
+              "L": 112,
+              "recall": 0.836436,
+              "qps": 46893
+            },
+            "new": {
+              "L": 112,
+              "recall": 0.836436,
+              "qps": 56604
+            },
+            "ratio": 1.2070884780244386,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 128,
+            "old": {
+              "L": 128,
+              "recall": 0.870546,
+              "qps": 42103
+            },
+            "new": {
+              "L": 128,
+              "recall": 0.870546,
+              "qps": 51144
+            },
+            "ratio": 1.214735292021946,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 144,
+            "old": {
+              "L": 144,
+              "recall": 0.892822,
+              "qps": 38305
+            },
+            "new": {
+              "L": 144,
+              "recall": 0.892822,
+              "qps": 46472
+            },
+            "ratio": 1.2132097637384154,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 160,
+            "old": {
+              "L": 160,
+              "recall": 0.907493,
+              "qps": 33847
+            },
+            "new": {
+              "L": 160,
+              "recall": 0.907493,
+              "qps": 42670
+            },
+            "ratio": 1.2606730286288297,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 180,
+            "old": {
+              "L": 180,
+              "recall": 0.920393,
+              "qps": 27831
+            },
+            "new": {
+              "L": 180,
+              "recall": 0.920393,
+              "qps": 38240
+            },
+            "ratio": 1.3740074018181165,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 200,
+            "old": {
+              "L": 200,
+              "recall": 0.929378,
+              "qps": 28450
+            },
+            "new": {
+              "L": 200,
+              "recall": 0.929378,
+              "qps": 35187
+            },
+            "ratio": 1.2368014059753953,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 224,
+            "old": {
+              "L": 224,
+              "recall": 0.935554,
+              "qps": 26724
+            },
+            "new": {
+              "L": 224,
+              "recall": 0.935554,
+              "qps": 32631
+            },
+            "ratio": 1.22103726986978,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 256,
+            "old": {
+              "L": 256,
+              "recall": 0.94194,
+              "qps": 24762
+            },
+            "new": {
+              "L": 256,
+              "recall": 0.94194,
+              "qps": 29623
+            },
+            "ratio": 1.1963088603505372,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 288,
+            "old": {
+              "L": 288,
+              "recall": 0.946997,
+              "qps": 23008
+            },
+            "new": {
+              "L": 288,
+              "recall": 0.946997,
+              "qps": 27256
+            },
+            "ratio": 1.1846314325452016,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 320,
+            "old": {
+              "L": 320,
+              "recall": 0.950976,
+              "qps": 21457
+            },
+            "new": {
+              "L": 320,
+              "recall": 0.950976,
+              "qps": 25374
+            },
+            "ratio": 1.1825511488092464,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 384,
+            "old": {
+              "L": 384,
+              "recall": 0.957019,
+              "qps": 17283
+            },
+            "new": {
+              "L": 384,
+              "recall": 0.957019,
+              "qps": 21455
+            },
+            "ratio": 1.2413932766302147,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 448,
+            "old": {
+              "L": 448,
+              "recall": 0.961475,
+              "qps": 16328
+            },
+            "new": {
+              "L": 448,
+              "recall": 0.961475,
+              "qps": 19158
+            },
+            "ratio": 1.1733219010289073,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 512,
+            "old": {
+              "L": 512,
+              "recall": 0.964965,
+              "qps": 14698
+            },
+            "new": {
+              "L": 512,
+              "recall": 0.964965,
+              "qps": 17211
+            },
+            "ratio": 1.1709756429446183,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 640,
+            "old": {
+              "L": 640,
+              "recall": 0.969623,
+              "qps": 12399
+            },
+            "new": {
+              "L": 640,
+              "recall": 0.969623,
+              "qps": 14351
+            },
+            "ratio": 1.1574320509718525,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 768,
+            "old": {
+              "L": 768,
+              "recall": 0.972769,
+              "qps": 10307
+            },
+            "new": {
+              "L": 768,
+              "recall": 0.972769,
+              "qps": 11859
+            },
+            "ratio": 1.1505772775783447,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 1024,
+            "old": {
+              "L": 1024,
+              "recall": 0.976686,
+              "qps": 8246
+            },
+            "new": {
+              "L": 1024,
+              "recall": 0.976686,
+              "qps": 9121
+            },
+            "ratio": 1.1061120543293719,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 1536,
+            "old": {
+              "L": 1536,
+              "recall": 0.98073,
+              "qps": 5652
+            },
+            "new": {
+              "L": 1536,
+              "recall": 0.98073,
+              "qps": 6143
+            },
+            "ratio": 1.0868719037508847,
+            "recall_delta": 0.0
+          },
+          {
+            "L": 2048,
+            "old": {
+              "L": 2048,
+              "recall": 0.982845,
+              "qps": 4351
+            },
+            "new": {
+              "L": 2048,
+              "recall": 0.982845,
+              "qps": 4683
+            },
+            "ratio": 1.0763042978625603,
+            "recall_delta": 0.0
+          }
+        ],
+        "geomean_qps_ratio": 1.1909009338459084,
+        "max_abs_recall_delta": 0.0
+      }
+    }
+  }
+}

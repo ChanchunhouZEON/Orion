@@ -219,14 +219,8 @@ fn resolve_graph_layout(
 
     // Only a genuinely absent export permits configuration-based planning.
     // Permission errors and existing malformed exports remain errors.
-    let export_missing = match config.staged_file.as_deref() {
-        Some(path) => match std::fs::metadata(path) {
-            Ok(_) => false,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-            Err(error) => return Err(format!("{}: {error}", path.display())),
-        },
-        None => true,
-    };
+    let export_missing = config.graph_source != GraphSource::Parlayann
+        || CachePlan::available_staged_export(config)?.is_none();
     if config.graph_source == GraphSource::Parlayann && !(offline && export_missing) {
         let staged_path = CachePlan::resolve_staged_export(config, num_points)?;
         let mut header = [0; 24];
@@ -443,6 +437,10 @@ fn calculate_memory(
         "node_reader_bytes": node_reader_bytes,
         "resident_lower_bound_bytes": resident_lower_bound,
         "resident_lower_bound_gib": resident_lower_bound as f64 / BYTES_PER_GIB,
+        "graph_source_policy": config.graph_source_policy,
+        "graph_source": config.graph_source,
+        "graph_selection_reason": config.graph_selection_reason,
+        "graph_action": if cache.is_hit { "load cache" } else if config.graph_source == GraphSource::Rust { "build Rust graph" } else if staged_source.is_some() { "import PA staged export" } else { "PA input required" },
         "cache_hit": cache.is_hit,
         "cache_path": cache.metadata_path,
         "staged_source": staged_source,
@@ -534,6 +532,14 @@ pub fn format_report(report: &serde_json::Value) -> String {
         value("dimension"),
         value("vector_storage")
     );
+    text.push_str(&format!(
+        "Graph: {} → {} | {}\n{}\nCache: {}\n\n",
+        value("graph_source_policy"),
+        value("graph_source"),
+        value("graph_action"),
+        value("graph_selection_reason"),
+        value("cache_path")
+    ));
     let mut table = Table::new();
     let width = table.width().unwrap_or(112).min(112);
     table

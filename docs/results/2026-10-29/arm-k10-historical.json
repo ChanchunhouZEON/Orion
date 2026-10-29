@@ -1,0 +1,223 @@
+{
+  "study": "seven-datasets-near32-20261022",
+  "platform": "local AArch64 / macOS",
+  "protocol": "k10,8threads,3trials/L median; historical L schedules and calibration; local AArch64. Reuse completed SIFT/Ada; run remaining five serially. No paper outputs updated.",
+  "source": {
+    "file": "parlayann-history-comparison.json",
+    "sha256": "1a2250a3854f993bca184f7e82d8c4913ba7ca3d0d76cf48f15b2c2ccca743ca"
+  },
+  "method": "Piecewise linear interpolation of QPS against reported recall; duplicate recall keeps fastest point; no extrapolation. Historical PA tie-aware recall not corrected to strict ID recall. Some metadata unverified. No paper modifications.",
+  "datasets": {
+    "sift": {
+      "source": "visualizations/sweep_orion_vs_parlayann_sift.json",
+      "historical_metadata": {
+        "dataset": "sift",
+        "num_points": 1000000,
+        "num_runs": 3
+      },
+      "rows": [
+        {
+          "recall": 0.95,
+          "orion_qps": 356916.47058823536,
+          "parlayann_qps": 271079.9096385543,
+          "ratio": 1.3166467078439403
+        },
+        {
+          "recall": 0.97,
+          "orion_qps": 287116.79166666674,
+          "parlayann_qps": 223925.27255400256,
+          "ratio": 1.2821991389892122
+        },
+        {
+          "recall": 0.99,
+          "orion_qps": 170448.04651162834,
+          "parlayann_qps": 145285.3097055616,
+          "ratio": 1.1731953275734628
+        }
+      ],
+      "notes": []
+    },
+    "glove25": {
+      "source": "visualizations/sweep_orion_vs_parlayann_glove25.json",
+      "historical_metadata": {
+        "dataset": "glove25",
+        "num_points": 1000000,
+        "num_runs": 1
+      },
+      "rows": [
+        {
+          "recall": 0.95,
+          "orion_qps": 386004.49926793575,
+          "parlayann_qps": 255800.81389578167,
+          "ratio": 1.509004187239223
+        },
+        {
+          "recall": 0.97,
+          "orion_qps": 289750.54455445556,
+          "parlayann_qps": 201042.06089438635,
+          "ratio": 1.4412434058098447
+        },
+        {
+          "recall": 0.99,
+          "orion_qps": 166808.7407407411,
+          "parlayann_qps": 127679.99296482398,
+          "ratio": 1.3064595076121062
+        }
+      ],
+      "notes": [
+        "Historical JSON num_points=1M conflicts with full dataset size; old collector default may explain it, but raw run provenance not verified. Treat as provisional."
+      ]
+    },
+    "glove100": {
+      "source": "visualizations/sweep_orion_vs_parlayann_glove100.json",
+      "historical_metadata": {
+        "dataset": "glove100",
+        "num_points": 1000000,
+        "num_runs": 1
+      },
+      "rows": [
+        {
+          "recall": 0.95,
+          "orion_qps": 50443.46969696968,
+          "parlayann_qps": 37768.99737609329,
+          "ratio": 1.3355787339194494
+        },
+        {
+          "recall": 0.97,
+          "orion_qps": 31389.48235294133,
+          "parlayann_qps": 24094.511432706222,
+          "ratio": 1.3027648408895651
+        },
+        {
+          "recall": 0.99,
+          "orion_qps": 13691.909090909141,
+          "parlayann_qps": 11425.039772727287,
+          "ratio": 1.1984123787116345
+        }
+      ],
+      "notes": [
+        "Historical JSON num_points=1M conflicts with full dataset size; old collector default may explain it, but raw run provenance not verified. Treat as provisional."
+      ]
+    },
+    "gist": {
+      "source": "visualizations/sweep_orion_vs_parlayann_gist.json",
+      "historical_metadata": {
+        "dataset": "gist",
+        "num_points": 1000000,
+        "num_runs": 3
+      },
+      "rows": [
+        {
+          "recall": 0.95,
+          "orion_qps": 48327.24324324324,
+          "parlayann_qps": 33206.52480000006,
+          "ratio": 1.4553538358594862
+        },
+        {
+          "recall": 0.97,
+          "orion_qps": 34068,
+          "parlayann_qps": 21308.591463414657,
+          "ratio": 1.5987917389327373
+        },
+        {
+          "recall": 0.99,
+          "orion_qps": 12237,
+          "parlayann_qps": 9645.241271186474,
+          "ratio": 1.2687085429947684
+        }
+      ],
+      "notes": []
+    },
+    "deep10m": {
+      "source": "visualizations/sweep_orion_vs_parlayann_deep10m.json",
+      "historical_metadata": {
+        "dataset": "deep10m",
+        "num_points": 1000000,
+        "num_runs": 1
+      },
+      "rows": [
+        {
+          "recall": 0.95,
+          "orion_qps": 179277.6485148516,
+          "parlayann_qps": 143635.69707811577,
+          "ratio": 1.2481413197539055
+        },
+        {
+          "recall": 0.97,
+          "orion_qps": 126022.14792899416,
+          "parlayann_qps": 107611.10974358975,
+          "ratio": 1.1710886378671617
+        },
+        {
+          "recall": 0.99,
+          "orion_qps": 66324.32000000004,
+          "parlayann_qps": 55278.41986754963,
+          "ratio": 1.1998230079462662
+        }
+      ],
+      "notes": [
+        "Historical JSON num_points=1M conflicts with full dataset size; old collector default may explain it, but raw run provenance not verified. Treat as provisional."
+      ]
+    },
+    "msmarco_bert_1M": {
+      "source": "visualizations/sweep_orion_vs_parlayann_msmarco_bert_1M.json",
+      "historical_metadata": {
+        "dataset": "msmarco_bert_1M",
+        "num_points": 1000000,
+        "num_runs": 3
+      },
+      "rows": [
+        {
+          "recall": 0.95,
+          "orion_qps": 59493.676470588325,
+          "parlayann_qps": 41700.77605764766,
+          "ratio": 1.4266803185711352
+        },
+        {
+          "recall": 0.97,
+          "orion_qps": 23833.461538461528,
+          "parlayann_qps": 17432.631723027447,
+          "ratio": 1.3671751871508289
+        },
+        {
+          "recall": 0.99,
+          "orion_qps": null,
+          "parlayann_qps": 7957.028363998015,
+          "ratio": null
+        }
+      ],
+      "notes": []
+    },
+    "wiki_ada_1M": {
+      "source": "visualizations/wiki_ada_revision/20261009_mips_recipe/three_engine.json",
+      "historical_metadata": {
+        "dataset": "wiki_ada_1M",
+        "num_points": 1000000,
+        "num_runs": 3,
+        "k": 10,
+        "threads": 8
+      },
+      "rows": [
+        {
+          "recall": 0.99,
+          "orion_qps": 134356.78421052633,
+          "parlayann_qps": 117537.1203703704,
+          "ratio": 1.1431008670891
+        },
+        {
+          "recall": 0.995,
+          "orion_qps": 112499.32876712365,
+          "parlayann_qps": 88177.47427385922,
+          "ratio": 1.2758284323015
+        },
+        {
+          "recall": 0.999,
+          "orion_qps": 45444.59999999858,
+          "parlayann_qps": 33653.699999999655,
+          "ratio": 1.3503596929906383
+        }
+      ],
+      "notes": []
+    }
+  }
+}

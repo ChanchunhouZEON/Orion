@@ -5,9 +5,8 @@
 
 //! Central config loader for `benchmark/configs/sweep.yaml`.
 //!
-//! Every benchmark entry point (`run_qps_recall_sweep`,
-//! `run_orion_parlayann_sweep`, and the secondary profiling utilities)
-//! resolves its per-dataset parameters through [`load_dataset_config`].
+//! The standalone CLI resolves raw presets through `cli::config`; older
+//! benchmark/profiling utilities consume [`load_dataset_config`] metadata.
 //! The YAML file is the single source of truth for:
 //!
 //!   * data file paths (`paths.{base, query, groundtruth}`)
@@ -15,12 +14,12 @@
 //!     window_size}`)
 //!   * dataset objective (`metric`: l2, inner-product, or cosine)
 //!   * base-graph source (`base_graph.{source, staged_file}` —
-//!     `rust` = build in-process; `parlayann` = import a `.staged v2`
-//!     export)
+//!     `auto` = availability-based selection; `rust` = in-process build;
+//!     `parlayann` = STAG v3 import)
 //!
 //! Placeholders in path strings (`${PA_ROOT}`, `${max_extra}`) are
-//! resolved at load time. `${PA_ROOT}` must be set via env (no
-//! repo-baked default — keeps user paths out of committed config);
+//! resolved at load time. `${PA_ROOT}` uses the environment or the portable
+//! sibling-checkout default `../ParlayANN`;
 //! `${max_extra}` resolves from the dataset's `orion.max_extra`.
 //!
 //! Many fields are deserialised by serde from YAML but consumed only
@@ -36,16 +35,12 @@ use std::path::PathBuf;
 
 // ── User-facing enums ──────────────────────────────────────────────────────
 
-/// Where the base graph comes from.
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub enum BaseGraphSource {
-    /// Build in-process via `build_diskann_index`.
-    Rust,
-    /// Import a ParlayANN `.staged v2` export.
-    Parlayann,
-}
+/// Legacy benchmark metadata shares the CLI policy vocabulary. Availability is
+/// resolved by `cli::config`, where cache identity and storage type are known.
+pub use crate::cli::config::GraphSourcePolicy as BaseGraphSource;
 
-/// Fully resolved config for one dataset.
+/// Legacy preset metadata for one dataset. Graph availability is resolved by
+/// the CLI, where cache identity and resident storage are also known.
 #[derive(Clone, Debug)]
 pub struct DatasetConfig {
     pub name: String,
@@ -78,7 +73,7 @@ pub struct OrionConfig {
 #[derive(Clone, Debug)]
 pub struct BaseGraphConfig {
     pub source: BaseGraphSource,
-    /// Only populated when `source == Parlayann`.
+    /// Optional PA candidate export, also used by automatic selection.
     pub staged_file: Option<PathBuf>,
 }
 
@@ -279,8 +274,9 @@ pub fn load_root() -> &'static RawRoot {
     static ROOT: std::sync::OnceLock<RawRoot> = std::sync::OnceLock::new();
     ROOT.get_or_init(|| {
         let text = match std::env::var("ORION_SWEEP_CONFIG") {
-            Ok(path) => std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("Cannot read {path}: {e}")),
+            Ok(path) => {
+                std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("Cannot read {path}: {e}"))
+            }
             Err(_) => DEFAULT_CONFIG.to_owned(),
         };
         serde_yaml::from_str(&text).expect("invalid Orion preset configuration")
@@ -390,47 +386,30 @@ fn resolve_dataset(root: &RawRoot, name: &str) -> DatasetConfig {
     };
 
     let bg_raw = ds.base_graph.as_ref();
-    let mut source = match bg_raw.and_then(|b| b.source.as_deref()).unwrap_or("rust") {
+    let source = match bg_raw.and_then(|b| b.source.as_deref()).unwrap_or("auto") {
+        "auto" => BaseGraphSource::Auto,
         "rust" | "Rust" => BaseGraphSource::Rust,
         "parlayann" | "Parlayann" | "PA" | "pa" => BaseGraphSource::Parlayann,
-        other => panic!("Unknown base_graph.source: {other} (expected rust|parlayann)"),
+        other => panic!("Unknown base_graph.source: {other} (expected auto|rust|parlayann)"),
     };
-    // `staged_file` may reference `${max_extra}` (dataset-context) so
-    // the path stays in sync with whatever `orion.max_extra` is set
-    // at, plus env-var placeholders like `${PA_ROOT}`. Substitute
-    // `${max_extra}` first, then try to resolve env vars — if any
-    // env var is unset (typically `PA_ROOT` on a dev box without a
-    // ParlayANN checkout), fall back to the Rust in-process build
-    // path instead of panicking. Lets every benchmark profile run
-    // out of the box without requiring PA_ROOT.
-    let mut staged_file: Option<PathBuf> = None;
-    if let Some(s) = bg_raw.and_then(|b| b.staged_file.clone()) {
-        let max_extra_subbed = s.replace("${max_extra}", &orion.max_extra.to_string());
-        match try_resolve_placeholders(&max_extra_subbed) {
-            Some(resolved) => staged_file = Some(PathBuf::from(resolved)),
-            None => {
-                if matches!(source, BaseGraphSource::Parlayann) {
-                    eprintln!(
-                        "config: dataset '{name}' has base_graph.source=parlayann but a \
-                         placeholder in staged_file '{s}' isn't resolvable (env var unset) \
-                         — falling back to source=rust (build graph in-process)."
-                    );
-                    source = BaseGraphSource::Rust;
-                }
-                // staged_file stays None.
-            }
-        }
-    }
-    if matches!(source, BaseGraphSource::Parlayann) && staged_file.is_none() {
-        panic!("Dataset '{name}' has base_graph.source=parlayann but no staged_file");
-    }
+    let staged_file = bg_raw
+        .and_then(|b| b.staged_file.as_ref())
+        .and_then(|s| {
+            try_resolve_placeholders(&s.replace("${max_extra}", &orion.max_extra.to_string()))
+        })
+        .map(PathBuf::from);
 
     DatasetConfig {
         name: name.to_string(),
         dimension: ds.dimension,
         base_path: PathBuf::from(paths.base.clone()),
         query_path: PathBuf::from(paths.query.clone()),
-        groundtruth_path: PathBuf::from(paths.groundtruth.clone().expect("this legacy benchmark requires groundtruth")),
+        groundtruth_path: PathBuf::from(
+            paths
+                .groundtruth
+                .clone()
+                .expect("this legacy benchmark requires groundtruth"),
+        ),
         diskann,
         orion,
         base_graph: BaseGraphConfig {
@@ -442,10 +421,9 @@ fn resolve_dataset(root: &RawRoot, name: &str) -> DatasetConfig {
 }
 
 /// Replace `${VAR}` occurrences with the corresponding env var, returning
-/// `None` if any required var is unset. Lets callers (e.g.
-/// `resolve_dataset`) fall back to a Rust in-process build path when
-/// `PA_ROOT` isn't available, instead of forcing every profile invocation
-/// to set it. Unterminated `${...}` is still a malformed-config panic.
+/// `None` if a variable has neither an environment value nor a portable default.
+/// This helper only expands paths; graph fallback is decided by the CLI policy.
+/// Unterminated `${...}` is still a malformed-config panic.
 pub fn try_resolve_placeholders(s: &str) -> Option<String> {
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();

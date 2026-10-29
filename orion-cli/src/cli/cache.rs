@@ -26,6 +26,9 @@ struct CacheManifest {
     num_points: usize,
     dimension: usize,
     imported_from: Option<SourceFileIdentity>,
+    /// Older manifests identify the source through their namespace only.
+    #[serde(default)]
+    graph_source: Option<GraphSource>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -150,6 +153,9 @@ fn validate_manifest(
         || metadata.namespace != config.cache_namespace
         || metadata.num_points != num_points
         || metadata.dimension != config.dimension
+        || metadata
+            .graph_source
+            .is_some_and(|source| source != config.graph_source)
     {
         return Err("cache provenance does not match the current dataset/configuration".into());
     }
@@ -199,7 +205,13 @@ impl CachePlan {
 
         // Either file means a cache was started. Reject incomplete pairs instead
         // of treating them as misses and overwriting the remaining file.
-        if path.exists() || graph.exists() {
+        if path
+            .try_exists()
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            || graph
+                .try_exists()
+                .map_err(|e| format!("{}: {e}", graph.display()))?
+        {
             validate_headers(&path, num_points, config.graph_degree)?;
             validate_manifest(&path, config, num_points)?;
             return Ok(Self {
@@ -211,7 +223,12 @@ impl CachePlan {
 
         if let Some(name) = &config.legacy_dataset {
             let legacy = legacy_cache_path(config, name, num_points);
-            if legacy.is_file() && legacy.with_extension("pgraph").is_file() {
+            if legacy.try_exists().map_err(|e| e.to_string())?
+                || legacy
+                    .with_extension("pgraph")
+                    .try_exists()
+                    .map_err(|e| e.to_string())?
+            {
                 // Old caches carry no export identity. An explicit alternative export must
                 // not be ignored merely because a name-based legacy cache happens to exist.
                 if config.staged_file_explicit && !manifest_path(&legacy).is_file() {
@@ -244,26 +261,40 @@ impl CachePlan {
         })
     }
 
+    /// Locate the default export (including the historical `_pct60` suffix).
+    /// Only NotFound means unavailable; unreadable/non-file inputs are errors.
+    pub fn available_staged_export(config: &ResolvedRunConfig) -> Result<Option<PathBuf>, String> {
+        let Some(path) = &config.staged_file else {
+            return Ok(None);
+        };
+        let mut candidates = vec![path.clone()];
+        if !config.staged_file_explicit {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                candidates.push(
+                    path.with_file_name(format!("{stem}_pct{}.staged", config.legacy_local_pct)),
+                );
+            }
+        }
+        for path in candidates {
+            match std::fs::metadata(&path) {
+                Ok(meta) if meta.is_file() => return Ok(Some(path)),
+                Ok(_) => return Err(format!("{} is not a staged file", path.display())),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("{}: {e}", path.display())),
+            }
+        }
+        Ok(None)
+    }
+
     /// Resolve and validate the STAG header on a cache miss.
     /// Cache hits deliberately skip this IO: the original export may have been removed.
     pub fn resolve_staged_export(
         config: &ResolvedRunConfig,
         num_points: usize,
     ) -> Result<PathBuf, String> {
-        let mut path = config.staged_file.clone().ok_or(
-            "ParlayANN cache miss: provide --staged-file or ORION_STAGED_FILE, or set PA_ROOT for the YAML export path"
-        )?;
-
-        // The prep script appends _pct60; also accept older YAML paths without that suffix.
-        if !config.staged_file_explicit && !path.is_file() {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                let alternate =
-                    path.with_file_name(format!("{stem}_pct{}.staged", config.legacy_local_pct));
-                if alternate.is_file() {
-                    path = alternate;
-                }
-            }
-        }
+        let path = Self::available_staged_export(config)?
+            .or_else(|| config.staged_file.clone())
+            .ok_or("ParlayANN cache miss: provide --staged-file or ORION_STAGED_FILE, or set PA_ROOT for the YAML export path. No Rust graph was substituted.")?;
 
         let mut file = std::fs::File::open(&path).map_err(|e| {
             format!(
@@ -305,6 +336,7 @@ impl CachePlan {
             num_points: num_points,
             dimension: config.dimension,
             imported_from: source.map(SourceFileIdentity::read).transpose()?,
+            graph_source: Some(config.graph_source),
         };
 
         // Publish with a same-directory rename so readers never see partial JSON.

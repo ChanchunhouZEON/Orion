@@ -1,6 +1,6 @@
 # Orion CLI and query inputs
 
-[Back to the README](../README.md#table-of-contents)
+[Back to the README](../README.md#contents)
 
 `orion-cli` is an independent workspace crate. It depends on the Orion engine,
 not on `benchmark`. It supplies the `orion` executable and shared configuration,
@@ -33,10 +33,11 @@ The bundled YAML remains `benchmark/configs/sweep.yaml`, embedded into the CLI
 at compile time. `--config` selects a custom YAML file. Rebuild after changing
 bundled defaults, or pass the edited file with `--config`.
 
-Without a graph-source override, anonymous runs build a Rust graph. A ParlayANN
-request reuses a compatible cache first, or imports its STAG file on a cache
-miss. Missing both is an error; there is no silent switch to Rust. Missing or
-malformed data and incompatible options also produce errors.
+The default graph policy is `auto`: a compatible PA cache, then a PA STAG v3
+export, then a Rust cache/build for f32 storage. Explicit `--graph-source
+parlayann` and explicit staged paths are strict; native u8 never falls back to
+Rust. Existing invalid files and permission errors fail instead of changing the
+source. See [Graph sources](graph-sources.md) for precedence and provenance.
 
 ```bash
 # Preparation alone needs no query or ground-truth inputs.
@@ -125,8 +126,8 @@ Known presets support offline planning before any files have been downloaded:
 ```
 
 YAML `num_points` and `num_queries` describe source-file row counts. `max_points`
-is a separate loading limit: SIFT10M/100M share a declared 1B-row base but load
-only their configured prefixes. An explicit `--base` or `--query` discards the
+is a separate loading limit: SIFT100M loads a prefix of the declared 1B-row
+base; SIFT10M uses a separately prepared 10M-row file. An explicit `--base` or `--query` discards the
 corresponding preset count; a missing custom base needs its own YAML declaration.
 
 Available vector headers must agree with the declared counts and dimensions.
@@ -140,3 +141,7 @@ The report includes `metadata_sources` and per-component `source` labels. Withou
 above the limit fail; a lower estimate is not a guarantee that the run will fit.
 If query count is unknown for a sweep, replay-buffer sizes are `null`, not zero.
 Streaming search still estimates its bounded query batches.
+
+The report also shows `graph_source_policy`, concrete `graph_source`,
+`graph_selection_reason`, `graph_action`, and `cache_path`. Offline `PA input
+required` reports estimate memory but do not indicate that execution can start.

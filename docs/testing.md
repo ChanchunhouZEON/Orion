@@ -1,0 +1,37 @@
+# Testing and CI
+
+[README](../README.md)
+
+Run checks with the pinned toolchain from the repository root:
+
+```bash
+cargo test --locked -p orion-cli
+cargo check --locked -p benchmark --bins
+cargo test --locked -p vector --release
+cargo test --locked -p orion --release --lib
+```
+
+The CLI suite includes real small-data import/build/cache-reload tests, input
+format and stream checks, optional-GT behavior, native-u8 compatibility, offline
+preflight, and budget enforcement. Automatic graph selection tests cover:
+
+- PA cache/export priority over a Rust cache;
+- Rust cache reuse and construction when PA inputs are absent;
+- explicit CLI, environment and YAML source strictness;
+- native-u8 missing-input behavior and offline estimates;
+- malformed exports and incomplete caches without silent fallback;
+- default/custom cache roots, source provenance and older manifests.
+
+These tests use temporary fixtures, not the large experimental datasets.
+SIMD tests need CPUs supporting the compiled feature set. Compilation is a
+separate check from execution.
+
+[The AVX workflow](../.github/workflows/avx512.yml) compiles all x86 variants,
+runs supported variants, and records skipped runtime coverage. It also includes
+Apple Silicon checks. Review the job summaries rather than treating a green
+compile as evidence that an unsupported instruction path executed.
+
+No static coverage percentage is claimed. Coverage needs a fresh instrumented
+run with an explicit package/test scope; historical percentages are not an
+up-to-date guarantee. Benchmark timing regressions require controlled repeated
+experiments in addition to correctness tests.
