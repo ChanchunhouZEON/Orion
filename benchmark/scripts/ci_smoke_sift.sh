@@ -17,10 +17,10 @@
 # successfully but at ~1000× slowdown — also unusable.
 #
 # Real x86_64 runtime validation:
-#   * `.github/workflows/avx512.yml` runs cargo test on GH-hosted
-#     Skylake runners (real x86, with AVX-512F / BW / DQ / VL).
-#   * The numerical-parity job there compares each SIMD impl
-#     against the scalar reference — catches any AVX-512 bug
+#   * `.github/workflows/ci.yml` runs cargo test on GH-hosted
+#     x86 runners after checking their supported CPU features.
+#   * Numerical-parity tests compare each supported SIMD impl
+#     against the scalar reference — catches AVX-512 bugs
 #     that the compile-only path here cannot.
 #
 # So the Colima role is: *did this cross-compile change break the
@@ -97,8 +97,8 @@ phase_sift_smoke_note() {
     printf '  * qemu64 default CPU lacks AVX2/FMA → SIGILL on rustc-emitted prelude\n'
     printf '  * QEMU_CPU=max emulates AVX-512 but at ~1000x slowdown → unusable\n'
     printf '\n'
-    printf 'Real x86_64 runtime validation runs on GH Actions Skylake hosts via\n'
-    printf '.github/workflows/avx512.yml (cargo test + numerical-parity job).\n'
+    printf 'Real x86_64 runtime validation runs on feature-checked GH Actions hosts via\n'
+    printf '.github/workflows/ci.yml (SIMD regressions + Python/CLI parity).\n'
     printf '\n'
     printf 'The cross-compile success of phases 1-5 means: any cfg-gate bug or\n'
     printf 'missing trait impl on the x86_64 path would have shown up here.\n'

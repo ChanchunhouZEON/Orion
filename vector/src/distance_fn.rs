@@ -877,8 +877,11 @@ impl DistanceFn for L2U8Distance {
         for i in 0..32 {
             let a = *base_chunk.add(i) as i32;
             let b = *query_chunk.add(i) as i32;
-            let d = (a - b) as u32;
-            *acc = acc.wrapping_add(d * d);
+            // Keep the signed difference until after squaring: casting a
+            // negative value to u32 first overflows the debug-mode multiply.
+            // u8 differences are in [-255, 255], so the i32 square is safe.
+            let d = a - b;
+            *acc = acc.wrapping_add((d * d) as u32);
         }
     }
     #[inline(always)]

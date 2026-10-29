@@ -26,9 +26,11 @@ These tests use temporary fixtures, not the large experimental datasets.
 SIMD tests need CPUs supporting the compiled feature set. Compilation is a
 separate check from execution.
 
-[The AVX workflow](../.github/workflows/avx512.yml) compiles all x86 variants,
+[The Orion CI workflow](../.github/workflows/ci.yml) compiles all x86 variants,
 runs supported variants, and records skipped runtime coverage. It also includes
-Apple Silicon checks. Review the job summaries rather than treating a green
+Apple Silicon and Python/CLI consistency checks. The AVX2 Python job runs
+byte-distance regressions in debug mode with integer overflow checks enabled.
+Review the job summaries rather than treating a green
 compile as evidence that an unsupported instruction path executed.
 
 No static coverage percentage is claimed. Coverage needs a fresh instrumented

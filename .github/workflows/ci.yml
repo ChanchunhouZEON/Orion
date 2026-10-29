@@ -1,6 +1,6 @@
 # Compilation is mandatory for every SIMD variant. Runtime coverage is
 # reported separately: GitHub-hosted x86 runners do not guarantee AVX-512.
-name: avx512
+name: Orion CI
 
 on:
   push:
@@ -49,7 +49,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: avx512-${{ github.ref }}
+  group: orion-ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -195,7 +195,10 @@ jobs:
           bash .github/scripts/check-cpu-features.sh 'avx2 fma f16c'
           python -m pip install 'numpy>=1.24,<3'
           cargo fetch --locked
-      - name: Shared runtime and CLI regressions
-        run: cargo test --locked -p orion-runtime -p orion-cli
+      - name: Byte-distance, shared runtime and CLI regressions
+        run: |
+          # Debug overflow checks cover the scalar stream fallback on AVX2.
+          cargo test --locked -p vector --test native_u8_stream
+          cargo test --locked -p orion-runtime -p orion-cli
       - name: NumPy, persistence and CLI parity
         run: python orion-py/tests/run.py

@@ -111,3 +111,29 @@ fn u8_stream_tail_shapes_match_scalar() {
     check_stream::<192>();
     check_stream::<384>();
 }
+
+#[test]
+fn u8_kernel_all_byte_pairs_match_squared_difference() {
+    use vector::{DistanceFn, L2U8Distance};
+
+    // Exercise the kernel directly, including every negative difference and
+    // both extreme byte values. Run in debug too: release wrapping masked a
+    // signed-to-unsigned multiplication bug in the non-AVX-512 fallback.
+    #[repr(align(64))]
+    struct Chunk([u8; 64]);
+
+    for a in 0..=255u8 {
+        let base = Chunk([a; 64]);
+        for b in 0..=255u8 {
+            let query = Chunk([b; 64]);
+            let mut acc = L2U8Distance::init();
+            // Both arrays cover the kernel's 32- or 64-byte aligned chunk.
+            unsafe {
+                L2U8Distance::step(&mut acc, base.0.as_ptr(), query.0.as_ptr());
+            }
+            let difference = i32::from(a) - i32::from(b);
+            let expected = difference * difference * L2U8Distance::CHUNK_BYTES as i32;
+            assert_eq!(L2U8Distance::reduce(acc), expected as f32, "a={a}, b={b}");
+        }
+    }
+}
