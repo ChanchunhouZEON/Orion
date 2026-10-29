@@ -1,34 +1,43 @@
 # Code Structure
 
-The standalone executable and shared runtime now live in `orion-cli`:
+The runtime is grouped by responsibility and shared directly by CLI, Python and
+benchmark callers. `orion-cli` is binary-only: it has no library or forwarding
+modules. The runtime's optional `cli` feature enables flag parsing, YAML presets
+and legacy environment resolution; Python's programmatic options do not depend
+on those features.
 
 ```text
-orion-cli/src/
-  main.rs                  # One-pass search and preparation; JSONL output
-  lib.rs                   # Shared runtime API, independent of benchmark
-  config.rs                # Embedded YAML presets and shared settings
-  cascade.rs               # Stage selection and f32 dispatch
-  parlayann_bridge.rs      # STAG import
-  cli/
-    config.rs / plan.rs    # Resolve options into one validated execution plan
-    data.rs               # Base ownership and replayable experiment inputs
-    query.rs              # QuerySource + Read-based decoding + optional GT
-    execution.rs          # SearchBackend implementations
-    index.rs / cache.rs   # Build/import and cache provenance
-    resources.rs          # Component-level memory report and budget checks
-benchmark/src/bin/
-  orion_sweep.rs           # orion-sweep: repeated L/trial experiments
-```
+orion-runtime/src/
+  lib.rs                   # Public module boundary and ergonomic Index/config exports
+  index.rs                 # Owned Index session, dedicated pool, calibration and snapshots
+  config/
+    mod.rs                 # Resolved settings and automatic graph-source policy
+    options.rs             # Programmatic IndexOptions, GraphConfig, CascadeConfig
+    plan.rs                # Validated storage/cascade plan
+    cli.rs                 # Optional CLI/environment/preset resolution
+    presets.rs             # Optional sweep.yaml parsing and preset metadata
+  data/
+    mod.rs                 # Aligned base ownership, formats and block readers
+    query.rs               # Read-based query and ground-truth decoding
+    memory.rs              # Memory preflight and budget enforcement
+  graph/
+    mod.rs                 # Build/import/load and transfer base ownership
+    cache.rs               # Cache identity, validation and provenance manifests
+    parlayann.rs           # STAG v3 import support
+  search/
+    mod.rs                 # Typed f32/native-u8 backend dispatch
+    cascade.rs             # Metric/stage selection and cascade construction
+    utils.rs               # Dimension dispatch, validation and benchmark helpers
 
-The benchmark's configuration/cascade/utility modules re-export shared runtime
-code; they no longer own duplicate CLI implementations. The older tree below
-also describes the engine and remaining benchmark tools.
+orion-cli/
+  src/main.rs              # One-pass CLI, JSONL results and calibration summary
+  tests/                   # CLI execution and offline-preflight integration tests
 
+orion-py/
+  src/lib.rs               # PyO3 ownership boundary, GIL release and per-index lock
+  python/orion_py/          # Public Index/config/result API
+  tests/                   # NumPy/file/cache and CLI result consistency checks
 
-[← Back to main README](../README.md)
-
-
-```
 orion/
   src/
     model/
@@ -114,23 +123,16 @@ diskann/
 benchmark/
   src/
     bin/
-      orion.rs             # **Production driver** — composable cascade: --prefilter --admission --rerank
+      orion_sweep.rs               # Replay, calibration and parameter/trial sweeps via runtime
       diskann_sweep.rs              # Microsoft DiskANN L-sweep (in-process via the `diskann` core crate)
                                     #   — third engine for the 3-engine head-to-head
     runner/
-      cascade.rs                    # **Cascade dispatch layer** — PrefilterChoice / AdmissionChoice
-                                    #   / RerankChoice enums + build_*() factories +
-                                    #   pin_cascade() mlock helper + search_compose /
-                                    #   search_batch_compose entry points
-      parlayann_bridge.rs           # Load PA `.staged v3` exports → (local, remote, extra) per-node
+      mod.rs                        # Direct runtime cascade/STAG imports and runner exports
       orion_runner.rs      # Boxed AlgorithmRunner; reads cascade triple from
                                     #   sweep.yaml's per-dataset `orion.{prefilter,admission,rerank}`
       orion_ads_runner.rs  # ADSampling variant — rotates the dataset, dispatches through
                                     #   the AdsF32Admission cascade
       diskann_runner.rs / diskann_ads_runner.rs  # In-memory DiskANN baselines
-    config.rs                       # sweep.yaml parser — `cfg.datasets.<ds>.staged.{alpha, R,
-                                    #   L_build, max_extra, window_size, prefilter, admission,
-                                    #   rerank}` typed config
   configs/
     sweep.yaml                      # **Single source of truth** for per-dataset build params +
                                     #   cascade triple (replaces the legacy 4-way `metric:` enum)

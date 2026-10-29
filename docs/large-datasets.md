@@ -77,7 +77,7 @@ The admission names are explicit: `native-l2-u8` scores original bytes exactly,
 whereas `l2-u8` scores an affine-quantized sidecar of an f32 base. Existing custom
 native-u8 configurations must change their admission to `native-l2-u8`.
 Configuration resolution produces a validated `SearchPlan` before loading:
-`orion-cli/src/cli/plan.rs` owns compatibility and storage accounting, and `orion-cli/src/cli/execution.rs`
+`orion-runtime/src/config/plan.rs` owns compatibility and storage accounting, and `orion-runtime/src/search/mod.rs`
 owns the standalone sweep's typed index/admission adapters. Both representations
 share calibration, the search loop, timing, and reporting.
 

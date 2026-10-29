@@ -9,8 +9,10 @@
 //! driver. This module only provides operations that depend on the concrete
 //! search backend and its resident element representation.
 
-use crate::cascade;
-use crate::cli::{
+pub mod cascade;
+pub mod utils;
+
+use crate::{
     config::ResolvedRunConfig,
     data::{BaseElement, LoadedBase},
 };
@@ -36,8 +38,7 @@ pub trait SearchBackend {
         data: &mut LoadedBase<Self::Element>,
     ) -> Result<orion::Orion<N, Self::Element>, String>
     where
-        [Self::Element; N]:
-        vector::FullPrecisionDistance<Self::Element, N>;
+        [Self::Element; N]: vector::FullPrecisionDistance<Self::Element, N>;
 
     /// Pins backend-specific search storage before measured execution.
     ///
@@ -46,10 +47,8 @@ pub trait SearchBackend {
     fn pin_search_storage<const N: usize>(
         index: &orion::Orion<N, Self::Element>,
         config: &ResolvedRunConfig,
-    )
-    where
-        [Self::Element; N]:
-        vector::FullPrecisionDistance<Self::Element, N>;
+    ) where
+        [Self::Element; N]: vector::FullPrecisionDistance<Self::Element, N>;
 
     /// Executes one batch using the backend-specific search pipeline.
     fn search_batch<const N: usize>(
@@ -60,8 +59,7 @@ pub trait SearchBackend {
         calibration: orion::CalibratedParams,
     ) -> diskann::common::ANNResult<Vec<Vec<u32>>>
     where
-        [Self::Element; N]:
-        vector::FullPrecisionDistance<Self::Element, N>;
+        [Self::Element; N]: vector::FullPrecisionDistance<Self::Element, N>;
 }
 
 /// Backend using the conventional `f32` resident representation together with
@@ -75,7 +73,7 @@ impl SearchBackend for F32CascadeBackend {
         config: &ResolvedRunConfig,
         data: &mut LoadedBase<Self::Element>,
     ) -> Result<orion::Orion<N, Self::Element>, String> {
-        crate::cli::index::load_index(config, data)
+        crate::graph::load_index(config, data)
     }
 
     fn pin_search_storage<const N: usize>(
@@ -84,12 +82,7 @@ impl SearchBackend for F32CascadeBackend {
     ) {
         let cascade = config.search_plan().cascade();
 
-        cascade::pin_cascade(
-            index,
-            cascade.prefilter,
-            cascade.admission,
-            cascade.rerank,
-        );
+        cascade::pin_cascade(index, cascade.prefilter, cascade.admission, cascade.rerank);
     }
 
     fn search_batch<const N: usize>(
@@ -130,7 +123,7 @@ impl SearchBackend for NativeU8L2Backend {
         config: &ResolvedRunConfig,
         data: &mut LoadedBase<Self::Element>,
     ) -> Result<orion::Orion<N, Self::Element>, String> {
-        crate::cli::index::load_u8_index(config, data)
+        crate::graph::load_u8_index(config, data)
     }
 
     fn pin_search_storage<const N: usize>(
@@ -149,9 +142,7 @@ impl SearchBackend for NativeU8L2Backend {
         calibration: orion::CalibratedParams,
     ) -> diskann::common::ANNResult<Vec<Vec<u32>>> {
         use orion::algorithm::search::stage::{
-            admission::NativeU8Admission,
-            prefilter::NoPrefilter,
-            rerank::NoRerank,
+            admission::NativeU8Admission, prefilter::NoPrefilter, rerank::NoRerank,
         };
 
         let admission = NativeU8Admission::new(&index.dataset);

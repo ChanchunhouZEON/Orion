@@ -1,0 +1,23 @@
+[package]
+name = "orion-runtime"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+cli = ["dep:clap", "dep:serde_yaml"]
+
+[dependencies]
+orion = { path = "../orion" }
+diskann = { path = "../diskann" }
+vector = { path = "../vector" }
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+byteorder.workspace = true
+libc.workspace = true
+log.workspace = true
+comfy-table.workspace = true
+clap = { workspace = true, optional = true }
+sha2 = "0.10"
+bytemuck.workspace = true
+serde_yaml = { version = "0.9", optional = true }

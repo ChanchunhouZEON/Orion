@@ -603,7 +603,7 @@ where
         results
             .par_iter_mut()
             .zip(queries.par_iter())
-            .for_each(|(out, query)| {
+            .try_for_each(|(out, query)| -> ANNResult<()> {
                 *out = self
                     .search_unified(
                         query,
@@ -615,9 +615,9 @@ where
                         prefilter,
                         admission,
                         rerank,
-                    )
-                    .unwrap_or_default();
-            });
+                    )?;
+                Ok(())
+            })?;
         Ok(results)
     }
 }

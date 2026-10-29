@@ -7,17 +7,13 @@
 
 use std::time::Instant;
 
-use orion_cli::utils;
-
 use clap::Parser;
-use cli::config::{Args, ResolvedRunConfig};
-use cli::data::LoadedDataset;
-use cli::plan::SearchPlan;
-use execution::SearchBackend;
-use orion_cli::cli;
-use orion_cli::cli::execution;
-use orion_cli::cli::execution::{F32CascadeBackend, NativeU8L2Backend};
-use orion_cli::with_supported_dimension;
+use orion_runtime::{
+    config::{cli::Args, plan::SearchPlan, ResolvedRunConfig},
+    data::{LoadedDataset, memory},
+    search::{utils, F32CascadeBackend, NativeU8L2Backend, SearchBackend},
+    with_supported_dimension,
+};
 
 /// Promote the calling thread to the highest QoS tier (`USER_INTERACTIVE`,
 /// 0x21) so macOS keeps it on a P-core and at the highest DVFS step
@@ -454,9 +450,9 @@ fn execute(args: Args) -> Result<(), String> {
         return Ok(());
     }
     if args.preflight {
-        let report = cli::resources::preflight_report(&config)?;
-        cli::resources::print_report(&report, args.preflight_format)?;
-        return cli::resources::enforce_budget(&report);
+        let report = memory::preflight_report(&config)?;
+        memory::print_report(&report, args.preflight_format)?;
+        return memory::enforce_budget(&report);
     }
     log::info!("Run settings: {resolved}");
     match config.search_plan() {

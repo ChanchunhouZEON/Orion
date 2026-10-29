@@ -6,22 +6,14 @@ members = [
     "logger",
     "orion",
     "orion-cli",
-    "orion_py",
+    "orion-runtime",
+    "orion-py",
     "platform",
     "vector",
 ]
-# `orion_py` is a PyO3 cdylib — it expects Python symbols
-# (PyBytes_Size, PyErr_Clear, ...) to be resolved at *runtime* by
-# the Python interpreter that dlopen's the .so. `cargo build` from
-# the workspace root tries to link it as a normal cdylib and fails
-# on macOS (the linker is strict about unresolved symbols).
-#
-# Exclude it from `default-members` so plain `cargo build` /
-# `cargo check` from root skip it. It's still a full workspace
-# member — `cargo build -p orion_py` works (with the right linker
-# flags), and `maturin develop --release` from inside `orion_py/`
-# is the recommended build path documented in
-# `benchmark/scripts/orion_py_bench.py`.
+# Python is built explicitly (or with maturin); ordinary Rust workspace builds
+# do not require a Python development environment. The extension's build.rs
+# configures runtime symbol resolution on macOS.
 default-members = [
     "adsampling",
     "benchmark",
@@ -29,6 +21,7 @@ default-members = [
     "logger",
     "orion",
     "orion-cli",
+    "orion-runtime",
     "platform",
     "vector",
 ]
@@ -105,3 +98,8 @@ strip = false
 debug = 2
 lto = "thin"
 codegen-units = 4
+
+# Python must be able to translate an unexpected Rust panic into an exception.
+[profile.python]
+inherits = "release"
+panic = "unwind"

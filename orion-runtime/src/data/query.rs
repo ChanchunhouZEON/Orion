@@ -12,8 +12,8 @@
 //! inputs are widened only into this bounded query buffer and never into the
 //! resident base representation.
 
-use super::data::{validate_and_normalize_vectors, VectorFormat};
-use crate::cascade::SearchMetric;
+use crate::data::{validate_and_normalize_vectors, VectorFormat};
+use crate::search::cascade::SearchMetric;
 use std::io::Read;
 
 pub trait QuerySource {
@@ -329,7 +329,7 @@ impl<R: Read> GroundTruthReader<R> {
 /// `-` reads from stdin. Any other path is opened as a regular file. Neither
 /// source requires `Seek`.
 pub fn open_queries(
-    config: &super::config::ResolvedRunConfig,
+    config: &crate::config::ResolvedRunConfig,
 ) -> Result<Box<dyn QuerySource>, String> {
     use std::io::BufReader;
 

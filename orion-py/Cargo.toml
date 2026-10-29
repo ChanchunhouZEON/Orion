@@ -1,0 +1,22 @@
+[package]
+name = "orion_py"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+test = false
+
+[dependencies]
+orion-runtime = { path = "../orion-runtime" }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
+numpy = "0.22"
+ndarray.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+pyo3-build-config = "0.22"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("gil-refs"))'] }

@@ -35,3 +35,15 @@ No static coverage percentage is claimed. Coverage needs a fresh instrumented
 run with an explicit package/test scope; historical percentages are not an
 up-to-date guarantee. Benchmark timing regressions require controlled repeated
 experiments in addition to correctness tests.
+
+## Python / shared runtime
+
+```bash
+cargo test --locked -p orion-runtime -p orion-cli
+python3 orion-py/tests/run.py
+```
+
+The Python suite uses generated small STAG graphs and NumPy data. It compares
+file/array inputs and CLI IDs/calibration for L2, inner product, cosine and native
+u8, then checks strict cache reopening, invalid inputs and serialized concurrent
+calls. The runner builds a local extension and CLI; no wheel is published.

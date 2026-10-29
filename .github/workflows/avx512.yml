@@ -13,6 +13,8 @@ on:
       - 'diskann/**'
       - 'orion/**'
       - 'orion-cli/**'
+      - 'orion-runtime/**'
+      - 'orion-py/**'
       - 'platform/**'
       - 'adsampling/**'
       - 'logger/**'
@@ -28,6 +30,8 @@ on:
       - 'diskann/**'
       - 'orion/**'
       - 'orion-cli/**'
+      - 'orion-runtime/**'
+      - 'orion-py/**'
       - 'platform/**'
       - 'adsampling/**'
       - 'logger/**'
@@ -158,7 +162,7 @@ jobs:
         run: cargo clippy --locked -p vector --release
 
   summary:
-    needs: [compile-check-cross, build-and-test]
+    needs: [compile-check-cross, build-and-test, python-api]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -166,6 +170,32 @@ jobs:
         env:
           CROSS_RESULT: ${{ needs.compile-check-cross.result }}
           LINUX_RESULT: ${{ needs.build-and-test.result }}
+          PYTHON_RESULT: ${{ needs.python-api.result }}
         run: |
-          echo "macOS/cross: $CROSS_RESULT; Linux SIMD matrix: $LINUX_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          [[ "$CROSS_RESULT" == success && "$LINUX_RESULT" == success ]]
+          echo "macOS/cross: $CROSS_RESULT; Linux SIMD matrix: $LINUX_RESULT; Python API: $PYTHON_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          [[ "$CROSS_RESULT" == success && "$LINUX_RESULT" == success && "$PYTHON_RESULT" == success ]]
+
+  python-api:
+    name: Python API / CLI consistency
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RUSTFLAGS: '-C target-cpu=x86-64 -C target-feature=+avx2,+fma,+f16c'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: python-api
+      - name: Check CPU and install local test dependencies
+        run: |
+          bash .github/scripts/check-cpu-features.sh 'avx2 fma f16c'
+          python -m pip install 'numpy>=1.24,<3'
+          cargo fetch --locked
+      - name: Shared runtime and CLI regressions
+        run: cargo test --locked -p orion-runtime -p orion-cli
+      - name: NumPy, persistence and CLI parity
+        run: python orion-py/tests/run.py

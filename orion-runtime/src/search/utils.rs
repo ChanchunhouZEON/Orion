@@ -3,12 +3,8 @@
  * Licensed under the MIT License.
  */
 
-//! Shared benchmark-harness utilities.
-//!
-//! Consumed by several bins via `#[path = "../utils.rs"] mod utils`
-//! (e.g. `orion.rs`, `orion.rs`). The benchmark crate
-//! itself doesn't reach every export, so we silence the dead-code
-//! warnings at the module level rather than tagging each helper.
+//! Shared dimension registry, input validation and benchmark compatibility helpers.
+//! Benchmark-only helpers are explicit calls and are not run by Index sessions.
 
 #![allow(dead_code)]
 

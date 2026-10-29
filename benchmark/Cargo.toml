@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-orion-cli = { path = "../orion-cli" }
+orion-runtime = { path = "../orion-runtime", features = ["cli"] }
 adsampling = { path = "../adsampling" }
 diskann = { path = "../diskann" }
 platform = { path = "../platform" }

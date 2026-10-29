@@ -4,12 +4,15 @@
  */
 
 //! Resolve graph provenance, transfer the base allocation, then load/build/import.
-use super::{
-    cache::CachePlan,
+pub mod cache;
+pub mod parlayann;
+
+use crate::graph::parlayann as parlayann_bridge;
+use crate::{
     config::{GraphSource, ResolvedRunConfig},
     data::{BaseElement, LoadedBase},
+    graph::cache::CachePlan,
 };
-use crate::parlayann_bridge;
 use diskann::model::InmemDataset;
 use orion::{build_diskann_index, Orion};
 use std::{path::Path, time::Instant};
@@ -161,10 +164,11 @@ where
     Ok(Orion::from_phased_graph(dataset, graph, entry, None, None))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cli"))]
 mod large_input_tests {
     use super::*;
-    use super::super::data::LoadedDataset;
+
+    use crate::data::LoadedDataset;
     use clap::Parser;
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -210,7 +214,7 @@ mod large_input_tests {
             }
         }
         drop(file);
-        let config = super::super::config::Args::try_parse_from([
+        let config = crate::config::cli::Args::try_parse_from([
             "orion",
             "sift10m",
             "--base",
@@ -308,7 +312,7 @@ mod large_input_tests {
             }
         }
         drop(f);
-        let config = super::super::config::Args::try_parse_from([
+        let config = crate::config::cli::Args::try_parse_from([
             "orion",
             "--base",
             base.to_str().unwrap(),
@@ -336,7 +340,7 @@ mod large_input_tests {
         .unwrap();
         let mut data = LoadedDataset::load(&config).unwrap();
         let ptr = data.base.as_ref().unwrap().as_ptr();
-        let old = crate::parlayann_bridge::load_from_staged_file(
+        let old = crate::graph::parlayann::load_from_staged_file(
             &staged,
             &data.base.as_ref().unwrap()[..512],
             128,
@@ -349,9 +353,9 @@ mod large_input_tests {
         // Even callers that bypass CLI resolution cannot run native admission
         // against an f32 index or silently allocate a quantized replacement.
         {
-            let rejected = crate::cascade::build_admission(
+            let rejected = crate::search::cascade::build_admission(
                 &index,
-                crate::cascade::AdmissionChoice::NativeL2U8,
+                crate::search::cascade::AdmissionChoice::NativeL2U8,
             );
             assert!(
                 matches!(rejected, Err(error) if error.to_string().contains("requires a native u8 index"))

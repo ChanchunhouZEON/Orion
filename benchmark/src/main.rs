@@ -3,12 +3,12 @@
  * Licensed under the MIT License.
  */
 
-mod config;
+use orion_runtime::config::presets as config;
 mod dataset;
 mod metrics;
 mod report;
 mod runner;
-mod utils;
+use orion_runtime::search::utils;
 #[allow(unused_imports)]
 #[allow(unused_imports)]
 

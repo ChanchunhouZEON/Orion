@@ -3,39 +3,11 @@
  * Licensed under the MIT License.
  */
 
-//! # Composable cascade dispatch (benchmark harness side)
+//! Metric-dependent cascade selection and shared search dispatch.
 //!
-//! The three CLI axes (`--prefilter`, `--admission`, `--rerank`) map
-//! to the enums below. The harness owns the build-and-pin handshake
-//! so the search library can stay unaware of `mlock(2)` — each axis
-//! pins its own sidecar(s) at `pin_cascade` time, and a single
-//! dyn-dispatch call to `search_batch_unified` runs the actual search.
-//!
-//! Why this layer:
-//!   * The lib's stage traits are object-safe; the harness builds each
-//!     axis as a `Box<dyn Stage>` and pipes the three boxes into one
-//!     non-generic search call.
-//!   * Pinning is a benchmark concern; lib knows nothing of `mlock`.
-//!     Per-axis pin helpers live next to the per-axis build helpers so
-//!     the CLI mapping and pin policy stay close to each other.
-//!
-//! ### Two consumption shapes
-//!
-//! 1. `benchmark` crate's `main.rs` / `OrionRunner`: imports
-//!    via the `runner` module tree (`runner::cascade::*`).
-//! 2. `orion_sweep` bin: imports via `#[path = "../runner/cascade.rs"]`
-//!    since it doesn't sit on top of a benchmark lib crate.
-//!
-//! Both paths satisfy `crate::utils::mlock_bytes` because every
-//! consumer in the crate has a `utils` module reachable as
-//! `crate::utils` (either the real one, or a `#[path]`-imported copy
-//! inside the bin).
-//!
-//! The cascade helpers are consumed by the `orion` /
-//! `orion_sweep` bins via `#[path]`, not from the `benchmark` main
-//! binary — so to that compilation unit they look unused. Suppress
-//! the dead-code warning at the module level rather than tagging
-//! every helper individually.
+//! Both frontends use these stage factories. Optional pinning remains an
+//! explicit hook for benchmark callers; embedded searches do not lock memory
+//! or flush the cache as part of normal API execution.
 
 use diskann::common::ANNResult;
 use orion::algorithm::search::stage::admission::{
@@ -59,17 +31,16 @@ use vector::FullPrecisionDistance;
 /// - whether vector normalization is required by the data path.
 ///
 /// `InnerProduct` also accepts the common CLI/config aliases `mips` and `ip`.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, clap::ValueEnum,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum SearchMetric {
     /// Squared Euclidean-distance search.
     L2,
 
     /// Maximum inner-product search (MIPS).
     #[serde(alias = "mips", alias = "ip")]
-    #[value(alias = "mips", alias = "ip")]
+    #[cfg_attr(feature = "cli", value(alias = "mips", alias = "ip"))]
     InnerProduct,
 
     /// Cosine-similarity search.
@@ -233,7 +204,9 @@ mod selector_tests {
             assert_eq!(c.rerank, RerankChoice::IpF32);
             c.validate_cascade_options(metric).unwrap();
         }
-        assert!(low.validate_cascade_options(SearchMetric::InnerProduct).is_err());
+        assert!(low
+            .validate_cascade_options(SearchMetric::InnerProduct)
+            .is_err());
         assert!(high.validate_cascade_options(SearchMetric::L2).is_ok());
     }
 }
@@ -433,7 +406,8 @@ where
         AdmissionChoice::NativeL2U8 => {
             return Err(diskann::common::ANNError::log_index_config_error(
                 "admission".into(),
-                "native-l2-u8 requires a native u8 index; the f32 dispatcher cannot execute it".into(),
+                "native-l2-u8 requires a native u8 index; the f32 dispatcher cannot execute it"
+                    .into(),
             ));
         }
         AdmissionChoice::L2U8 => Box::new(L2U8Admission::new(orion.ensure_quantized_dataset())),
@@ -488,20 +462,24 @@ pub fn pin_prefilter<const N: usize>(
         PrefilterChoice::Jl => {
             if admission_is_mips {
                 let q = orion.ensure_quantized_dataset_jl_mips();
-                crate::utils::mlock_bytes(
+                crate::search::utils::mlock_bytes(
                     "prefilter (JL codes, mips)",
                     q.codes.as_ptr(),
                     q.codes.len(),
                 );
-                crate::utils::mlock_bytes(
+                crate::search::utils::mlock_bytes(
                     "prefilter (JL indices, mips)",
                     q.indices.as_ptr() as *const u8,
                     q.indices.len() * std::mem::size_of::<u32>(),
                 );
             } else {
                 let q = orion.ensure_quantized_dataset_jl();
-                crate::utils::mlock_bytes("prefilter (JL codes)", q.codes.as_ptr(), q.codes.len());
-                crate::utils::mlock_bytes(
+                crate::search::utils::mlock_bytes(
+                    "prefilter (JL codes)",
+                    q.codes.as_ptr(),
+                    q.codes.len(),
+                );
+                crate::search::utils::mlock_bytes(
                     "prefilter (JL indices)",
                     q.indices.as_ptr() as *const u8,
                     q.indices.len() * std::mem::size_of::<u32>(),
@@ -510,24 +488,24 @@ pub fn pin_prefilter<const N: usize>(
         }
         PrefilterChoice::JlHadamard => {
             let q = orion.ensure_quantized_dataset_jl_hadamard();
-            crate::utils::mlock_bytes(
+            crate::search::utils::mlock_bytes(
                 "prefilter (JL Hadamard codes)",
                 q.codes.as_slice().as_ptr(),
                 q.codes.as_slice().len(),
             );
             // signs1/2/3 are 3 × D_PAD bytes (= 3072 bytes at D_PAD=1024);
             // negligible but pin for symmetry.
-            crate::utils::mlock_bytes(
+            crate::search::utils::mlock_bytes(
                 "prefilter (JL Hadamard signs1)",
                 q.signs1.as_ptr() as *const u8,
                 q.signs1.len(),
             );
-            crate::utils::mlock_bytes(
+            crate::search::utils::mlock_bytes(
                 "prefilter (JL Hadamard signs2)",
                 q.signs2.as_ptr() as *const u8,
                 q.signs2.len(),
             );
-            crate::utils::mlock_bytes(
+            crate::search::utils::mlock_bytes(
                 "prefilter (JL Hadamard signs3)",
                 q.signs3.as_ptr() as *const u8,
                 q.signs3.len(),
@@ -535,7 +513,7 @@ pub fn pin_prefilter<const N: usize>(
         }
         PrefilterChoice::Rabitq => {
             let q = orion.ensure_quantized_dataset_rabitq();
-            crate::utils::mlock_bytes(
+            crate::search::utils::mlock_bytes(
                 "prefilter (RaBitQ codes)",
                 q.codes.as_slice().as_ptr(),
                 q.codes.as_slice().len(),
@@ -543,7 +521,7 @@ pub fn pin_prefilter<const N: usize>(
             // Rotation matrix is hot at every search setup (rotate_query
             // is O(N²)). Pin it so the f32 matrix stays L1-resident
             // across queries.
-            crate::utils::mlock_bytes(
+            crate::search::utils::mlock_bytes(
                 "prefilter (RaBitQ rotation)",
                 q.rotation.as_slice().as_ptr() as *const u8,
                 q.rotation.as_slice().len() * std::mem::size_of::<f32>(),
@@ -562,7 +540,7 @@ where
         AdmissionChoice::NativeL2U8 => {} // Native storage is pinned with its base.
         AdmissionChoice::L2U8 => {
             let q = orion.ensure_quantized_dataset();
-            crate::utils::mlock_bytes(
+            crate::search::utils::mlock_bytes(
                 "admission (u8 base)",
                 q.data.as_ptr() as *const u8,
                 q.data.len() * std::mem::size_of::<u8>(),
@@ -570,7 +548,7 @@ where
         }
         AdmissionChoice::L2U16 => {
             let q = orion.ensure_quantized_dataset_l2_u16();
-            crate::utils::mlock_bytes(
+            crate::search::utils::mlock_bytes(
                 "admission (u16 base)",
                 q.data.as_ptr() as *const u8,
                 q.data.len() * std::mem::size_of::<u16>(),
@@ -578,12 +556,12 @@ where
         }
         AdmissionChoice::L2Kt => {
             let q = orion.ensure_quantized_dataset_l2_kt();
-            crate::utils::mlock_bytes(
+            crate::search::utils::mlock_bytes(
                 "admission (L2-KT i8 base)",
                 q.data.as_ptr() as *const u8,
                 q.data.len() * std::mem::size_of::<i8>(),
             );
-            crate::utils::mlock_bytes(
+            crate::search::utils::mlock_bytes(
                 "admission (L2-KT ‖x‖²)",
                 q.norms_sq.as_ptr() as *const u8,
                 q.norms_sq.len() * std::mem::size_of::<i32>(),
@@ -591,7 +569,7 @@ where
         }
         AdmissionChoice::MipsI8 => {
             let q = orion.ensure_quantized_dataset_mips();
-            crate::utils::mlock_bytes(
+            crate::search::utils::mlock_bytes(
                 "admission (MIPS i8 base)",
                 q.data.as_ptr() as *const u8,
                 q.data.len() * std::mem::size_of::<i8>(),
@@ -599,7 +577,7 @@ where
         }
         AdmissionChoice::MipsI16 => {
             let q = orion.ensure_quantized_dataset_mips_i16();
-            crate::utils::mlock_bytes(
+            crate::search::utils::mlock_bytes(
                 "admission (MIPS i16 base)",
                 q.data.as_ptr() as *const u8,
                 q.data.len() * std::mem::size_of::<i16>(),
@@ -614,7 +592,7 @@ where
             // base resident, so pin it here as a safety net.
             if !matches!(orion.dataset.data.len(), 0) {
                 let d = orion.dataset.data.as_slice();
-                crate::utils::mlock_bytes(
+                crate::search::utils::mlock_bytes(
                     "admission (ADS f32 base)",
                     d.as_ptr() as *const u8,
                     d.len() * std::mem::size_of::<f32>(),
@@ -633,7 +611,7 @@ where
     match choice {
         RerankChoice::F32 | RerankChoice::IpF32 => {
             let d = orion.dataset.data.as_slice();
-            crate::utils::mlock_bytes(
+            crate::search::utils::mlock_bytes(
                 "rerank (f32 base)",
                 d.as_ptr() as *const u8,
                 d.len() * std::mem::size_of::<f32>(),
@@ -641,7 +619,7 @@ where
         }
         RerankChoice::U16 => {
             let q = orion.ensure_quantized_dataset_l2_u16();
-            crate::utils::mlock_bytes(
+            crate::search::utils::mlock_bytes(
                 "rerank (u16 base)",
                 q.data.as_ptr() as *const u8,
                 q.data.len() * std::mem::size_of::<u16>(),

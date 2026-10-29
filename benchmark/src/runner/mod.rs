@@ -1,8 +1,8 @@
-pub mod cascade;
+pub(crate) use orion_runtime::search::cascade;
 pub mod common;
 pub mod diskann_ads_runner;
 pub mod diskann_runner;
-pub mod parlayann_bridge;
+pub(crate) use orion_runtime::graph::parlayann as parlayann_bridge;
 pub mod orion_ads_runner;
 pub mod orion_runner;
 

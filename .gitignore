@@ -51,3 +51,7 @@ core.*
 # dir auto-creates next to the test binary's cwd.
 /orion/orion_graphs/
 /orion_graphs/
+
+# Local Python extension/package tests (never dataset or experiment outputs).
+/orion-py/**/__pycache__/
+/orion-py/python/orion_py/*.so

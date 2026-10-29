@@ -4,8 +4,10 @@
 
 The CLI embeds [sweep.yaml](../benchmark/configs/sweep.yaml). `--config` loads a
 replacement YAML file; rebuilding is necessary only when changing embedded
-configuration. `orion-cli` owns shared resolution used by `orion` and
-`orion-sweep`; the latter remains a benchmark executable.
+configuration. The optional `cli` feature of `orion-runtime` owns shared resolution used by
+`orion` and `orion-sweep`; the latter remains a benchmark executable. The validated
+plan and execution operations also live in `orion-runtime`. Python uses programmatic
+`IndexOptions` rather than CLI flags, YAML presets or legacy environment overrides.
 
 ## Resolution
 

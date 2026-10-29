@@ -20,68 +20,20 @@
 //!
 //! The resulting configuration also derives the graph-cache identity used to distinguish
 //! graphs built from different datasets or construction parameters.
-use super::data::VectorFormat;
-use crate::cascade::{AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric};
-use crate::config::{
-    load_root, try_resolve_placeholders, RawBaseGraph, RawOrionOverride, RawRoot, ResolvedSweep,
-    SweepOverrides,
+use crate::config::presets::{
+    load_root, try_resolve_placeholders, RawBaseGraph, RawOrionOverride, RawRoot, SweepOverrides,
+};
+use crate::data::VectorFormat;
+use crate::search::cascade::{
+    AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric,
 };
 use clap::Parser;
-use serde::{Deserialize, Serialize};
-use std::hash::{Hash, Hasher};
+
 use std::path::PathBuf;
 
-/// Source used to obtain the base proximity graph.
-///
-/// The graph can either be constructed by DiskANN native Rust builder or imported
-/// from a ParlayANN-generated staged graph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum GraphSource {
-    /// Construct the graph using DiskANN native Rust implementation with extra
-    /// candidates complemented.
-    Rust,
-
-    /// Import a graph produced by ParlayANN.
-    #[value(alias = "pa")]
-    Parlayann,
-}
-
-/// User policy, kept separate from the concrete source used in cache identities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, clap::ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum GraphSourcePolicy {
-    /// Prefer a PA cache/export, then use the Rust builder for f32 storage.
-    Auto,
-    Rust,
-    #[value(alias = "pa")]
-    Parlayann,
-}
-
-/// Element representation used for resident base vectors.
-///
-/// This is independent of the on-disk [`VectorFormat`]. For example, vectors read
-/// from a `.bvecs` file may either remain as native `u8` values or be expanded into
-/// `f32` values after loading.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, clap::ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum VectorStorageKind {
-    /// Store each coordinate as `f32`.
-    F32,
-
-    /// Keep each coordinate in its native unsigned 8-bit representation if the base vector
-    /// is in `u8` stored form.
-    U8,
-}
-
-#[derive(Debug, Clone, Copy, clap::ValueEnum, Default)]
-pub enum PreflightFormat {
-    /// Table for a terminal, JSON when stdout is redirected.
-    #[default]
-    Auto,
-    Table,
-    Json,
-}
+use crate::config::{
+    GraphSource, GraphSourcePolicy, PreflightFormat, ResolvedRunConfig, VectorStorageKind,
+};
 
 /// Command-line configuration accepted by the Orion benchmark executable.
 ///
@@ -180,71 +132,6 @@ pub struct Args {
     pub sweep: SweepOverrides,
     #[arg(long)]
     pub print_config: bool,
-}
-
-/// Fully resolved and validated configuration for one Orion benchmark run.
-///
-/// Unlike [`Args`], all required settings have concrete values. The resolution
-/// process has already applied dataset presets, legacy compatibility settings,
-/// global defaults, and explicit CLI overrides.
-///
-/// Instances of this type are intended to be passed to the data-loading, graph
-/// preparation, calibration, and search stages.
-///
-/// # Cache identity
-///
-/// [`cache_namespace`](Self::cache_namespace) identifies graph state derived from
-/// the effective base dataset and graph-construction parameters. Query-only
-/// settings intentionally do not participate in that identity.
-#[derive(Debug, Serialize)]
-pub struct ResolvedRunConfig {
-    /// Preset name, or "anonymous" for explicit inputs without a preset.
-    pub dataset: String,
-    pub base: PathBuf,
-    pub query: Option<PathBuf>,
-    pub groundtruth: Option<PathBuf>,
-    /// Preset source counts; discarded when the corresponding input is overridden.
-    pub num_points: Option<usize>,
-    pub num_queries: Option<usize>,
-    pub query_batch_size: usize,
-    pub replay_queries: bool,
-    pub base_format: VectorFormat,
-    pub query_format: VectorFormat,
-    // Executable interpretation of the public, serialized run settings.
-    // Constructed only after compatibility validation; consumers use the accessor.
-    #[serde(flatten)]
-    search_plan: super::plan::SearchPlan,
-    pub memory_budget_gib: Option<f64>,
-    pub prepare_only: bool,
-    pub dimension: usize,
-    pub metric: SearchMetric,
-    pub alpha: f32,
-    pub graph_degree: u32,
-    pub build_l: usize,
-    pub max_extra: usize,
-    pub window_size: usize,
-    pub graph_source: GraphSource,
-    pub graph_source_policy: GraphSourcePolicy,
-    /// Why automatic selection chose this source; explicit policies stay strict.
-    pub graph_selection_reason: &'static str,
-    pub staged_file: Option<PathBuf>,
-    pub max_points: usize,
-    pub sweep: ResolvedSweep,
-    /// Cache namespace derived from graph-affecting inputs and construction settings.
-    pub cache_namespace: String,
-    pub cache_dir: PathBuf,
-    /// Whether the staged graph path came explicitly from CLI or the legacy environment.
-    ///
-    /// This is excluded from serialization because it records resolution provenance
-    /// rather than runtime semantics.
-    #[serde(skip)]
-    pub staged_file_explicit: bool,
-    /// Matching legacy bundled preset, when this configuration is compatible with an
-    /// older cache naming scheme.
-    #[serde(skip)]
-    pub legacy_dataset: Option<String>,
-    #[serde(skip)]
-    pub legacy_local_pct: usize,
 }
 
 /// Compatibility settings read from legacy environment variables.
@@ -426,7 +313,7 @@ impl Args {
             )?;
         let dimension = match self.dimension.or_else(|| preset.map(|p| p.dimension)) {
             Some(d) => d,
-            None => super::data::inspect_vector_file(&base, base_format)?.dimension,
+            None => crate::data::inspect_vector_file(&base, base_format)?.dimension,
         };
         crate::with_supported_dimension!(dimension, |D| Ok::<_, String>(D))?;
 
@@ -499,7 +386,7 @@ impl Args {
             GraphSourcePolicy::Rust => GraphSource::Rust,
             GraphSourcePolicy::Auto | GraphSourcePolicy::Parlayann => GraphSource::Parlayann,
         };
-        let search_plan = super::plan::SearchPlan::resolve(
+        let search_plan = crate::config::plan::SearchPlan::resolve(
             vector_storage,
             dimension,
             metric,
@@ -555,6 +442,7 @@ impl Args {
         }
 
         let mut run = ResolvedRunConfig {
+            base_content_id: None,
             dataset,
             base,
             query,
@@ -595,7 +483,7 @@ impl Args {
         };
 
         // Derive cache identities only after every effective setting is resolved.
-        run.legacy_dataset = run.matching_legacy_preset();
+        run.legacy_dataset = matching_legacy_preset(&run);
         run.cache_namespace = run.compute_cache_namespace();
         if graph_source_policy == GraphSourcePolicy::Auto {
             run.select_automatic_graph(self.cache_dir.is_some())?;
@@ -711,184 +599,45 @@ impl Args {
     }
 }
 
-impl ResolvedRunConfig {
-    /// Only absence allows fallback. Invalid PA caches/exports and permission
-    /// errors are surfaced instead of quietly changing the experiment's graph.
-    fn select_automatic_graph(&mut self, custom_cache_dir: bool) -> Result<(), String> {
-        use super::cache::CachePlan;
-
-        let count = match self.num_points {
-            Some(n) => Some(n),
-            None => match std::fs::metadata(&self.base) {
-                Ok(_) => {
-                    Some(super::data::inspect_vector_file(&self.base, self.base_format)?.count)
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                Err(e) => return Err(format!("{}: {e}", self.base.display())),
-            },
-        }
-        .map(|n| n.min(self.max_points));
-
-        if let Some(n) = count {
-            let cache = CachePlan::resolve(self, n).map_err(|error| {
-                format!(
-                    "automatic PA cache lookup failed in {}: {error}; no Rust graph was substituted",
-                    self.cache_dir.display()
-                )
-            })?;
-            if cache.is_hit {
-                self.graph_selection_reason = "PA cache available";
-                return Ok(());
-            }
-        }
-        if let Some(path) = CachePlan::available_staged_export(self)? {
-            if let Some(n) = count {
-                CachePlan::resolve_staged_export(self, n)?;
-            }
-            self.staged_file = Some(path);
-            self.graph_selection_reason = "PA staged export available";
-            return Ok(());
-        }
-        if self.search_plan().storage().kind == VectorStorageKind::U8 {
-            // Offline preflight can still estimate this configuration. Execution
-            // will report the missing PA input before allocating the dataset.
-            self.graph_selection_reason =
-                "native u8 requires a PA cache or staged export; no Rust fallback";
-            return Ok(());
-        }
-
-        self.graph_source = GraphSource::Rust;
-        if !custom_cache_dir {
-            self.cache_dir = PathBuf::from("cache/orion");
-        }
-        self.cache_namespace = self.compute_cache_namespace();
-        self.graph_selection_reason = if count
-            .map(|n| CachePlan::resolve(self, n).map(|cache| cache.is_hit))
-            .transpose()?
-            .unwrap_or(false)
-        {
-            "PA unavailable; Rust cache available"
-        } else {
-            "PA unavailable; Rust build required"
-        };
-        Ok(())
+fn matching_legacy_preset(config: &ResolvedRunConfig) -> Option<String> {
+    // A custom YAML entry called "sift" is not evidence of the old cache's identity.
+    let bundled: RawRoot = serde_yaml::from_str(crate::config::presets::DEFAULT_CONFIG).ok()?;
+    if config.base_format != VectorFormat::Fvecs
+        || config.search_plan().storage().kind != VectorStorageKind::F32
+    {
+        return None;
     }
-
-    pub fn search_plan(&self) -> super::plan::SearchPlan {
-        self.search_plan
+    let name = &config.dataset;
+    let preset = bundled.datasets.get(name)?;
+    let paths = preset.paths.as_ref()?;
+    let ov = preset.orion.as_ref();
+    let defaults = &bundled.defaults.orion;
+    let same = |a: &std::path::Path, b: &std::path::Path| {
+        a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+    };
+    if !same(&config.base, std::path::Path::new(&paths.base))
+        || config.dimension != preset.dimension
+        || Some(config.metric) != preset.metric
+        || config.alpha != ov.and_then(|o| o.alpha).unwrap_or(defaults.alpha)
+        || config.graph_degree
+            != ov
+                .and_then(|o| o.graph_degree)
+                .unwrap_or(defaults.graph_degree)
+        || config.build_l
+            != ov
+                .and_then(|o| o.build_search_list_size)
+                .unwrap_or(defaults.build_search_list_size)
+    {
+        return None;
     }
-
-    /// Returns the bundled legacy preset whose historical cache identity exactly
-    /// matches this resolved configuration.
-    ///
-    /// A matching dataset name alone is insufficient: the base path, storage format,
-    /// metric, dimension, and graph-construction parameters must also match the
-    /// bundled preset.
-    ///
-    /// This prevents custom configurations from accidentally reusing legacy caches.
-    fn matching_legacy_preset(&self) -> Option<String> {
-        // A custom YAML entry called "sift" is not evidence of the old cache's identity.
-        let bundled: RawRoot = serde_yaml::from_str(crate::config::DEFAULT_CONFIG).ok()?;
-        if self.base_format != VectorFormat::Fvecs
-            || self.search_plan().storage().kind != VectorStorageKind::F32
-        {
-            return None;
-        }
-        let name = &self.dataset;
-        let preset = bundled.datasets.get(name)?;
-        let paths = preset.paths.as_ref()?;
-        let ov = preset.orion.as_ref();
-        let defaults = &bundled.defaults.orion;
-        let same = |a: &std::path::Path, b: &std::path::Path| {
-            a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
-        };
-        if !same(&self.base, std::path::Path::new(&paths.base))
-            || self.dimension != preset.dimension
-            || Some(self.metric) != preset.metric
-            || self.alpha != ov.and_then(|o| o.alpha).unwrap_or(defaults.alpha)
-            || self.graph_degree
-                != ov
-                    .and_then(|o| o.graph_degree)
-                    .unwrap_or(defaults.graph_degree)
-            || self.build_l
-                != ov
-                    .and_then(|o| o.build_search_list_size)
-                    .unwrap_or(defaults.build_search_list_size)
-        {
-            return None;
-        }
-        Some(name.clone())
-    }
-
-    /// Computes the stable namespace used for graph-cache files.
-    ///
-    /// The identity includes the base-file identity and every resolved setting that
-    /// changes the stored graph. Query paths and search-only sweep settings are
-    /// intentionally excluded.
-    ///
-    /// Existing `v3_*` cache identities depend on the serialized tuple layout below.
-    /// Reordering fields or changing their encoding is therefore a cache-format change.
-    ///
-    /// Native `u8` storage additionally uses a dedicated namespace discriminator to
-    /// prevent raw-byte graphs from colliding with historical `f32` cache entries.
-    fn compute_cache_namespace(&self) -> String {
-        fn base_file_identity(path: &std::path::Path) -> (PathBuf, Option<u64>, Option<u128>) {
-            let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| {
-                if path.is_absolute() {
-                    path.to_owned()
-                } else {
-                    std::env::current_dir()
-                        .expect("working directory")
-                        .join(path)
-                }
-            });
-            let meta = std::fs::metadata(path).ok();
-            let modified = meta
-                .as_ref()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_nanos());
-            (absolute, meta.map(|m| m.len()), modified)
-        }
-
-        // Keep tuple order, field encoding, and the v3 prefix stable: these bytes
-        // determine existing cache filenames. Query inputs intentionally do not
-        // participate because they do not change the stored graph.
-        let descriptor = serde_json::to_vec(&(
-            base_file_identity(&self.base),
-            self.dimension,
-            self.metric,
-            self.alpha,
-            self.graph_degree,
-            self.build_l,
-            self.max_extra,
-            self.graph_source,
-            if self.graph_source == GraphSource::Parlayann {
-                Some(self.legacy_local_pct)
-            } else {
-                None
-            },
-        ))
-        .expect("serialize cache identity");
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        descriptor.hash(&mut hash);
-        if self.base_format != VectorFormat::Fvecs {
-            format!("{:?}", self.base_format).hash(&mut hash);
-        }
-        // Preserve all historical f32 identities; native storage gets its own
-        // namespace so a stale quantized sidecar cannot be mistaken for raw bytes.
-        if self.search_plan().storage().kind == VectorStorageKind::U8 {
-            "native-u8-v1".hash(&mut hash);
-        }
-        format!("v3_{:016x}", hash.finish())
-    }
+    Some(name.clone())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     fn root() -> RawRoot {
-        serde_yaml::from_str(crate::config::DEFAULT_CONFIG).unwrap()
+        serde_yaml::from_str(crate::config::presets::DEFAULT_CONFIG).unwrap()
     }
     fn resolve(args: &[&str]) -> Result<ResolvedRunConfig, String> {
         Args::try_parse_from(args)
@@ -944,7 +693,7 @@ mod tests {
         assert_ne!(native.cache_namespace, float.cache_namespace);
         assert_eq!(
             native.search_plan(),
-            super::super::plan::SearchPlan::NativeU8L2
+            crate::config::plan::SearchPlan::NativeU8L2
         );
         assert_eq!(
             native.search_plan().cascade(),

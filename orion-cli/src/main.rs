@@ -10,15 +10,14 @@
 //! machinery live in the benchmark binaries.
 
 use clap::Parser;
-use orion_cli::{
-    cli::{
-        config::{Args, ResolvedRunConfig},
-        data::LoadedBase,
-        execution::SearchBackend,
-        plan::SearchPlan,
+use orion_runtime::{
+    config::{cli::Args, plan::SearchPlan, ResolvedRunConfig},
+    data::{
+        memory as resources,
         query::{open_queries, GroundTruthReader},
-        resources,
+        LoadedBase,
     },
+    search::{F32CascadeBackend, NativeU8L2Backend, SearchBackend},
     with_supported_dimension,
 };
 use std::{
@@ -26,7 +25,6 @@ use std::{
     path::PathBuf,
     time::Instant,
 };
-use orion_cli::cli::execution::{F32CascadeBackend, NativeU8L2Backend};
 
 #[derive(Parser)]
 #[command(
@@ -53,8 +51,7 @@ fn run<const N: usize, B: SearchBackend>(
     output: Option<&PathBuf>,
 ) -> Result<(), String>
 where
-    [B::Element; N]:
-    vector::FullPrecisionDistance<B::Element, N>,
+    [B::Element; N]: vector::FullPrecisionDistance<B::Element, N>,
 {
     // Open lightweight query/evaluation inputs before allocating the potentially
     // much larger base dataset and index structures.
@@ -97,17 +94,10 @@ where
         return Ok(());
     }
 
-    let query_source = query_source
-        .as_mut()
-        .ok_or("missing query source")?;
+    let query_source = query_source.as_mut().ok_or("missing query source")?;
 
-    let mut gt = gt_file.map(|file| {
-        GroundTruthReader::new(
-            BufReader::new(file),
-            config.sweep.k,
-            points,
-        )
-    });
+    let mut gt =
+        gt_file.map(|file| GroundTruthReader::new(BufReader::new(file), config.sweep.k, points));
 
     // Results are emitted as JSONL. `create_new` prevents silently overwriting
     // an existing result file.
@@ -117,9 +107,7 @@ where
                 .write(true)
                 .create_new(true)
                 .open(path)
-                .map_err(|e| {
-                    format!("result output {}: {e}", path.display())
-                })?,
+                .map_err(|e| format!("result output {}: {e}", path.display()))?,
         )),
 
         None => Box::new(BufWriter::new(std::io::stdout())),
@@ -132,10 +120,7 @@ where
     // The queries are therefore retained and searched below rather than read
     // again after calibration.
     let mut decoded = Vec::new();
-    query_source.read_batch(
-        &mut decoded,
-        config.sweep.calibration_samples,
-    )?;
+    query_source.read_batch(&mut decoded, config.sweep.calibration_samples)?;
 
     if decoded.is_empty() {
         return Err("query source is empty".into());
@@ -164,19 +149,14 @@ where
     // measured search phase reflects the final runtime configuration.
     B::pin_search_storage(&index, config);
 
-    use orion::algorithm::search::{
-        NDC_F32,
-        NDC_I8,
-        VISIT_COUNT,
-    };
+    use orion::algorithm::search::{NDC_F32, NDC_I8, VISIT_COUNT};
 
     // Reset global search counters immediately before the measured search phase.
     NDC_F32.reset();
     NDC_I8.reset();
     VISIT_COUNT.reset();
 
-    let (mut count, mut recall_sum, mut search_seconds) =
-        (0usize, 0.0, 0.0);
+    let (mut count, mut recall_sum, mut search_seconds) = (0usize, 0.0, 0.0);
 
     // `stream_seconds` measures the complete streaming phase, including result
     // serialization, ground-truth evaluation, and query decoding.
@@ -210,17 +190,10 @@ where
             if let Some(truth) = gt.as_mut() {
                 let row = truth
                     .next()?
-                    .ok_or_else(|| {
-                        format!(
-                            "ground truth ended before query {count}"
-                        )
-                    })?;
+                    .ok_or_else(|| format!("ground truth ended before query {count}"))?;
 
-                recall_sum += ids
-                    .iter()
-                    .filter(|id| row.contains(id))
-                    .count() as f64
-                    / config.sweep.k as f64;
+                recall_sum +=
+                    ids.iter().filter(|id| row.contains(id)).count() as f64 / config.sweep.k as f64;
             }
 
             serde_json::to_writer(
@@ -231,27 +204,19 @@ where
                     "ids": ids,
                 }),
             )
-                .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?;
 
-            writer
-                .write_all(b"\n")
-                .map_err(|e| e.to_string())?;
+            writer.write_all(b"\n").map_err(|e| e.to_string())?;
 
             count += 1;
         }
 
         // Flush once per batch so streamed output remains externally observable
         // without paying the cost of flushing once per query.
-        writer
-            .flush()
-            .map_err(|e| e.to_string())?;
+        writer.flush().map_err(|e| e.to_string())?;
 
         // Refill the reusable decode buffer. A zero-length batch marks EOF.
-        if query_source.read_batch(
-            &mut decoded,
-            config.query_batch_size,
-        )? == 0
-        {
+        if query_source.read_batch(&mut decoded, config.query_batch_size)? == 0 {
             break;
         }
 
@@ -267,15 +232,11 @@ where
     // queries have been consumed.
     if let Some(truth) = gt.as_mut() {
         if truth.next()?.is_some() {
-            return Err(
-                "ground truth has more rows than the query stream".into(),
-            );
+            return Err("ground truth has more rows than the query stream".into());
         }
     }
 
-    let recall = gt
-        .as_ref()
-        .map(|_| recall_sum / count as f64);
+    let recall = gt.as_ref().map(|_| recall_sum / count as f64);
 
     println!(
         "{}",
@@ -285,6 +246,11 @@ where
             "queries": count,
             "recall": recall,
             "k": config.sweep.k,
+            "calibration": {
+                "threshold": calibration.threshold,
+                "early_exit_limit": calibration.early_exit_limit,
+                "search_list_size": config.sweep.calibration_l,
+            },
             "search_seconds": search_seconds,
             "qps": count as f64 / search_seconds,
             "stream_seconds": stream_started.elapsed().as_secs_f64(),
@@ -315,14 +281,12 @@ fn execute(mut command: Command) -> Result<(), String> {
         ));
     }
 
-    let resolved = serde_json::to_string_pretty(&config)
-        .map_err(|e| e.to_string())?;
+    let resolved = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
 
     if command.run.print_config {
         println!("{resolved}");
         return Ok(());
     }
-
 
     // Preflight resolves resource requirements without starting the actual run.
     if command.run.preflight {
@@ -339,29 +303,18 @@ fn execute(mut command: Command) -> Result<(), String> {
     // dimensionality selected by the resolved search plan.
     match config.search_plan() {
         SearchPlan::F32Cascade { .. } => {
-            with_supported_dimension!(
-                config.dimension,
-                |D| run::<D, F32CascadeBackend>(
-                    &config,
-                    command.output.as_ref(),
-                )
-            )
-        }
-
-        SearchPlan::NativeU8L2 => {
-            run::<128, NativeU8L2Backend>(
+            with_supported_dimension!(config.dimension, |D| run::<D, F32CascadeBackend>(
                 &config,
                 command.output.as_ref(),
-            )
+            ))
         }
+
+        SearchPlan::NativeU8L2 => run::<128, NativeU8L2Backend>(&config, command.output.as_ref()),
     }
 }
 
 fn main() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info"),
-    )
-        .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     if let Err(error) = execute(Command::parse()) {
         log::error!("{error}");

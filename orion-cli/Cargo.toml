@@ -8,16 +8,14 @@ name = "orion"
 path = "src/main.rs"
 
 [dependencies]
-comfy-table = { workspace = true }
-diskann = { path = "../diskann" }
+orion-runtime = { path = "../orion-runtime", features = ["cli"] }
 orion = { path = "../orion" }
 vector = { path = "../vector" }
 rayon = { workspace = true }
 clap = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
-byteorder = { workspace = true }
-libc = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
+
+[dev-dependencies]
 serde_yaml = "0.9"

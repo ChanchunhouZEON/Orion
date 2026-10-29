@@ -4,9 +4,13 @@
  */
 
 //! Deterministic-prefix replay and local geometric audits; no timing claims.
-use orion_cli::cascade;
-use orion_cli::cli;
-use orion_cli::with_supported_dimension;
+use orion_runtime::{
+    config::{cli::Args as RunArgs, ResolvedRunConfig},
+    data::{memory, LoadedDataset},
+    graph,
+};
+use orion_runtime::search::cascade;
+use orion_runtime::with_supported_dimension;
 
 use clap::{Parser, ValueEnum};
 use diskann::model::InmemDataset;
@@ -34,7 +38,7 @@ enum Track {
 )]
 struct Args {
     #[command(flatten)]
-    run: cli::config::Args,
+    run: RunArgs,
     /// Evenly spaced queries; 0 means all. This binary does not measure QPS.
     #[arg(long, default_value_t = 200)]
     diagnostic_queries: usize,
@@ -304,11 +308,11 @@ fn trace_json<const N: usize>(
 
 fn run<const N: usize>(
     args: &Args,
-    config: &cli::config::ResolvedRunConfig,
-    mut data: cli::data::LoadedDataset,
+    config: &ResolvedRunConfig,
+    mut data: LoadedDataset,
 ) -> Result<(), String> {
     if config.prepare_only {
-        cli::index::load_index::<N>(config, &mut data)?;
+        graph::load_index::<N>(config, &mut data)?;
         return Ok(());
     }
     let ground_truth = data.ground_truth.take().ok_or("this diagnostic requires --groundtruth; ordinary orion search does not")?;
@@ -331,7 +335,7 @@ fn run<const N: usize>(
     if out.exists() {
         return Err(format!("Refusing to overwrite {}", out.display()));
     }
-    let idx = cli::index::load_index::<N>(config, &mut data)?;
+    let idx = graph::load_index::<N>(config, &mut data)?;
 
 
     let calib = idx
@@ -541,10 +545,10 @@ fn execute(args: Args) -> Result<(), String> {
         return Ok(());
     }
     if args.run.preflight {
-        println!("{}", serde_json::to_string_pretty(&cli::resources::preflight_report(&config)?).map_err(|e| e.to_string())?);
+        println!("{}", serde_json::to_string_pretty(&memory::preflight_report(&config)?).map_err(|e| e.to_string())?);
         return Ok(());
     }
-    let data = cli::data::LoadedDataset::load(&config)?;
+    let data = LoadedDataset::load(&config)?;
     // Sequential queries avoid interpreting instrumented runtime as throughput.
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(1)

@@ -5,7 +5,7 @@
 
 //! Central config loader for `benchmark/configs/sweep.yaml`.
 //!
-//! The standalone CLI resolves raw presets through `cli::config`; older
+//! The standalone CLI resolves raw presets through `config::cli`; older
 //! benchmark/profiling utilities consume [`load_dataset_config`] metadata.
 //! The YAML file is the single source of truth for:
 //!
@@ -36,8 +36,8 @@ use std::path::PathBuf;
 // ── User-facing enums ──────────────────────────────────────────────────────
 
 /// Legacy benchmark metadata shares the CLI policy vocabulary. Availability is
-/// resolved by `cli::config`, where cache identity and storage type are known.
-pub use crate::cli::config::GraphSourcePolicy as BaseGraphSource;
+/// resolved by `config::cli`, where cache identity and storage type are known.
+pub use crate::config::GraphSourcePolicy as BaseGraphSource;
 
 /// Legacy preset metadata for one dataset. Graph availability is resolved by
 /// the CLI, where cache identity and resident storage are also known.
@@ -65,9 +65,9 @@ pub struct OrionConfig {
     /// search pipeline reads these to build the prefilter / admission
     /// / rerank stages. Mirrors the `Cascade::default_for_dataset`
     /// mapping in `orion.rs`.
-    pub prefilter: crate::cascade::PrefilterChoice,
-    pub admission: crate::cascade::AdmissionChoice,
-    pub rerank: crate::cascade::RerankChoice,
+    pub prefilter: crate::search::cascade::PrefilterChoice,
+    pub admission: crate::search::cascade::AdmissionChoice,
+    pub rerank: crate::search::cascade::RerankChoice,
 }
 
 #[derive(Clone, Debug)]
@@ -121,16 +121,7 @@ pub struct SweepOverrides {
     pub trials: Option<usize>,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct ResolvedSweep {
-    pub k: usize,
-    pub profile: String,
-    pub search_list_sizes: Vec<usize>,
-    pub threads: usize,
-    pub trials: usize,
-    pub calibration_samples: usize,
-    pub calibration_l: usize,
-}
+pub use crate::config::ResolvedSweep;
 
 impl SweepConfig {
     pub fn resolve(
@@ -142,7 +133,7 @@ impl SweepConfig {
         let search_list_sizes = overrides.search_list_sizes.clone().or_else(|| {
             self.schedules_by_k.get(&k).and_then(|row| row.get(profile)).cloned()
         }).ok_or_else(|| format!("no sweep.schedules_by_k entry for k={k}, profile={profile}; add one or pass --search-list-sizes"))?;
-        crate::utils::validate_search_list_sizes(k, &search_list_sizes)?;
+        crate::search::utils::validate_search_list_sizes(k, &search_list_sizes)?;
         let defaults = self.profiles.get(profile);
         let threads = overrides
             .threads
@@ -225,7 +216,7 @@ pub struct RawDataset {
     pub num_queries: Option<usize>,
     pub max_points: Option<usize>,
     pub dimension: usize,
-    pub metric: Option<crate::cascade::SearchMetric>,
+    pub metric: Option<crate::search::cascade::SearchMetric>,
     pub paths: Option<RawPaths>,
     pub base_graph: Option<RawBaseGraph>,
     pub diskann: Option<RawDiskANNOverride>,
@@ -268,7 +259,7 @@ pub struct RawOrionOverride {
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-pub const DEFAULT_CONFIG: &str = include_str!("../../benchmark/configs/sweep.yaml");
+pub const DEFAULT_CONFIG: &str = include_str!("../../../benchmark/configs/sweep.yaml");
 
 pub fn load_root() -> &'static RawRoot {
     static ROOT: std::sync::OnceLock<RawRoot> = std::sync::OnceLock::new();
@@ -348,17 +339,17 @@ fn resolve_dataset(root: &RawRoot, name: &str) -> DatasetConfig {
         window_size: ov
             .and_then(|o| o.window_size)
             .unwrap_or(orion_d.window_size),
-        prefilter: parse_cascade_str::<crate::cascade::PrefilterChoice>(
+        prefilter: parse_cascade_str::<crate::search::cascade::PrefilterChoice>(
             ov.and_then(|o| o.prefilter.as_deref())
                 .unwrap_or(orion_d.prefilter.as_str()),
             "prefilter",
         ),
-        admission: parse_cascade_str::<crate::cascade::AdmissionChoice>(
+        admission: parse_cascade_str::<crate::search::cascade::AdmissionChoice>(
             ov.and_then(|o| o.admission.as_deref())
                 .unwrap_or(orion_d.admission.as_str()),
             "admission",
         ),
-        rerank: parse_cascade_str::<crate::cascade::RerankChoice>(
+        rerank: parse_cascade_str::<crate::search::cascade::RerankChoice>(
             ov.and_then(|o| o.rerank.as_deref())
                 .unwrap_or(orion_d.rerank.as_str()),
             "rerank",

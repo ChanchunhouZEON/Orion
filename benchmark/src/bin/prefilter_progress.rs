@@ -1,14 +1,19 @@
 //! Per-query prefilter trajectories. Instrumented diagnostics, never QPS timings.
+use orion_runtime::{
+    config::{cli::Args as RunArgs, ResolvedRunConfig},
+    data::{memory, LoadedDataset},
+    graph,
+};
 use clap::Parser;
 use orion::algorithm::search::diagnostics::{NeighborMode, NoopObserver, SearchObserver};
-use orion_cli::{cascade, cli, with_supported_dimension};
+use orion_runtime::{search::cascade, with_supported_dimension};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
 #[derive(Parser)]
 struct Args {
     #[command(flatten)]
-    run: cli::config::Args,
+    run: RunArgs,
     /// Evenly spaced queries; zero selects all queries.
     #[arg(long, default_value_t = 0)]
     diagnostic_queries: usize,
@@ -68,13 +73,13 @@ fn summarize(rows: &[Value]) -> Value {
 
 fn run<const D: usize>(
     args: &Args,
-    config: &cli::config::ResolvedRunConfig,
-    mut data: cli::data::LoadedDataset,
+    config: &ResolvedRunConfig,
+    mut data: LoadedDataset,
 ) -> Result<(), String>
 where
     [f32; D]: vector::FullPrecisionDistance<f32, D>,
 {
-    let idx = cli::index::load_index::<D>(config, &mut data)?;
+    let idx = graph::load_index::<D>(config, &mut data)?;
     if config.prepare_only {
         return Ok(());
     }
@@ -221,12 +226,12 @@ fn execute(args: Args) -> Result<(), String> {
     if args.run.preflight {
         println!(
             "{}",
-            serde_json::to_string_pretty(&cli::resources::preflight_report(&config)?)
+            serde_json::to_string_pretty(&memory::preflight_report(&config)?)
                 .map_err(|e| e.to_string())?
         );
         return Ok(());
     }
-    let data = cli::data::LoadedDataset::load(&config)?;
+    let data = LoadedDataset::load(&config)?;
     with_supported_dimension!(config.dimension, |D| run::<D>(&args, &config, data))
 }
 

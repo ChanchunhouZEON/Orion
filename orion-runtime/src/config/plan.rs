@@ -9,14 +9,10 @@
 //! The resulting [`SearchPlan`] is the validated execution contract shared by
 //! loading, preflight estimation, memory accounting, and search dispatch.
 
-use super::config::{GraphSource, VectorStorageKind};
-use super::data::VectorFormat;
-use crate::cascade::{
-    AdmissionChoice,
-    Cascade,
-    PrefilterChoice,
-    RerankChoice,
-    SearchMetric,
+use crate::config::{GraphSource, VectorStorageKind};
+use crate::data::VectorFormat;
+use crate::search::cascade::{
+    AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric,
 };
 
 /// Fully resolved search execution plan.
@@ -85,11 +81,9 @@ impl SearchPlan {
         // quantized sidecar is desired on top of f32 storage.
         if vector_storage == VectorStorageKind::F32 {
             return if cascade.admission == AdmissionChoice::NativeL2U8 {
-                Err(
-                    "native-l2-u8 requires --vector-storage u8; \
+                Err("native-l2-u8 requires --vector-storage u8; \
                      use l2-u8 for a quantized f32 sidecar"
-                        .into(),
-                )
+                    .into())
             } else {
                 Ok(Self::F32Cascade { cascade })
             };
@@ -100,29 +94,21 @@ impl SearchPlan {
         // restriction here ensures downstream code can rely on those invariants
         // without branching again.
         if dimension != 128 || metric != SearchMetric::L2 {
-            return Err(
-                "native u8 storage currently requires \
+            return Err("native u8 storage currently requires \
                  128-dimensional L2 vectors"
-                    .into(),
-            );
+                .into());
         }
 
         // Native byte storage must come from byte-encoded inputs directly.
         // Float encodings are rejected rather than silently quantized because
         // quantization requires an explicit policy and would defeat the purpose
         // of preserving the original resident representation.
-        if !matches!(
-            base_format,
-            VectorFormat::Bvecs | VectorFormat::U8bin
-        ) || !matches!(
-            query_format,
-            VectorFormat::Bvecs | VectorFormat::U8bin
-        ) {
-            return Err(
-                "native u8 requires bvecs/u8bin base and queries; \
+        if !matches!(base_format, VectorFormat::Bvecs | VectorFormat::U8bin)
+            || !matches!(query_format, VectorFormat::Bvecs | VectorFormat::U8bin)
+        {
+            return Err("native u8 requires bvecs/u8bin base and queries; \
                  it does not quantize floats"
-                    .into(),
-            );
+                .into());
         }
 
         // The native-u8 path is not a configurable three-stage cascade:
@@ -135,11 +121,9 @@ impl SearchPlan {
             || cascade.admission != AdmissionChoice::NativeL2U8
             || cascade.rerank != RerankChoice::None
         {
-            return Err(
-                "native u8 requires --prefilter none \
+            return Err("native u8 requires --prefilter none \
                  --admission native-l2-u8 --rerank none"
-                    .into(),
-            );
+                .into());
         }
 
         // Native u8 currently consumes a ParlayANN STAG graph export/cache.
@@ -147,11 +131,9 @@ impl SearchPlan {
         // permitting another graph source here would imply a construction path
         // that does not exist.
         if graph_source != GraphSource::Parlayann {
-            return Err(
-                "native u8 uses a ParlayANN STAG export/cache; \
+            return Err("native u8 uses a ParlayANN STAG export/cache; \
                  the Rust builder remains f32"
-                    .into(),
-            );
+                .into());
         }
 
         Ok(Self::NativeU8L2)
@@ -192,8 +174,7 @@ impl SearchPlan {
 
                 // `L2U8` denotes a quantized admission sidecar attached to an
                 // otherwise f32-resident search path.
-                has_l2_u8_sidecar:
-                cascade.admission == AdmissionChoice::L2U8,
+                has_l2_u8_sidecar: cascade.admission == AdmissionChoice::L2U8,
             },
         }
     }
@@ -205,23 +186,14 @@ impl SearchPlan {
 // Both fields are instead derived from the validated plan at serialization
 // time, keeping the plan itself as the single source of truth.
 impl serde::Serialize for SearchPlan {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
 
         let mut map = serializer.serialize_map(Some(2))?;
 
-        map.serialize_entry(
-            "vector_storage",
-            &self.storage().kind,
-        )?;
+        map.serialize_entry("vector_storage", &self.storage().kind)?;
 
-        map.serialize_entry(
-            "cascade",
-            &self.cascade(),
-        )?;
+        map.serialize_entry("cascade", &self.cascade())?;
 
         map.end()
     }

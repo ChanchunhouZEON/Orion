@@ -2,9 +2,10 @@
 
 [Back to the README](../README.md#contents)
 
-`orion-cli` is an independent workspace crate. It depends on the Orion engine,
-not on `benchmark`. It supplies the `orion` executable and shared configuration,
-input readers, graph loading, preflight, and backend adapters. The `orion-sweep`
+`orion-cli` is the binary-only `orion` frontend. It uses the optional `cli`
+feature of `orion-runtime` for flags/presets and its shared modules for input
+readers, graph loading, preflight and backend adapters;
+Python uses the same runtime. Neither frontend depends on `benchmark`. The `orion-sweep`
 executable remains in `benchmark` for repeated experimental runs.
 
 ## Anonymous datasets and configuration

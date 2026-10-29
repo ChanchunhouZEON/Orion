@@ -4,7 +4,7 @@
  */
 
 //! Cache lookup is independent of the availability of the original graph export.
-use super::config::{GraphSource, ResolvedRunConfig};
+use crate::config::{GraphSource, ResolvedRunConfig};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -354,11 +354,13 @@ impl CachePlan {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cli"))]
 mod tests {
-    use super::super::config::Args;
     use super::*;
+    use crate::config::cli::Args;
+    use crate::config::{GraphSource, ResolvedRunConfig};
     use clap::Parser;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Temp(PathBuf);

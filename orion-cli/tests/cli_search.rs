@@ -297,7 +297,7 @@ fn anonymous_config_uses_defaults_and_preset_evaluation_can_be_disabled() {
 impl Fixture {
     fn auto_config(&self) {
         let mut yaml: serde_yaml::Value =
-            serde_yaml::from_str(orion_cli::config::DEFAULT_CONFIG).unwrap();
+            serde_yaml::from_str(orion_runtime::config::presets::DEFAULT_CONFIG).unwrap();
         yaml["datasets"] = serde_yaml::from_str(
             r#"
 fixture:

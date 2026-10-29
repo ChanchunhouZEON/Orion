@@ -4,8 +4,11 @@
  */
 
 //! Bounded-buffer vector loading into the allocation transferred to Orion.
-use super::config::{ResolvedRunConfig, VectorStorageKind};
-use crate::cascade::SearchMetric;
+pub mod memory;
+pub mod query;
+
+use crate::config::{ResolvedRunConfig, VectorStorageKind};
+use crate::search::cascade::SearchMetric;
 use diskann::common::AlignedBoxWithSlice;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -31,15 +34,9 @@ const SIMD_ALIGNMENT_BYTES: usize = 64;
 ///
 /// This distinction determines both shape inspection and how vectors are
 /// decoded into the resident storage representation.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum VectorFormat {
     Fvecs,
     Bvecs,
@@ -99,31 +96,23 @@ pub struct VectorHeader {
 /// count is inferred from the total file size. Dimensions on subsequent records
 /// are intentionally validated later while decoding the requested prefix.
 pub fn inspect_vector_file(path: &Path, format: VectorFormat) -> Result<VectorHeader, String> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
 
-    let file_bytes = file
-        .metadata()
-        .map_err(|e| e.to_string())?
-        .len();
+    let file_bytes = file.metadata().map_err(|e| e.to_string())?.len();
 
-    let read_header_word =
-        |file: &mut std::fs::File| -> Result<usize, String> {
-            let mut word_bytes = [0; 4];
-            file.read_exact(&mut word_bytes)
-                .map_err(|e| e.to_string())?;
+    let read_header_word = |file: &mut std::fs::File| -> Result<usize, String> {
+        let mut word_bytes = [0; 4];
+        file.read_exact(&mut word_bytes)
+            .map_err(|e| e.to_string())?;
 
-            Ok(u32::from_le_bytes(word_bytes) as usize)
-        };
+        Ok(u32::from_le_bytes(word_bytes) as usize)
+    };
 
     // Binary formats have one [count, dimension] header; vecs formats repeat
     // a dimension word before every vector and derive their count from file size.
     let first_header_word = read_header_word(&mut file)?;
     let (count, dimension) = if format.has_file_header() {
-        (
-            first_header_word,
-            read_header_word(&mut file)?
-        )
+        (first_header_word, read_header_word(&mut file)?)
     } else {
         // One vecs record consists of:
         //
@@ -131,14 +120,12 @@ pub fn inspect_vector_file(path: &Path, format: VectorFormat) -> Result<VectorHe
         //
         // All records are expected to have the same encoded size. Per-record
         // dimension values are checked later during actual decoding.
-        let record_bytes = 4
-            + first_header_word as u64 * format.coordinate_bytes() as u64;
+        let record_bytes = 4 + first_header_word as u64 * format.coordinate_bytes() as u64;
         if file_bytes % record_bytes != 0 {
             return Err("truncated vector records".into());
         }
         (
-            usize::try_from(file_bytes / record_bytes)
-                .map_err(|e| e.to_string())?,
+            usize::try_from(file_bytes / record_bytes).map_err(|e| e.to_string())?,
             first_header_word,
         )
     };
@@ -184,9 +171,7 @@ pub fn inspect_vector_file(path: &Path, format: VectorFormat) -> Result<VectorHe
 /// - how encoded byte coordinates are converted,
 /// - whether encoded `f32` coordinates are accepted,
 /// - what post-load normalization is required by the search metric.
-pub trait BaseElement:
-Default + Copy + Send + Sync + Into<f32>
-{
+pub trait BaseElement: Default + Copy + Send + Sync + Into<f32> {
     /// Resident storage representation selected by this element type.
     const STORAGE: VectorStorageKind;
 
@@ -206,11 +191,7 @@ Default + Copy + Send + Sync + Into<f32>
     fn from_float(value: f32) -> Result<Self, String>;
 
     /// Performs representation-specific validation or normalization after load.
-    fn normalize(
-        data: &mut [Self],
-        dimension: usize,
-        metric: SearchMetric,
-    ) -> Result<(), String>;
+    fn normalize(data: &mut [Self], dimension: usize, metric: SearchMetric) -> Result<(), String>;
 }
 
 impl BaseElement for f32 {
@@ -273,8 +254,7 @@ fn read_vectors_into<T: BaseElement>(
     if dimension == 0 || output.len() % dimension != 0 {
         return Err("invalid output vector shape".into());
     }
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if format == VectorFormat::U8bin {
         if let Some(bytes) = T::native_bytes_mut(output) {
             // The caller has validated the header and total length. Read only
@@ -283,10 +263,7 @@ fn read_vectors_into<T: BaseElement>(
             return read_native_bytes(&mut file, bytes).map_err(|e| e.to_string());
         }
     }
-    let mut reader = BufReader::with_capacity(
-        VECTOR_READ_BUFFER_BYTES,
-        file,
-    );
+    let mut reader = BufReader::with_capacity(VECTOR_READ_BUFFER_BYTES, file);
 
     // File-header formats store `[count, dimension]` once at the beginning.
     // Shape validation has already been performed by `inspect_vector_file`, so
@@ -328,8 +305,7 @@ fn read_vectors_into<T: BaseElement>(
         if format.coordinate_bytes() == 1 {
             // Byte-valued formats can be written directly into either native
             // u8 storage or widened f32 storage without an intermediate row.
-            for (coordinate, &encoded_coordinate) in
-                values.iter_mut().zip(&encoded_row) {
+            for (coordinate, &encoded_coordinate) in values.iter_mut().zip(&encoded_row) {
                 *coordinate = T::from_byte(encoded_coordinate);
             }
         } else {
@@ -397,10 +373,14 @@ pub struct LoadedDataset<T = f32> {
 
 impl<T> std::ops::Deref for LoadedDataset<T> {
     type Target = LoadedBase<T>;
-    fn deref(&self) -> &Self::Target { &self.base_data }
+    fn deref(&self) -> &Self::Target {
+        &self.base_data
+    }
 }
 impl<T> std::ops::DerefMut for LoadedDataset<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.base_data }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.base_data
+    }
 }
 
 impl<T: BaseElement> LoadedBase<T> {
@@ -451,16 +431,22 @@ impl<T: BaseElement> LoadedBase<T> {
         }
         let base_header = inspect_vector_file(&config.base, config.base_format)?;
         if base_header.dimension != config.dimension {
-            return Err(format!("base dimension {} != configured dimension {}", base_header.dimension, config.dimension));
+            return Err(format!(
+                "base dimension {} != configured dimension {}",
+                base_header.dimension, config.dimension
+            ));
         }
 
         let num_points = base_header.count.min(config.max_points);
-        if num_points == 0 || num_points > u32::MAX as usize || (!config.prepare_only && config.sweep.k > num_points) {
+        if num_points == 0
+            || num_points > u32::MAX as usize
+            || (!config.prepare_only && config.sweep.k > num_points)
+        {
             return Err("invalid point count or k (IDs must fit u32 excluding sentinel)".into());
         }
         let dimension = base_header.dimension;
 
-        super::resources::check_memory_budget(config, num_points)?;
+        crate::data::memory::check_memory_budget(config, num_points)?;
 
         let coordinate_count = num_points
             .checked_mul(dimension)
@@ -490,32 +476,58 @@ impl<T: BaseElement> LoadedBase<T> {
 impl<T: BaseElement> LoadedDataset<T> {
     pub fn load(config: &ResolvedRunConfig) -> Result<Self, String> {
         if config.prepare_only {
-            return Ok(Self { base_data: LoadedBase::load(config)?, queries: vec![], ground_truth: None });
+            return Ok(Self {
+                base_data: LoadedBase::load(config)?,
+                queries: vec![],
+                ground_truth: None,
+            });
         }
         let path = config.query.as_deref().ok_or("--query is required")?;
-        if path == Path::new("-") || !std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?.is_file() {
+        if path == Path::new("-")
+            || !std::fs::metadata(path)
+                .map_err(|e| format!("{}: {e}", path.display()))?
+                .is_file()
+        {
             return Err("sweep/diagnostics require a replayable query file; use orion for streaming queries".into());
         }
-        let report = super::resources::preflight_report(config)?;
-        super::resources::enforce_budget(&report)?;
-        let mut source = super::query::open_queries(config)?;
+        let report = crate::data::memory::preflight_report(config)?;
+        crate::data::memory::enforce_budget(&report)?;
+        let mut source = crate::data::query::open_queries(config)?;
         let mut batch = Vec::new();
         let mut queries = Vec::new();
         while source.read_batch(&mut batch, 1024)? != 0 {
             queries.extend(batch.chunks_exact(config.dimension).map(|row| row.to_vec()));
         }
-        let points = inspect_vector_file(&config.base, config.base_format)?.count.min(config.max_points);
+        let points = inspect_vector_file(&config.base, config.base_format)?
+            .count
+            .min(config.max_points);
         let ground_truth = if let Some(path) = &config.groundtruth {
             let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let mut reader = super::query::GroundTruthReader::new(BufReader::new(file), config.sweep.k, points);
+            let mut reader = crate::data::query::GroundTruthReader::new(
+                BufReader::new(file),
+                config.sweep.k,
+                points,
+            );
             let mut rows = Vec::with_capacity(queries.len());
             for _ in &queries {
-                rows.push(reader.next()?.ok_or("ground truth has fewer rows than queries")?);
+                rows.push(
+                    reader
+                        .next()?
+                        .ok_or("ground truth has fewer rows than queries")?,
+                );
             }
-            if reader.next()?.is_some() { return Err("ground truth has more rows than queries".into()); }
+            if reader.next()?.is_some() {
+                return Err("ground truth has more rows than queries".into());
+            }
             Some(rows)
-        } else { None };
-        Ok(Self { base_data: LoadedBase::load(config)?, queries, ground_truth })
+        } else {
+            None
+        };
+        Ok(Self {
+            base_data: LoadedBase::load(config)?,
+            queries,
+            ground_truth,
+        })
     }
 }
 
@@ -619,13 +631,13 @@ mod tests {
             usize::MAX,
             f32::from_le_bytes
         )
-            .is_err());
+        .is_err());
         assert!(read_dimensioned_records(
             &mut Cursor::new(&data[..data.len() - 1]),
             usize::MAX,
             f32::from_le_bytes
         )
-            .is_err());
+        .is_err());
     }
 
     #[test]

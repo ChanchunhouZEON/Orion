@@ -4,10 +4,14 @@
  */
 
 //! EE-disabled same-graph neighbor-policy experiment.
-use orion_cli::cascade;
-use orion_cli::cli;
-use orion_cli::with_supported_dimension;
-use orion_cli::utils;
+use orion_runtime::{
+    config::{cli::Args as RunArgs, ResolvedRunConfig},
+    data::{memory, LoadedDataset},
+    graph,
+};
+use orion_runtime::search::cascade;
+use orion_runtime::with_supported_dimension;
+use orion_runtime::search::utils;
 
 use clap::Parser;
 use orion::algorithm::search::diagnostics::{NeighborMode, NoopObserver, SearchTrace};
@@ -19,7 +23,7 @@ use std::{path::PathBuf, time::Instant};
 #[command(name = "adaptive")]
 struct AdaptiveArgs {
     #[command(flatten)]
-    run: cli::config::Args,
+    run: RunArgs,
     /// Evenly spaced diagnostic queries; 0 means all. Timing uses all queries.
     #[arg(long, default_value_t = 1000)]
     diagnostic_queries: usize,
@@ -54,18 +58,18 @@ fn paired_discovery(a: &[Vec<Option<usize>>], b: &[Vec<Option<usize>>]) -> Value
 
 fn run<const N: usize>(
     args: &AdaptiveArgs,
-    config: &cli::config::ResolvedRunConfig,
-    mut data: cli::data::LoadedDataset,
+    config: &ResolvedRunConfig,
+    mut data: LoadedDataset,
 ) -> Result<(), String>
 where
     [f32; N]: vector::FullPrecisionDistance<f32, N>,
 {
     if config.prepare_only {
-        cli::index::load_index::<N>(config, &mut data)?;
+        graph::load_index::<N>(config, &mut data)?;
         return Ok(());
     }
     let ground_truth = data.ground_truth.take().ok_or("this diagnostic requires --groundtruth; ordinary orion search does not")?;
-    let idx = cli::index::load_index::<N>(config, &mut data)?;
+    let idx = graph::load_index::<N>(config, &mut data)?;
 
 
     let queries: Vec<[f32; N]> = data
@@ -386,10 +390,10 @@ fn execute(args: AdaptiveArgs) -> Result<(), String> {
         return Ok(());
     }
     if args.run.preflight {
-        println!("{}", serde_json::to_string_pretty(&cli::resources::preflight_report(&config)?).map_err(|e| e.to_string())?);
+        println!("{}", serde_json::to_string_pretty(&memory::preflight_report(&config)?).map_err(|e| e.to_string())?);
         return Ok(());
     }
-    let data = cli::data::LoadedDataset::load(&config)?;
+    let data = LoadedDataset::load(&config)?;
     with_supported_dimension!(config.dimension, |D| run::<D>(&args, &config, data))
 }
 

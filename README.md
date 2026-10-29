@@ -8,7 +8,7 @@
 
 [![Apple Silicon NEON](https://img.shields.io/badge/Apple%20Silicon-NEON-success?logo=apple&logoColor=white)](docs/platforms.md)
 [![x86_64 AVX--512](https://img.shields.io/badge/x86__64-AVX--512-success?logo=intel&logoColor=white)](docs/platforms.md)
-[![PyO3 binding](https://img.shields.io/badge/PyO3-Py%203.9%2B-blue?logo=python&logoColor=white)](orion_py/)
+[![PyO3 binding](https://img.shields.io/badge/PyO3-Py%203.9%2B-blue?logo=python&logoColor=white)](orion-py/)
 [![Rust LOC](https://img.shields.io/badge/Rust-40k%20LOC-orange?logo=rust&logoColor=white)](#)
 
 Orion is an in-memory approximate nearest neighbor engine in Rust. It combines
@@ -24,6 +24,7 @@ standalone CLI is separate from the benchmark harness.
 ## Contents
 
 - [Quick start](#quick-start)
+- [Python interface](#python-interface)
 - [How search works](#how-search-works)
 - [Graph selection and caches](#graph-selection-and-caches)
 - [Measured performance](#measured-performance)
@@ -75,6 +76,38 @@ metric, dimension, construction settings, and cascade overrides:
 `--config path.yaml` selects an alternative configuration; bundled defaults are
 embedded at compile time. Ordinary `orion` consumes queries once; `orion-sweep`
 loads replayable queries and runs all requested L values/trials in one process.
+
+## Python interface
+
+[`orion-py`](orion-py/README.md) exposes the same graph preparation,
+calibration and search runtime as the CLI. Build the extension locally with
+NumPy and maturin installed:
+
+```bash
+maturin develop --manifest-path orion-py/Cargo.toml --profile python
+```
+
+```python
+import numpy as np
+from orion_py import Index
+
+index = Index.from_file("/data/base.fbin", metric="l2", threads=8)
+queries = np.load("/data/queries.npy")  # C-contiguous float32, shape (nq, dim)
+index.calibrate(queries[:200], k=10)
+result = index.search(queries, k=10, search_list_size=100)
+print(result.ids, result.counts)  # uint32 IDs (nq, k), valid counts (nq,)
+
+index.save("/data/orion-snapshot")  # New directory; base vectors remain separate.
+reopened = Index.open("/data/orion-snapshot", base="/data/base.fbin", threads=8)
+```
+
+Use `Index.from_array(base, metric="l2", threads=8)` for a NumPy base, or pass a
+vector-file path directly to `calibrate` and `search`. `GraphConfig` and
+`CascadeConfig` select graph construction and search stages. Float32 and native
+uint8 arrays are supported; native-u8 search requires a PA graph cache/export.
+Python options use dimension/metric defaults without reading CLI presets or
+legacy environment variables. See the [Python guide](orion-py/README.md) for
+supported formats, cache reuse and CLI consistency tests. Wheels are not yet published.
 
 ## How search works
 
@@ -131,40 +164,40 @@ precedence, provenance, legacy cache compatibility, and builder differences.
 
 ## Measured performance
 
-These dated results describe specific builds and protocols. They do not replace
-or regenerate the existing paper figures. Complete summaries, measured brackets,
-and provenance are in [Benchmarks](docs/benchmarks.md).
+The existing **k=10, 8-thread** panel compares QPS across recall levels on
+six datasets. These are the archived local Apple Silicon results; the figures
+and their source measurements are unchanged.
 
-**Six datasets, k=100, 2026-10-27:** local Apple Silicon/macOS, 8 threads,
-3 trials per parameter, PA-derived Orion graphs. Values below are Orion QPS
-change relative to ParlayANN, estimated by linear interpolation over measured
-recall frontiers. `—` means a target was outside a measured range.
+| SIFT | GloVe-25 |
+|---|---|
+| ![SIFT Recall@10 panel](visualizations/baseline_panel_sift.png) | ![GloVe-25 Recall@10 panel](visualizations/baseline_panel_glove25.png) |
+| **GloVe-100** | **GIST** |
+| ![GloVe-100 Recall@10 panel](visualizations/baseline_panel_glove100.png) | ![GIST Recall@10 panel](visualizations/baseline_panel_gist.png) |
+| **DEEP** | **MS-MARCO** |
+| ![DEEP Recall@10 panel](visualizations/baseline_panel_deep10m.png) | ![MS-MARCO Recall@10 panel](visualizations/baseline_panel_msmarco_bert_1M.png) |
 
-| Dataset | R=0.95 | R=0.97 | R=0.98 | R=0.99 |
+**Orion QPS / baseline QPS** at recall 0.95 and 0.99, using the same three-engine
+source data as the panels. Vamana denotes the Microsoft DiskANN in-memory
+implementation; ParlayANN denotes its Vamana implementation.
+
+| Dataset | vs Vamana @ 0.95 | vs ParlayANN @ 0.95 | vs Vamana @ 0.99 | vs ParlayANN @ 0.99 |
 |---|---:|---:|---:|---:|
-| `sift` | — | +20.99% | +6.27% | -5.90% |
-| `glove25` | +58.03% | +31.43% | +21.47% | +13.75% |
-| `glove100` | +23.65% | +2.16% | -13.99% | — |
-| `gist` | +191.75% | — | — | — |
-| `deep10m` | +11.09% | +12.19% | +8.40% | -5.50% |
-| `msmarco_bert_1M` | +165.52% | — | — | — |
+| SIFT | 3.63× | 1.26× | 3.88× | 1.20× |
+| GloVe-25 | 2.39× | 1.52× | 2.24× | 1.41× |
+| GloVe-100 | 4.29× | 1.34× | 4.23× | 1.28× |
+| GIST | 7.08× | 1.52× | 7.46× | 1.92× |
+| DEEP | 4.28× | 1.22× | 4.64× | 1.25× |
+| MS-MARCO | — | 1.29× | — | — |
 
-There are gains across much of the panel, alongside high-recall losses on
-SIFT, DEEP10M and GloVe100. The older k=10 comparison is documented separately
-because its ParlayANN measurements were historical rather than paired reruns.
+Ratios use linear QPS interpolation on each measured recall frontier, without
+extrapolation; `—` means the target is outside a measured range. Historical
+ParlayANN results retain its original tie-aware recall. The MS-MARCO Vamana
+curve does not reach 0.95 and is not assigned a speedup. Trial counts and dataset
+sizes are recorded in the [source JSON files](docs/historical-benchmarks.md).
+Reproduce the table with `python3 benchmark/scripts/readme_speedups.py`.
 
-**SIFT1B, k=10, 2026-10-27:** Xeon Platinum 8358P, 8 physical cores, 3 trials,
-Orion native-u8 with THP. The fastest measured points meeting R≥.95, .97 and .99
-were respectively **+2.45%, +20.61% and +12.87%** versus ParlayANN. At R≥.90,
-Orion was **9.82% slower**. Actual recalls differ; ParlayANN retains its original
-tie-aware metric while Orion reports ID recall. This is a threshold comparison,
-not a strict identical-recall claim.
-
-**Graph quality matters:** the 2026-10-29 study runs the same Orion binary on
-Rust-built and PA-built graphs for six datasets at k=10 and k=100. PA graphs
-usually deliver higher QPS at comparable recall; GloVe25 is close. On raw
-MS-MARCO the current Rust builder's L2 objective differs from the PA MIPS recipe,
-so its gap is not an isolated builder comparison. See [graph-source results](docs/benchmarks.md#same-engine-different-graph-sources).
+[k=100, SIFT1B and graph-source comparisons](docs/benchmarks.md) are documented
+separately with their run-specific protocols.
 
 ## Large datasets
 
@@ -212,7 +245,7 @@ causal speedup.
 ## Development and documentation
 
 ```bash
-cargo test --locked -p orion-cli
+cargo test --locked -p orion-runtime -p orion-cli
 cargo check --locked -p benchmark --bins
 cargo test --locked -p vector --release
 ```

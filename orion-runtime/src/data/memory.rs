@@ -21,10 +21,10 @@
 //! sidecars, allocator/runtime overhead, query scratch, and OS page cache.
 //! Therefore, the reported value is a lower bound and must not be interpreted
 //! as predicted peak RSS.
-use super::{
-    cache::CachePlan,
+use crate::{
     config::{GraphSource, ResolvedRunConfig, VectorStorageKind},
     data::inspect_vector_file,
+    graph::cache::CachePlan,
 };
 use std::{io::Read, path::PathBuf};
 
@@ -73,7 +73,7 @@ pub fn preflight_report(config: &ResolvedRunConfig) -> Result<serde_json::Value,
 /// always fail, so a declaration cannot hide corruption or a mismatched dataset.
 fn resolve_vector_count(
     path: &std::path::Path,
-    format: super::data::VectorFormat,
+    format: crate::data::VectorFormat,
     dimension: usize,
     declared: Option<usize>,
     offline: bool,
@@ -275,11 +275,16 @@ fn checked_mul_bytes(count: u64, bytes_per_item: u64) -> Result<u64, String> {
 /// Returns an error if the point count is invalid, graph metadata cannot be
 /// resolved, arithmetic overflows, or the memory arithmetic overflows. Budget checking uses [`enforce_budget`]
 /// after the complete report is available.
-fn estimate_resident_memory(
+pub fn estimate_resident_memory(
     config: &ResolvedRunConfig,
     num_points: usize,
 ) -> Result<serde_json::Value, String> {
-    let input = resolve_memory_inputs(config, num_points, false, "file")?;
+    let base_source = if config.base_content_id.is_some() {
+        "array"
+    } else {
+        "file"
+    };
+    let input = resolve_memory_inputs(config, num_points, false, base_source)?;
     calculate_memory(config, input)
 }
 
@@ -383,14 +388,14 @@ fn calculate_memory(
         .memory_budget_gib
         .is_some_and(|budget| accounted as f64 > budget * BYTES_PER_GIB);
     let cascade = config.search_plan().cascade();
-    let other_sidecars = cascade.prefilter != crate::cascade::PrefilterChoice::None
+    let other_sidecars = cascade.prefilter != crate::search::cascade::PrefilterChoice::None
         || !matches!(
             cascade.admission,
-            crate::cascade::AdmissionChoice::NativeL2U8
-                | crate::cascade::AdmissionChoice::L2U8
-                | crate::cascade::AdmissionChoice::AdsF32
+            crate::search::cascade::AdmissionChoice::NativeL2U8
+                | crate::search::cascade::AdmissionChoice::L2U8
+                | crate::search::cascade::AdmissionChoice::AdsF32
         )
-        || cascade.rerank == crate::cascade::RerankChoice::U16;
+        || cascade.rerank == crate::search::cascade::RerankChoice::U16;
     let mut components = serde_json::json!([
         {"name":"base vectors", "bytes":base_bytes, "basis":format!("{num_points} × {} × {} bytes + SIMD tail", config.dimension, storage.element_bytes), "phase":"resident"},
         {"name":"graph slab", "bytes":graph_bytes, "basis":format!("{num_points} × {stride_bytes} bytes/node"), "phase":"resident"},
@@ -482,9 +487,9 @@ pub fn enforce_budget(report: &serde_json::Value) -> Result<(), String> {
 /// a table. An explicit format also supports notebooks and captured terminal logs.
 pub fn print_report(
     report: &serde_json::Value,
-    format: super::config::PreflightFormat,
+    format: crate::config::PreflightFormat,
 ) -> Result<(), String> {
-    use super::config::PreflightFormat;
+    use crate::config::PreflightFormat;
     use std::io::IsTerminal;
     let table = match format {
         PreflightFormat::Auto => std::io::stdout().is_terminal(),
@@ -592,15 +597,16 @@ pub fn format_report(report: &serde_json::Value) -> String {
     text
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cli"))]
 mod tests {
     use super::*;
+
     use clap::Parser;
     #[test]
     fn offline_sweep_keeps_unknown_query_buffers_explicit() {
         let directory =
             std::env::temp_dir().join(format!("orion-offline-sweep-{}", std::process::id()));
-        let mut config = super::super::config::Args::try_parse_from(["orion", "sift1b"])
+        let mut config = crate::config::cli::Args::try_parse_from(["orion", "sift1b"])
             .unwrap()
             .resolve_for_sweep()
             .unwrap();
@@ -642,7 +648,7 @@ mod tests {
             .flat_map(u32::to_le_bytes)
             .collect();
         std::fs::write(&staged, header).unwrap();
-        let args = super::super::config::Args::try_parse_from([
+        let args = crate::config::cli::Args::try_parse_from([
             "orion",
             "sift1b",
             "--query-format",
@@ -666,7 +672,7 @@ mod tests {
 
     #[test]
     fn billion_lower_bound_and_budget_guard() {
-        let args = super::super::config::Args::try_parse_from([
+        let args = crate::config::cli::Args::try_parse_from([
             "orion",
             "--base",
             "missing-large.bvecs",

@@ -1,9 +1,9 @@
-use orion_cli::{
-    cascade::SearchMetric,
-    cli::{
-        data::VectorFormat,
+use orion_runtime::{
+    data::{
         query::{QuerySource, VectorReader},
+        VectorFormat,
     },
+    search::cascade::SearchMetric,
 };
 use std::io::{self, Cursor, Read};
 
