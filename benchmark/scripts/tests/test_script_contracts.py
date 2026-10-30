@@ -171,8 +171,12 @@ class ScriptContracts(unittest.TestCase):
         vamana.mkdir(parents=True)
         neighbor = self.executable('neighbors', record + 'print("For 10@10 recall = 0.9, QPS = 100")\n')
         neighbor.rename(vamana / 'neighbors')
-        # wiki has no build quantization flag; exercises Bash 3.2 empty-array handling.
-        data = pa / 'data/WikiAda1M'
+        # Derive the fixture directory from the maintained recipe rather than
+        # duplicating a historical directory name here.
+        recipe_dir = subprocess.check_output([
+            'bash', '-c', 'source "$1"; load_parlay_recipe wiki_ada_1M; printf "%s" "$PA_DIR_NAME"',
+            'recipe', str(SCRIPTS / '_parlay.sh')], text=True)
+        data = pa / 'data' / recipe_dir
         data.mkdir(parents=True)
         for name in ('base.fbin', 'query.fbin', 'gt.bin'):
             (data / name).write_bytes(struct.pack('<II', 42, 1))

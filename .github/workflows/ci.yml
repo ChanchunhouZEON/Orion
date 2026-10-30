@@ -96,16 +96,19 @@ jobs:
       # Explicit --target keeps SIMD flags out of host build scripts/proc macros.
       # Even on an AVX2-only host we can compile and link AVX-512 test binaries.
       - name: Compile libraries and CLI
-        run: cargo check --locked -p vector -p orion -p diskann -p orion-cli --target x86_64-unknown-linux-gnu
+        run: cargo check --locked -p vector -p orion -p diskann -p orion-cli -p orion-runtime --target x86_64-unknown-linux-gnu
       - name: Compile tests and benchmark executables
         run: |
           cargo test --locked -p vector --release --no-run --target x86_64-unknown-linux-gnu
-          cargo test --locked -p orion --release --lib --no-run --target x86_64-unknown-linux-gnu
+          cargo test --locked -p diskann --test padded_dataset --release --no-run --target x86_64-unknown-linux-gnu
+          cargo test --locked -p orion --release --lib --test dynamic_index --test dynamic_cascade --test sidecar_migration --test native_u8_search --no-run --target x86_64-unknown-linux-gnu
           cargo build --locked -p benchmark --release --bin orion-sweep --bin diskann_sweep --bin prefilter_progress --target x86_64-unknown-linux-gnu
       - name: Execute SIMD regression tests
         if: steps.cpu.outputs.supported == 'true'
         run: |
           cargo test --locked -p vector --release --target x86_64-unknown-linux-gnu -- --nocapture
+          cargo test --locked -p diskann --test padded_dataset --release --target x86_64-unknown-linux-gnu
+          cargo test --locked -p orion --release --test dynamic_index --test dynamic_cascade --test sidecar_migration --test native_u8_search --target x86_64-unknown-linux-gnu
           cargo test --locked -p orion --release --lib model::dataset --target x86_64-unknown-linux-gnu -- --nocapture
           cargo test --locked -p benchmark --release --bin diskann_sweep --bin prefilter_progress --target x86_64-unknown-linux-gnu
           DISKANN_BINARY=target/x86_64-unknown-linux-gnu/release/diskann_sweep python3 benchmark/scripts/tests/check_diskann_streaming.py
@@ -144,19 +147,21 @@ jobs:
       - name: Verify ARM runner
         run: test "$(uname -m)" = arm64
       - name: Native library and CLI checks
-        run: cargo check --locked -p vector -p orion -p diskann -p orion-cli
+        run: cargo check --locked -p vector -p orion -p diskann -p orion-cli -p orion-runtime
       - name: Native NEON regressions
         run: |
           cargo test --locked -p vector --release
+          cargo test --locked -p diskann --test padded_dataset --release
           cargo test --locked -p orion --release --lib model::dataset
+          cargo test --locked -p orion --release --test dynamic_index --test dynamic_cascade --test sidecar_migration --test native_u8_search
       - name: Cross-check AVX2 fallback
         env:
           RUSTFLAGS: '-C target-cpu=x86-64 -C target-feature=+avx2,+fma,+f16c'
-        run: cargo check --locked -p vector -p orion -p diskann -p orion-cli --target x86_64-unknown-linux-gnu
+        run: cargo check --locked -p vector -p orion -p diskann -p orion-cli -p orion-runtime --target x86_64-unknown-linux-gnu
       - name: Cross-check AVX-512
         env:
           RUSTFLAGS: '-C target-cpu=x86-64 -C target-feature=+avx2,+fma,+f16c,+avx512f,+avx512bw,+avx512dq,+avx512vl,+avx512vpopcntdq'
-        run: cargo check --locked -p vector -p orion -p diskann -p orion-cli --target x86_64-unknown-linux-gnu
+        run: cargo check --locked -p vector -p orion -p diskann -p orion-cli -p orion-runtime --target x86_64-unknown-linux-gnu
       - name: Clippy (informational)
         continue-on-error: true
         run: cargo clippy --locked -p vector --release

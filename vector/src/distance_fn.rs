@@ -61,6 +61,10 @@ pub trait DistanceFn {
     /// loops `compute_bytes / CHUNK_BYTES` times per vertex.
     const CHUNK_BYTES: usize = 32;
 
+    /// Conservative coordinate limit for exact integer accumulation. Runtime
+    /// padded APIs reject larger dimensions instead of silently wrapping.
+    const MAX_COORDINATES: usize = usize::MAX;
+
     /// Zeroed accumulator at the start of each vertex.
     fn init() -> Self::Acc;
 
@@ -101,6 +105,7 @@ pub struct L2U8Distance;
 
 #[cfg(target_arch = "aarch64")]
 impl DistanceFn for L2U8Distance {
+    const MAX_COORDINATES: usize = (u32::MAX as u64 / (255 * 255)) as usize;
     type Storage = u8;
     type Acc = uint32x4_t;
 
@@ -168,6 +173,7 @@ pub struct L2U16Distance;
 
 #[cfg(target_arch = "aarch64")]
 impl DistanceFn for L2U16Distance {
+    const MAX_COORDINATES: usize = (u64::MAX / (65535_u64 * 65535)) as usize;
     type Storage = u16;
     type Acc = (uint64x2_t, uint64x2_t, uint64x2_t, uint64x2_t);
 
@@ -316,6 +322,7 @@ pub struct IpI8Distance;
 
 #[cfg(target_arch = "aarch64")]
 impl DistanceFn for IpI8Distance {
+    const MAX_COORDINATES: usize = (i32::MAX as u64 / (128 * 128)) as usize;
     type Storage = i8;
     type Acc = int32x4_t;
 
@@ -373,6 +380,7 @@ pub struct IpI16Distance;
 
 #[cfg(target_arch = "aarch64")]
 impl DistanceFn for IpI16Distance {
+    const MAX_COORDINATES: usize = (i64::MAX as u64 / (32768_u64 * 32768)) as usize;
     type Storage = i16;
     /// 4 independent `int64x2_t` accumulators — same shape PA's
     /// well-tuned i16 kernel uses. Single-acc was the bottleneck:
@@ -534,6 +542,7 @@ use std::arch::x86_64::*;
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 impl DistanceFn for L2U8Distance {
+    const MAX_COORDINATES: usize = (u32::MAX as u64 / (255 * 255)) as usize;
     type Storage = u8;
     /// 16 i32 lanes — `_mm512_madd_epi16` produces these directly,
     /// no further widen needed (Σ at D=960 maxes at 62,424,000, within i32).
@@ -568,7 +577,7 @@ impl DistanceFn for L2U8Distance {
     }
     #[inline(always)]
     fn reduce(acc: Self::Acc) -> f32 {
-        unsafe { _mm512_reduce_add_epi32(acc) as f32 }
+        unsafe { _mm512_reduce_add_epi32(acc) as u32 as f32 }
     }
     #[inline(always)]
     fn merge(into: &mut Self::Acc, src: Self::Acc) {
@@ -578,10 +587,9 @@ impl DistanceFn for L2U8Distance {
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 impl DistanceFn for L2U16Distance {
+    const MAX_COORDINATES: usize = (u64::MAX / (65535_u64 * 65535)) as usize;
     type Storage = u16;
-    /// 4 independent i64 chains (same shape as the NEON path) —
-    /// VPMADDWD produces 16 i32 per half, widen to i64 via
-    /// `_mm512_cvtepi32_epi64` (two halves × 8 lanes each).
+    /// Four independent u64 chains, matching the NEON accumulation width.
     type Acc = (__m512i, __m512i, __m512i, __m512i);
     const CHUNK_BYTES: usize = 64;
 
@@ -598,61 +606,37 @@ impl DistanceFn for L2U16Distance {
     }
     #[inline(always)]
     unsafe fn step(acc: &mut Self::Acc, base_chunk: *const u16, query_chunk: *const u16) {
-        // 64 B = 32 u16 = two 512-bit loads.
-        let a_lo = _mm512_loadu_si512(base_chunk as *const __m512i);
-        let a_hi = _mm512_loadu_si512(base_chunk.add(16) as *const __m512i);
-        let q_lo = _mm512_loadu_si512(query_chunk as *const __m512i);
-        let q_hi = _mm512_loadu_si512(query_chunk.add(16) as *const __m512i);
-
-        // Per-lane abs-diff via signed sub on widened i32. For u16
-        // |a-b| ≤ 65535 fits in i32 but the signed sub at i16 width
-        // could underflow — we widen to i32 first to keep the math
-        // straightforward.
-        let aw_lo_lo = _mm512_cvtepu16_epi32(_mm512_castsi512_si256(a_lo));
-        let aw_lo_hi = _mm512_cvtepu16_epi32(_mm512_extracti64x4_epi64(a_lo, 1));
-        let aw_hi_lo = _mm512_cvtepu16_epi32(_mm512_castsi512_si256(a_hi));
-        let aw_hi_hi = _mm512_cvtepu16_epi32(_mm512_extracti64x4_epi64(a_hi, 1));
-        let qw_lo_lo = _mm512_cvtepu16_epi32(_mm512_castsi512_si256(q_lo));
-        let qw_lo_hi = _mm512_cvtepu16_epi32(_mm512_extracti64x4_epi64(q_lo, 1));
-        let qw_hi_lo = _mm512_cvtepu16_epi32(_mm512_castsi512_si256(q_hi));
-        let qw_hi_hi = _mm512_cvtepu16_epi32(_mm512_extracti64x4_epi64(q_hi, 1));
-
-        let d0 = _mm512_sub_epi32(aw_lo_lo, qw_lo_lo);
-        let d1 = _mm512_sub_epi32(aw_lo_hi, qw_lo_hi);
-        let d2 = _mm512_sub_epi32(aw_hi_lo, qw_hi_lo);
-        let d3 = _mm512_sub_epi32(aw_hi_hi, qw_hi_hi);
-
-        // i32 * i32 → i64 element-wise. AVX-512 has `_mm512_mul_epi32`
-        // which multiplies even lanes; we use `_mm512_mullo_epi32` to
-        // produce 16 i32 lanes (low 32 of i64 product), then widen.
-        // For our range (|d| ≤ 65535) the i32 product (≤ 2^32) fits in
-        // i64 cleanly.
+        // Exactly 64 B = two 256-bit loads of 16 u16 coordinates.
+        // Loading 512 bits at offsets 0 and 16 would overlap half a chunk
+        // and read beyond the final padded row.
+        let a0 = _mm512_cvtepu16_epi32(_mm256_loadu_si256(base_chunk.cast()));
+        let a1 = _mm512_cvtepu16_epi32(_mm256_loadu_si256(base_chunk.add(16).cast()));
+        let q0 = _mm512_cvtepu16_epi32(_mm256_loadu_si256(query_chunk.cast()));
+        let q1 = _mm512_cvtepu16_epi32(_mm256_loadu_si256(query_chunk.add(16).cast()));
+        let d0 = _mm512_sub_epi32(a0, q0);
+        let d1 = _mm512_sub_epi32(a1, q1);
         let p0 = _mm512_mullo_epi32(d0, d0);
         let p1 = _mm512_mullo_epi32(d1, d1);
-        let p2 = _mm512_mullo_epi32(d2, d2);
-        let p3 = _mm512_mullo_epi32(d3, d3);
 
-        // Widen i32 → i64 for accumulation, splitting each 16-lane
-        // i32 vec into low + high halves (8 i64 each).
-        macro_rules! widen_add {
-            ($dst:expr, $p:expr) => {{
-                let lo = _mm512_cvtepi32_epi64(_mm512_castsi512_si256($p));
-                let hi = _mm512_cvtepi32_epi64(_mm512_extracti64x4_epi64($p, 1));
-                $dst = _mm512_add_epi64($dst, lo);
-                $dst = _mm512_add_epi64($dst, hi);
-            }};
-        }
-        widen_add!(acc.0, p0);
-        widen_add!(acc.1, p1);
-        widen_add!(acc.2, p2);
-        widen_add!(acc.3, p3);
+        // A squared u16 difference can exceed i32::MAX. Zero-extend the
+        // unsigned product into four independent 64-bit accumulator chains.
+        acc.0 = _mm512_add_epi64(acc.0, _mm512_cvtepu32_epi64(_mm512_castsi512_si256(p0)));
+        acc.1 = _mm512_add_epi64(
+            acc.1,
+            _mm512_cvtepu32_epi64(_mm512_extracti64x4_epi64(p0, 1)),
+        );
+        acc.2 = _mm512_add_epi64(acc.2, _mm512_cvtepu32_epi64(_mm512_castsi512_si256(p1)));
+        acc.3 = _mm512_add_epi64(
+            acc.3,
+            _mm512_cvtepu32_epi64(_mm512_extracti64x4_epi64(p1, 1)),
+        );
     }
     #[inline(always)]
     fn reduce(acc: Self::Acc) -> f32 {
         unsafe {
             let s01 = _mm512_add_epi64(acc.0, acc.1);
             let s23 = _mm512_add_epi64(acc.2, acc.3);
-            _mm512_reduce_add_epi64(_mm512_add_epi64(s01, s23)) as f32
+            _mm512_reduce_add_epi64(_mm512_add_epi64(s01, s23)) as u64 as f32
         }
     }
     #[inline(always)]
@@ -707,6 +691,7 @@ impl DistanceFn for JLHammingDistance {
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 impl DistanceFn for IpI8Distance {
+    const MAX_COORDINATES: usize = (i32::MAX as u64 / (128 * 128)) as usize;
     type Storage = i8;
     /// 16 i32 lanes — VPMADDWD output. Σ at D=960 maxes ≈ 15.5 M,
     /// well within i32.
@@ -746,9 +731,9 @@ impl DistanceFn for IpI8Distance {
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 impl DistanceFn for IpI16Distance {
+    const MAX_COORDINATES: usize = (i64::MAX as u64 / (32768_u64 * 32768)) as usize;
     type Storage = i16;
-    /// 4 independent i64 chains, same shape as NEON. VPMADDWD →
-    /// 16 i32 lanes per pair, widen + accumulate into i64.
+    /// Four independent i64 chains, widening each signed product before sum.
     type Acc = (__m512i, __m512i, __m512i, __m512i);
     const CHUNK_BYTES: usize = 64;
 
@@ -765,24 +750,25 @@ impl DistanceFn for IpI16Distance {
     }
     #[inline(always)]
     unsafe fn step(acc: &mut Self::Acc, base_chunk: *const i16, query_chunk: *const i16) {
-        let a_lo = _mm512_loadu_si512(base_chunk as *const __m512i);
-        let a_hi = _mm512_loadu_si512(base_chunk.add(16) as *const __m512i);
-        let q_lo = _mm512_loadu_si512(query_chunk as *const __m512i);
-        let q_hi = _mm512_loadu_si512(query_chunk.add(16) as *const __m512i);
-
-        let m0 = _mm512_madd_epi16(a_lo, q_lo);
-        let m1 = _mm512_madd_epi16(a_hi, q_hi);
-
-        // Widen i32 → i64 and dispatch across 4 acc chains.
-        let m0_lo = _mm512_cvtepi32_epi64(_mm512_castsi512_si256(m0));
-        let m0_hi = _mm512_cvtepi32_epi64(_mm512_extracti64x4_epi64(m0, 1));
-        let m1_lo = _mm512_cvtepi32_epi64(_mm512_castsi512_si256(m1));
-        let m1_hi = _mm512_cvtepi32_epi64(_mm512_extracti64x4_epi64(m1, 1));
-
-        acc.0 = _mm512_add_epi64(acc.0, m0_lo);
-        acc.1 = _mm512_add_epi64(acc.1, m0_hi);
-        acc.2 = _mm512_add_epi64(acc.2, m1_lo);
-        acc.3 = _mm512_add_epi64(acc.3, m1_hi);
+        // Widen before multiplication: madd_epi16 would overflow its
+        // signed pair sum for two (-32768 * -32768) products.
+        // Two 256-bit loads cover exactly this kernel's 64-byte chunk.
+        let a0 = _mm512_cvtepi16_epi32(_mm256_loadu_si256(base_chunk.cast()));
+        let a1 = _mm512_cvtepi16_epi32(_mm256_loadu_si256(base_chunk.add(16).cast()));
+        let q0 = _mm512_cvtepi16_epi32(_mm256_loadu_si256(query_chunk.cast()));
+        let q1 = _mm512_cvtepi16_epi32(_mm256_loadu_si256(query_chunk.add(16).cast()));
+        let p0 = _mm512_mullo_epi32(a0, q0);
+        let p1 = _mm512_mullo_epi32(a1, q1);
+        acc.0 = _mm512_add_epi64(acc.0, _mm512_cvtepi32_epi64(_mm512_castsi512_si256(p0)));
+        acc.1 = _mm512_add_epi64(
+            acc.1,
+            _mm512_cvtepi32_epi64(_mm512_extracti64x4_epi64(p0, 1)),
+        );
+        acc.2 = _mm512_add_epi64(acc.2, _mm512_cvtepi32_epi64(_mm512_castsi512_si256(p1)));
+        acc.3 = _mm512_add_epi64(
+            acc.3,
+            _mm512_cvtepi32_epi64(_mm512_extracti64x4_epi64(p1, 1)),
+        );
     }
     #[inline(always)]
     fn reduce(acc: Self::Acc) -> f32 {
@@ -866,6 +852,7 @@ impl DistanceFn for L2F32Distance {
     all(target_arch = "x86_64", target_feature = "avx512f")
 )))]
 impl DistanceFn for L2U8Distance {
+    const MAX_COORDINATES: usize = (u32::MAX as u64 / (255 * 255)) as usize;
     type Storage = u8;
     type Acc = u32;
     #[inline(always)]
@@ -899,6 +886,7 @@ impl DistanceFn for L2U8Distance {
     all(target_arch = "x86_64", target_feature = "avx512f")
 )))]
 impl DistanceFn for L2U16Distance {
+    const MAX_COORDINATES: usize = (u64::MAX / (65535_u64 * 65535)) as usize;
     type Storage = u16;
     type Acc = u64;
     #[inline(always)]
@@ -956,6 +944,7 @@ impl DistanceFn for JLHammingDistance {
     all(target_arch = "x86_64", target_feature = "avx512f")
 )))]
 impl DistanceFn for IpI8Distance {
+    const MAX_COORDINATES: usize = (i32::MAX as u64 / (128 * 128)) as usize;
     type Storage = i8;
     type Acc = i32;
     #[inline(always)]
@@ -983,6 +972,7 @@ impl DistanceFn for IpI8Distance {
     all(target_arch = "x86_64", target_feature = "avx512f")
 )))]
 impl DistanceFn for IpI16Distance {
+    const MAX_COORDINATES: usize = (i64::MAX as u64 / (32768_u64 * 32768)) as usize;
     type Storage = i16;
     type Acc = i64;
     #[inline(always)]

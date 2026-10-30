@@ -65,11 +65,11 @@ where
     [f32; N]: vector::FullPrecisionDistance<f32, N>,
 {
     if config.prepare_only {
-        graph::load_index::<N>(config, &mut data)?;
+        graph::load_index(config, &mut data)?;
         return Ok(());
     }
     let ground_truth = data.ground_truth.take().ok_or("this diagnostic requires --groundtruth; ordinary orion search does not")?;
-    let idx = graph::load_index::<N>(config, &mut data)?;
+    let idx = graph::load_index(config, &mut data)?;
 
 
     let queries: Vec<[f32; N]> = data
@@ -90,7 +90,7 @@ where
     let calib = pool
         .install(|| {
             idx.calibrate(
-                &queries[..settings.calibration_samples.min(queries.len())],
+                queries[..settings.calibration_samples.min(queries.len())].as_flattened(),
                 settings.calibration_l,
                 config.window_size,
                 orion::CalibrationConfig {

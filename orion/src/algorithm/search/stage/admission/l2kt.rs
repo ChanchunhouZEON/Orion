@@ -22,20 +22,23 @@ use crate::model::{L2KTDataset, Neighbor};
 /// The sink performs the reconstruction inline; the norms slab is
 /// prefetched alongside the i8 base via
 /// [`vector::DistanceStream::with_aux`].
-pub struct L2KTAdmission<'a, const N: usize> {
-    pub dataset: &'a L2KTDataset<N>,
+pub struct L2KTAdmission<'a> {
+    pub dataset: &'a L2KTDataset,
 }
 
-impl<'a, const N: usize> L2KTAdmission<'a, N> {
+impl<'a> L2KTAdmission<'a> {
     #[inline]
-    pub fn new(dataset: &'a L2KTDataset<N>) -> Self {
+    pub fn new(dataset: &'a L2KTDataset) -> Self {
         Self { dataset }
     }
 }
 
-impl<'a, const N: usize> AdmissionStage<N> for L2KTAdmission<'a, N> {
+impl<'a> AdmissionStage for L2KTAdmission<'a> {
+    fn shape(&self) -> Option<(usize, usize)> {
+        Some((self.dataset.dimension, self.dataset.num_vertices))
+    }
     #[inline]
-    fn open<'b>(&'b self, q: &[f32; N]) -> Box<dyn AdmissionSession + 'b> {
+    fn open<'b>(&'b self, q: &[f32]) -> Box<dyn AdmissionSession + 'b> {
         let padded = self.dataset.quantize_query_padded(q);
         let q_norm_sq = self.dataset.query_norm_sq(&padded) as f32;
         Box::new(L2KTSession {
@@ -48,17 +51,17 @@ impl<'a, const N: usize> AdmissionStage<N> for L2KTAdmission<'a, N> {
 
 /// Per-query L2-KT session: padded i8 query + scalar `q_norm_sq` for
 /// the sink-side reconstruction.
-pub struct L2KTSession<'a, const N: usize> {
-    dataset: &'a L2KTDataset<N>,
+pub struct L2KTSession<'a> {
+    dataset: &'a L2KTDataset,
     padded: Vec<i8>,
     q_norm_sq: f32,
 }
 
-impl<'a, const N: usize> AdmissionSession for L2KTSession<'a, N> {
+impl<'a> AdmissionSession for L2KTSession<'a> {
     #[inline]
     fn entry_distance(&self, vid: u32) -> f32 {
         use vector::DistanceFn;
-        let stride_elems = L2KTDataset::<N>::STRIDE;
+        let stride_elems = self.dataset.stride;
         unsafe {
             let v_ptr = self
                 .dataset
@@ -66,10 +69,11 @@ impl<'a, const N: usize> AdmissionSession for L2KTSession<'a, N> {
                 .as_slice()
                 .as_ptr()
                 .add(vid as usize * stride_elems);
-            let chunks = stride_elems / 32;
+            let block = vector::IpI8Distance::CHUNK_BYTES;
+            let chunks = stride_elems / block;
             let mut acc = vector::IpI8Distance::init();
             for c in 0..chunks {
-                let off = c * 32;
+                let off = c * block;
                 vector::IpI8Distance::step(&mut acc, v_ptr.add(off), self.padded.as_ptr().add(off));
             }
             let neg_ip = vector::IpI8Distance::reduce(acc);
@@ -86,7 +90,7 @@ impl<'a, const N: usize> AdmissionSession for L2KTSession<'a, N> {
         cutoff: f32,
         lookahead_lines: usize,
     ) -> usize {
-        let stride_bytes = L2KTDataset::<N>::STRIDE;
+        let stride_bytes = self.dataset.stride;
         let base_ptr = self.dataset.data.as_slice().as_ptr() as *const u8;
         let query_ptr = self.padded.as_ptr() as *const u8;
         let x_norms_ptr = self.dataset.norms_sq.as_slice().as_ptr();
@@ -94,7 +98,7 @@ impl<'a, const N: usize> AdmissionSession for L2KTSession<'a, N> {
 
         let mut w = 0usize;
         unsafe {
-            vector::DistanceStream::<vector::IpI8Distance, N>::new(
+            vector::DistanceStream::<vector::IpI8Distance>::new(
                 base_ptr,
                 stride_bytes,
                 stride_bytes,
@@ -125,7 +129,7 @@ mod tests {
         for (i, v) in ds.data.as_mut_slice().iter_mut().enumerate() {
             *v = ((i % 11) as f32) * 0.08 - 0.4;
         }
-        let kt = L2KTDataset::<16>::build_from(&ds);
+        let kt = L2KTDataset::build_from(&ds);
         let adm = L2KTAdmission::new(&kt);
         let q = [0.0f32; 16];
         let session = adm.open(&q);

@@ -21,8 +21,12 @@ impl<'a, const N: usize> NativeU8Admission<'a, N> {
     }
 }
 
-impl<const N: usize> AdmissionStage<N> for NativeU8Admission<'_, N> {
-    fn open<'a>(&'a self, query: &[f32; N]) -> Box<dyn AdmissionSession + 'a> {
+impl<const N: usize> AdmissionStage for NativeU8Admission<'_, N> {
+    fn shape(&self) -> Option<(usize, usize)> {
+        Some((N, self.dataset.num_active_pts))
+    }
+    fn open<'a>(&'a self, query: &[f32]) -> Box<dyn AdmissionSession + 'a> {
+        let query: &[f32; N] = query.try_into().expect("query dimension mismatch");
         // The stage interface uses f32 queries. Reject fractional/out-of-range
         // values instead of silently turning exact search into quantization.
         assert!(
@@ -59,7 +63,7 @@ impl<const N: usize> AdmissionSession for NativeU8Session<'_, N> {
     ) -> usize {
         let mut w = 0;
         unsafe {
-            vector::DistanceStream::<vector::L2U8Distance, N>::new(
+            vector::DistanceStream::<vector::L2U8Distance>::new(
                 self.dataset.data.as_ptr(),
                 N,
                 N,

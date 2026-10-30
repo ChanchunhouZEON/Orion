@@ -13,20 +13,23 @@ use super::{PrefilterSession, PrefilterStage};
 use crate::model::dataset::jl_hadamard_dataset::JlHadamardDataset;
 
 /// Wraps a [`JlHadamardDataset`] for use as a [`super::PrefilterStage`].
-pub struct JlHadamardPrefilter<'a, const N: usize> {
-    pub dataset: &'a JlHadamardDataset<N, 1024>,
+pub struct JlHadamardPrefilter<'a> {
+    pub dataset: &'a JlHadamardDataset,
 }
 
-impl<'a, const N: usize> JlHadamardPrefilter<'a, N> {
+impl<'a> JlHadamardPrefilter<'a> {
     #[inline]
-    pub fn new(dataset: &'a JlHadamardDataset<N, 1024>) -> Self {
+    pub fn new(dataset: &'a JlHadamardDataset) -> Self {
         Self { dataset }
     }
 }
 
-impl<'a, const N: usize> PrefilterStage<N> for JlHadamardPrefilter<'a, N> {
+impl<'a> PrefilterStage for JlHadamardPrefilter<'a> {
+    fn shape(&self) -> Option<(usize, usize)> {
+        Some((self.dataset.dimension, self.dataset.num_vertices))
+    }
     #[inline]
-    fn open<'b>(&'b self, q: &[f32; N]) -> Box<dyn PrefilterSession + 'b> {
+    fn open<'b>(&'b self, q: &[f32]) -> Box<dyn PrefilterSession + 'b> {
         Box::new(JlHadamardSession {
             dataset: self.dataset,
             query: self.dataset.encode_query(q),
@@ -35,13 +38,13 @@ impl<'a, const N: usize> PrefilterStage<N> for JlHadamardPrefilter<'a, N> {
 }
 
 /// Per-query JL Hadamard session.
-pub struct JlHadamardSession<'a, const N: usize> {
-    dataset: &'a JlHadamardDataset<N, 1024>,
+pub struct JlHadamardSession<'a> {
+    dataset: &'a JlHadamardDataset,
     query: Box<[u8]>,
 }
 
-impl<'a, const N: usize> PrefilterSession for JlHadamardSession<'a, N> {
-    /// In-place cmov-compact via `DistanceStream<JLHammingDistance, N>`.
+impl<'a> PrefilterSession for JlHadamardSession<'a> {
+    /// In-place cmov-compact via `DistanceStream<JLHammingDistance>`.
     /// Same kernel as the JL Sparse prefilter — byte layout matches
     /// (LSB-first bit-packed sign codes).
     #[inline]
@@ -65,7 +68,7 @@ impl<'a, const N: usize> PrefilterSession for JlHadamardSession<'a, N> {
 
         let mut w = 0usize;
         unsafe {
-            vector::DistanceStream::<vector::JLHammingDistance, N>::new(
+            vector::DistanceStream::<vector::JLHammingDistance>::new(
                 base_ptr,
                 stride_bytes,
                 stride_bytes,

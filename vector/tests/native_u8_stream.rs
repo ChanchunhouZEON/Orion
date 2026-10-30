@@ -55,7 +55,7 @@ fn check_stream<const N: usize>() {
             for lookahead in [1, 10, 64] {
                 let mut actual = Vec::new();
                 unsafe {
-                    DistanceStream::<L2U8Distance, N>::new(
+                    DistanceStream::<L2U8Distance>::new(
                         base.as_ptr(),
                         N,
                         N,

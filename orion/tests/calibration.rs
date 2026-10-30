@@ -1,5 +1,5 @@
 use diskann::model::InmemDataset;
-use orion::{CalibrationConfig, CalibrationMetric, Orion};
+use orion::{CalibrationConfig, CalibrationMetric, StaticOrion};
 
 const DIM: usize = 32;
 const POINTS: usize = 128;
@@ -28,7 +28,7 @@ fn calibration_beam_policy_preserves_base_and_adds_headroom() {
     assert_eq!(calls, 2);
 }
 
-fn fixture() -> (Orion<DIM>, [[f32; DIM]; 1]) {
+fn fixture() -> (StaticOrion<DIM>, [[f32; DIM]; 1]) {
     let mut flat = vec![0.0; POINTS * DIM];
     for i in 0..POINTS {
         flat[i * DIM] = (i + 10) as f32;
@@ -48,7 +48,7 @@ fn fixture() -> (Orion<DIM>, [[f32; DIM]; 1]) {
             (local, vec![], vec![])
         })
         .collect();
-    let index = Orion::new(dataset, &partitions, 0, 1, 0, None, None, None, false);
+    let index = StaticOrion::new(dataset, &partitions, 0, 1, 0, None, None, None, false);
     let mut query = [0.0; DIM];
     query[0] = 1.0;
     (index, [query])

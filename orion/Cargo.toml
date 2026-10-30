@@ -8,6 +8,7 @@ default = []
 indicatif = ["dep:indicatif"]
 
 [dependencies]
+bytemuck = { workspace = true }
 platform = { path = "../platform" }
 vector = { path = "../vector" }
 diskann = { path = "../diskann", features = ["orion"]}

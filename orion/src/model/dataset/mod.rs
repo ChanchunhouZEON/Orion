@@ -10,7 +10,7 @@
 //!
 //! ## Members
 //!
-//! - [`quantized_dataset`] — generic `QuantizedDataset<Q, N>` over the
+//! - [`quantized_dataset`] — generic `QuantizedDataset<Q>` over the
 //!   [`QuantSpec`] trait. Three impls ship today: [`L2U8`] (SIFT/GIST
 //!   L2-u8 prefilter), [`MipsI8`] (glove100 MIPS-Q i8 beam), and
 //!   [`MipsI16`] (PA-style i16 beam). All three share the same slab
@@ -38,3 +38,5 @@ pub use quantized_dataset::{
     L2U8, L2U16, MipsI8, MipsI16, QuantParamsL2, QuantParamsMips, QuantSpec, QuantizedDataset,
 };
 pub use rabitq_b4_dataset::{RABITQ_B4_MAGIC, RabitQ4Dataset, rabitq_b4_code_stride};
+
+pub mod rows;

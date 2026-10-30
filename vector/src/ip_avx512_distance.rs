@@ -24,7 +24,14 @@ unsafe fn reduce_add_ps(v: __m512) -> f32 {
 /// 16-wide. See module docstring for unroll factor rationale.
 #[inline(never)]
 pub fn distance_ip_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32 {
-    debug_assert_eq!(N % 4, 0);
+    distance_ip_slice_f32(a, b)
+}
+
+#[inline(always)]
+pub fn distance_ip_slice_f32(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len());
+    let n = a.len();
+
     unsafe {
         let mut s0 = _mm512_setzero_ps();
         let mut s1 = _mm512_setzero_ps();
@@ -35,7 +42,7 @@ pub fn distance_ip_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
         let b_ptr = b.as_ptr();
 
         const PF_AHEAD: usize = 4;
-        let chunks = N / 64;
+        let chunks = n / 64;
         for i in 0..chunks {
             let offset = i * 64;
             if i + PF_AHEAD < chunks {
@@ -61,13 +68,13 @@ pub fn distance_ip_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
         }
 
         let mut tail = chunks * 64;
-        while tail + 16 <= N {
+        while tail + 16 <= n {
             let av = _mm512_loadu_ps(a_ptr.add(tail));
             let bv = _mm512_loadu_ps(b_ptr.add(tail));
             s0 = _mm512_fmadd_ps(av, bv, s0);
             tail += 16;
         }
-        let residue = N - tail;
+        let residue = n - tail;
         if residue > 0 {
             let mask: __mmask16 = ((1u32 << residue) - 1) as __mmask16;
             let av = _mm512_maskz_loadu_ps(mask, a_ptr.add(tail));

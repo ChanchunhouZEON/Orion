@@ -6,7 +6,7 @@ use orion::algorithm::search::stage::prefilter::NoPrefilter;
 use orion::algorithm::search::stage::rerank::{F32Rerank, NoRerank};
 use orion::algorithm::search::stage::{AdmissionSession, AdmissionStage};
 use orion::model::Neighbor;
-use orion::{CalibrationConfig, CalibrationMetric, Orion, PhasedGraph};
+use orion::{CalibrationConfig, CalibrationMetric, StaticOrion, PhasedGraph};
 
 const DIM: usize = 128;
 const COUNT: usize = 64;
@@ -42,8 +42,9 @@ struct FloatSession<'a> {
     dataset: &'a InmemDataset<f32, DIM>,
     query: [f32; DIM],
 }
-impl AdmissionStage<DIM> for ExactFloat<'_> {
-    fn open<'a>(&'a self, query: &[f32; DIM]) -> Box<dyn AdmissionSession + 'a> {
+impl AdmissionStage for ExactFloat<'_> {
+    fn open<'a>(&'a self, query: &[f32]) -> Box<dyn AdmissionSession + 'a> {
+        let query: &[f32; DIM] = query.try_into().unwrap();
         Box::new(FloatSession {
             dataset: self.0,
             query: *query,
@@ -119,8 +120,8 @@ fn native_admission_scores_and_cutoffs_equal_full_precision_without_rescaling() 
 fn native_storage_preserves_calibration_search_and_local_extra_expansion() {
     let (bytes, floats) = datasets();
     let pointer = bytes.data.as_ptr();
-    let native = Orion::from_phased_graph(bytes, graph(), 0, None, None);
-    let reference = Orion::from_phased_graph(floats, graph(), 0, None, None);
+    let native = StaticOrion::from_phased_graph(bytes, graph(), 0, None, None);
+    let reference = StaticOrion::from_phased_graph(floats, graph(), 0, None, None);
     assert_eq!(native.dataset.data.as_ptr(), pointer);
     assert_eq!(native.dataset.data.len(), COUNT * DIM + 64);
     let queries: Vec<[f32; DIM]> = [7, 13, 41]

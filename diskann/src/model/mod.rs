@@ -3,7 +3,7 @@ pub use neighbor::Neighbor;
 pub use neighbor::NeighborPriorityQueue;
 
 pub mod data_store;
-pub use data_store::InmemDataset;
+pub use data_store::{InmemDataset, PaddedDataset};
 
 pub mod graph;
 pub use graph::BidirIter;

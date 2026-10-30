@@ -73,6 +73,35 @@ impl SearchPlan {
         cascade: Cascade,
         graph_source: GraphSource,
     ) -> Result<Self, String> {
+        match vector_storage {
+            VectorStorageKind::F32 => {
+                vector::PaddedLayout::for_kernel::<vector::L2F32Distance>(dimension)?;
+            }
+            VectorStorageKind::U8 => {
+                vector::PaddedLayout::for_kernel::<vector::L2U8Distance>(dimension)?;
+            }
+        }
+
+        // Quantized stages also have accumulator bounds. Check them before
+        // allocating the base instead of letting lazy sidecar fitting panic.
+        if vector_storage == VectorStorageKind::F32 {
+            match cascade.admission {
+                AdmissionChoice::L2U8 => {
+                    vector::PaddedLayout::for_kernel::<vector::L2U8Distance>(dimension)?;
+                }
+                AdmissionChoice::L2U16 => {
+                    vector::PaddedLayout::for_kernel::<vector::L2U16Distance>(dimension)?;
+                }
+                AdmissionChoice::MipsI8 | AdmissionChoice::L2Kt => {
+                    vector::PaddedLayout::for_kernel::<vector::IpI8Distance>(dimension)?;
+                }
+                AdmissionChoice::MipsI16 => {
+                    vector::PaddedLayout::for_kernel::<vector::IpI16Distance>(dimension)?;
+                }
+                _ => {}
+            }
+        }
+
         // The conventional f32 path accepts the configured cascade unchanged.
         //
         // `NativeL2U8`, however, means "score directly against a resident u8
@@ -89,14 +118,10 @@ impl SearchPlan {
             };
         }
 
-        // Native u8 execution currently has a deliberately narrow contract:
-        // SIFT-style 128-dimensional vectors under the L2 metric. Keeping this
-        // restriction here ensures downstream code can rely on those invariants
-        // without branching again.
-        if dimension != 128 || metric != SearchMetric::L2 {
-            return Err("native u8 storage currently requires \
-                 128-dimensional L2 vectors"
-                .into());
+        // Native byte distances support runtime dimensions but retain exact L2
+        // semantics; they do not implicitly quantize or normalize coordinates.
+        if metric != SearchMetric::L2 {
+            return Err("native u8 storage requires L2 vectors".into());
         }
 
         // Native byte storage must come from byte-encoded inputs directly.

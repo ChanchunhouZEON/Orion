@@ -19,24 +19,24 @@
 //! → bit-level signal is noisy. The HDHD construction (Ailon-Chazelle
 //! 2006) makes each output bit a sign of a Gaussian-like sum over
 //! **all D dims**, jumping per-bit information content from ~3
-//! effective bits to ~7+. Same byte budget (D_PAD bits = 128 B/vert
+//! effective bits to ~7+. Same byte budget (d_pad bits = 128 B/vert
 //! on GIST) → tighter Hamming-vs-true-L2 correlation → more
 //! discriminative cutoff at iso-recall.
 //!
 //! ## FLOP budget
 //!
-//! Per encode (vertex or query) at D=960, D_PAD=1024:
+//! Per encode (vertex or query) at D=960, d_pad=1024:
 //!   * 3 × FWHT-1024 = 3 × 1024 × 10 ≈ 30,720 add/sub ops
-//!   * 3 × D_PAD sign-flip multiplies ≈ 3,072
-//!   * 1 × D_PAD comparisons + bit-packing ≈ 1,024
+//!   * 3 × d_pad sign-flip multiplies ≈ 3,072
+//!   * 1 × d_pad comparisons + bit-packing ≈ 1,024
 //!   * Total ≈ 34k FLOPs, ~15-25µs scalar.
 //!
 //! JL Sparse: ~6k FLOPs / ~7µs setup. Hadamard pays 2-3× the setup
 //! for dense-per-bit signal — still <1% of total wall-time at L=192.
 
+use super::rows::F32Rows;
 use diskann::common::ANNResult;
 use diskann::common::AlignedBoxWithSlice;
-use diskann::model::InmemDataset;
 use rayon::prelude::*;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -58,12 +58,18 @@ pub const fn next_pow2(n: usize) -> usize {
     p
 }
 
-/// Per-vertex code stride in bytes — derived from `D_PAD` plus a
-/// floor at 32 bytes so the `JLHammingDistance` NEON kernel
-/// (32-byte chunk) never reads past the buffer end. Padding bytes
+/// Per-vertex code stride in bytes — derived from `d_pad` plus a
+/// floor at one `JLHammingDistance` block so neither NEON nor AVX-512
+/// reads past the buffer end. Padding bytes
 /// XOR to zero between matched queries / codes (both stay all-zero
 /// in the tail), so the padding doesn't bias Hamming distance.
 pub const fn jl_hadamard_stride(d_pad: usize) -> usize {
+    let bytes = jl_hadamard_stride_disk(d_pad);
+    let block = <vector::JLHammingDistance as vector::DistanceFn>::CHUNK_BYTES;
+    bytes.div_ceil(block) * block
+}
+
+pub const fn jl_hadamard_stride_disk(d_pad: usize) -> usize {
     let raw = (d_pad + 7) / 8;
     let floored = if raw < 32 { 32 } else { raw };
     (floored + 15) & !15
@@ -71,16 +77,17 @@ pub const fn jl_hadamard_stride(d_pad: usize) -> usize {
 
 /// JL Hadamard signature dataset.
 ///
-/// Generic over the source f32 dim `N` and the padded FWHT length
-/// `D_PAD` (must be a power of two ≥ `N`). For datasets whose `N` is
-/// already a power of two, `D_PAD == N`.
-pub struct JlHadamardDataset<const N: usize, const D_PAD: usize> {
+/// Both the logical input dimension and FWHT output length are runtime values.
+/// Default recipes keep 1024 output bits through dimension 1024, then use the
+/// next power of two. `build_with_padding` selects an explicit output width.
+pub struct JlHadamardDataset {
+    pub dimension: usize,
+    pub d_pad: usize,
     /// Packed sign bits, `num_vertices × STRIDE` bytes, 16-byte
     /// aligned. Bit `i` of byte `b` encodes signature bit `b × 8 + i`.
     pub codes: AlignedBoxWithSlice<u8>,
-    /// First `±1` sign-flip diagonal, length `D_PAD`. Stored as `i8`
-    /// for cache compactness (3 × D_PAD bytes for all three signs <
-    /// 1 cache line at D_PAD=1024).
+    /// First `±1` sign-flip diagonal, length `d_pad`. Stored as `i8`
+    /// for cache compactness (3 × d_pad bytes for all three signs).
     pub signs1: Vec<i8>,
     pub signs2: Vec<i8>,
     pub signs3: Vec<i8>,
@@ -91,26 +98,33 @@ pub struct JlHadamardDataset<const N: usize, const D_PAD: usize> {
     pub seed: u64,
 }
 
-impl<const N: usize, const D_PAD: usize> JlHadamardDataset<N, D_PAD> {
-    pub const STRIDE: usize = jl_hadamard_stride(D_PAD);
-
+impl JlHadamardDataset {
     /// Build the signature dataset from an `InmemDataset`. Parallelised
     /// over vertices via rayon. Deterministic for a given seed.
-    pub fn build_from(dataset: &InmemDataset<f32, N>, seed: u64) -> Self {
+    pub fn build_from(dataset: &impl F32Rows, seed: u64) -> Self {
+        Self::build_with_padding(
+            dataset,
+            seed,
+            dataset.dimension().next_power_of_two().max(1024),
+        )
+    }
+    pub fn build_with_padding(dataset: &impl F32Rows, seed: u64, d_pad: usize) -> Self {
+        let dim = dataset.dimension();
+        assert!(dim > 0);
         assert!(
-            D_PAD.is_power_of_two() && D_PAD >= N,
-            "D_PAD must be a power of two ≥ N (got D_PAD={D_PAD}, N={N})"
+            d_pad.is_power_of_two() && d_pad >= dim,
+            "d_pad must be a power of two ≥ dim (got d_pad={d_pad}, dim={dim})"
         );
 
-        let num_vertices = dataset.num_points;
-        let stride = Self::STRIDE;
+        let num_vertices = dataset.len();
+        let stride = jl_hadamard_stride(d_pad);
 
         // Derive three sign-flip diagonals from the seed. xorshift64
         // for determinism; offsets pull non-overlapping streams.
         let mut rng = XorShift64(seed.wrapping_add(0x8B9C_4D7E_25F1_A302));
-        let mut signs1 = vec![0i8; D_PAD];
-        let mut signs2 = vec![0i8; D_PAD];
-        let mut signs3 = vec![0i8; D_PAD];
+        let mut signs1 = vec![0i8; d_pad];
+        let mut signs2 = vec![0i8; d_pad];
+        let mut signs3 = vec![0i8; d_pad];
         for s in [&mut signs1, &mut signs2, &mut signs3] {
             for v in s.iter_mut() {
                 *v = if (rng.next_u64() & 1) == 0 { 1 } else { -1 };
@@ -121,19 +135,20 @@ impl<const N: usize, const D_PAD: usize> JlHadamardDataset<N, D_PAD> {
         let mut codes = AlignedBoxWithSlice::<u8>::new(num_vertices * stride, 16)
             .expect("JlHadamardDataset codes alloc");
 
-        let base = dataset.data.as_slice();
         let codes_slice = codes.as_mut_slice();
 
         codes_slice
             .par_chunks_mut(stride)
             .enumerate()
             .for_each(|(vid, code)| {
-                let x = &base[vid * N..(vid + 1) * N];
-                let mut buf = vec![0.0f32; D_PAD];
-                encode_vector::<N, D_PAD>(x, &signs1, &signs2, &signs3, &mut buf, code);
+                let x = dataset.row(vid);
+                let mut buf = vec![0.0f32; d_pad];
+                encode_vector(x, &signs1, &signs2, &signs3, &mut buf, code);
             });
 
         Self {
+            dimension: dim,
+            d_pad,
             codes,
             signs1,
             signs2,
@@ -145,10 +160,12 @@ impl<const N: usize, const D_PAD: usize> JlHadamardDataset<N, D_PAD> {
     }
 
     /// Encode a query into a fixed-size signature.
-    pub fn encode_query(&self, q: &[f32; N]) -> Box<[u8]> {
+    pub fn encode_query(&self, q: &[f32]) -> Box<[u8]> {
+        let d_pad = self.d_pad;
+        assert_eq!(q.len(), self.dimension);
         let mut out = vec![0u8; self.stride].into_boxed_slice();
-        let mut buf = vec![0.0f32; D_PAD];
-        encode_vector::<N, D_PAD>(
+        let mut buf = vec![0.0f32; d_pad];
+        encode_vector(
             q,
             &self.signs1,
             &self.signs2,
@@ -173,20 +190,22 @@ impl<const N: usize, const D_PAD: usize> JlHadamardDataset<N, D_PAD> {
     ///   [u32 magic = JL_HADAMARD_MAGIC]
     ///   [u32 version = 1]
     ///   [u32 num_vertices][u32 dim = N]
-    ///   [u32 d_pad = D_PAD][u32 stride]
+    ///   [u32 d_pad = d_pad][u32 stride]
     ///   [u64 seed]
     /// Body:
-    ///   [D_PAD i8 signs1][D_PAD i8 signs2][D_PAD i8 signs3]
+    ///   [d_pad i8 signs1][d_pad i8 signs2][d_pad i8 signs3]
     ///   [num_vertices × STRIDE u8 codes]
     pub fn save<P: AsRef<Path>>(&self, path: P) -> ANNResult<()> {
+        let d_pad = self.d_pad;
+        let dim = self.dimension;
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
         let mut hdr = [0u8; 32];
         hdr[0..4].copy_from_slice(&JL_HADAMARD_MAGIC.to_le_bytes());
         hdr[4..8].copy_from_slice(&1u32.to_le_bytes());
         hdr[8..12].copy_from_slice(&(self.num_vertices as u32).to_le_bytes());
-        hdr[12..16].copy_from_slice(&(N as u32).to_le_bytes());
-        hdr[16..20].copy_from_slice(&(D_PAD as u32).to_le_bytes());
-        hdr[20..24].copy_from_slice(&(self.stride as u32).to_le_bytes());
+        hdr[12..16].copy_from_slice(&(dim as u32).to_le_bytes());
+        hdr[16..20].copy_from_slice(&(d_pad as u32).to_le_bytes());
+        hdr[20..24].copy_from_slice(&(jl_hadamard_stride_disk(d_pad) as u32).to_le_bytes());
         hdr[24..32].copy_from_slice(&self.seed.to_le_bytes());
         w.write_all(&hdr)?;
 
@@ -196,7 +215,12 @@ impl<const N: usize, const D_PAD: usize> JlHadamardDataset<N, D_PAD> {
         w.write_all(s_bytes(&self.signs1))?;
         w.write_all(s_bytes(&self.signs2))?;
         w.write_all(s_bytes(&self.signs3))?;
-        w.write_all(self.codes.as_slice())?;
+        super::rows::write_rows(
+            &mut w,
+            self.codes.as_slice(),
+            self.stride,
+            jl_hadamard_stride_disk(d_pad),
+        )?;
         w.flush()?;
         Ok(())
     }
@@ -205,6 +229,13 @@ impl<const N: usize, const D_PAD: usize> JlHadamardDataset<N, D_PAD> {
         let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
         let mut hdr = [0u8; 32];
         r.read_exact(&mut hdr)?;
+        if u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported sidecar version",
+            )
+            .into());
+        }
         let magic = u32::from_le_bytes(hdr[0..4].try_into().unwrap());
         if magic != JL_HADAMARD_MAGIC {
             return Err(std::io::Error::new(
@@ -218,34 +249,37 @@ impl<const N: usize, const D_PAD: usize> JlHadamardDataset<N, D_PAD> {
         }
         let num_vertices = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let dim = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
-        if dim != N {
+        if dim == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("dim mismatch: file={dim} expected={N}"),
+                "zero sidecar dimension",
             )
             .into());
         }
         let d_pad = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
-        if d_pad != D_PAD {
+        if !d_pad.is_power_of_two() || d_pad < dim {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("d_pad mismatch: file={d_pad} expected={D_PAD}"),
+                format!("d_pad mismatch: file={d_pad} expected={d_pad}"),
             )
             .into());
         }
         let stride = u32::from_le_bytes(hdr[20..24].try_into().unwrap()) as usize;
-        if stride != Self::STRIDE {
+        if stride != jl_hadamard_stride_disk(d_pad) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
+                format!(
+                    "stride mismatch: file={stride} expected={}",
+                    jl_hadamard_stride(d_pad)
+                ),
             )
             .into());
         }
         let seed = u64::from_le_bytes(hdr[24..32].try_into().unwrap());
 
-        let mut signs1 = vec![0i8; D_PAD];
-        let mut signs2 = vec![0i8; D_PAD];
-        let mut signs3 = vec![0i8; D_PAD];
+        let mut signs1 = vec![0i8; d_pad];
+        let mut signs2 = vec![0i8; d_pad];
+        let mut signs3 = vec![0i8; d_pad];
         let read_signs = |r: &mut std::io::BufReader<std::fs::File>,
                           s: &mut [i8]|
          -> ANNResult<()> {
@@ -257,11 +291,13 @@ impl<const N: usize, const D_PAD: usize> JlHadamardDataset<N, D_PAD> {
         read_signs(&mut r, &mut signs2)?;
         read_signs(&mut r, &mut signs3)?;
 
-        let mut codes = AlignedBoxWithSlice::<u8>::new(num_vertices * stride, 16)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
-        r.read_exact(codes.as_mut_slice())?;
+        let disk_stride = stride;
+        let stride = jl_hadamard_stride(d_pad);
+        let codes = super::rows::read_rows::<u8>(&mut r, num_vertices, stride, disk_stride)?;
 
         Ok(Self {
+            dimension: dim,
+            d_pad,
             codes,
             signs1,
             signs2,
@@ -275,11 +311,11 @@ impl<const N: usize, const D_PAD: usize> JlHadamardDataset<N, D_PAD> {
 
 // ── FWHT + encoder ────────────────────────────────────────────────────
 
-/// Encode one vector (vertex or query) — zero-pad to `D_PAD`, run
+/// Encode one vector (vertex or query) — zero-pad to `d_pad`, run
 /// `H D₃ H D₂ H D₁` in place on the buffer, then sign-pack the first
-/// `D_PAD` bits into the output code slot.
+/// `d_pad` bits into the output code slot.
 #[inline]
-fn encode_vector<const N: usize, const D_PAD: usize>(
+fn encode_vector(
     x: &[f32],
     signs1: &[i8],
     signs2: &[i8],
@@ -287,11 +323,11 @@ fn encode_vector<const N: usize, const D_PAD: usize>(
     buf: &mut [f32],
     code: &mut [u8],
 ) {
-    debug_assert_eq!(buf.len(), D_PAD);
+    let d_pad = buf.len();
 
     // Zero-extend x into the FWHT scratch buffer.
-    buf[..N].copy_from_slice(x);
-    for v in &mut buf[N..] {
+    buf[..x.len()].copy_from_slice(x);
+    for v in &mut buf[x.len()..] {
         *v = 0.0;
     }
 
@@ -306,12 +342,12 @@ fn encode_vector<const N: usize, const D_PAD: usize>(
     fwht(buf);
 
     // Sign-pack into the code byte slot. Padded code tail (beyond
-    // D_PAD bits) stays zero — same for query and base, so it
+    // d_pad bits) stays zero — same for query and base, so it
     // contributes zero to Hamming distance.
     for byte in code.iter_mut() {
         *byte = 0;
     }
-    for bit_idx in 0..D_PAD {
+    for bit_idx in 0..d_pad {
         if buf[bit_idx] > 0.0 {
             code[bit_idx >> 3] |= 1u8 << (bit_idx & 7);
         }
@@ -395,8 +431,8 @@ mod tests {
         let signs1 = vec![1i8, -1, 1, -1, 1, -1, 1, -1];
         let signs2 = vec![1i8, 1, -1, -1, 1, 1, -1, -1];
         let signs3 = vec![1i8, 1, 1, 1, -1, -1, -1, -1];
-        encode_vector::<8, 8>(&q, &signs1, &signs2, &signs3, &mut buf1, &mut code1);
-        encode_vector::<8, 8>(&q, &signs1, &signs2, &signs3, &mut buf2, &mut code2);
+        encode_vector(&q, &signs1, &signs2, &signs3, &mut buf1, &mut code1);
+        encode_vector(&q, &signs1, &signs2, &signs3, &mut buf2, &mut code2);
         assert_eq!(code1, code2);
     }
 }

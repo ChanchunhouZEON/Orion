@@ -11,14 +11,12 @@
 
 use clap::Parser;
 use orion_runtime::{
-    config::{cli::Args, plan::SearchPlan, ResolvedRunConfig},
+    config::{ResolvedRunConfig, cli::Args, plan::SearchPlan},
     data::{
-        memory as resources,
-        query::{open_queries, GroundTruthReader},
-        LoadedBase,
+        LoadedBase, memory as resources,
+        query::{GroundTruthReader, open_queries},
     },
     search::{F32CascadeBackend, NativeU8L2Backend, SearchBackend},
-    with_supported_dimension,
 };
 use std::{
     io::{BufReader, BufWriter, Write},
@@ -46,13 +44,10 @@ struct Command {
     output: Option<PathBuf>,
 }
 
-fn run<const N: usize, B: SearchBackend>(
+fn run<B: SearchBackend>(
     config: &ResolvedRunConfig,
     output: Option<&PathBuf>,
-) -> Result<(), String>
-where
-    [B::Element; N]: vector::FullPrecisionDistance<B::Element, N>,
-{
+) -> Result<(), String> {
     // Open lightweight query/evaluation inputs before allocating the potentially
     // much larger base dataset and index structures.
     let gt_file = if config.prepare_only {
@@ -86,7 +81,7 @@ where
         .build()
         .map_err(|e| e.to_string())?;
 
-    let index = pool.install(|| B::load_index::<N>(config, &mut data))?;
+    let index = pool.install(|| B::load_index(config, &mut data))?;
 
     // `prepare_only` intentionally stops after all required index preparation
     // and loading work has completed.
@@ -126,15 +121,10 @@ where
         return Err("query source is empty".into());
     }
 
-    let mut queries: Vec<[f32; N]> = decoded
-        .chunks_exact(N)
-        .map(|query| query.try_into().unwrap())
-        .collect();
-
     let calibration = pool
         .install(|| {
             index.calibrate(
-                &queries,
+                &decoded,
                 config.sweep.calibration_l,
                 config.window_size,
                 orion::CalibrationConfig {
@@ -174,7 +164,7 @@ where
             .install(|| {
                 B::search_batch(
                     &index,
-                    &queries,
+                    &decoded,
                     config,
                     config.sweep.search_list_sizes[0],
                     calibration,
@@ -219,13 +209,6 @@ where
         if query_source.read_batch(&mut decoded, config.query_batch_size)? == 0 {
             break;
         }
-
-        queries.clear();
-        queries.extend(
-            decoded
-                .chunks_exact(N)
-                .map(|query| <[f32; N]>::try_from(query).unwrap()),
-        );
     }
 
     // The opposite ground-truth length mismatch is checked only after all
@@ -299,17 +282,11 @@ fn execute(mut command: Command) -> Result<(), String> {
 
     log::info!("Run settings: {resolved}");
 
-    // Dispatch to the concrete vector representation and compile-time
-    // dimensionality selected by the resolved search plan.
+    // Dispatch only on resident coordinate type; dimensions stay runtime values.
     match config.search_plan() {
-        SearchPlan::F32Cascade { .. } => {
-            with_supported_dimension!(config.dimension, |D| run::<D, F32CascadeBackend>(
-                &config,
-                command.output.as_ref(),
-            ))
-        }
+        SearchPlan::F32Cascade { .. } => run::<F32CascadeBackend>(&config, command.output.as_ref()),
 
-        SearchPlan::NativeU8L2 => run::<128, NativeU8L2Backend>(&config, command.output.as_ref()),
+        SearchPlan::NativeU8L2 => run::<NativeU8L2Backend>(&config, command.output.as_ref()),
     }
 }
 

@@ -12,7 +12,8 @@
 //! instrumentation and legacy diagnostic searches live in `super::diagnostics`.
 
 use super::diagnostics::{NeighborMode, NoopObserver, SearchObserver};
-use crate::Orion;
+use crate::StaticOrion;
+use crate::index::compressed_index::CompressedIndex;
 use crate::model::Neighbor as DNeighbor;
 use crate::model::scratch::{InMemScratchPool, InMemSearchScratch};
 use diskann::common::ANNResult;
@@ -118,10 +119,182 @@ fn prefilter_slack() -> f32 {
     })
 }
 
-impl<const N: usize, T: Send + Sync> Orion<N, T>
+impl<const N: usize, T: Send + Sync> StaticOrion<N, T>
 where
     [T; N]: FullPrecisionDistance<T, N>,
 {
+    /// Unified cascade beam search.
+    ///
+    /// Drives a single beam loop through the three stage traits.
+    /// `prefilter` is optional (`None` = no rejection tier, e.g. on
+    /// SIFT-class workloads where the admission kernel is already
+    /// cheap enough). `admission` is mandatory (it defines the PQ-
+    /// ranked distance metric). `rerank` is mandatory but can be
+    /// [`NoRerank`](crate::algorithm::search::stage::rerank::NoRerank)
+    /// if the admission tier already ranks at sufficient precision.
+    ///
+    /// # Stage interaction contract
+    ///
+    /// * **Peel** (PEEL_HOPS = 3) runs at search start to fill the
+    ///   PQ before any threshold-state machinery activates.
+    ///
+    /// * **Prefilter threshold** is a multiplicative slack over the
+    ///   running mean of prefilter distances on PQ entries. The mean
+    ///   is incrementally re-computed only when `pq_back_id` changes
+    ///   (mirrors PA `beamSearch.h:142`).
+    ///
+    /// * **Admission cutoff** is the PQ tail distance (`pq_worst`)
+    ///   when the PQ is full, otherwise `f32::MAX`. The admission
+    ///   stream cmov-compacts admits into the per-hop staging buffer.
+    ///
+    /// * **Rerank** runs once at end of beam over the top
+    ///   `k * rerank_factor` PQ entries (default factor two).
+    ///
+    /// # Generic monomorphisation
+    ///
+    /// The function body inlines every trait method call. With ~5-7
+    /// distinct recipes in the dispatcher we get ~5-7 specialised
+    /// hot loops — bloat budget ~20 KiB compiled text.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_unified<P, A, R>(
+        &self,
+        query: &[f32; N],
+        k: usize,
+        search_list_size: usize,
+        window_size: usize,
+        epsilon: f32,
+        early_exit_limit: usize,
+        prefilter: Option<&P>,
+        admission: &A,
+        rerank: &R,
+    ) -> ANNResult<Vec<u32>>
+    where
+        P: ?Sized + PrefilterStage,
+        A: ?Sized + AdmissionStage,
+        R: ?Sized + RerankStage,
+    {
+        let mode = if super::include_extras() {
+            NeighborMode::LocalExtra
+        } else {
+            NeighborMode::FullNeighbor
+        };
+        self.search_unified_observed(
+            query,
+            k,
+            search_list_size,
+            window_size,
+            epsilon,
+            early_exit_limit,
+            prefilter,
+            admission,
+            rerank,
+            mode,
+            &mut NoopObserver,
+        )
+    }
+
+    /// Same production loop, with explicit neighbor policy and optional instrumentation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_unified_observed<P, A, R, O>(
+        &self,
+        query: &[f32; N],
+        k: usize,
+        search_list_size: usize,
+        window_size: usize,
+        epsilon: f32,
+        early_exit_limit: usize,
+        prefilter: Option<&P>,
+        admission: &A,
+        rerank: &R,
+        mode: NeighborMode,
+        observer: &mut O,
+    ) -> ANNResult<Vec<u32>>
+    where
+        P: ?Sized + PrefilterStage,
+        A: ?Sized + AdmissionStage,
+        R: ?Sized + RerankStage,
+        O: SearchObserver,
+    {
+        let t_setup = std::time::Instant::now();
+        let aligned = AlignedQuery(*query);
+
+        // ── Per-query stage state (sessions) ─────────────────────
+        // Prefilter is optional: `None` ⇒ no `open` call, no
+        // threshold recompute, no `filter_compact`. The
+        // `if let Some(_) = p_session` branches below are loop-
+        // invariant; LLVM hoists them.
+        let p_session: Option<Box<dyn PrefilterSession + '_>> =
+            prefilter.map(|p| p.open(&aligned.0));
+        let a_session: Box<dyn AdmissionSession + '_> = admission.open(&aligned.0);
+
+        self.search_sessions(
+            k,
+            search_list_size,
+            window_size,
+            epsilon,
+            early_exit_limit,
+            p_session.as_deref(),
+            a_session.as_ref(),
+            mode,
+            observer,
+            t_setup,
+            |scratch, factor| rerank.rerank(query, &[], k, factor, scratch),
+        )
+    }
+
+    /// Parallel batch wrapper. Mirrors the `search_batch_*` shape on
+    /// every other search variant — rayon `par_iter_mut().zip(...)`
+    /// with no manual chunking (empirically tied with PA's parlay
+    /// scheduler at our work granularity).
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_batch_unified<P, A, R>(
+        &self,
+        queries: &[[f32; N]],
+        k: usize,
+        search_list_size: usize,
+        window_size: usize,
+        epsilon: f32,
+        early_exit_limit: usize,
+        prefilter: Option<&P>,
+        admission: &A,
+        rerank: &R,
+    ) -> ANNResult<Vec<Vec<u32>>>
+    where
+        P: ?Sized + PrefilterStage + Sync,
+        A: ?Sized + AdmissionStage + Sync,
+        R: ?Sized + RerankStage + Sync,
+    {
+        self.inmem_scratch_pool.get_or_init(|| {
+            InMemScratchPool::for_workers(rayon::current_num_threads(), search_list_size)
+        });
+
+        let n = queries.len();
+        let mut results: Vec<Vec<u32>> = (0..n).map(|_| Vec::new()).collect();
+        results
+            .par_iter_mut()
+            .zip(queries.par_iter())
+            .try_for_each(|(out, query)| -> ANNResult<()> {
+                *out = self.search_unified(
+                    query,
+                    k,
+                    search_list_size,
+                    window_size,
+                    epsilon,
+                    early_exit_limit,
+                    prefilter,
+                    admission,
+                    rerank,
+                )?;
+                Ok(())
+            })?;
+        Ok(results)
+    }
+}
+
+// Both typed recipes and runtime-dimensional exact search use this one loop.
+// Sessions separate coordinate preparation from graph traversal; no dimension
+// or dataset representation is consulted inside the traversal.
+impl<D, S> CompressedIndex<D, S> {
     /// **One peeled hop**: bypass prefilter / DCC / early-exit and
     /// run the admission stream directly. Used in the search-start
     /// warm-up window (hops 0..PEEL_HOPS); the PQ transitions
@@ -209,112 +382,23 @@ where
         Some((admitted, n))
     }
 
-    /// Unified cascade beam search.
-    ///
-    /// Drives a single beam loop through the three stage traits.
-    /// `prefilter` is optional (`None` = no rejection tier, e.g. on
-    /// SIFT-class workloads where the admission kernel is already
-    /// cheap enough). `admission` is mandatory (it defines the PQ-
-    /// ranked distance metric). `rerank` is mandatory but can be
-    /// [`NoRerank`](crate::algorithm::search::stage::rerank::NoRerank)
-    /// if the admission tier already ranks at sufficient precision.
-    ///
-    /// # Stage interaction contract
-    ///
-    /// * **Peel** (PEEL_HOPS = 3) runs at search start to fill the
-    ///   PQ before any threshold-state machinery activates.
-    ///
-    /// * **Prefilter threshold** is a multiplicative slack over the
-    ///   running mean of prefilter distances on PQ entries. The mean
-    ///   is incrementally re-computed only when `pq_back_id` changes
-    ///   (mirrors PA `beamSearch.h:142`).
-    ///
-    /// * **Admission cutoff** is the PQ tail distance (`pq_worst`)
-    ///   when the PQ is full, otherwise `f32::MAX`. The admission
-    ///   stream cmov-compacts admits into the per-hop staging buffer.
-    ///
-    /// * **Rerank** runs once at end of beam over the top
-    ///   `k * rerank_factor` PQ entries (default factor two).
-    ///
-    /// # Generic monomorphisation
-    ///
-    /// The function body inlines every trait method call. With ~5-7
-    /// distinct recipes in the dispatcher we get ~5-7 specialised
-    /// hot loops — bloat budget ~20 KiB compiled text.
     #[allow(clippy::too_many_arguments)]
-    pub fn search_unified<P, A, R>(
+    pub(crate) fn search_sessions<O: SearchObserver>(
         &self,
-        query: &[f32; N],
         k: usize,
         search_list_size: usize,
         window_size: usize,
         epsilon: f32,
         early_exit_limit: usize,
-        prefilter: Option<&P>,
-        admission: &A,
-        rerank: &R,
-    ) -> ANNResult<Vec<u32>>
-    where
-        P: ?Sized + PrefilterStage<N>,
-        A: ?Sized + AdmissionStage<N>,
-        R: ?Sized + RerankStage<N>,
-    {
-        let mode = if super::include_extras() {
-            NeighborMode::LocalExtra
-        } else {
-            NeighborMode::FullNeighbor
-        };
-        self.search_unified_observed(
-            query,
-            k,
-            search_list_size,
-            window_size,
-            epsilon,
-            early_exit_limit,
-            prefilter,
-            admission,
-            rerank,
-            mode,
-            &mut NoopObserver,
-        )
-    }
-
-    /// Same production loop, with explicit neighbor policy and optional instrumentation.
-    #[allow(clippy::too_many_arguments)]
-    pub fn search_unified_observed<P, A, R, O>(
-        &self,
-        query: &[f32; N],
-        k: usize,
-        search_list_size: usize,
-        window_size: usize,
-        epsilon: f32,
-        early_exit_limit: usize,
-        prefilter: Option<&P>,
-        admission: &A,
-        rerank: &R,
+        p_session: Option<&dyn PrefilterSession>,
+        a_session: &dyn AdmissionSession,
         mode: NeighborMode,
         observer: &mut O,
-    ) -> ANNResult<Vec<u32>>
-    where
-        P: ?Sized + PrefilterStage<N>,
-        A: ?Sized + AdmissionStage<N>,
-        R: ?Sized + RerankStage<N>,
-        O: SearchObserver,
-    {
-        let t_setup = std::time::Instant::now();
+        t_setup: std::time::Instant,
+        finish: impl FnOnce(&mut InMemSearchScratch, usize) -> Vec<u32>,
+    ) -> ANNResult<Vec<u32>> {
         let entry = self.entry;
         let graph = &self.graph;
-        let aligned = AlignedQuery(*query);
-
-        // ── Per-query stage state (sessions) ─────────────────────
-        // Prefilter is optional: `None` ⇒ no `open` call, no
-        // threshold recompute, no `filter_compact`. The
-        // `if let Some(_) = p_session` branches below are loop-
-        // invariant; LLVM hoists them.
-        let p_session: Option<Box<dyn PrefilterSession + '_>> =
-            prefilter.map(|p| p.open(&aligned.0));
-        let a_session: Box<dyn AdmissionSession + '_> = admission.open(&aligned.0);
-
         // ── Scratch pool ─────────────────────────────────────────
         let pool = self.inmem_scratch_pool.get_or_init(|| {
             InMemScratchPool::for_workers(rayon::current_num_threads(), search_list_size)
@@ -359,7 +443,7 @@ where
         'peel: {
             for _ in 0..peel_count {
                 match self.peel_hop_unified(
-                    a_session.as_ref(),
+                    a_session,
                     search_list_size,
                     scratch,
                     lookahead_lines,
@@ -445,29 +529,29 @@ where
             // recomputation work.
             let frontier_full = scratch.pq.size() >= search_list_size;
             let mut observed_prefilter_cutoff = None;
-            if let Some(ps) = p_session.as_deref() {
-                if frontier_full {
-                    let pq_size = scratch.pq.size();
-                    let pq_back_id = scratch.pq[pq_size - 1].id;
-                    if scratch.jl_threshold_count == 0 || scratch.jl_last_worst_id != pq_back_id {
-                        observer.prefilter(pq_size, 0);
-                        let mut tail_sum = 0.0f32;
-                        for i in 0..pq_size {
-                            tail_sum += ps.distance(scratch.pq[i].id);
-                        }
-                        scratch.jl_tail_mean = tail_sum / (pq_size as f32);
-                        scratch.jl_last_worst_id = pq_back_id;
+            if let Some(ps) = p_session
+                && frontier_full
+            {
+                let pq_size = scratch.pq.size();
+                let pq_back_id = scratch.pq[pq_size - 1].id;
+                if scratch.jl_threshold_count == 0 || scratch.jl_last_worst_id != pq_back_id {
+                    observer.prefilter(pq_size, 0);
+                    let mut tail_sum = 0.0f32;
+                    for i in 0..pq_size {
+                        tail_sum += ps.distance(scratch.pq[i].id);
                     }
-                    scratch.jl_threshold_sum += scratch.jl_tail_mean;
-                    scratch.jl_threshold_count += 1;
-                    let threshold = scratch.jl_threshold_sum / (scratch.jl_threshold_count as f32)
-                        * prefilter_slack();
+                    scratch.jl_tail_mean = tail_sum / (pq_size as f32);
+                    scratch.jl_last_worst_id = pq_back_id;
+                }
+                scratch.jl_threshold_sum += scratch.jl_tail_mean;
+                scratch.jl_threshold_count += 1;
+                let threshold = scratch.jl_threshold_sum / (scratch.jl_threshold_count as f32)
+                    * prefilter_slack();
 
-                    observer.prefilter(0, scratch.id_scratch.len());
-                    observed_prefilter_cutoff = Some(threshold);
-                    unsafe {
-                        ps.filter_compact(&mut scratch.id_scratch, threshold, lookahead_lines);
-                    }
+                observer.prefilter(0, scratch.id_scratch.len());
+                observed_prefilter_cutoff = Some(threshold);
+                unsafe {
+                    ps.filter_compact(&mut scratch.id_scratch, threshold, lookahead_lines);
                 }
             }
 
@@ -569,55 +653,6 @@ where
         // holds the post-search entries here).
         let factor = rerank_factor();
         observer.rerank(scratch.pq.size().min(k.saturating_mul(factor)));
-        Ok(rerank.rerank(query, &[], k, factor, scratch))
-    }
-
-    /// Parallel batch wrapper. Mirrors the `search_batch_*` shape on
-    /// every other search variant — rayon `par_iter_mut().zip(...)`
-    /// with no manual chunking (empirically tied with PA's parlay
-    /// scheduler at our work granularity).
-    #[allow(clippy::too_many_arguments)]
-    pub fn search_batch_unified<P, A, R>(
-        &self,
-        queries: &[[f32; N]],
-        k: usize,
-        search_list_size: usize,
-        window_size: usize,
-        epsilon: f32,
-        early_exit_limit: usize,
-        prefilter: Option<&P>,
-        admission: &A,
-        rerank: &R,
-    ) -> ANNResult<Vec<Vec<u32>>>
-    where
-        P: ?Sized + PrefilterStage<N> + Sync,
-        A: ?Sized + AdmissionStage<N> + Sync,
-        R: ?Sized + RerankStage<N> + Sync,
-    {
-        self.inmem_scratch_pool.get_or_init(|| {
-            InMemScratchPool::for_workers(rayon::current_num_threads(), search_list_size)
-        });
-
-        let n = queries.len();
-        let mut results: Vec<Vec<u32>> = (0..n).map(|_| Vec::new()).collect();
-        results
-            .par_iter_mut()
-            .zip(queries.par_iter())
-            .try_for_each(|(out, query)| -> ANNResult<()> {
-                *out = self
-                    .search_unified(
-                        query,
-                        k,
-                        search_list_size,
-                        window_size,
-                        epsilon,
-                        early_exit_limit,
-                        prefilter,
-                        admission,
-                        rerank,
-                    )?;
-                Ok(())
-            })?;
-        Ok(results)
+        Ok(finish(scratch, factor))
     }
 }

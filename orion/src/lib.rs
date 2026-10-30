@@ -17,8 +17,8 @@ pub use algorithm::search::calibrate::{
 pub use algorithm::search::convergence::SearchConvergenceChecker;
 pub use algorithm::search::diagnostics::SearchProfileStats;
 pub use index::NaiveOrion;
-pub use index::Orion;
 pub use index::{BeamSearchConfig, BeamSearchResult, IoLimiter, async_beam_search};
+pub use index::{CompressedIndex, DynamicCascade, DynamicSearchConfig, Orion, StaticOrion};
 pub use index::{DIM_32, DIM_100, DIM_128, DIM_768, DIM_784, DIM_960, DIM_1536};
 pub use index::{DiskANNBuildResult, build_diskann_index};
 pub use model::PhasedGraph;

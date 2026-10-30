@@ -36,9 +36,6 @@ const GRAPH_HEADER_WORDS: u64 = 4;
 /// Resident graph records are padded to this cache-line size.
 const CACHE_LINE_BYTES: u64 = 64;
 
-/// Extra tail allocation reserved for SIMD reads past the final vector.
-const SIMD_PAD_BYTES: u64 = 64;
-
 /// Builds a resident-memory preflight report without loading vector or graph payloads.
 ///
 /// The function validates available headers against declarations and falls back
@@ -92,7 +89,12 @@ fn resolve_vector_count(
                 ));
             }
             if declared.is_some_and(|count| count != actual.count) {
-                return Err(format!("{}: file count {} != declared count {}; update the preset or explicitly override the input path", path.display(), actual.count, declared.unwrap()));
+                return Err(format!(
+                    "{}: file count {} != declared count {}; update the preset or explicitly override the input path",
+                    path.display(),
+                    actual.count,
+                    declared.unwrap()
+                ));
             }
             Ok((Some(actual.count), "file"))
         }
@@ -307,18 +309,27 @@ fn calculate_memory(
         || num_points > u32::MAX as usize
         || (!config.prepare_only && config.sweep.k > num_points)
     {
-        return Err(format!("invalid loaded point count {num_points} or k={}: require 1..={} points and k <= loaded count for search (base {}, max-points {})", config.sweep.k, u32::MAX, config.base.display(), config.max_points));
+        return Err(format!(
+            "invalid loaded point count {num_points} or k={}: require 1..={} points and k <= loaded count for search (base {}, max-points {})",
+            config.sweep.k,
+            u32::MAX,
+            config.base.display(),
+            config.max_points
+        ));
     }
 
     // Resident storage is selected explicitly. A native-byte admission stage
     // borrows this buffer; it does not allocate a second quantized dataset.
-    let coordinate_count = checked_mul_bytes(num_points as u64, config.dimension as u64)?;
     let storage = config.search_plan().storage();
-    let coordinate_bytes = storage.element_bytes as u64;
-    let base_payload_bytes = checked_mul_bytes(coordinate_count, coordinate_bytes)?;
-    let base_bytes = base_payload_bytes
-        .checked_add(SIMD_PAD_BYTES)
-        .ok_or("memory estimate overflow")?;
+    let layout = match storage.kind {
+        VectorStorageKind::F32 => {
+            vector::PaddedLayout::for_kernel::<vector::L2F32Distance>(config.dimension)?
+        }
+        VectorStorageKind::U8 => {
+            vector::PaddedLayout::for_kernel::<vector::L2U8Distance>(config.dimension)?
+        }
+    };
+    let base_bytes = checked_mul_bytes(num_points as u64, layout.stride_bytes() as u64)?;
     let graph_bytes = checked_mul_bytes(num_points as u64, stride_bytes)?;
     let node_reader_bytes =
         checked_mul_bytes(num_points as u64, std::mem::size_of::<usize>() as u64)?;
@@ -326,7 +337,9 @@ fn calculate_memory(
     // Only the L2U8 representation is accounted for here. Other cascade buffers
     // remain explicitly excluded, rather than presented as a complete estimate.
     let admission_bytes = if storage.has_l2_u8_sidecar && !config.prepare_only {
-        let aligned_dimension = (config.dimension as u64 + 31) / 32 * 32;
+        let aligned_dimension =
+            vector::PaddedLayout::for_kernel::<vector::L2U8Distance>(config.dimension)?
+                .stride_bytes() as u64;
         checked_mul_bytes(num_points as u64, aligned_dimension)?
     } else {
         0
@@ -359,10 +372,19 @@ fn calculate_memory(
                     .max(config.sweep.calibration_samples),
             )
     };
-    let query_bytes = checked_mul_bytes(
+    let mut query_bytes = checked_mul_bytes(
         checked_mul_bytes(buffered as u64, config.dimension as u64)?,
         8,
     )?;
+    if storage.kind == VectorStorageKind::U8 {
+        let native_bytes = checked_mul_bytes(
+            buffered.min(config.sweep.threads) as u64,
+            layout.stride_bytes() as u64,
+        )?;
+        query_bytes = query_bytes
+            .checked_add(native_bytes)
+            .ok_or("query buffers overflow")?;
+    }
     let result_bytes = checked_mul_bytes(
         checked_mul_bytes(buffered as u64, config.sweep.k as u64)?,
         4,
@@ -397,11 +419,11 @@ fn calculate_memory(
         )
         || cascade.rerank == crate::search::cascade::RerankChoice::U16;
     let mut components = serde_json::json!([
-        {"name":"base vectors", "bytes":base_bytes, "basis":format!("{num_points} × {} × {} bytes + SIMD tail", config.dimension, storage.element_bytes), "phase":"resident"},
+        {"name":"base vectors", "bytes":base_bytes, "basis":format!("{num_points} × {} bytes/row ({} logical coordinates, SIMD-padded)", layout.stride_bytes(), config.dimension), "phase":"resident"},
         {"name":"graph slab", "bytes":graph_bytes, "basis":format!("{num_points} × {stride_bytes} bytes/node"), "phase":"resident"},
         {"name":"node reader counters", "bytes":node_reader_bytes, "basis":"one usize per node", "phase":"resident"},
         {"name":"L2U8 admission sidecar", "bytes":admission_bytes, "basis":if storage.has_l2_u8_sidecar {"aligned byte vectors"} else {"not allocated for this phase/recipe; native admission shares base"}, "phase":"resident"},
-        {"name":"query buffers", "bytes":if unknown_replay_buffers { None } else { Some(query_bytes) }, "basis":if unknown_replay_buffers { "query count unknown; full replay payload cannot be estimated".to_string() } else { format!("up to {buffered} rows × dimension × f32 × 2; decoding plus search arrays") }, "phase":"search"},
+        {"name":"query buffers", "bytes":if unknown_replay_buffers { None } else { Some(query_bytes) }, "basis":if unknown_replay_buffers { "query count unknown; full replay payload cannot be estimated".to_string() } else { format!("up to {buffered} rows × dimension × f32 × 2; decoding/search arrays{}", if storage.kind == VectorStorageKind::U8 { "; plus one SIMD-padded byte query per active worker" } else { "" }) }, "phase":"search"},
         {"name":"result IDs", "bytes":if unknown_replay_buffers { None } else { Some(result_bytes) }, "basis":"buffered queries × k × u32", "phase":"search"},
         {"name":"ground truth IDs", "bytes":if unknown_replay_buffers && config.groundtruth.is_some() { None } else { Some(gt_bytes) }, "basis":"replay keeps all top-k rows; streaming keeps one row; absent GT uses none", "phase":"evaluation"},
         {"name":"other cascade sidecars", "bytes":if other_sidecars {None} else {Some(0u64)}, "basis":"selected prefilter/admission/rerank; not yet estimated when allocated", "phase":"resident"},
@@ -664,9 +686,9 @@ mod tests {
         let config = args.resolve().unwrap();
         let report = estimate_resident_memory(&config, 1_000_000_000).unwrap();
         assert_eq!(report["base_f32_bytes"], 0);
-        assert_eq!(report["base_u8_bytes"], 128_000_000_064u64);
+        assert_eq!(report["base_u8_bytes"], 128_000_000_000u64);
         assert_eq!(report["l2_u8_admission_bytes"], 0);
-        assert_eq!(report["resident_lower_bound_bytes"], 520_000_000_064u64);
+        assert_eq!(report["resident_lower_bound_bytes"], 520_000_000_000u64);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -692,7 +714,7 @@ mod tests {
         .unwrap();
         let mut config = args.resolve().unwrap();
         let report = estimate_resident_memory(&config, 1_000_000_000).unwrap();
-        assert_eq!(report["base_f32_bytes"], 512_000_000_064u64);
+        assert_eq!(report["base_f32_bytes"], 512_000_000_000u64);
         assert_eq!(report["graph_slab_bytes"], 384_000_000_000u64);
         assert_eq!(report["l2_u8_admission_bytes"], 128_000_000_000u64);
         config.memory_budget_gib = Some(128.);

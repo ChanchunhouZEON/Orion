@@ -8,43 +8,44 @@
 use super::{AdmissionSession, AdmissionStage};
 use crate::model::{MipsI16, Neighbor, QuantizedDataset};
 
-/// Wraps a `QuantizedDataset<MipsI16, N>` for use as an
+/// Wraps a `QuantizedDataset<MipsI16>` for use as an
 /// [`AdmissionStage`]. Twin of [`super::mips_i8::MipsI8Admission`]
 /// with i16 storage for the high-recall band where i8 quantization
 /// noise caps recall.
-pub struct MipsI16Admission<'a, const N: usize> {
-    pub dataset: &'a QuantizedDataset<MipsI16, N>,
+pub struct MipsI16Admission<'a> {
+    pub dataset: &'a QuantizedDataset<MipsI16>,
 }
 
-impl<'a, const N: usize> MipsI16Admission<'a, N> {
+impl<'a> MipsI16Admission<'a> {
     #[inline]
-    pub fn new(dataset: &'a QuantizedDataset<MipsI16, N>) -> Self {
+    pub fn new(dataset: &'a QuantizedDataset<MipsI16>) -> Self {
         Self { dataset }
     }
 }
 
-impl<'a, const N: usize> AdmissionStage<N> for MipsI16Admission<'a, N> {
+impl<'a> AdmissionStage for MipsI16Admission<'a> {
+    fn shape(&self) -> Option<(usize, usize)> {
+        Some((self.dataset.dimension, self.dataset.n))
+    }
     #[inline]
-    fn open<'b>(&'b self, q: &[f32; N]) -> Box<dyn AdmissionSession + 'b> {
+    fn open<'b>(&'b self, q: &[f32]) -> Box<dyn AdmissionSession + 'b> {
         Box::new(MipsI16Session {
             dataset: self.dataset,
             padded: self.dataset.quantize_query_padded(q),
-            short: self.dataset.quantize_query(q),
         })
     }
 }
 
 /// Per-query MIPS i16 session.
-pub struct MipsI16Session<'a, const N: usize> {
-    dataset: &'a QuantizedDataset<MipsI16, N>,
+pub struct MipsI16Session<'a> {
+    dataset: &'a QuantizedDataset<MipsI16>,
     padded: Vec<i16>,
-    short: [i16; N],
 }
 
-impl<'a, const N: usize> AdmissionSession for MipsI16Session<'a, N> {
+impl<'a> AdmissionSession for MipsI16Session<'a> {
     #[inline]
     fn entry_distance(&self, vid: u32) -> f32 {
-        unsafe { self.dataset.qdist(vid, &self.short) }
+        unsafe { self.dataset.qdist(vid, &self.padded) }
     }
 
     #[inline]
@@ -55,13 +56,13 @@ impl<'a, const N: usize> AdmissionSession for MipsI16Session<'a, N> {
         cutoff: f32,
         lookahead_lines: usize,
     ) -> usize {
-        let stride_bytes = QuantizedDataset::<MipsI16, N>::STRIDE * std::mem::size_of::<i16>();
+        let stride_bytes = self.dataset.stride * std::mem::size_of::<i16>();
         let base_ptr = self.dataset.data.as_slice().as_ptr() as *const u8;
         let query_ptr = self.padded.as_ptr() as *const u8;
 
         let mut w = 0usize;
         unsafe {
-            vector::DistanceStream::<vector::IpI16Distance, N>::new(
+            vector::DistanceStream::<vector::IpI16Distance>::new(
                 base_ptr,
                 stride_bytes,
                 stride_bytes,
@@ -89,7 +90,7 @@ mod tests {
         for (i, v) in ds.data.as_mut_slice().iter_mut().enumerate() {
             *v = ((i % 7) as f32) * 0.1 - 0.3;
         }
-        let qds = QuantizedDataset::<MipsI16, 16>::from_f32_dataset(&ds);
+        let qds = QuantizedDataset::<MipsI16>::from_f32_dataset(&ds);
         let adm = MipsI16Admission::new(&qds);
         let q = [0.1f32; 16];
         let session = adm.open(&q);

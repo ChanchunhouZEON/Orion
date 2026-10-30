@@ -57,24 +57,12 @@
 //!
 //! ## Dispatch
 //!
-//! All three traits are **statically dispatched** via generics —
-//! never `dyn Trait`. The hot loop closures embed the stage methods
-//! and DistanceStream<DistanceFn> kernels inline; virtual calls would
-//! cost ~10 cy each per candidate (50-200 µs/query). The recipe enum
-//! at the top of `search_unified` fires the appropriate
-//! monomorphisation:
-//!
-//! ```ignore
-//! match recipe {
-//!     Recipe::SiftL2 => self.search_unified::<NoPrefilter, L2U8Admission, F32Rerank, N>(...),
-//!     Recipe::GistPaAligned => self.search_unified::<JlPrefilter, L2U16Admission, F32Rerank, N>(...),
-//!     // ...
-//! }
-//! ```
-//!
-//! Each branch monomorphises to a fully specialised beam loop with
-//! all three kernels inlined. We expect ~5-7 active recipes, so the
-//! code-bloat budget is ~20 KiB of compiled text — trivial.
+//! Stage factories accept logical query slices, so the same recipe works with
+//! `Orion` and the temporary `StaticOrion<N,T>` compatibility adapter. Each
+//! factory opens a query-local session once. Graph expansion dispatches to that
+//! session per batch; its concrete `DistanceStream<K>` keeps SIMD and prefetch
+//! operations inlined inside the coordinate loop. Dimensions and row strides
+//! are prepared before streaming, not dispatched for each coordinate.
 
 pub mod admission;
 pub mod prefilter;

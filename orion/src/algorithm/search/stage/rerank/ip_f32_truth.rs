@@ -6,7 +6,7 @@
 //! IP-based f32 truth rerank for MIPS-family recipes.
 //!
 //! Reads the top-(k · rerank_factor) PQ entries against the f32 base
-//! via `DistanceStream<IpF32Distance, N>`, returns `-IP` so the
+//! via `DistanceStream<IpF32Distance>`, returns `-IP` so the
 //! "smaller == closer" convention works directly in the sort, and
 //! **unit-normalises the query inside the rerank** before the stream
 //! pass.
@@ -43,15 +43,19 @@ impl<'a, const N: usize> IpF32Rerank<'a, N> {
     }
 }
 
-impl<'a, const N: usize> RerankStage<N> for IpF32Rerank<'a, N> {
+impl<'a, const N: usize> RerankStage for IpF32Rerank<'a, N> {
+    fn shape(&self) -> Option<(usize, usize)> {
+        Some((N, self.dataset.num_active_pts))
+    }
     fn rerank(
         &self,
-        query: &[f32; N],
+        query: &[f32],
         pq_entries: &[Neighbor],
         k: usize,
         rerank_factor: usize,
         scratch: &mut InMemSearchScratch,
     ) -> Vec<u32> {
+        let query: &[f32; N] = query.try_into().expect("query dimension mismatch");
         let _ = pq_entries;
 
         let beam_n = scratch.pq.size();
@@ -77,7 +81,7 @@ impl<'a, const N: usize> RerankStage<N> for IpF32Rerank<'a, N> {
         let mut rerank_buf: Vec<(u32, f32)> = Vec::with_capacity(num_check);
         unsafe {
             let id_in = std::slice::from_raw_parts(scratch.id_scratch.as_ptr(), num_check);
-            vector::DistanceStream::<vector::IpF32Distance, N>::new(
+            vector::DistanceStream::<vector::IpF32Distance>::new(
                 dataset_base_ptr,
                 f32_stride_bytes,
                 f32_compute_bytes,

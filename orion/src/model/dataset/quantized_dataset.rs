@@ -7,7 +7,7 @@
 //! beam** search paths. Replaces the earlier triple of standalone
 //! types — `QuantizedDataset` (u8 / L2), `QuantizedDatasetMips<i8>`,
 //! and `QuantizedDatasetMips<i16>` — with a single generic
-//! [`QuantizedDataset<Q, N>`] parameterised by a [`QuantSpec`]
+//! [`QuantizedDataset<Q>`] parameterised by a [`QuantSpec`]
 //! marker that bundles all the per-storage / per-metric differences:
 //!
 //! - Storage type (`u8` / `i8` / `i16`).
@@ -39,12 +39,10 @@
 //! On-disk format is **packed** (no padding) for portability;
 //! padding is reintroduced at load time.
 
+use super::rows::F32Rows;
 use diskann::common::ANNResult;
 use diskann::common::AlignedBoxWithSlice;
-use diskann::model::InmemDataset;
-use vector::{
-    DistanceFn, FullPrecisionDistance, IpI8Distance, IpI16Distance, L2U8Distance, Metric,
-};
+use vector::{DistanceFn, IpI8Distance, IpI16Distance, L2U8Distance, Metric};
 
 // ─── Trait: per-storage / per-metric specification ────────────────────────
 
@@ -52,12 +50,12 @@ use vector::{
 /// drive the generic [`QuantizedDataset`]. See module docs.
 pub trait QuantSpec: 'static {
     /// Underlying storage element (`u8` / `i8` / `i16`).
-    type Storage: Copy + Default + Send + Sync + 'static;
+    type Storage: bytemuck::Pod + Copy + Default + Send + Sync + 'static;
     /// Quantization parameter struct. L2-u8 uses
     /// [`QuantParamsL2`] (slope + offset, two-tuple affine);
     /// MIPS-i8 / MIPS-i16 use [`QuantParamsMips`] (single scale,
     /// symmetric).
-    type Params: Copy + Send + Sync + std::fmt::Debug;
+    type Params: bytemuck::Pod + Send + Sync + std::fmt::Debug;
 
     /// Disk format magic. Distinct per spec so loading the wrong
     /// sidecar fails fast.
@@ -138,7 +136,8 @@ pub trait QuantSpec: 'static {
 // ─── Param structs ────────────────────────────────────────────────────────
 
 /// L2-u8 affine quantization: `u8 = clamp(round(v · slope) − offset, 0, 255)`.
-#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct QuantParamsL2 {
     pub slope: f32,
     pub offset: i32,
@@ -179,7 +178,8 @@ impl QuantParamsL2 {
 }
 
 /// MIPS symmetric quantization: `q = round(v · scale)` with `|q| ≤ MAX_Q`.
-#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct QuantParamsMips {
     pub scale: f32,
 }
@@ -504,75 +504,83 @@ impl QuantSpec for MipsI16 {
 /// Quantized base store. `Q` selects the storage + metric (one of
 /// [`L2U8`], [`MipsI8`], [`MipsI16`]); `N` is the vector dimension.
 #[derive(Debug)]
-pub struct QuantizedDataset<Q: QuantSpec, const N: usize> {
+pub struct QuantizedDataset<Q: QuantSpec> {
     pub data: AlignedBoxWithSlice<Q::Storage>,
     pub params: Q::Params,
     pub n: usize,
+    pub dimension: usize,
+    pub stride: usize,
 }
 
-impl<Q: QuantSpec, const N: usize> QuantizedDataset<Q, N> {
+impl<Q: QuantSpec> QuantizedDataset<Q> {
     /// Per-vertex element span, rounded up so each vertex's byte
-    /// footprint ends on a 32-byte boundary.
-    pub const STRIDE: usize = (N + Q::ALIGN_ELEMS - 1) & !(Q::ALIGN_ELEMS - 1);
-
-    pub fn from_f32_dataset(ds: &InmemDataset<f32, N>) -> Self
-    where
-        [f32; N]: FullPrecisionDistance<f32, N>,
-    {
-        let n = ds.num_active_pts;
-        let slice = ds.get_data();
-        let len = n * N;
-        let params = Q::build_params(&slice[..len]);
-
-        let mut data = AlignedBoxWithSlice::<Q::Storage>::new(n * Self::STRIDE, 32)
+    /// footprint ends on the selected distance kernel’s block boundary.
+    pub fn from_f32_dataset(ds: &impl F32Rows) -> Self {
+        let dimension = ds.dimension();
+        let n = ds.len();
+        assert!(dimension > 0 && n > 0);
+        assert!(dimension <= Q::QuantDistanceFn::MAX_COORDINATES);
+        let layout = vector::PaddedLayout::for_kernel::<Q::QuantDistanceFn>(dimension)
+            .expect("valid quantized row layout");
+        let stride = layout.stride_elements();
+        // Padding is not a sample: only logical values may fit the quantizer.
+        let (min, max) = ds.range();
+        let params = Q::build_params(&[min, max]);
+        let mut data = AlignedBoxWithSlice::<Q::Storage>::new(n * stride, layout.alignment())
             .expect("allocate aligned quantized buffer");
-
         use rayon::prelude::*;
         data.as_mut_slice()
-            .par_chunks_mut(Self::STRIDE)
-            .zip(slice[..len].par_chunks(N))
-            .for_each(|(out, inp)| {
-                for i in 0..N {
-                    out[i] = Q::quantize_scalar(&params, inp[i]);
+            .par_chunks_mut(stride)
+            .enumerate()
+            .for_each(|(id, out)| {
+                for (dst, &value) in out.iter_mut().zip(ds.row(id)) {
+                    *dst = Q::quantize_scalar(&params, value);
                 }
-                // Trailing out[N..STRIDE] is already zero (alloc_zeroed).
             });
-
-        Self { data, params, n }
+        Self {
+            data,
+            params,
+            n,
+            dimension,
+            stride,
+        }
     }
 
     /// # Safety
     /// UB if `id >= n`. Returned pointer is 32-byte aligned.
     #[inline]
-    pub unsafe fn get_vertex_unchecked(&self, id: u32) -> &[Q::Storage; N] {
-        let ptr =
-            unsafe { self.data.as_ptr().add(id as usize * Self::STRIDE) as *const [Q::Storage; N] };
-        unsafe { &*ptr }
+    pub unsafe fn get_vertex_unchecked(&self, id: u32) -> &[Q::Storage] {
+        unsafe {
+            std::slice::from_raw_parts(
+                self.data.as_ptr().add(id as usize * self.stride),
+                self.dimension,
+            )
+        }
     }
 
-    /// Quantize a query into a stack-allocated `[Storage; N]`. Used
-    /// only by legacy callers (`qdist`, `qdist4`) that read exactly
-    /// `N` elements and ignore the padding.
-    pub fn quantize_query(&self, query: &[f32; N]) -> [Q::Storage; N] {
-        let mut out = [Q::Storage::default(); N];
-        for i in 0..N {
-            out[i] = Q::quantize_scalar(&self.params, query[i]);
-        }
-        out
+    /// Quantize only the logical coordinates. `qdist` accepts this packed
+    /// form, while search sessions use the padded form to avoid per-hop copies.
+    pub fn quantize_query(&self, query: &[f32]) -> Vec<Q::Storage> {
+        assert_eq!(query.len(), self.dimension);
+        query
+            .iter()
+            .map(|&v| Q::quantize_scalar(&self.params, v))
+            .collect()
     }
 
     /// Quantize a query into a heap-allocated `Vec<Storage>` of size
-    /// [`Self::STRIDE`] — the same per-vertex element span as the base
+    /// [`self.stride`] — the same per-vertex element span as the base
     /// buffer, with the trailing `STRIDE - N` slots zero-padded so
     /// the kernel sees the same byte footprint per vertex on both
     /// sides. This is the form [`vector::DistanceStream`] expects:
-    /// it reads `stride_bytes / 32` chunks of 32-byte windows from
+    /// it reads complete kernel blocks from
     /// both the base and the query, so any byte the base touches must
     /// also be present (and zero) in the query. Allocated once per
     /// `search<Q>` call, reused across every hop.
-    pub fn quantize_query_padded(&self, query: &[f32; N]) -> Vec<Q::Storage> {
-        let mut out = vec![Q::Storage::default(); Self::STRIDE];
-        for i in 0..N {
+    pub fn quantize_query_padded(&self, query: &[f32]) -> Vec<Q::Storage> {
+        assert_eq!(query.len(), self.dimension);
+        let mut out = vec![Q::Storage::default(); self.stride];
+        for i in 0..self.dimension {
             out[i] = Q::quantize_scalar(&self.params, query[i]);
         }
         // out[N..STRIDE] retains its `Default` value (0 for i8/i16/u8).
@@ -584,27 +592,39 @@ impl<Q: QuantSpec, const N: usize> QuantizedDataset<Q, N> {
     /// `f32_threshold * Q::distance_scale_sq(self.params) * Q_SLACK` to
     /// stay in the same comparison space.
     #[inline]
-    pub unsafe fn qdist(&self, id: u32, q: &[Q::Storage; N]) -> f32 {
-        let v = unsafe { self.get_vertex_unchecked(id) };
-        unsafe { Q::distance::<N>(v.as_ptr(), q.as_ptr()) }
+    pub unsafe fn qdist(&self, id: u32, q: &[Q::Storage]) -> f32 {
+        assert!(q.len() == self.dimension || q.len() == self.stride);
+        let padded;
+        let query = if q.len() == self.stride {
+            q
+        } else {
+            padded = {
+                let mut v = vec![Q::Storage::default(); self.stride];
+                v[..self.dimension].copy_from_slice(q);
+                v
+            };
+            &padded
+        };
+        let ids = [id];
+        let mut distance = 0.;
+        unsafe {
+            vector::DistanceStream::<Q::QuantDistanceFn>::new(
+                self.data.as_ptr().cast(),
+                self.stride * std::mem::size_of::<Q::Storage>(),
+                self.stride * std::mem::size_of::<Q::Storage>(),
+                query.as_ptr().cast(),
+                &ids,
+                1,
+            )
+            .run(|_, d| distance = d);
+        }
+        distance
     }
 
     /// 4-way batched quantized distance.
     #[inline]
-    pub unsafe fn qdist4(&self, ids: [u32; 4], q: &[Q::Storage; N]) -> [f32; 4] {
-        let v0 = unsafe { self.get_vertex_unchecked(ids[0]) };
-        let v1 = unsafe { self.get_vertex_unchecked(ids[1]) };
-        let v2 = unsafe { self.get_vertex_unchecked(ids[2]) };
-        let v3 = unsafe { self.get_vertex_unchecked(ids[3]) };
-        unsafe {
-            Q::distance_batch4::<N>(
-                v0.as_ptr(),
-                v1.as_ptr(),
-                v2.as_ptr(),
-                v3.as_ptr(),
-                q.as_ptr(),
-            )
-        }
+    pub unsafe fn qdist4(&self, ids: [u32; 4], q: &[Q::Storage]) -> [f32; 4] {
+        ids.map(|id| unsafe { self.qdist(id, q) })
     }
 
     /// Convert `f32_pq_worst` into the quantized distance scale, ready
@@ -635,26 +655,24 @@ impl<Q: QuantSpec, const N: usize> QuantizedDataset<Q, N> {
         hdr[0..4].copy_from_slice(&Q::MAGIC.to_le_bytes());
         hdr[4..8].copy_from_slice(&1u32.to_le_bytes());
         hdr[8..12].copy_from_slice(&(self.n as u32).to_le_bytes());
-        hdr[12..16].copy_from_slice(&(N as u32).to_le_bytes());
-        // Pack params into hdr[16..24]. Both QuantParamsL2 (slope:f32 +
-        // offset:i32) and QuantParamsMips (scale:f32 + 4 B pad) fit in
-        // 8 bytes, so this is a thin spec-aware copy via unsafe transmute.
-        // SAFETY: both Param structs are #[repr(Rust)] but hold POD
-        // members totalling ≤ 8 bytes; we transmute via byte-array copy.
-        unsafe {
-            let pbytes = std::slice::from_raw_parts(
-                &self.params as *const Q::Params as *const u8,
-                std::mem::size_of::<Q::Params>().min(8),
-            );
-            hdr[16..16 + pbytes.len()].copy_from_slice(pbytes);
-        }
+        hdr[12..16].copy_from_slice(&(self.dimension as u32).to_le_bytes());
+        // Fixed POD layout preserves the legacy header without unaligned reads.
+        let params = bytemuck::bytes_of(&self.params);
+        assert!(
+            params.len() <= 8,
+            "quantization parameters exceed the header"
+        );
+        hdr[16..16 + params.len()].copy_from_slice(params);
         w.write_all(&hdr)?;
         let elem_bytes = std::mem::size_of::<Q::Storage>();
         let base = self.data.as_slice();
         for id in 0..self.n {
-            let off = id * Self::STRIDE;
+            let off = id * self.stride;
             let vertex_bytes = unsafe {
-                std::slice::from_raw_parts(base.as_ptr().add(off) as *const u8, N * elem_bytes)
+                std::slice::from_raw_parts(
+                    base.as_ptr().add(off) as *const u8,
+                    self.dimension * elem_bytes,
+                )
             };
             w.write_all(vertex_bytes)?;
         }
@@ -667,6 +685,13 @@ impl<Q: QuantSpec, const N: usize> QuantizedDataset<Q, N> {
         let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
         let mut hdr = [0u8; 24];
         r.read_exact(&mut hdr)?;
+        if u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported sidecar version",
+            )
+            .into());
+        }
         let magic = u32::from_le_bytes(hdr[0..4].try_into().unwrap());
         if magic != Q::MAGIC {
             return Err(std::io::Error::new(
@@ -681,48 +706,44 @@ impl<Q: QuantSpec, const N: usize> QuantizedDataset<Q, N> {
         }
         let n = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let dim = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
-        if dim != N {
+        if dim == 0 || n == 0 || dim > Q::QuantDistanceFn::MAX_COORDINATES {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("dim mismatch: file={dim} expected={N}"),
+                "invalid quantized shape",
             )
             .into());
         }
-        // SAFETY: see save() — we re-read the same byte layout the
-        // matching impl wrote.
-        let params: Q::Params = unsafe {
-            let mut buf = [0u8; 8];
-            let n_bytes = std::mem::size_of::<Q::Params>().min(8);
-            buf[..n_bytes].copy_from_slice(&hdr[16..16 + n_bytes]);
-            std::ptr::read(buf.as_ptr() as *const Q::Params)
-        };
-        let mut data = AlignedBoxWithSlice::<Q::Storage>::new(n * Self::STRIDE, 32)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
-        let elem_bytes = std::mem::size_of::<Q::Storage>();
-        if Self::STRIDE == N {
-            let bytes = unsafe {
-                std::slice::from_raw_parts_mut(
-                    data.as_mut_slice().as_mut_ptr() as *mut u8,
-                    n * N * elem_bytes,
-                )
-            };
-            r.read_exact(bytes)?;
-        } else {
-            let base = data.as_mut_slice();
-            let mut buf = vec![0u8; N * elem_bytes];
-            for id in 0..n {
-                r.read_exact(&mut buf)?;
-                let off = id * Self::STRIDE;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        buf.as_ptr(),
-                        base.as_mut_ptr().add(off) as *mut u8,
-                        N * elem_bytes,
-                    );
-                }
-            }
+        let expected = (n as u64)
+            .checked_mul(dim as u64)
+            .and_then(|x| x.checked_mul(std::mem::size_of::<Q::Storage>() as u64))
+            .and_then(|x| x.checked_add(24));
+        if expected != Some(r.get_ref().metadata()?.len()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "quantized payload length does not match its shape",
+            )
+            .into());
         }
-        Ok(Self { data, params, n })
+        let layout = vector::PaddedLayout::for_kernel::<Q::QuantDistanceFn>(dim)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let stride = layout.stride_elements();
+        let param_bytes = std::mem::size_of::<Q::Params>();
+        if param_bytes > 8 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "quantization parameters exceed the header",
+            )
+            .into());
+        }
+        let params: Q::Params = bytemuck::pod_read_unaligned(&hdr[16..16 + param_bytes]);
+        let data = super::rows::read_rows::<Q::Storage>(&mut r, n, stride, dim)?;
+        Ok(Self {
+            data,
+            params,
+            n,
+            dimension: dim,
+            stride,
+        })
     }
 }
 
@@ -798,19 +819,19 @@ mod tests {
     #[test]
     fn build_l2u8_dataset() {
         let ds = make_ds::<8>(16);
-        let qds = QuantizedDataset::<L2U8, 8>::from_f32_dataset(&ds);
+        let qds = QuantizedDataset::<L2U8>::from_f32_dataset(&ds);
         assert_eq!(qds.n, 16);
         let q = [0.0f32; 8];
         let qq = qds.quantize_query(&q);
         assert_eq!(qq.len(), 8);
         let pad = qds.quantize_query_padded(&q);
-        assert_eq!(pad.len(), QuantizedDataset::<L2U8, 8>::STRIDE);
+        assert_eq!(pad.len(), qds.stride);
     }
 
     #[test]
     fn pq_worst_to_quantized_scales_with_slope_sq() {
         let ds = make_ds::<4>(4);
-        let qds = QuantizedDataset::<L2U8, 4>::from_f32_dataset(&ds);
+        let qds = QuantizedDataset::<L2U8>::from_f32_dataset(&ds);
         let f32_w = 1.0f32;
         let q_w = qds.pq_worst_to_quantized(f32_w);
         let expected = qds.params.slope * qds.params.slope * f32_w;
@@ -824,9 +845,9 @@ mod tests {
         let tmp = std::env::temp_dir().join("orion_qds_l2u8_test.bin");
         let _ = std::fs::remove_file(&tmp);
         let ds = make_ds::<4>(8);
-        let qds = QuantizedDataset::<L2U8, 4>::from_f32_dataset(&ds);
+        let qds = QuantizedDataset::<L2U8>::from_f32_dataset(&ds);
         qds.save(&tmp).unwrap();
-        let loaded = QuantizedDataset::<L2U8, 4>::load(&tmp).unwrap();
+        let loaded = QuantizedDataset::<L2U8>::load(&tmp).unwrap();
         assert_eq!(loaded.n, qds.n);
         assert!((loaded.params.slope - qds.params.slope).abs() < 1e-6);
         let _ = std::fs::remove_file(&tmp);
@@ -835,23 +856,23 @@ mod tests {
     #[test]
     fn build_mips_i8_dataset() {
         let ds = make_ds::<8>(4);
-        let qds = QuantizedDataset::<MipsI8, 8>::from_f32_dataset(&ds);
+        let qds = QuantizedDataset::<MipsI8>::from_f32_dataset(&ds);
         assert_eq!(qds.n, 4);
-        assert_eq!((QuantizedDataset::<MipsI8, 8>::STRIDE) % 32, 0);
+        assert_eq!((qds.stride) % 32, 0);
     }
 
     #[test]
     fn build_mips_i16_dataset() {
         let ds = make_ds::<8>(4);
-        let qds = QuantizedDataset::<MipsI16, 8>::from_f32_dataset(&ds);
+        let qds = QuantizedDataset::<MipsI16>::from_f32_dataset(&ds);
         assert_eq!(qds.n, 4);
-        assert_eq!((QuantizedDataset::<MipsI16, 8>::STRIDE * 2) % 32, 0);
+        assert_eq!((qds.stride * 2) % 32, 0);
     }
 
     #[test]
     fn build_l2_u16_dataset() {
         let ds = make_ds::<8>(8);
-        let qds = QuantizedDataset::<L2U16, 8>::from_f32_dataset(&ds);
+        let qds = QuantizedDataset::<L2U16>::from_f32_dataset(&ds);
         assert_eq!(qds.n, 8);
     }
 }

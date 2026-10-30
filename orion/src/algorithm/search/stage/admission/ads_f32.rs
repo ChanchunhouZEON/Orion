@@ -47,12 +47,16 @@ impl<'a, const N: usize> AdsF32Admission<'a, N> {
     }
 }
 
-impl<'a, const N: usize> AdmissionStage<N> for AdsF32Admission<'a, N>
+impl<'a, const N: usize> AdmissionStage for AdsF32Admission<'a, N>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
+    fn shape(&self) -> Option<(usize, usize)> {
+        Some((N, self.dataset.num_active_pts))
+    }
     #[inline]
-    fn open<'b>(&'b self, q: &[f32; N]) -> Box<dyn AdmissionSession + 'b> {
+    fn open<'b>(&'b self, q: &[f32]) -> Box<dyn AdmissionSession + 'b> {
+        let q: &[f32; N] = q.try_into().expect("query dimension mismatch");
         Box::new(AdsF32Session {
             dataset: self.dataset,
             query: *q,
@@ -128,5 +132,65 @@ where
             w += keep as usize;
         }
         w
+    }
+}
+
+/// Runtime-dimensional ADS adapter. The caller supplies the same rotated base
+/// and query as for the typed adapter; SIMD padding is excluded from sampling.
+pub struct DynamicAdsF32Admission<'a> {
+    dataset: &'a diskann::model::PaddedDataset<f32>,
+    epsilon: f32,
+}
+impl<'a> DynamicAdsF32Admission<'a> {
+    pub fn new(dataset: &'a diskann::model::PaddedDataset<f32>, epsilon: f32) -> Self {
+        Self { dataset, epsilon }
+    }
+}
+impl AdmissionStage for DynamicAdsF32Admission<'_> {
+    fn shape(&self) -> Option<(usize, usize)> {
+        Some((self.dataset.layout().logical_dim(), self.dataset.len()))
+    }
+    fn open<'b>(&'b self, q: &[f32]) -> Box<dyn AdmissionSession + 'b> {
+        Box::new(DynamicAdsSession {
+            dataset: self.dataset,
+            query: q.to_vec(),
+            epsilon: self.epsilon,
+        })
+    }
+}
+struct DynamicAdsSession<'a> {
+    dataset: &'a diskann::model::PaddedDataset<f32>,
+    query: Vec<f32>,
+    epsilon: f32,
+}
+impl AdmissionSession for DynamicAdsSession<'_> {
+    fn entry_distance(&self, id: u32) -> f32 {
+        vector::distance_l2_slice_f32(&self.query, self.dataset.row(id as usize).unwrap())
+    }
+    unsafe fn admit_stream(&self, ids: &[u32], out: *mut Neighbor, cutoff: f32, _: usize) -> usize {
+        let prefetch = |id: u32| {
+            let row = self.dataset.row(id as usize).unwrap();
+            vector::prefetch_vector(row);
+        };
+        if let Some(&id) = ids.first() {
+            prefetch(id);
+        }
+        let mut count = 0;
+        for (i, &id) in ids.iter().enumerate() {
+            if let Some(&next) = ids.get(i + 1) {
+                prefetch(next);
+            }
+            let distance = vector::distance_l2_adsampling_slice_f32(
+                &self.query,
+                self.dataset.row(id as usize).unwrap(),
+                cutoff,
+                self.epsilon,
+            );
+            unsafe {
+                out.add(count).write(Neighbor::new(id, distance));
+            }
+            count += ((distance >= 0.) & (distance < cutoff)) as usize;
+        }
+        count
     }
 }

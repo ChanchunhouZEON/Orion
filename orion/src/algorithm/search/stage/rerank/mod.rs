@@ -37,7 +37,11 @@ use crate::model::Neighbor;
 use crate::model::scratch::InMemSearchScratch;
 
 /// Final precision pass on the top-(k · rerank_factor) PQ entries.
-pub trait RerankStage<const N: usize>: Send + Sync {
+pub trait RerankStage: Send + Sync {
+    /// Logical dimension and row count, for checking recipe/base compatibility.
+    fn shape(&self) -> Option<(usize, usize)> {
+        None
+    }
     /// Score and emit top-k.
     ///
     /// * `query` — the original f32 query (pre-quantization).
@@ -49,7 +53,7 @@ pub trait RerankStage<const N: usize>: Send + Sync {
     ///   and padded-query allocation.
     fn rerank(
         &self,
-        query: &[f32; N],
+        query: &[f32],
         pq_entries: &[Neighbor],
         k: usize,
         rerank_factor: usize,
@@ -73,10 +77,10 @@ pub trait RerankStage<const N: usize>: Send + Sync {
 /// always passes `&[]`.
 pub struct NoRerank;
 
-impl<const N: usize> RerankStage<N> for NoRerank {
+impl RerankStage for NoRerank {
     fn rerank(
         &self,
-        _query: &[f32; N],
+        _query: &[f32],
         _pq_entries: &[Neighbor],
         k: usize,
         _rerank_factor: usize,
@@ -91,3 +95,6 @@ impl<const N: usize> RerankStage<N> for NoRerank {
         out
     }
 }
+
+pub mod dynamic_f32;
+pub use dynamic_f32::DynamicF32Rerank;

@@ -5,15 +5,19 @@
 
 //! Bounded-buffer vector loading into the allocation transferred to Orion.
 pub mod memory;
+pub mod padded;
 pub mod query;
 
 use crate::config::{ResolvedRunConfig, VectorStorageKind};
 use crate::search::cascade::SearchMetric;
 use diskann::common::AlignedBoxWithSlice;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read};
+#[cfg(test)]
+use std::io::{Seek, SeekFrom};
 use std::path::Path;
 
 const VECTOR_READ_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+#[cfg(test)]
 const SIMD_ALIGNMENT_BYTES: usize = 64;
 
 /// Supported on-disk vector encodings.
@@ -171,7 +175,9 @@ pub fn inspect_vector_file(path: &Path, format: VectorFormat) -> Result<VectorHe
 /// - how encoded byte coordinates are converted,
 /// - whether encoded `f32` coordinates are accepted,
 /// - what post-load normalization is required by the search metric.
-pub trait BaseElement: Default + Copy + Send + Sync + Into<f32> {
+pub trait BaseElement:
+    Default + Copy + Send + Sync + Into<f32> + orion::index::compressed_index::DynamicElement
+{
     /// Resident storage representation selected by this element type.
     const STORAGE: VectorStorageKind;
 
@@ -245,6 +251,7 @@ impl BaseElement for u8 {
 ///
 /// Native u8bin payloads are read in blocks directly into resident storage.
 /// Other formats reuse one encoded row plus the fixed IO buffer.
+#[cfg(test)]
 fn read_vectors_into<T: BaseElement>(
     path: &Path,
     format: VectorFormat,
@@ -280,47 +287,56 @@ fn read_vectors_into<T: BaseElement>(
     let mut encoded_row = vec![0; row_bytes];
 
     for values in output.chunks_exact_mut(dimension) {
-        if !format.has_file_header() {
-            // Vecs formats repeat the dimension before every record.
-            //
-            // Although `inspect_vector_file` used the first row to infer shape,
-            // every decoded row must still be checked because a corrupted file
-            // could contain a later record with a different dimension while
-            // retaining a superficially valid total byte length.
-            let mut dimension_header = [0; 4];
+        read_vector_row(&mut reader, format, dimension, &mut encoded_row, values)?;
+    }
 
-            reader
-                .read_exact(&mut dimension_header)
-                .map_err(|e| e.to_string())?;
+    Ok(())
+}
 
-            if u32::from_le_bytes(dimension_header) as usize != dimension {
-                return Err("inconsistent per-record dimension".into());
-            }
-        }
+// Shared decoder for packed and padded destinations. The caller reuses the
+// encoded buffer and chooses which logical row receives the coordinates.
+fn read_vector_row<T: BaseElement, R: Read>(
+    reader: &mut R,
+    format: VectorFormat,
+    dimension: usize,
+    encoded_row: &mut [u8],
+    values: &mut [T],
+) -> Result<(), String> {
+    if !format.has_file_header() {
+        // Vecs formats repeat the dimension before every record.
+        //
+        // Although `inspect_vector_file` used the first row to infer shape,
+        // every decoded row must still be checked because a corrupted file
+        // could contain a later record with a different dimension while
+        // retaining a superficially valid total byte length.
+        let mut dimension_header = [0; 4];
 
         reader
-            .read_exact(&mut encoded_row)
+            .read_exact(&mut dimension_header)
             .map_err(|e| e.to_string())?;
 
-        if format.coordinate_bytes() == 1 {
-            // Byte-valued formats can be written directly into either native
-            // u8 storage or widened f32 storage without an intermediate row.
-            for (coordinate, &encoded_coordinate) in values.iter_mut().zip(&encoded_row) {
-                *coordinate = T::from_byte(encoded_coordinate);
-            }
-        } else {
-            // Float-valued formats are decoded as little-endian f32 values.
-            // Whether the resident representation accepts those values is a
-            // policy of `BaseElement::from_float`.
-            for (coordinate, encoded_coordinate) in
-                values.iter_mut().zip(encoded_row.chunks_exact(4))
-            {
-                *coordinate =
-                    T::from_float(f32::from_le_bytes(encoded_coordinate.try_into().unwrap()))?;
-            }
+        if u32::from_le_bytes(dimension_header) as usize != dimension {
+            return Err("inconsistent per-record dimension".into());
         }
     }
 
+    reader.read_exact(encoded_row).map_err(|e| e.to_string())?;
+
+    if format.coordinate_bytes() == 1 {
+        // Byte-valued formats can be written directly into either native
+        // u8 storage or widened f32 storage without an intermediate row.
+        for (coordinate, &encoded_coordinate) in values.iter_mut().zip(encoded_row.iter()) {
+            *coordinate = T::from_byte(encoded_coordinate);
+        }
+    } else {
+        // Float-valued formats are decoded as little-endian f32 values.
+        // Whether the resident representation accepts those values is a
+        // policy of `BaseElement::from_float`.
+        for (coordinate, encoded_coordinate) in values.iter_mut().zip(encoded_row.chunks_exact(4)) {
+            *coordinate =
+                T::from_float(f32::from_le_bytes(encoded_coordinate.try_into().unwrap()))?;
+        }
+    }
     Ok(())
 }
 
@@ -342,7 +358,7 @@ fn read_native_bytes<R: Read>(reader: &mut R, output: &mut [u8]) -> std::io::Res
 /// The base vectors are stored in an [`AlignedBoxWithSlice<T>`] and are owned
 /// by this struct until [`take_index_dataset`](Self::take_index_dataset) is
 /// called. That method transfers the allocation directly into an
-/// [`InmemDataset`](diskann::model::InmemDataset) without reallocating or
+/// [`PaddedDataset`](diskann::model::PaddedDataset) without reallocating or
 /// copying the base vectors.
 ///
 /// After the transfer, [`base`](Self::base) becomes `None`.
@@ -352,7 +368,7 @@ fn read_native_bytes<R: Read>(reader: &mut R, output: &mut [u8]) -> std::io::Res
 /// A `LoadedBase` is normally constructed from a validated
 /// [`ResolvedRunConfig`] using [`load`](Self::load). The resulting base
 /// allocation can then be moved into an
-/// [`Orion`](orion::index::compressed_index::Orion) index via
+/// [`Orion`](orion::Orion) index via
 /// [`take_index_dataset`](Self::take_index_dataset).
 ///
 /// This ownership-transfer path avoids keeping a second copy of the original
@@ -362,6 +378,7 @@ pub struct LoadedBase<T = f32> {
     /// Padded allocation, transferred to the index without copying.
     pub base: Option<AlignedBoxWithSlice<T>>,
     pub num_points: usize,
+    pub layout: vector::PaddedLayout,
 }
 
 /// Replayable experiment inputs. Ordinary search uses LoadedBase + QuerySource.
@@ -385,7 +402,7 @@ impl<T> std::ops::DerefMut for LoadedDataset<T> {
 
 impl<T: BaseElement> LoadedBase<T> {
     /// Transfers ownership of the base-vector allocation into an
-    /// [`InmemDataset`](diskann::model::InmemDataset).
+    /// [`PaddedDataset`](diskann::model::PaddedDataset).
     ///
     /// The underlying allocation is moved rather than copied. After a
     /// successful call, [`Self::base`] is `None`, so the allocation cannot be
@@ -394,22 +411,12 @@ impl<T: BaseElement> LoadedBase<T> {
     /// # Errors
     ///
     /// Returns an error if the base allocation has already been transferred.
-    pub fn take_index_dataset<const N: usize>(
-        &mut self,
-    ) -> Result<diskann::model::InmemDataset<T, N>, String>
-    where
-        [T; N]: vector::FullPrecisionDistance<T, N>,
-    {
+    pub fn take_index_dataset(&mut self) -> Result<diskann::model::PaddedDataset<T>, String> {
         let allocation = self
             .base
             .take()
             .ok_or("base allocation already transferred")?;
-        Ok(diskann::model::InmemDataset {
-            data: allocation,
-            num_points: self.num_points,
-            num_active_pts: self.num_points,
-            capacity: self.num_points * N,
-        })
+        diskann::model::PaddedDataset::from_allocation(allocation, self.num_points, self.layout)
     }
 
     /// Loads the benchmark dataset described by `config` into memory.
@@ -448,27 +455,19 @@ impl<T: BaseElement> LoadedBase<T> {
 
         crate::data::memory::check_memory_budget(config, num_points)?;
 
-        let coordinate_count = num_points
-            .checked_mul(dimension)
-            .ok_or("base size overflow")?;
-        // Reserve one tail for SIMD reads past the final vector. Individual
-        // vectors remain contiguous and keep their original dimension.
-        let allocation_elements = coordinate_count
-            .checked_add(SIMD_ALIGNMENT_BYTES / std::mem::size_of::<T>())
-            .ok_or("base size overflow")?;
-        let mut base = AlignedBoxWithSlice::new(allocation_elements, SIMD_ALIGNMENT_BYTES)
-            .map_err(|e| e.to_string())?;
-
-        read_vectors_into(
+        let layout = vector::PaddedLayout::for_kernel::<T::Kernel>(dimension)?;
+        let dataset = padded::load::<T>(
             &config.base,
             config.base_format,
-            dimension,
-            &mut base[..coordinate_count],
+            layout,
+            config.max_points,
+            config.metric,
+            None,
         )?;
-        T::normalize(&mut base[..coordinate_count], dimension, config.metric)?;
         Ok(Self {
-            base: Some(base),
+            base: Some(dataset.into_allocation()),
             num_points,
+            layout,
         })
     }
 }
@@ -626,18 +625,18 @@ mod tests {
                 .unwrap();
         assert_eq!((read, d), (vec![1.0, 2.0], 2));
         let invalid = bytes(&[(2, [1.0, 2.0]), (3, [3.0, 4.0])]);
-        assert!(read_dimensioned_records(
-            &mut Cursor::new(invalid),
-            usize::MAX,
-            f32::from_le_bytes
-        )
-        .is_err());
-        assert!(read_dimensioned_records(
-            &mut Cursor::new(&data[..data.len() - 1]),
-            usize::MAX,
-            f32::from_le_bytes
-        )
-        .is_err());
+        assert!(
+            read_dimensioned_records(&mut Cursor::new(invalid), usize::MAX, f32::from_le_bytes)
+                .is_err()
+        );
+        assert!(
+            read_dimensioned_records(
+                &mut Cursor::new(&data[..data.len() - 1]),
+                usize::MAX,
+                f32::from_le_bytes
+            )
+            .is_err()
+        );
     }
 
     #[test]

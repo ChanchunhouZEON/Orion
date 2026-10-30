@@ -3,15 +3,15 @@
  * Licensed under the MIT License.
  */
 
-//! Shared dimension registry, input validation and benchmark compatibility helpers.
+//! Input validation and legacy diagnostic benchmark compatibility helpers.
 //! Benchmark-only helpers are explicit calls and are not run by Index sessions.
 
 #![allow(dead_code)]
 
 use std::hint::black_box;
 
-/// One registry of the const-generic dimensions compiled into the sweep driver.
-/// Padding is a data transformation, not a dimension alias.
+/// Fixed query-array dimensions used only by legacy diagnostic binaries.
+/// The main sweep, CLI and Python runtime do not use this dispatch.
 #[macro_export]
 macro_rules! with_supported_dimension {
     ($dimension:expr, |$d:ident| $body:expr) => {

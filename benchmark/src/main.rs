@@ -303,7 +303,7 @@ fn main() {
 }
 
 fn run_convergence_diag(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
-    use orion::{build_diskann_index, Orion, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
@@ -341,7 +341,7 @@ fn run_convergence_diag(dataset: &Dataset, k: usize, overrides: &config::SweepOv
             drop(result.index);
 
             let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut idx = Orion::<$N>::new(
+            let mut idx = StaticOrion::<$N>::new(
                 empty_ds, &result.partitions, result.entry_point,
                 ocfg.graph_degree, ocfg.max_extra, None, None, None, false,
             );
@@ -640,7 +640,7 @@ fn run_thread_sweep(dataset: &Dataset, k: usize, overrides: &config::SweepOverri
     println!("  {}", "─".repeat(72));
 
     // ── One-time scratch-pool sizing ──────────────────────────────────
-    // `Orion::inmem_scratch_pool` is `get_or_init` — initialised
+    // `StaticOrion::inmem_scratch_pool` is `get_or_init` — initialised
     // ONCE on first search with size `current_num_threads() + 5`. If we
     // let the T=1 pool's warmup initialise it (sized for 6 scratches),
     // every later thread count (T=8, T=16) reuses that under-sized pool
@@ -799,7 +799,7 @@ fn run_thread_sweep(dataset: &Dataset, k: usize, overrides: &config::SweepOverri
 }
 
 fn run_build_profile(dataset: &Dataset, _k: usize) {
-    use orion::{build_diskann_index, Orion, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
     use std::time::Instant;
 
     let num_points = dataset.num_base();
@@ -880,10 +880,10 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
                 .expect("orion build failed");
                 let orion_graph_s = result.graph_build_time.as_secs_f64();
 
-                // Orion overhead: Orion::new (extract + clustering + reorder).
+                // Orion overhead: StaticOrion::new (extract + clustering + reorder).
                 let t_ov = Instant::now();
                 let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                let mut idx = Orion::<$N>::new(
+                let mut idx = StaticOrion::<$N>::new(
                     empty_ds,
                     &result.partitions,
                     result.entry_point,
@@ -977,7 +977,7 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
 }
 
 fn run_search_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
-    use orion::{build_diskann_index, Orion, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
 
     let run = experiment("diagnostic", k, overrides);
 
@@ -1007,7 +1007,7 @@ fn run_search_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOver
             drop(result.index);
 
             let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut idx = Orion::<$N>::new(
+            let mut idx = StaticOrion::<$N>::new(
                 empty_ds,
                 &result.partitions,
                 result.entry_point,
@@ -1033,7 +1033,7 @@ fn run_search_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOver
             println!("Warm-up (1000 queries)...");
             let _ = idx.ensure_quantized_dataset();
             for q in &queries[..queries.len().min(1000)] {
-                crate::runner::cascade::search_compose::<$N>(
+                crate::runner::cascade::search_compose::<_>(
                     &idx,
                     q,
                     k,
@@ -1166,7 +1166,7 @@ fn run_memory_profile(dataset: &Dataset) {
     use diskann::index::{create_inmem_index, ANNInmemIndex};
     use diskann::model::configuration::index_write_parameters::IndexWriteParametersBuilder;
     use diskann::model::{IndexConfiguration, InmemDataset};
-    use orion::{Orion, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion::{StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
@@ -1266,7 +1266,7 @@ fn run_memory_profile(dataset: &Dataset) {
             drop(idx);
 
             let empty_ds = InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut idx = Orion::<$N>::new(
+            let mut idx = StaticOrion::<$N>::new(
                 empty_ds,
                 &partitions,
                 entry_point,
@@ -1782,7 +1782,7 @@ fn run_cliff_profile(dataset: &Dataset) {
 fn run_neighbor_contribution_profile(dataset: &Dataset) {
     use diskann::model::{Neighbor as DNeighbor, Vertex};
     use orion::algorithm::search::convergence::SearchConvergenceChecker;
-    use orion::{build_diskann_index, Orion};
+    use orion::{build_diskann_index, StaticOrion};
     use vector::Metric;
 
     let num_points = dataset.num_base();
@@ -1807,7 +1807,7 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
             let entry = result.entry_point;
             drop(result.index);
             let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut idx = Orion::<$N>::new(
+            let mut idx = StaticOrion::<$N>::new(
                 empty_ds, &result.partitions, entry,
                 ocfg.graph_degree, ocfg.max_extra, None, None, None, false,
             );
@@ -2061,7 +2061,7 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
 }
 
 fn run_extra_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
-    use orion::{build_diskann_index, Orion, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
     let ocfg = crate::config::load_dataset_config_by_dim(dataset.dimension).orion;
     let run = experiment("single", k, overrides);
     assert_eq!(run.search_list_sizes.len(), 1, "extra-profile requires one search L");
@@ -2108,7 +2108,7 @@ fn run_extra_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOverr
                 drop(result.index);
 
                 let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                let mut idx = Orion::<$N>::new(
+                let mut idx = StaticOrion::<$N>::new(
                     empty_ds,
                     &result.partitions,
                     entry,
@@ -2281,7 +2281,7 @@ fn run_extra_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOverr
 }
 
 fn run_calibration_diag(dataset: &Dataset, k: usize) {
-    use orion::{build_diskann_index, Orion, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
     use std::time::Instant;
 
     let num_points = dataset.num_base();
@@ -2317,7 +2317,7 @@ fn run_calibration_diag(dataset: &Dataset, k: usize) {
 
             let t_staged = Instant::now();
             let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut idx = Orion::<$N>::new(
+            let mut idx = StaticOrion::<$N>::new(
                 empty_ds, &result.partitions, result.entry_point,
                 ocfg.graph_degree, ocfg.max_extra, None, None, None, false,
             );
@@ -2417,7 +2417,7 @@ fn run_calibration_diag(dataset: &Dataset, k: usize) {
 fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
     use rayon::prelude::*;
     use orion::{
-        build_diskann_index, Orion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_960,
+        build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_960,
     };
     use std::time::Instant;
 
@@ -2500,11 +2500,11 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
             // Wrap in `pool.install` so the Vamana builder (which
             // queries `rayon::current_num_threads()`) sees the
             // 8-thread pool, not the global all-cores pool.
-            let idx: Orion<$N> = pool.install(|| {
+            let idx: StaticOrion<$N> = pool.install(|| {
                 if cache_path.exists() && pgraph_path.exists() {
                     println!("  → cache hit: loading {:?}", pgraph_path);
                     let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                    let mut idx = Orion::<$N>::load_from_cache(&cache_path, empty_ds)
+                    let mut idx = StaticOrion::<$N>::load_from_cache(&cache_path, empty_ds)
                         .expect("load_from_cache failed");
                     idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
                     idx
@@ -2518,7 +2518,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
                     .expect("parlayann_bridge::load_from_staged_file failed");
                     let max_extra_from_file = input.max_extra as usize;
                     let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                    let mut idx = Orion::<$N>::new(
+                    let mut idx = StaticOrion::<$N>::new(
                         empty_ds,
                         &input.partitions,
                         input.entry_point,
@@ -2553,7 +2553,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
                     let entry = result.entry_point;
                     drop(result.index);
                     let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                    let mut idx = Orion::<$N>::new(
+                    let mut idx = StaticOrion::<$N>::new(
                         empty_ds,
                         &result.partitions,
                         entry,
@@ -2651,7 +2651,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
             // (b) early-stop alone, (c) the combined effect.
             orion::algorithm::search::set_include_extras(false);
             let origin_data = measure("origin (cascade-only)", &|q, sls| {
-                search_compose::<$N>(
+                search_compose::<_>(
                     &idx,
                     q,
                     k,
@@ -2670,7 +2670,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
             // Default INCLUDE_EXTRAS=true; convergence + early-exit on.
             orion::algorithm::search::set_include_extras(true);
             let full_data = measure("full", &|q, sls| {
-                search_compose::<$N>(
+                search_compose::<_>(
                     &idx,
                     q,
                     k,
@@ -2690,7 +2690,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
             // the beam early. Extras still walked post-convergence.
             orion::algorithm::search::set_include_extras(true);
             let no_ee_data = measure("no-early-stop", &|q, sls| {
-                search_compose::<$N>(
+                search_compose::<_>(
                     &idx,
                     q,
                     k,
@@ -2710,7 +2710,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
             //     plumbing in `algorithm::search::mod`).
             orion::algorithm::search::set_include_extras(false);
             let no_extra_data = measure("no-extra", &|q, sls| {
-                search_compose::<$N>(
+                search_compose::<_>(
                     &idx,
                     q,
                     k,
@@ -2818,7 +2818,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
 fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
     use rayon::prelude::*;
     use orion::{
-        build_diskann_index, Orion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_960,
+        build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_960,
     };
     use std::time::Instant;
 
@@ -2900,11 +2900,11 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
             // sees our 8-thread pool, not the global all-cores pool.
             // Keeps build-phase thermal/contention profile consistent
             // with the measurement phase.
-            let idx: Orion<$N> = pool.install(|| {
+            let idx: StaticOrion<$N> = pool.install(|| {
                 if cache_path.exists() && pgraph_path.exists() {
                     println!("  → cache hit: loading PhasedGraph from {:?}", pgraph_path);
                     let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                    let mut idx = Orion::<$N>::load_from_cache(&cache_path, empty_ds)
+                    let mut idx = StaticOrion::<$N>::load_from_cache(&cache_path, empty_ds)
                         .expect("load_from_cache failed");
                     idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
                     idx
@@ -2923,7 +2923,7 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
                     // value — keeps the imported graph faithful.
                     let max_extra_from_file = input.max_extra as usize;
                     let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                    let mut idx = Orion::<$N>::new(
+                    let mut idx = StaticOrion::<$N>::new(
                         empty_ds, &input.partitions, entry,
                         ocfg.graph_degree, max_extra_from_file,
                         None, None, Some(cache_path.clone()), true,
@@ -2944,7 +2944,7 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
                     let entry = result.entry_point;
                     drop(result.index);
                     let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                    let mut idx = Orion::<$N>::new(
+                    let mut idx = StaticOrion::<$N>::new(
                         empty_ds, &result.partitions, entry,
                         ocfg.graph_degree, ocfg.max_extra,
                         None, None, Some(cache_path.clone()), true,
@@ -3029,7 +3029,7 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
                 // RAM under the right cascade dispatch.
                 pool.install(|| {
                     queries.par_iter().for_each(|q| {
-                        let _ = search_compose::<$N>(
+                        let _ = search_compose::<_>(
                             &idx, q, k, warmup_l, ocfg.window_size, thr, ee,
                             pre, ocfg.admission, rerank,
                         );
@@ -3044,7 +3044,7 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
                         let t = Instant::now();
                         let results: Vec<Vec<u32>> = pool.install(|| {
                             queries.par_iter().map(|q| {
-                                search_compose::<$N>(
+                                search_compose::<_>(
                                     &idx, q, k, sls, ocfg.window_size, thr, ee,
                                     pre, ocfg.admission, rerank,
                                 )

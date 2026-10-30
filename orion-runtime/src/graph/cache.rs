@@ -107,7 +107,10 @@ fn validate_headers(path: &Path, num_points: usize, degree: u32) -> Result<(), S
         .map_err(|e| e.to_string())?;
     let version = u32::from_le_bytes(metadata_bytes[..4].try_into().unwrap());
     let entry = u32::from_le_bytes(metadata_bytes[4..].try_into().unwrap()) as usize;
-    if version != 5 || entry >= num_points {
+    // V6 adds logical dataset shape after the unchanged eight-byte prefix.
+    // The index loader checks that shape before loading the graph payload;
+    // this lightweight lookup also validates the existing provenance manifest.
+    if !matches!(version, 5 | 6) || entry >= num_points {
         return Err(format!(
             "invalid cache metadata: version={version}, entry={entry}, N={num_points}"
         ));

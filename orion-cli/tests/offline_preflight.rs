@@ -69,7 +69,7 @@ fn large_presets_need_no_files_or_additional_parameters() {
         let report = fixture.report(&[preset, "--preflight"]);
         assert_eq!(report["num_points"], count);
         assert_eq!(report["num_queries"], 10_000);
-        assert_eq!(report["base_u8_bytes"], count * 128 + 64);
+        assert_eq!(report["base_u8_bytes"], count * 128);
         assert_eq!(report["graph_slab_bytes"], count * 384);
         assert_eq!(report["l2_u8_admission_bytes"], 0);
         assert_eq!(report["metadata_sources"]["base"], "configuration");

@@ -6,7 +6,9 @@ pub use crate::algorithm::search::async_beam_search::{
     BeamSearchConfig, BeamSearchResult, IoLimiter, async_beam_search,
 };
 pub use builder::{DiskANNBuildResult, build_diskann_index};
-pub use compressed_index::Orion;
+pub use compressed_index::{
+    CompressedIndex, DynamicCascade, DynamicSearchConfig, Orion, StaticOrion,
+};
 pub use naive_compressed_index::NaiveOrion;
 
 /// Supported dimension constants for dispatch.

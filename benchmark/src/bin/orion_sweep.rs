@@ -3,16 +3,16 @@
  * Licensed under the MIT License.
  */
 
-//! Orion sweep driver: resolve config, load data, dispatch a compiled dimension.
+//! Orion sweep driver: resolve config, load padded data, search with runtime dimensions.
+//! The shared runtime uses runtime-dimensional `orion::Orion` for every recipe.
 
 use std::time::Instant;
 
 use clap::Parser;
 use orion_runtime::{
-    config::{cli::Args, plan::SearchPlan, ResolvedRunConfig},
+    config::{ResolvedRunConfig, cli::Args, plan::SearchPlan},
     data::{LoadedDataset, memory},
-    search::{utils, F32CascadeBackend, NativeU8L2Backend, SearchBackend},
-    with_supported_dimension,
+    search::{F32CascadeBackend, NativeU8L2Backend, SearchBackend, utils},
 };
 
 /// Promote the calling thread to the highest QoS tier (`USER_INTERACTIVE`,
@@ -149,31 +149,21 @@ macro_rules! log_search_metrics {
     };
 }
 
-fn run_sweep<const N: usize, B: SearchBackend>(
+fn run_sweep<B: SearchBackend>(
     config: &ResolvedRunConfig,
     mut data: LoadedDataset<B::Element>,
-) -> Result<(), String>
-where
-    [B::Element; N]: vector::FullPrecisionDistance<B::Element, N>,
-{
+) -> Result<(), String> {
     let run = &config.sweep;
     let k = run.k;
     let num_threads = run.threads;
-    let idx = B::load_index::<N>(config, &mut data)?;
+    let idx = B::load_index(config, &mut data)?;
     if config.prepare_only {
         return Ok(());
     }
 
     let gt = &data.ground_truth;
-    let queries_arr: Vec<[f32; N]> = data
-        .queries
-        .iter()
-        .map(|q| {
-            let mut a = [0f32; N];
-            a.copy_from_slice(&q[..N]);
-            a
-        })
-        .collect();
+    let queries_arr: Vec<f32> = data.queries.iter().flatten().copied().collect();
+    let query_count = data.queries.len();
 
     // Per-cascade sidecar materialisation. `pin_cascade` below
     // would also trigger these via `ensure_*`, but we kick them
@@ -183,8 +173,7 @@ where
 
     // Calibrate on the full graph with the cascade's exact metric
     // and top-k target, including unnormalized MIPS datasets.
-    let calib_qs: Vec<[f32; N]> =
-        queries_arr[..run.calibration_samples.min(queries_arr.len())].to_vec();
+    let calib_qs = &queries_arr[..run.calibration_samples.min(query_count) * config.dimension];
     let calib = idx
         .calibrate(
             &calib_qs,
@@ -271,13 +260,14 @@ where
     // Both storage paths pin their resident base, graph slab and query batch.
     // Native u8 owns only this one base buffer, with no f32 or quantized copy.
     {
-        let ds_bytes_ptr = idx.dataset.data.as_ptr() as *const u8;
-        let ds_bytes_len = idx.dataset.data.len() * config.search_plan().storage().element_bytes;
+        let ds_bytes_ptr = idx.dataset.as_slice().as_ptr() as *const u8;
+        let ds_bytes_len =
+            idx.dataset.as_slice().len() * config.search_plan().storage().element_bytes;
         mlock_bytes("resident base", ds_bytes_ptr, ds_bytes_len);
         let pg = idx.graph.buffer_bytes();
         mlock_bytes("pgraph slab", pg.as_ptr(), pg.len());
         let q_bytes_ptr = queries_arr.as_ptr() as *const u8;
-        let q_bytes_len = queries_arr.len() * std::mem::size_of::<[f32; N]>();
+        let q_bytes_len = queries_arr.len() * std::mem::size_of::<f32>();
         mlock_bytes("queries", q_bytes_ptr, q_bytes_len);
     }
 
@@ -321,12 +311,15 @@ where
             // the "first query" conditions PA reports.
             utils::flush_cache();
             let t = Instant::now();
-            let results = pool.install(|| B::search_batch(&idx, &queries_arr, config, l, calib).unwrap());
+            let results =
+                pool.install(|| B::search_batch(&idx, &queries_arr, config, l, calib).unwrap());
             let wall = t.elapsed();
-            samples.push(queries_arr.len() as f64 / wall.as_secs_f64());
+            samples.push(query_count as f64 / wall.as_secs_f64());
             recall = gt.as_ref().map(|truth| mean_recall(&results, truth, k));
         }
-        let recall = recall.map(|v| format!("{v:.6}")).unwrap_or_else(|| "n/a".into());
+        let recall = recall
+            .map(|v| format!("{v:.6}"))
+            .unwrap_or_else(|| "n/a".into());
         samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let qps = samples[trials / 2];
         // Visit / per-phase instrumentation (mips_q path only):
@@ -458,12 +451,11 @@ fn execute(args: Args) -> Result<(), String> {
     match config.search_plan() {
         SearchPlan::F32Cascade { .. } => {
             let data = LoadedDataset::<f32>::load(&config)?;
-            with_supported_dimension!(config.dimension, |D| run_sweep::<D, F32CascadeBackend>(&config, data))
+            run_sweep::<F32CascadeBackend>(&config, data)
         }
         SearchPlan::NativeU8L2 => {
             let data = LoadedDataset::<u8>::load(&config)?;
-            // Resolution restricts native byte mode to SIFT's physical dimension.
-            run_sweep::<128, NativeU8L2Backend>(&config, data)
+            run_sweep::<NativeU8L2Backend>(&config, data)
         }
     }
 }

@@ -73,13 +73,13 @@ mod l2_neon_distance_u8;
 //   * `l2_float_distance.rs` for x86_64 without AVX-512 (AVX2 path).
 //   * `l2_scalar_distance.rs` for everything else.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-pub use l2_avx512_distance::distance_l2_vector_f32;
+pub use l2_avx512_distance::{distance_l2_slice_f32, distance_l2_vector_f32};
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
-pub use l2_float_distance::distance_l2_vector_f32;
+pub use l2_float_distance::{distance_l2_slice_f32, distance_l2_vector_f32};
 #[cfg(target_arch = "aarch64")]
-pub use l2_neon_distance::distance_l2_vector_f32;
+pub use l2_neon_distance::{distance_l2_slice_f32, distance_l2_vector_f32};
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-pub use l2_scalar_distance::distance_l2_vector_f32;
+pub use l2_scalar_distance::{distance_l2_slice_f32, distance_l2_vector_f32};
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub use l2_avx512_distance_u8::{distance_l2_vector_u8, distance_l2_vector_u8_batch4};
@@ -87,9 +87,13 @@ pub use l2_avx512_distance_u8::{distance_l2_vector_u8, distance_l2_vector_u8_bat
 pub use l2_neon_distance_u8::{distance_l2_vector_u8, distance_l2_vector_u8_batch4};
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-pub use ip_avx512_distance::{distance_ip_vector_f32, distance_ip_vector_f32_batch4};
+pub use ip_avx512_distance::{
+    distance_ip_slice_f32, distance_ip_vector_f32, distance_ip_vector_f32_batch4,
+};
 #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
-pub use ip_neon_distance::{distance_ip_vector_f32, distance_ip_vector_f32_batch4};
+pub use ip_neon_distance::{
+    distance_ip_slice_f32, distance_ip_vector_f32, distance_ip_vector_f32_batch4,
+};
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub use ip_avx512_distance_i8::{distance_ip_vector_i8, distance_ip_vector_i8_batch4};
@@ -103,8 +107,8 @@ pub use ip_neon_distance_i16::{distance_ip_vector_i16, distance_ip_vector_i16_ba
 
 mod distance_fn;
 pub use distance_fn::{
-    DistanceFn, IpF32Distance, IpI16Distance, IpI8Distance, JLHammingDistance, L2F32Distance,
-    L2U16Distance, L2U8Distance,
+    DistanceFn, IpF32Distance, IpI8Distance, IpI16Distance, JLHammingDistance, L2F32Distance,
+    L2U8Distance, L2U16Distance,
 };
 
 mod distance_buffer;
@@ -120,7 +124,7 @@ mod l2_scalar_distance;
 pub use crate::half::Half;
 pub use distance::FullPrecisionDistance;
 pub use metric::Metric;
-pub use utils::{prefetch_vector, CACHE_LINE_BYTES};
+pub use utils::{CACHE_LINE_BYTES, prefetch_vector};
 pub use vector_storage::VectorStorage;
 
 #[cfg(test)]
@@ -418,5 +422,30 @@ mod distance_test {
             let back = h.to_f32();
             assert_abs_diff_eq!(back, v, epsilon = 0.01);
         }
+    }
+}
+
+mod padded_layout;
+pub use padded_layout::PaddedLayout;
+
+/// Runtime-dimensional ADS with the same checkpoint cadence as the typed API.
+pub fn distance_l2_adsampling_slice_f32(a: &[f32], b: &[f32], bound: f32, epsilon: f32) -> f32 {
+    assert_eq!(a.len(), b.len());
+    #[cfg(target_arch = "aarch64")]
+    { return l2_neon_distance::distance_l2_adsampling_slice_f32(a, b, bound, epsilon); }
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    { return l2_avx512_distance::distance_l2_adsampling_slice_f32(a, b, bound, epsilon); }
+    #[cfg(not(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx512f"))))]
+    {
+        let mut sum = 0.;
+        for (i, (&x, &y)) in a.iter().zip(b).enumerate() {
+            let d = x - y; sum += d * d;
+            let processed = i + 1;
+            if processed % 32 == 0 && processed < a.len()
+                && sum * (a.len() as f32 / processed as f32) > bound * (1. + epsilon / (processed as f32).sqrt()) {
+                return -1.;
+            }
+        }
+        if sum >= bound { -1. } else { sum }
     }
 }

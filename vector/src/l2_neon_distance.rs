@@ -59,7 +59,14 @@ pub fn distance_l2_vector_f16<const N: usize>(a: &[Half; N], b: &[Half; N]) -> f
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
 pub fn distance_l2_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32 {
-    debug_assert_eq!(N % 4, 0);
+    distance_l2_slice_f32(a, b)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub fn distance_l2_slice_f32(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len());
+    let n = a.len();
 
     unsafe {
         let mut sum0 = vdupq_n_f32(0.0);
@@ -76,7 +83,7 @@ pub fn distance_l2_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
         const PF_AHEAD: usize = 4;
 
         // Unroll by 4: process 16 floats per iteration
-        let chunks = N / 16;
+        let chunks = n / 16;
         for i in 0..chunks {
             let offset = i * 16;
 
@@ -117,7 +124,7 @@ pub fn distance_l2_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
 
         // Handle remaining elements in 4-float steps
         let remaining_start = chunks * 16;
-        for i in (remaining_start..N).step_by(4) {
+        for i in (remaining_start..n / 4 * 4).step_by(4) {
             let a_vec = vld1q_f32(a_ptr.add(i));
             let b_vec = vld1q_f32(b_ptr.add(i));
             let diff = vsubq_f32(a_vec, b_vec);
@@ -125,7 +132,12 @@ pub fn distance_l2_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
         }
 
         let total = vaddq_f32(vaddq_f32(sum0, sum1), vaddq_f32(sum2, sum3));
-        vaddvq_f32(total)
+        let mut result = vaddvq_f32(total);
+        for i in n / 4 * 4..n {
+            let d = a[i] - b[i];
+            result += d * d;
+        }
+        result
     }
 }
 
@@ -154,7 +166,13 @@ pub fn distance_l2_adsampling_f32<const N: usize>(
     upper_bound: f32,
     epsilon: f32,
 ) -> f32 {
-    debug_assert_eq!(N % 4, 0);
+    distance_l2_adsampling_slice_f32(a, b, upper_bound, epsilon)
+}
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub fn distance_l2_adsampling_slice_f32(a: &[f32], b: &[f32], upper_bound: f32, epsilon: f32) -> f32 {
+    assert_eq!(a.len(), b.len());
+    let n = a.len();
 
     unsafe {
         // 4× unrolled like `distance_l2_early_abandon_f32` — 16 dims per outer iter.
@@ -172,8 +190,8 @@ pub fn distance_l2_adsampling_f32<const N: usize>(
         // algorithmic win for high-dim data.
         const CHECK_INTERVAL: usize = 4;
 
-        let chunks = N / 16;
-        let n_f = N as f32;
+        let chunks = n / 16;
+        let n_f = n as f32;
         for i in 0..chunks {
             let offset = i * 16;
 
@@ -215,7 +233,7 @@ pub fn distance_l2_adsampling_f32<const N: usize>(
                 let partial_v = vaddq_f32(vaddq_f32(sum0, sum1), vaddq_f32(sum2, sum3));
                 let partial = vaddvq_f32(partial_v);
                 let processed = ((i + 1) * 16) as f32;
-                // abandon iff partial × (N/d') > upper_bound × (1 + ε/√d')
+                // abandon iff partial × (n/d') > upper_bound × (1 + ε/√d')
                 let lhs = partial * (n_f / processed);
                 let rhs = upper_bound * (1.0 + epsilon / processed.sqrt());
                 if lhs > rhs {
@@ -224,9 +242,9 @@ pub fn distance_l2_adsampling_f32<const N: usize>(
             }
         }
 
-        // Tail elements if N is not a multiple of 16.
+        // Tail elements if n is not a multiple of 16.
         let remaining_start = chunks * 16;
-        for i in (remaining_start..N).step_by(4) {
+        for i in (remaining_start..n / 4 * 4).step_by(4) {
             let a_vec = vld1q_f32(a_ptr.add(i));
             let b_vec = vld1q_f32(b_ptr.add(i));
             let diff = vsubq_f32(a_vec, b_vec);
@@ -234,12 +252,9 @@ pub fn distance_l2_adsampling_f32<const N: usize>(
         }
 
         let total = vaddq_f32(vaddq_f32(sum0, sum1), vaddq_f32(sum2, sum3));
-        let dist = vaddvq_f32(total);
-        if dist >= upper_bound {
-            -1.0
-        } else {
-            dist
-        }
+        let mut dist = vaddvq_f32(total);
+        for i in n / 4 * 4..n { let d = a[i] - b[i]; dist += d * d; }
+        if dist >= upper_bound { -1.0 } else { dist }
     }
 }
 
@@ -326,10 +341,6 @@ pub fn distance_l2_early_abandon_f32<const N: usize>(
 
         let total = vaddq_f32(vaddq_f32(sum0, sum1), vaddq_f32(sum2, sum3));
         let dist = vaddvq_f32(total);
-        if dist >= upper_bound {
-            -1.0
-        } else {
-            dist
-        }
+        if dist >= upper_bound { -1.0 } else { dist }
     }
 }

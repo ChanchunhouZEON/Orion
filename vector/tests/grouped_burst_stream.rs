@@ -20,7 +20,7 @@ fn check<const N: usize>() {
         for lookahead in [1, 10, 64] {
             let mut result = Vec::new();
             unsafe {
-                DistanceStream::<IpI8Distance, N>::new(
+                DistanceStream::<IpI8Distance>::new(
                     base.as_ptr().cast(),
                     stride,
                     stride,
@@ -39,7 +39,11 @@ fn check<const N: usize>() {
                     .zip(&query)
                     .map(|(&a, &b)| i32::from(a) * i32::from(b))
                     .sum();
-                assert_eq!(*value, -(dot as f32), "N={N}, stride={stride}, count={count}, lookahead={lookahead}, id={id}");
+                assert_eq!(
+                    *value,
+                    -(dot as f32),
+                    "N={N}, stride={stride}, count={count}, lookahead={lookahead}, id={id}"
+                );
             }
         }
     }

@@ -24,8 +24,15 @@ pub fn distance_l2_vector_f16<const N: usize>(a: &[Half; N], b: &[Half; N]) -> f
 /// Calculate L2 squared distance between two f32 vectors (scalar).
 #[inline(never)]
 pub fn distance_l2_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32 {
+    distance_l2_slice_f32(a, b)
+}
+
+#[inline(always)]
+pub fn distance_l2_slice_f32(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len());
+    let n = a.len();
     let mut sum = 0.0f32;
-    for i in 0..N {
+    for i in 0..n {
         let diff = a[i] - b[i];
         sum += diff * diff;
     }

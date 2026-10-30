@@ -42,7 +42,7 @@ pub use rabitq::RabitqPrefilter;
 /// The stage is a **factory** for per-query [`PrefilterSession`]s.
 /// The session owns its per-query state internally (the encoded query
 /// signature, etc.) and exposes the hot-loop methods. Trait shape is
-/// object-safe so callers can dispatch via `&dyn PrefilterStage<N>` —
+/// object-safe so callers can dispatch via `&dyn PrefilterStage` —
 /// e.g. from a CLI-driven runner where the concrete cascade isn't
 /// known until parse-time.
 ///
@@ -51,7 +51,11 @@ pub use rabitq::RabitqPrefilter;
 ///   admission tier itself is already cheap).
 /// * [`jl::JlPrefilter`] — JL Sparse 1024-bit Hamming filter for
 ///   high-D L2 workloads (GIST).
-pub trait PrefilterStage<const N: usize>: Send + Sync {
+pub trait PrefilterStage: Send + Sync {
+    /// Logical dimension and row count, for checking recipe/base compatibility.
+    fn shape(&self) -> Option<(usize, usize)> {
+        None
+    }
     /// Materialise a per-query session. Called once at search setup
     /// (not per hop). Implementations should keep this O(N) at most
     /// — avoid O(N²) dense rotations (use Hadamard if needed).
@@ -59,7 +63,7 @@ pub trait PrefilterStage<const N: usize>: Send + Sync {
     /// The session's lifetime borrows from `&self`, so it stays valid
     /// for the duration of a single search call without needing
     /// 'static query data.
-    fn open<'a>(&'a self, q: &[f32; N]) -> Box<dyn PrefilterSession + 'a>;
+    fn open<'a>(&'a self, q: &[f32]) -> Box<dyn PrefilterSession + 'a>;
 }
 
 /// Per-query prefilter state. Holds the encoded query (signature,
@@ -71,7 +75,7 @@ pub trait PrefilterSession: Send + Sync {
     /// strictly less than `threshold`.
     ///
     /// Implementations typically drive
-    /// `vector::DistanceStream<DistanceFn, N>` with the lookahead-
+    /// `vector::DistanceStream<DistanceFn>` with the lookahead-
     /// prefetch shape. The closure pattern is:
     ///
     /// ```ignore
@@ -110,9 +114,9 @@ pub struct NoPrefilter;
 /// Session for [`NoPrefilter`] — all methods are no-ops.
 pub struct NoPrefilterSession;
 
-impl<const N: usize> PrefilterStage<N> for NoPrefilter {
+impl PrefilterStage for NoPrefilter {
     #[inline(always)]
-    fn open<'a>(&'a self, _q: &[f32; N]) -> Box<dyn PrefilterSession + 'a> {
+    fn open<'a>(&'a self, _q: &[f32]) -> Box<dyn PrefilterSession + 'a> {
         Box::new(NoPrefilterSession)
     }
 }

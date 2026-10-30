@@ -32,20 +32,23 @@ use crate::model::{JLSparseDataset, JLSparseDatasetMips};
 /// L2-mode JL prefilter wrapping a [`JLSparseDataset`] (no per-vertex
 /// norms). Const-generic over `NZ` so the L2 default (`NZ=9`) can
 /// stay tunable without breaking the type.
-pub struct JlPrefilter<'a, const N: usize, const NZ: usize = 9> {
-    pub dataset: &'a JLSparseDataset<N, 1024, NZ>,
+pub struct JlPrefilter<'a, const NZ: usize = 9> {
+    pub dataset: &'a JLSparseDataset<1024, NZ>,
 }
 
-impl<'a, const N: usize, const NZ: usize> JlPrefilter<'a, N, NZ> {
+impl<'a, const NZ: usize> JlPrefilter<'a, NZ> {
     #[inline]
-    pub fn new(dataset: &'a JLSparseDataset<N, 1024, NZ>) -> Self {
+    pub fn new(dataset: &'a JLSparseDataset<1024, NZ>) -> Self {
         Self { dataset }
     }
 }
 
-impl<'a, const N: usize, const NZ: usize> PrefilterStage<N> for JlPrefilter<'a, N, NZ> {
+impl<'a, const NZ: usize> PrefilterStage for JlPrefilter<'a, NZ> {
+    fn shape(&self) -> Option<(usize, usize)> {
+        Some((self.dataset.dimension, self.dataset.num_vertices))
+    }
     #[inline]
-    fn open<'b>(&'b self, q: &[f32; N]) -> Box<dyn PrefilterSession + 'b> {
+    fn open<'b>(&'b self, q: &[f32]) -> Box<dyn PrefilterSession + 'b> {
         Box::new(JlSession {
             dataset: self.dataset,
             query: self.dataset.encode_query(q),
@@ -53,14 +56,14 @@ impl<'a, const N: usize, const NZ: usize> PrefilterStage<N> for JlPrefilter<'a, 
     }
 }
 
-pub struct JlSession<'a, const N: usize, const NZ: usize> {
-    dataset: &'a JLSparseDataset<N, 1024, NZ>,
+pub struct JlSession<'a, const NZ: usize> {
+    dataset: &'a JLSparseDataset<1024, NZ>,
     query: Box<[u8]>,
 }
 
-impl<'a, const N: usize, const NZ: usize> PrefilterSession for JlSession<'a, N, NZ> {
+impl<'a, const NZ: usize> PrefilterSession for JlSession<'a, NZ> {
     /// In-place cmov-compact `id_scratch` via
-    /// `DistanceStream<JLHammingDistance, N>`. Same shape as the
+    /// `DistanceStream<JLHammingDistance>`. Same shape as the
     /// legacy `search_l2_u8_q` JL block — STRIDE = 128 B (BITS=1024)
     /// so each vertex is exactly one cache line, hitting hot path A
     /// in `DistanceStream::resolve`.
@@ -85,7 +88,7 @@ impl<'a, const N: usize, const NZ: usize> PrefilterSession for JlSession<'a, N, 
 
         let mut w = 0usize;
         unsafe {
-            vector::DistanceStream::<vector::JLHammingDistance, N>::new(
+            vector::DistanceStream::<vector::JLHammingDistance>::new(
                 q_jl_base_ptr,
                 q_jl_stride_bytes,
                 q_jl_stride_bytes,
@@ -116,20 +119,23 @@ impl<'a, const N: usize, const NZ: usize> PrefilterSession for JlSession<'a, N, 
 /// `popcount × ‖v‖` per PA's `Mips_JL_Sparse_Point_Normalized`.
 /// Const-generic over `NZ` so the MIPS sweet-spot (currently `NZ=9`)
 /// can be tuned independently of the L2 path.
-pub struct JlMipsPrefilter<'a, const N: usize, const NZ: usize = 9> {
-    pub dataset: &'a JLSparseDatasetMips<N, 1024, NZ>,
+pub struct JlMipsPrefilter<'a, const NZ: usize = 9> {
+    pub dataset: &'a JLSparseDatasetMips<1024, NZ>,
 }
 
-impl<'a, const N: usize, const NZ: usize> JlMipsPrefilter<'a, N, NZ> {
+impl<'a, const NZ: usize> JlMipsPrefilter<'a, NZ> {
     #[inline]
-    pub fn new(dataset: &'a JLSparseDatasetMips<N, 1024, NZ>) -> Self {
+    pub fn new(dataset: &'a JLSparseDatasetMips<1024, NZ>) -> Self {
         Self { dataset }
     }
 }
 
-impl<'a, const N: usize, const NZ: usize> PrefilterStage<N> for JlMipsPrefilter<'a, N, NZ> {
+impl<'a, const NZ: usize> PrefilterStage for JlMipsPrefilter<'a, NZ> {
+    fn shape(&self) -> Option<(usize, usize)> {
+        Some((self.dataset.dimension, self.dataset.num_vertices))
+    }
     #[inline]
-    fn open<'b>(&'b self, q: &[f32; N]) -> Box<dyn PrefilterSession + 'b> {
+    fn open<'b>(&'b self, q: &[f32]) -> Box<dyn PrefilterSession + 'b> {
         Box::new(JlMipsSession {
             dataset: self.dataset,
             query: self.dataset.encode_query(q),
@@ -137,12 +143,12 @@ impl<'a, const N: usize, const NZ: usize> PrefilterStage<N> for JlMipsPrefilter<
     }
 }
 
-pub struct JlMipsSession<'a, const N: usize, const NZ: usize> {
-    dataset: &'a JLSparseDatasetMips<N, 1024, NZ>,
+pub struct JlMipsSession<'a, const NZ: usize> {
+    dataset: &'a JLSparseDatasetMips<1024, NZ>,
     query: Box<[u8]>,
 }
 
-impl<'a, const N: usize, const NZ: usize> PrefilterSession for JlMipsSession<'a, N, NZ> {
+impl<'a, const NZ: usize> PrefilterSession for JlMipsSession<'a, NZ> {
     /// Same streaming kernel as the L2 variant, but the per-candidate
     /// score is multiplied by `‖v‖` (looked up from
     /// `dataset.norms`) before the threshold compare.
@@ -168,7 +174,7 @@ impl<'a, const N: usize, const NZ: usize> PrefilterSession for JlMipsSession<'a,
 
         let mut w = 0usize;
         unsafe {
-            vector::DistanceStream::<vector::JLHammingDistance, N>::new(
+            vector::DistanceStream::<vector::JLHammingDistance>::new(
                 q_jl_base_ptr,
                 q_jl_stride_bytes,
                 q_jl_stride_bytes,

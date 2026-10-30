@@ -6,7 +6,7 @@
 //! f32 truth rerank — full-precision base. Default for L2-Q.
 //!
 //! Reads the top-(k · rerank_factor) PQ entries against the f32 base
-//! via `DistanceStream<L2F32Distance, N>`, sorts by recomputed L2
+//! via `DistanceStream<L2F32Distance>`, sorts by recomputed L2
 //! distance, and emits the top-k vertex IDs.
 
 use super::super::super::NDC_F32;
@@ -34,15 +34,19 @@ impl<'a, const N: usize> F32Rerank<'a, N> {
     }
 }
 
-impl<'a, const N: usize> RerankStage<N> for F32Rerank<'a, N> {
+impl<'a, const N: usize> RerankStage for F32Rerank<'a, N> {
+    fn shape(&self) -> Option<(usize, usize)> {
+        Some((N, self.dataset.num_active_pts))
+    }
     fn rerank(
         &self,
-        query: &[f32; N],
+        query: &[f32],
         pq_entries: &[Neighbor],
         k: usize,
         rerank_factor: usize,
         scratch: &mut InMemSearchScratch,
     ) -> Vec<u32> {
+        let query: &[f32; N] = query.try_into().expect("query dimension mismatch");
         // PQ entries are read directly from `scratch.pq` by the
         // unified search loop's contract; the trait param is here
         // only for future flexibility.
@@ -74,7 +78,7 @@ impl<'a, const N: usize> RerankStage<N> for F32Rerank<'a, N> {
         let mut rerank_buf: Vec<(u32, f32)> = Vec::with_capacity(num_check);
         unsafe {
             let id_in = std::slice::from_raw_parts(scratch.id_scratch.as_ptr(), num_check);
-            vector::DistanceStream::<vector::L2F32Distance, N>::new(
+            vector::DistanceStream::<vector::L2F32Distance>::new(
                 dataset_base_ptr,
                 f32_stride_bytes,
                 f32_compute_bytes,

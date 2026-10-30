@@ -59,7 +59,7 @@ class IndexTests(unittest.TestCase):
 
     def cli(self, base, query, cache, metric, storage, k):
         args = [os.environ["ORION_TEST_CLI"], "anonymous", "--base", str(base), "--query", str(query),
-                "--no-groundtruth", "--dimension", "128" if storage == "u8" else "32", "--metric", metric,
+                "--no-groundtruth", "--metric", metric,
                 "--vector-storage", storage, "--graph-source", "parlayann", "--staged-file", str(self.staged),
                 "--graph-degree", "8", "--build-l", "32", "--alpha", "1.2", "--max-extra", "4",
                 "--threads", "2", "--window-size", "5", "--k", str(k), "--search-l", "24", "--cache-dir", str(cache)]
@@ -74,12 +74,15 @@ class IndexTests(unittest.TestCase):
     def test_file_array_cli_parity_and_cached_reload(self):
         for metric, dtype, dim, suffix in [("l2", np.float32, 32, ".fbin"),
                 ("cosine", np.float32, 32, ".fvecs"), ("inner-product", np.float32, 32, ".fbin"),
-                ("l2", np.uint8, 128, ".u8bin"), ("l2", np.uint8, 128, ".bvecs")]:
+                ("l2", np.uint8, 128, ".u8bin"), ("l2", np.uint8, 128, ".bvecs"),
+                ("l2", np.float32, 31, ".fbin"), ("cosine", np.float32, 33, ".fvecs"),
+                ("inner-product", np.float32, 129, ".fbin"),
+                ("l2", np.uint8, 3, ".u8bin"), ("l2", np.uint8, 129, ".bvecs")]:
             with self.subTest(metric=metric, format=suffix):
                 base, queries = self.arrays(dtype, dim)
                 base_file, query_file = self.root / ("base" + suffix), self.root / ("query" + suffix)
                 write_vectors(base_file, base); write_vectors(query_file, queries)
-                folder = self.root / (metric + suffix)
+                folder = self.root / (metric + suffix + str(dim))
                 file_index = Index.from_file(base_file, metric=metric, graph=self.graph, cache_dir=folder, threads=2)
                 array_index = self.make(base, metric=metric)
                 for k in (3, 10):
@@ -93,7 +96,7 @@ class IndexTests(unittest.TestCase):
                     self.assertEqual([row[:n].tolist() for row, n in zip(f.ids, f.counts)], cli_ids)
                     self.assertAlmostEqual(fc.threshold, summary["calibration"]["threshold"], places=7)
                     self.assertEqual(fc.early_exit_limit, summary["calibration"]["early_exit_limit"])
-                snapshot = self.root / ("snapshot" + metric + suffix)
+                snapshot = self.root / ("snapshot" + metric + suffix + str(dim))
                 file_index.save(snapshot)
                 loaded = Index.open(snapshot, base=base_file, threads=1)
                 self.assert_results(f, loaded.search(queries, k=10, search_list_size=24))
@@ -133,12 +136,28 @@ class IndexTests(unittest.TestCase):
         with self.assertRaisesRegex(OrionError, "configuration"):
             Index.open(path, base=base)
 
+    def test_runtime_dimensions_array_persistence_and_rust_builder(self):
+        for dim in (3, 31, 33, 129, 1537):
+            with self.subTest(dimension=dim):
+                base, queries = self.arrays(dimension=dim)
+                index = self.make(base)
+                index.calibrate(queries, k=3)
+                expected = index.search(queries, k=3, search_list_size=32)
+                saved = self.root / ("odd-snapshot-" + str(dim))
+                index.save(saved)
+                self.assert_results(expected, Index.open(saved, base=base.copy()).search(queries, k=3, search_list_size=32))
+        base, queries = self.arrays(dimension=33)
+        graph = GraphConfig(source="rust", degree=8, build_l=32, alpha=1.2, max_extra=4)
+        index = Index.from_array(base, graph=graph, threads=2, cache_dir=self.root / "rust-odd")
+        result = index.search(base[:3], k=1, search_list_size=64, adaptive=False)
+        np.testing.assert_array_equal(result.ids[:, 0], [0, 1, 2])
+
     def test_bad_inputs_are_errors(self):
         base, queries = self.arrays()
         for invalid in [base.astype(np.float64), base.reshape(-1), [[1, 2]], base.astype(">f4")]:
             with self.assertRaises(TypeError): self.make(invalid)
         with self.assertRaises(ValueError): self.make(base[:, ::-1])
-        with self.assertRaises(OrionError): self.make(base[:, :31].copy())
+        with self.assertRaises(OrionError): self.make(base[:, :0].copy())
         with self.assertRaises(OrionError): self.make(base[:0])
         broken = base.copy(); broken[0, 0] = np.nan
         with self.assertRaisesRegex(OrionError, "non-finite"): self.make(broken)

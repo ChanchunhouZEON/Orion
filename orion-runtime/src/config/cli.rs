@@ -315,7 +315,7 @@ impl Args {
             Some(d) => d,
             None => crate::data::inspect_vector_file(&base, base_format)?.dimension,
         };
-        crate::with_supported_dimension!(dimension, |D| Ok::<_, String>(D))?;
+        vector::PaddedLayout::for_kernel::<vector::L2F32Distance>(dimension)?;
 
         let defaults = &root.defaults.orion;
         let dataset_overrides = preset.and_then(|p| p.orion.as_ref());
@@ -717,7 +717,7 @@ mod tests {
         assert!(resolve(&["orion", "sift10m", "--query", "query.fvecs"]).is_err());
         assert!(resolve(&["orion", "sift10m", "--base", "base.fbin"]).is_err());
         assert!(resolve(&["orion", "sift10m", "--graph-source", "rust"]).is_err());
-        assert!(resolve(&["orion", "sift10m", "--dimension", "32"]).is_err());
+        assert!(resolve(&["orion", "sift10m", "--dimension", "33"]).is_ok());
     }
 
     #[test]
@@ -877,7 +877,7 @@ mod tests {
     fn invalid_inputs_fail_before_execution() {
         for args in [
             vec!["orion", "missing"],
-            vec!["orion", "sift", "--dimension", "25"],
+            vec!["orion", "sift", "--dimension", "0"],
             vec!["orion", "sift", "--metric", "inner-product"],
             vec!["orion", "sift", "--window-size", "0"],
             vec!["orion", "sift", "--k", "100", "--ls", "16"],

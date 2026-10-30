@@ -181,7 +181,13 @@ mod tests {
         data: &[[f32; N]],
         adjacency: &[Vec<u32>],
     ) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("anns_mmap_search_test");
+        // Tests run concurrently; each fixture must own its cleanup directory.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "anns_mmap_search_test_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test_search_graph.anns");
 

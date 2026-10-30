@@ -83,7 +83,7 @@ impl IndexOptions {
         count: usize,
         content_id: Option<String>,
     ) -> Result<ResolvedRunConfig, String> {
-        crate::with_supported_dimension!(dimension, |N| Ok::<_, String>(N))?;
+        vector::PaddedLayout::for_kernel::<vector::L2F32Distance>(dimension)?;
         if count == 0 || count >= u32::MAX as usize || self.max_points == Some(0) {
             return Err("base must contain 1..u32::MAX points (excluding the sentinel)".into());
         }

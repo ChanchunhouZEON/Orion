@@ -1,7 +1,7 @@
 use super::super::utils::AlignedQuery;
 use crate::model::scratch::InMemScratchPool;
 use crate::model::Neighbor as DNeighbor;
-use crate::Orion;
+use crate::StaticOrion;
 use diskann::common::ANNResult;
 use diskann::model::Vertex;
 use vector::{FullPrecisionDistance, Metric};
@@ -82,7 +82,7 @@ impl SearchProfileStats {
     }
 }
 
-impl<const N: usize> Orion<N>
+impl<const N: usize> StaticOrion<N>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {

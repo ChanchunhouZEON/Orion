@@ -46,9 +46,9 @@
 //! `1/49` of the 1-bit version's variance — the recall ceiling on
 //! SIFT/GIST that 1-bit hit at ~0.74/0.94 should clear comfortably.
 
+use super::rows::F32Rows;
 use diskann::common::ANNResult;
 use diskann::common::AlignedBoxWithSlice;
-use diskann::model::InmemDataset;
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -70,7 +70,8 @@ pub const fn rabitq_b4_code_stride(dim: usize) -> usize {
 }
 
 /// B=4 RaBitQ-encoded base store.
-pub struct RabitQ4Dataset<const N: usize> {
+pub struct RabitQ4Dataset {
+    pub dimension: usize,
     /// Packed nibble codes, `num_vertices * STRIDE` bytes, 16-byte
     /// aligned. Each byte holds two signed 4-bit values: low nibble =
     /// dim `2b`, high nibble = dim `2b+1`. Sign-extend via
@@ -91,23 +92,26 @@ pub struct RabitQ4Dataset<const N: usize> {
     pub stride: usize,
 }
 
-impl<const N: usize> RabitQ4Dataset<N> {
-    pub const STRIDE: usize = rabitq_b4_code_stride(N);
+impl RabitQ4Dataset {
+    pub fn stride(&self) -> usize {
+        self.stride
+    }
 
-    pub fn build_from(dataset: &InmemDataset<f32, N>, seed: u64) -> Self {
-        let num_vertices = dataset.num_points;
-        let stride = Self::STRIDE;
-        let rotation = super::rabitq_dataset::build_orthogonal_rotation_pub::<N>(seed);
+    pub fn build_from(dataset: &impl F32Rows, seed: u64) -> Self {
+        let dim = dataset.dimension();
+        assert!(dim > 0);
+        let num_vertices = dataset.len();
+        let stride = rabitq_b4_code_stride(dim);
+        let rotation = super::rabitq_dataset::build_orthogonal_rotation_pub(seed, dim);
 
         let mut codes =
             AlignedBoxWithSlice::<u8>::new(num_vertices * stride, 16).expect("rbq4 codes alloc");
         let mut norms = Vec::with_capacity(num_vertices);
         let mut taus = Vec::with_capacity(num_vertices);
-        let mut rotated = vec![0.0f32; N];
+        let mut rotated = vec![0.0f32; dim];
 
-        let base = dataset.data.as_slice();
         for vid in 0..num_vertices {
-            let x = &base[vid * N..(vid + 1) * N];
+            let x = dataset.row(vid);
 
             // P @ x and per-vertex L2 norm.
             super::rabitq_dataset::apply_rotation_pub(rotation.as_slice(), x, &mut rotated);
@@ -135,21 +139,22 @@ impl<const N: usize> RabitQ4Dataset<N> {
             code.fill(0);
             let scale = QMAX as f32 / tau_eff;
             // Pairs: (d_lo, d_hi) → one byte.
-            for b in 0..(N / 2) {
+            for b in 0..(dim / 2) {
                 let lo = quantize_to_i4(rotated[2 * b] * scale);
                 let hi = quantize_to_i4(rotated[2 * b + 1] * scale);
                 code[b] = pack_nibbles(lo, hi);
             }
             // Odd-D tail (only the low nibble is meaningful; high
-            // nibble stays zero). N must equal the type-level const,
-            // so this branch is dead for N=128/960 but kept correct.
-            if N & 1 == 1 {
-                let lo = quantize_to_i4(rotated[N - 1] * scale);
-                code[N / 2] = pack_nibbles(lo, 0);
+            // nibble stays zero). dim must equal the type-level const,
+            // so this branch is dead for dim=128/960 but kept correct.
+            if dim & 1 == 1 {
+                let lo = quantize_to_i4(rotated[dim - 1] * scale);
+                code[dim / 2] = pack_nibbles(lo, 0);
             }
         }
 
         Self {
+            dimension: dim,
             codes,
             norms,
             taus,
@@ -160,17 +165,20 @@ impl<const N: usize> RabitQ4Dataset<N> {
     }
 
     #[inline]
-    pub fn rotate_query(&self, q: &[f32; N], out: &mut [f32; N]) {
+    pub fn rotate_query(&self, q: &[f32], out: &mut [f32]) {
+        assert_eq!(q.len(), self.dimension);
         super::rabitq_dataset::apply_rotation_pub(self.rotation.as_slice(), q, out);
     }
 
     /// Reference scalar L2² estimator. Decodes 4-bit signed values one
     /// at a time, dots with `rotated_q`, scales by `tau / QMAX`.
-    pub fn estimate_l2_sq(&self, rotated_q: &[f32; N], q_norm_sq: f32, vertex_id: u32) -> f32 {
+    pub fn estimate_l2_sq(&self, rotated_q: &[f32], q_norm_sq: f32, vertex_id: u32) -> f32 {
+        assert_eq!(rotated_q.len(), self.dimension);
+
         let off = (vertex_id as usize) * self.stride;
         let code = &self.codes.as_slice()[off..off + self.stride];
 
-        let dot = signed_dot_dispatch::<N>(code, rotated_q);
+        let dot = signed_dot_dispatch(code, rotated_q);
 
         let tau = self.taus[vertex_id as usize];
         let x_norm = self.norms[vertex_id as usize];
@@ -192,19 +200,20 @@ impl<const N: usize> RabitQ4Dataset<N> {
     ///   [num_vertices f32 taus]
     ///   [num_vertices * STRIDE u8 codes]
     pub fn save<P: AsRef<Path>>(&self, path: P) -> ANNResult<()> {
+        let dim = self.dimension;
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
         let mut hdr = [0u8; 32];
         hdr[0..4].copy_from_slice(&RABITQ_B4_MAGIC.to_le_bytes());
         hdr[4..8].copy_from_slice(&1u32.to_le_bytes());
         hdr[8..12].copy_from_slice(&(self.num_vertices as u32).to_le_bytes());
-        hdr[12..16].copy_from_slice(&(N as u32).to_le_bytes());
+        hdr[12..16].copy_from_slice(&(dim as u32).to_le_bytes());
         hdr[16..20].copy_from_slice(&(self.stride as u32).to_le_bytes());
         w.write_all(&hdr)?;
 
         let rot_bytes = unsafe {
             std::slice::from_raw_parts(
                 self.rotation.as_slice().as_ptr() as *const u8,
-                N * N * std::mem::size_of::<f32>(),
+                dim * dim * std::mem::size_of::<f32>(),
             )
         };
         w.write_all(rot_bytes)?;
@@ -234,6 +243,13 @@ impl<const N: usize> RabitQ4Dataset<N> {
         let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
         let mut hdr = [0u8; 32];
         r.read_exact(&mut hdr)?;
+        if u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported sidecar version",
+            )
+            .into());
+        }
         let magic = u32::from_le_bytes(hdr[0..4].try_into().unwrap());
         if magic != RABITQ_B4_MAGIC {
             return Err(std::io::Error::new(
@@ -247,28 +263,31 @@ impl<const N: usize> RabitQ4Dataset<N> {
         }
         let num_vertices = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let dim = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
-        if dim != N {
+        if dim == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("dim mismatch: file={dim} expected={N}"),
+                "zero sidecar dimension",
             )
             .into());
         }
         let stride = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
-        if stride != Self::STRIDE {
+        if stride != rabitq_b4_code_stride(dim) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
+                format!(
+                    "stride mismatch: file={stride} expected={}",
+                    rabitq_b4_code_stride(dim)
+                ),
             )
             .into());
         }
 
-        let mut rotation = AlignedBoxWithSlice::<f32>::new(N * N, 16)
+        let mut rotation = AlignedBoxWithSlice::<f32>::new(dim * dim, 16)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
         let rot_bytes = unsafe {
             std::slice::from_raw_parts_mut(
                 rotation.as_mut_slice().as_mut_ptr() as *mut u8,
-                N * N * std::mem::size_of::<f32>(),
+                dim * dim * std::mem::size_of::<f32>(),
             )
         };
         r.read_exact(rot_bytes)?;
@@ -296,6 +315,7 @@ impl<const N: usize> RabitQ4Dataset<N> {
         r.read_exact(codes.as_mut_slice())?;
 
         Ok(Self {
+            dimension: dim,
             codes,
             norms,
             taus,
@@ -344,42 +364,42 @@ fn unpack_hi(byte: u8) -> i8 {
 // ── Signed-dot kernel: <rotated_q, code (as i8 lanes)> ────────────────
 
 #[inline]
-fn signed_dot_dispatch<const N: usize>(code: &[u8], rotated_q: &[f32; N]) -> f32 {
+fn signed_dot_dispatch(code: &[u8], rotated_q: &[f32]) -> f32 {
     #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
     {
         // NEON path: handle the bulk of dims in 16-dim chunks (8 code
         // bytes per iter); scalar tail covers any leftover.
-        let chunk_bytes = (N / 2) & !7; // multiple of 8 bytes = 16 dims
+        let chunk_bytes = (rotated_q.len() / 2) & !7; // multiple of 8 bytes = 16 dims
         let neon_part = unsafe { signed_dot_neon(code.as_ptr(), rotated_q.as_ptr(), chunk_bytes) };
-        let tail = signed_dot_scalar::<N>(code, rotated_q, chunk_bytes * 2);
+        let tail = signed_dot_scalar(code, rotated_q, chunk_bytes * 2);
         return neon_part + tail;
     }
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     {
         // AVX-512 path: 16 dims per iter = 8 packed bytes.
-        let chunk_bytes = (N / 2) & !7;
+        let chunk_bytes = (rotated_q.len() / 2) & !7;
         let avx_part = unsafe { signed_dot_avx512(code.as_ptr(), rotated_q.as_ptr(), chunk_bytes) };
-        let tail = signed_dot_scalar::<N>(code, rotated_q, chunk_bytes * 2);
+        let tail = signed_dot_scalar(code, rotated_q, chunk_bytes * 2);
         return avx_part + tail;
     }
     #[allow(unreachable_code)]
-    signed_dot_scalar::<N>(code, rotated_q, 0)
+    signed_dot_scalar(code, rotated_q, 0)
 }
 
 /// Scalar reference: decode each nibble, multiply by `rotated_q[d]`,
 /// accumulate. Used by tests and as the NEON tail.
 #[inline]
-fn signed_dot_scalar<const N: usize>(code: &[u8], rotated_q: &[f32; N], start: usize) -> f32 {
+fn signed_dot_scalar(code: &[u8], rotated_q: &[f32], start: usize) -> f32 {
     let mut acc = 0.0f32;
     let mut d = start;
-    while d + 1 < N {
+    while d + 1 < rotated_q.len() {
         let byte = code[d / 2];
         let c_lo = unpack_lo(byte) as f32;
         let c_hi = unpack_hi(byte) as f32;
         acc += rotated_q[d] * c_lo + rotated_q[d + 1] * c_hi;
         d += 2;
     }
-    if d < N {
+    if d < rotated_q.len() {
         let byte = code[d / 2];
         let c_lo = unpack_lo(byte) as f32;
         acc += rotated_q[d] * c_lo;
@@ -550,6 +570,7 @@ unsafe fn signed_dot_avx512(code: *const u8, rotated_q: *const f32, bytes: usize
 mod tests {
     use super::*;
     use crate::model::dataset::rabitq_dataset::{XorShiftPub, gaussian_pub};
+    use diskann::model::InmemDataset;
 
     #[test]
     fn stride_matches_dimensions() {
@@ -587,8 +608,8 @@ mod tests {
             for v in q.iter_mut() {
                 *v = gaussian_pub(&mut rng);
             }
-            let neon = signed_dot_dispatch::<D>(&code, &q);
-            let scalar = signed_dot_scalar::<D>(&code, &q, 0);
+            let neon = signed_dot_dispatch(&code, &q);
+            let scalar = signed_dot_scalar(&code, &q, 0);
             let tol = (D as f32).sqrt() * 1e-4 * scalar.abs().max(1.0);
             assert!(
                 (neon - scalar).abs() < tol,
@@ -611,7 +632,7 @@ mod tests {
         }
         let mut ds = InmemDataset::<f32, D>::new(num, 1.0).unwrap();
         ds.data.memcpy(&flat).unwrap();
-        let rbq4 = RabitQ4Dataset::<D>::build_from(&ds, 7);
+        let rbq4 = RabitQ4Dataset::build_from(&ds, 7);
 
         let v0: [f32; D] = std::array::from_fn(|i| flat[i]);
         let q_norm_sq: f32 = v0.iter().map(|v| v * v).sum();
@@ -651,11 +672,11 @@ mod tests {
         }
         let mut ds = InmemDataset::<f32, D>::new(num, 1.0).unwrap();
         ds.data.memcpy(&flat).unwrap();
-        let a = RabitQ4Dataset::<D>::build_from(&ds, 777);
+        let a = RabitQ4Dataset::build_from(&ds, 777);
 
         let path = std::env::temp_dir().join(format!("rabitq4_test_{}.qrb4", std::process::id()));
         a.save(&path).expect("save");
-        let b = RabitQ4Dataset::<D>::load(&path).expect("load");
+        let b = RabitQ4Dataset::load(&path).expect("load");
         std::fs::remove_file(&path).ok();
 
         assert_eq!(a.num_vertices, b.num_vertices);

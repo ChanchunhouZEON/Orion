@@ -34,9 +34,9 @@
 //! integration into `compressed_index.rs` /
 //! `ensure_quantized_dataset_rabitq()` land in a follow-up pass.
 
+use super::rows::F32Rows;
 use diskann::common::ANNResult;
 use diskann::common::AlignedBoxWithSlice;
-use diskann::model::InmemDataset;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -51,6 +51,12 @@ pub const RABITQ_MAGIC: u32 = 0x5152_4251; // "QRBQ" little-endian-printable
 /// Does **not** include the per-vertex `f32` norm — that lives in a
 /// separate `Vec<f32>` so the bit-dot kernel only loads code bytes.
 pub const fn rabitq_code_stride(dim: usize) -> usize {
+    let bytes = rabitq_code_stride_disk(dim);
+    let block = <vector::JLHammingDistance as vector::DistanceFn>::CHUNK_BYTES;
+    bytes.div_ceil(block) * block
+}
+
+pub const fn rabitq_code_stride_disk(dim: usize) -> usize {
     let bits = (dim + 7) / 8;
     (bits + 15) & !15
 }
@@ -67,7 +73,8 @@ pub const fn rabitq_code_stride(dim: usize) -> usize {
 ///
 /// Plus the row-major `N × N` rotation matrix used for both encoding
 /// and per-query rotation at search time.
-pub struct RabitQDataset<const N: usize> {
+pub struct RabitQDataset {
+    pub dimension: usize,
     /// Packed sign codes, `num_vertices * STRIDE` bytes, 16-byte aligned.
     pub codes: AlignedBoxWithSlice<u8>,
     /// Per-vertex `||x||` in f32. Length = `num_vertices`.
@@ -94,30 +101,33 @@ pub struct RabitQDataset<const N: usize> {
     pub scale: f32,
 }
 
-impl<const N: usize> RabitQDataset<N> {
+impl RabitQDataset {
     /// Per-vertex code stride in bytes — same value as
-    /// [`rabitq_code_stride`] but exposed as an associated const for
-    /// callers that want it at compile time.
-    pub const STRIDE: usize = rabitq_code_stride(N);
+    /// [`rabitq_code_stride`] for this runtime dimension.
+    pub fn stride(&self) -> usize {
+        self.stride
+    }
 
     /// Encode an `InmemDataset` end-to-end. `seed` controls the
     /// deterministic rotation matrix so two builds with the same seed
     /// produce identical sidecars — useful for cache + reproducible
     /// benchmarks.
-    pub fn build_from(dataset: &InmemDataset<f32, N>, seed: u64) -> Self {
-        let num_vertices = dataset.num_points;
-        let stride = Self::STRIDE;
-        let scale = ((2.0 * N as f64) / std::f64::consts::PI).sqrt() as f32;
+    pub fn build_from(dataset: &impl F32Rows, seed: u64) -> Self {
+        let dim = dataset.dimension();
+        assert!(dim > 0);
+        let num_vertices = dataset.len();
+        let stride = rabitq_code_stride(dim);
+        let scale = ((2.0 * dim as f64) / std::f64::consts::PI).sqrt() as f32;
 
-        // 1. Build the rotation matrix P (N×N, row-major).
-        let rotation = build_orthogonal_rotation::<N>(seed);
+        // 1. Build the rotation matrix P (dim×dim, row-major).
+        let rotation = build_orthogonal_rotation(seed, dim);
 
         // 2. Encode each base vector: rotate, sign-pack, store norm + s.
         let mut codes =
             AlignedBoxWithSlice::<u8>::new(num_vertices * stride, 16).expect("RabitQ codes alloc");
         let mut norms = Vec::with_capacity(num_vertices);
         let mut s_values = Vec::with_capacity(num_vertices);
-        let mut rotated = vec![0.0f32; N];
+        let mut rotated = vec![0.0f32; dim];
 
         // Floor on per-vertex `s_x` to avoid divide-by-near-zero in the
         // estimator. For pathological vectors (constant value, all-zero
@@ -127,9 +137,8 @@ impl<const N: usize> RabitQDataset<N> {
         // the math well-defined.
         let s_floor = 1e-6 * scale;
 
-        let base = dataset.data.as_slice();
         for vid in 0..num_vertices {
-            let x = &base[vid * N..(vid + 1) * N];
+            let x = dataset.row(vid);
 
             // P @ x. Norm is preserved (orthogonal rotation), so we use
             // the rotated form for both L2 norm and L1 norm (s_x is
@@ -170,6 +179,7 @@ impl<const N: usize> RabitQDataset<N> {
         }
 
         Self {
+            dimension: dim,
             codes,
             norms,
             s_values,
@@ -184,7 +194,8 @@ impl<const N: usize> RabitQDataset<N> {
     /// in. Output is written into `out` (length N, caller-allocated).
     /// This is the per-query setup cost — `O(N²)` FLOPs.
     #[inline]
-    pub fn rotate_query(&self, q: &[f32; N], out: &mut [f32; N]) {
+    pub fn rotate_query(&self, q: &[f32], out: &mut [f32]) {
+        assert_eq!(q.len(), self.dimension);
         apply_rotation(self.rotation.as_slice(), q, out);
     }
 
@@ -196,14 +207,16 @@ impl<const N: usize> RabitQDataset<N> {
     ///
     /// This exists for correctness regression tests and as the
     /// reference the future NEON kernel will be benchmarked against.
-    pub fn estimate_l2_sq(&self, rotated_q: &[f32; N], q_norm_sq: f32, vertex_id: u32) -> f32 {
+    pub fn estimate_l2_sq(&self, rotated_q: &[f32], q_norm_sq: f32, vertex_id: u32) -> f32 {
+        assert_eq!(rotated_q.len(), self.dimension);
+
         let off = (vertex_id as usize) * self.stride;
         let code = &self.codes.as_slice()[off..off + self.stride];
 
         // <rotated_q, sign(rotated_x)> = sum_d (rotated_q[d] * sign_d)
         // where sign_d ∈ {+1, -1} ← bit d of `code` (1 → +1, 0 → -1).
         // Use NEON kernel when available; scalar fallback otherwise.
-        let signed_sum = signed_sum_dispatch::<N>(code, rotated_q);
+        let signed_sum = signed_sum_dispatch(code, rotated_q);
 
         // Per-vertex-corrected estimator of <q', x'>:
         //   <q', x'> ≈ signed_sum * (||x|| / s_x)
@@ -252,14 +265,15 @@ impl<const N: usize> RabitQDataset<N> {
     ///   [num_vertices f32 s_values]   ← v2 only
     ///   [num_vertices * STRIDE u8 codes]
     pub fn save<P: AsRef<Path>>(&self, path: P) -> ANNResult<()> {
+        let dim = self.dimension;
         use std::io::Write;
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
         let mut hdr = [0u8; 32];
         hdr[0..4].copy_from_slice(&RABITQ_MAGIC.to_le_bytes());
         hdr[4..8].copy_from_slice(&2u32.to_le_bytes());
         hdr[8..12].copy_from_slice(&(self.num_vertices as u32).to_le_bytes());
-        hdr[12..16].copy_from_slice(&(N as u32).to_le_bytes());
-        hdr[16..20].copy_from_slice(&(self.stride as u32).to_le_bytes());
+        hdr[12..16].copy_from_slice(&(dim as u32).to_le_bytes());
+        hdr[16..20].copy_from_slice(&(rabitq_code_stride_disk(dim) as u32).to_le_bytes());
         hdr[20..24].copy_from_slice(&self.scale.to_le_bytes());
         // hdr[24..32] reserved (zero).
         w.write_all(&hdr)?;
@@ -268,7 +282,7 @@ impl<const N: usize> RabitQDataset<N> {
         let rot_bytes = unsafe {
             std::slice::from_raw_parts(
                 self.rotation.as_slice().as_ptr() as *const u8,
-                N * N * std::mem::size_of::<f32>(),
+                dim * dim * std::mem::size_of::<f32>(),
             )
         };
         w.write_all(rot_bytes)?;
@@ -292,7 +306,12 @@ impl<const N: usize> RabitQDataset<N> {
         w.write_all(s_bytes)?;
 
         // Codes.
-        w.write_all(self.codes.as_slice())?;
+        super::rows::write_rows(
+            &mut w,
+            self.codes.as_slice(),
+            self.stride,
+            rabitq_code_stride_disk(dim),
+        )?;
         w.flush()?;
         Ok(())
     }
@@ -315,18 +334,21 @@ impl<const N: usize> RabitQDataset<N> {
         }
         let num_vertices = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let dim = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
-        if dim != N {
+        if dim == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("dim mismatch: file={dim} expected={N}"),
+                "zero sidecar dimension",
             )
             .into());
         }
         let stride = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
-        if stride != Self::STRIDE {
+        if stride != rabitq_code_stride_disk(dim) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
+                format!(
+                    "stride mismatch: file={stride} expected={}",
+                    rabitq_code_stride(dim)
+                ),
             )
             .into());
         }
@@ -341,12 +363,12 @@ impl<const N: usize> RabitQDataset<N> {
         }
         let scale = f32::from_le_bytes(hdr[20..24].try_into().unwrap());
 
-        let mut rotation = AlignedBoxWithSlice::<f32>::new(N * N, 16)
+        let mut rotation = AlignedBoxWithSlice::<f32>::new(dim * dim, 16)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
         let rot_bytes = unsafe {
             std::slice::from_raw_parts_mut(
                 rotation.as_mut_slice().as_mut_ptr() as *mut u8,
-                N * N * std::mem::size_of::<f32>(),
+                dim * dim * std::mem::size_of::<f32>(),
             )
         };
         r.read_exact(rot_bytes)?;
@@ -369,11 +391,12 @@ impl<const N: usize> RabitQDataset<N> {
         };
         r.read_exact(s_bytes)?;
 
-        let mut codes = AlignedBoxWithSlice::<u8>::new(num_vertices * stride, 16)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
-        r.read_exact(codes.as_mut_slice())?;
+        let disk_stride = stride;
+        let stride = rabitq_code_stride(dim);
+        let codes = super::rows::read_rows::<u8>(&mut r, num_vertices, stride, disk_stride)?;
 
         Ok(Self {
+            dimension: dim,
             codes,
             norms,
             s_values,
@@ -396,16 +419,16 @@ impl<const N: usize> RabitQDataset<N> {
 // `vbslq_f32` to select between `+q` and `-q` based on the bit mask.
 
 #[inline]
-fn signed_sum_dispatch<const N: usize>(code: &[u8], rotated_q: &[f32; N]) -> f32 {
+fn signed_sum_dispatch(code: &[u8], rotated_q: &[f32]) -> f32 {
     #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
     {
         // Whole-byte path covers the contiguous chunk; remainder
         // (D not a multiple of 8) falls through to scalar. The two
         // dataset dimensions we ship (SIFT 128, GIST 960) are both
         // multiples of 8, so the tail loop is dead code there.
-        let bytes = N / 8;
-        let neon_part = unsafe { signed_sum_neon::<N>(code.as_ptr(), rotated_q.as_ptr(), bytes) };
-        let scalar_tail = signed_sum_scalar_tail::<N>(code, rotated_q, bytes * 8);
+        let bytes = rotated_q.len() / 8;
+        let neon_part = unsafe { signed_sum_neon(code.as_ptr(), rotated_q.as_ptr(), bytes) };
+        let scalar_tail = signed_sum_scalar_tail(code, rotated_q, bytes * 8);
         return neon_part + scalar_tail;
     }
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
@@ -413,20 +436,20 @@ fn signed_sum_dispatch<const N: usize>(code: &[u8], rotated_q: &[f32; N]) -> f32
         // AVX-512: 16-bit mask per iter (= 2 code bytes = 16 dims).
         // Per-pair tail catches the trailing 1 byte / 8 dims case
         // (SIFT 128, GIST 960 both align, but D=100 trips this).
-        let pairs = N / 16;
-        let avx_part = unsafe { signed_sum_avx512::<N>(code.as_ptr(), rotated_q.as_ptr(), pairs) };
-        let scalar_tail = signed_sum_scalar_tail::<N>(code, rotated_q, pairs * 16);
+        let pairs = rotated_q.len() / 16;
+        let avx_part = unsafe { signed_sum_avx512(code.as_ptr(), rotated_q.as_ptr(), pairs) };
+        let scalar_tail = signed_sum_scalar_tail(code, rotated_q, pairs * 16);
         return avx_part + scalar_tail;
     }
     #[allow(unreachable_code)]
-    signed_sum_scalar::<N>(code, rotated_q)
+    signed_sum_scalar(code, rotated_q)
 }
 
 /// Scalar reference path. Used by tests and on non-NEON targets.
 #[inline]
-fn signed_sum_scalar<const N: usize>(code: &[u8], rotated_q: &[f32; N]) -> f32 {
+fn signed_sum_scalar(code: &[u8], rotated_q: &[f32]) -> f32 {
     let mut acc = 0.0f32;
-    for d in 0..N {
+    for d in 0..rotated_q.len() {
         let bit = (code[d >> 3] >> (d & 7)) & 1;
         let sign = if bit != 0 { 1.0 } else { -1.0 };
         acc += rotated_q[d] * sign;
@@ -441,9 +464,9 @@ fn signed_sum_scalar<const N: usize>(code: &[u8], rotated_q: &[f32; N]) -> f32 {
 /// it's unused on the scalar-only fallback build (no SIMD arm).
 #[allow(dead_code)]
 #[inline]
-fn signed_sum_scalar_tail<const N: usize>(code: &[u8], rotated_q: &[f32; N], start: usize) -> f32 {
+fn signed_sum_scalar_tail(code: &[u8], rotated_q: &[f32], start: usize) -> f32 {
     let mut acc = 0.0f32;
-    for d in start..N {
+    for d in start..rotated_q.len() {
         let bit = (code[d >> 3] >> (d & 7)) & 1;
         let sign = if bit != 0 { 1.0 } else { -1.0 };
         acc += rotated_q[d] * sign;
@@ -476,11 +499,7 @@ fn signed_sum_scalar_tail<const N: usize>(code: &[u8], rotated_q: &[f32; N], sta
 /// - `bytes * 8 <= N` (caller bounds the dimension)
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 #[inline]
-unsafe fn signed_sum_neon<const N: usize>(
-    code: *const u8,
-    rotated_q: *const f32,
-    bytes: usize,
-) -> f32 {
+unsafe fn signed_sum_neon(code: *const u8, rotated_q: *const f32, bytes: usize) -> f32 {
     unsafe {
         use std::arch::aarch64::*;
         // Per-lane bit masks: lane i tests bit i of the nibble.
@@ -547,11 +566,7 @@ unsafe fn signed_sum_neon<const N: usize>(
 /// - `pairs * 16 <= N`
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[inline]
-unsafe fn signed_sum_avx512<const N: usize>(
-    code: *const u8,
-    rotated_q: *const f32,
-    pairs: usize,
-) -> f32 {
+unsafe fn signed_sum_avx512(code: *const u8, rotated_q: *const f32, pairs: usize) -> f32 {
     use std::arch::x86_64::*;
 
     // Two accumulators break the loop-carried dep — mirrors NEON
@@ -605,8 +620,8 @@ unsafe fn signed_sum_avx512<const N: usize>(
 
 /// Public wrapper for [`build_orthogonal_rotation`] used by sibling
 /// codecs (B=4 dataset).
-pub fn build_orthogonal_rotation_pub<const N: usize>(seed: u64) -> AlignedBoxWithSlice<f32> {
-    build_orthogonal_rotation::<N>(seed)
+pub fn build_orthogonal_rotation_pub(seed: u64, dim: usize) -> AlignedBoxWithSlice<f32> {
+    build_orthogonal_rotation(seed, dim)
 }
 
 /// Public wrapper for [`apply_rotation`].
@@ -647,21 +662,21 @@ pub fn gaussian_pub(rng: &mut XorShiftPub) -> f32 {
 /// Modified Gram-Schmidt is `O(N³)` but stable enough for the
 /// dimensions we care about (N ≤ 1024). For very large N the QR
 /// decomposition via Householder would be preferable.
-fn build_orthogonal_rotation<const N: usize>(seed: u64) -> AlignedBoxWithSlice<f32> {
-    let mut mat = AlignedBoxWithSlice::<f32>::new(N * N, 16).expect("rotation alloc");
+fn build_orthogonal_rotation(seed: u64, dim: usize) -> AlignedBoxWithSlice<f32> {
+    let mut mat = AlignedBoxWithSlice::<f32>::new(dim * dim, 16).expect("rotation alloc");
     let mut rng = XorShift64(seed.wrapping_add(0x9E37_79B9_7F4A_7C15));
 
     // Fill with standard normal samples (row-major).
-    for i in 0..(N * N) {
+    for i in 0..(dim * dim) {
         mat.as_mut_slice()[i] = gaussian(&mut rng);
     }
 
     // Modified Gram-Schmidt on rows. After this, row vectors are
     // pairwise orthonormal, so the matrix is orthogonal (P @ P^T = I).
-    for i in 0..N {
+    for i in 0..dim {
         // Normalize row i.
-        let (i_start, after_i) = mat.as_mut_slice().split_at_mut((i + 1) * N);
-        let row_i = &mut i_start[i * N..(i + 1) * N];
+        let (i_start, after_i) = mat.as_mut_slice().split_at_mut((i + 1) * dim);
+        let row_i = &mut i_start[i * dim..(i + 1) * dim];
         let norm: f32 = row_i.iter().map(|v| v * v).sum::<f32>().sqrt();
         // Guard against the (vanishingly rare) zero-norm seed sample.
         let inv = if norm > 1e-12 { 1.0 / norm } else { 0.0 };
@@ -670,12 +685,12 @@ fn build_orthogonal_rotation<const N: usize>(seed: u64) -> AlignedBoxWithSlice<f
         }
 
         // Project out row i from each subsequent row j > i.
-        for jrow in after_i.chunks_exact_mut(N) {
+        for jrow in after_i.chunks_exact_mut(dim) {
             let mut dot = 0.0f32;
-            for d in 0..N {
+            for d in 0..dim {
                 dot += jrow[d] * row_i[d];
             }
-            for d in 0..N {
+            for d in 0..dim {
                 jrow[d] -= dot * row_i[d];
             }
         }
@@ -865,21 +880,27 @@ fn gaussian(rng: &mut XorShift64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use diskann::model::InmemDataset;
 
     #[test]
     fn stride_matches_paper_examples() {
         // SIFT D=128 → 16 B code, no pad needed
-        assert_eq!(rabitq_code_stride(128), 16);
+        assert_eq!(rabitq_code_stride_disk(128), 16);
+        assert_eq!(
+            rabitq_code_stride(128)
+                % <vector::JLHammingDistance as vector::DistanceFn>::CHUNK_BYTES,
+            0
+        );
         // GIST D=960 → ceil(960/8)=120 B → padded 128
         assert_eq!(rabitq_code_stride(960), 128);
         // Edge: D=1, 1 bit → padded 16
-        assert_eq!(rabitq_code_stride(1), 16);
+        assert_eq!(rabitq_code_stride_disk(1), 16);
     }
 
     #[test]
     fn rotation_is_orthogonal() {
         const N: usize = 32;
-        let rot = build_orthogonal_rotation::<N>(42);
+        let rot = build_orthogonal_rotation(42, N);
         // Verify P @ P^T = I by checking row dot products.
         for i in 0..N {
             for j in i..N {
@@ -898,7 +919,7 @@ mod tests {
     #[test]
     fn rotation_preserves_norm() {
         const N: usize = 32;
-        let rot = build_orthogonal_rotation::<N>(7);
+        let rot = build_orthogonal_rotation(7, N);
         let x: [f32; N] = std::array::from_fn(|i| ((i as f32) * 0.31 - 5.0).sin());
         let x_norm: f32 = x.iter().map(|v| v * v).sum::<f32>().sqrt();
         let mut y = [0.0f32; N];
@@ -928,7 +949,7 @@ mod tests {
 
         let mut ds = InmemDataset::<f32, N>::new(num, 1.0).unwrap();
         ds.data.memcpy(&flat).unwrap();
-        let rbq = RabitQDataset::<N>::build_from(&ds, 12345);
+        let rbq = RabitQDataset::build_from(&ds, 12345);
 
         // Self-distance: pick vertex 0, rotate it, estimate against itself.
         let v0: [f32; N] = std::array::from_fn(|i| flat[i]);
@@ -966,7 +987,7 @@ mod tests {
             let query = [1.0_f32; D];
             for (bits, expected) in [(0_u8, -(D as f32)), (255_u8, D as f32)] {
                 let code = vec![bits; rabitq_code_stride(D)];
-                assert_eq!(signed_sum_dispatch::<D>(&code, &query), expected, "D={D}");
+                assert_eq!(signed_sum_dispatch(&code, &query), expected, "D={D}");
             }
         }
         check::<1>();
@@ -1003,8 +1024,8 @@ mod tests {
             for v in q.iter_mut() {
                 *v = gaussian(&mut rng);
             }
-            let s = signed_sum_dispatch::<D>(&code, &q);
-            let r = signed_sum_scalar::<D>(&code, &q);
+            let s = signed_sum_dispatch(&code, &q);
+            let r = signed_sum_scalar(&code, &q);
             // Allow a relative tolerance proportional to sqrt(D) since
             // f32 sum accumulation drifts with the number of terms.
             let tol = (D as f32).sqrt() * 1e-5 * r.abs().max(1.0);
@@ -1039,11 +1060,11 @@ mod tests {
         }
         let mut ds = InmemDataset::<f32, N>::new(num, 1.0).unwrap();
         ds.data.memcpy(&flat).unwrap();
-        let a = RabitQDataset::<N>::build_from(&ds, 777);
+        let a = RabitQDataset::build_from(&ds, 777);
 
         let path = std::env::temp_dir().join(format!("rabitq_test_{}.qrbq", std::process::id()));
         a.save(&path).expect("save");
-        let b = RabitQDataset::<N>::load(&path).expect("load");
+        let b = RabitQDataset::load(&path).expect("load");
         std::fs::remove_file(&path).ok();
 
         assert_eq!(a.num_vertices, b.num_vertices);

@@ -87,8 +87,10 @@ result = index.search(queries, k=10, search_list_size=100)
   on the same index serialize, while its batch search runs in parallel.
 - File queries are decoded as a complete batch. For bounded query memory, call
   `search` with successive ndarray batches; calibrate once using a warmup batch.
-- Supported physical dimensions: 32, 100, 128, 768, 784, 960 and 1536. Native u8
-  currently requires 128-dimensional L2 and a PA cache or STAG export. It does
+- Dimensions are inferred at runtime; each resident row is padded for SIMD.
+  The Rust/DiskANN graph builder supports logical dimensions up to 1536 by
+  padding its working input; larger dimensions need a PA graph.
+  Native u8 requires L2 and a PA cache or STAG export. It does
   not fall back to Rust construction, allocate a quantized admission copy, or
   rerank. Native-u8 ndarray queries must also be uint8.
 

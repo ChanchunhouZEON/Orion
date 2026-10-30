@@ -79,7 +79,7 @@ fn run<const D: usize>(
 where
     [f32; D]: vector::FullPrecisionDistance<f32, D>,
 {
-    let idx = graph::load_index::<D>(config, &mut data)?;
+    let idx = graph::load_index(config, &mut data)?;
     if config.prepare_only {
         return Ok(());
     }
@@ -94,7 +94,7 @@ where
     let s = &config.sweep;
     let calib = idx
         .calibrate(
-            &queries[..s.calibration_samples.min(queries.len())],
+            queries[..s.calibration_samples.min(queries.len())].as_flattened(),
             s.calibration_l,
             config.window_size,
             orion::CalibrationConfig {

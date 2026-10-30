@@ -4,7 +4,7 @@
  */
 
 //! End-to-end integration tests that build a tiny synthetic Vamana
-//! graph and drive the unified search through `Orion`.
+//! graph and drive the unified search through `StaticOrion`.
 //!
 //! Exists to lift `algorithm/search/{in_mem_search, calibrate, utils}`,
 //! `index/compressed_index`, and `vector/distance_{fn,stream}` from
@@ -29,7 +29,7 @@ use orion::algorithm::search::stage::prefilter::{
     JlHadamardPrefilter, JlPrefilter, RabitqPrefilter,
 };
 use orion::algorithm::search::stage::rerank::{F32Rerank, IpF32Rerank, U16Rerank};
-use orion::{Orion, build_diskann_index};
+use orion::{StaticOrion, build_diskann_index};
 
 const DIM: usize = 32;
 // 128 points (vs the earlier 64) gives Vamana enough candidates that
@@ -78,9 +78,9 @@ fn unique_cache_path(test_name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("orion_e2e_{test_name}_{pid}_{nanos}.bin"))
 }
 
-/// Build a `Orion<DIM>` from the synthetic dataset, mirroring
+/// Build a `StaticOrion<DIM>` from the synthetic dataset, mirroring
 /// `benchmark/src/runner/orion_runner.rs::build_orion!`.
-fn build_orion_fixture(flat: &[f32], test_name: &str) -> Orion<DIM> {
+fn build_orion_fixture(flat: &[f32], test_name: &str) -> StaticOrion<DIM> {
     let result = build_diskann_index(
         flat,
         N_POINTS,
@@ -101,7 +101,7 @@ fn build_orion_fixture(flat: &[f32], test_name: &str) -> Orion<DIM> {
     drop(result.index);
 
     let empty_ds = InmemDataset::<f32, DIM>::new(0, 1.0).unwrap();
-    let mut orion = Orion::<DIM>::new(
+    let mut orion = StaticOrion::<DIM>::new(
         empty_ds,
         &result.partitions,
         result.entry_point,
@@ -143,7 +143,7 @@ fn search_pipeline_e2e() {
 
     let admission = L2U8Admission::new(orion.ensure_quantized_dataset());
     let rerank = F32Rerank::new(&orion.dataset);
-    let no_pf: Option<&dyn PrefilterStage<DIM>> = None;
+    let no_pf: Option<&dyn PrefilterStage> = None;
 
     // ── Scenario 1: self-query recovers self as top-1 ──
     for i in 0..8u32 {
@@ -171,7 +171,12 @@ fn search_pipeline_e2e() {
     // ── Scenario 2: calibrate returns finite params ──
     let warmup: Vec<[f32; DIM]> = (0..16).map(|i| query_at(&flat, i)).collect();
     let calib = orion
-        .calibrate(&warmup, /* sls */ 32, /* ws */ 5, Default::default())
+        .calibrate(
+            &warmup,
+            /* sls */ 32,
+            /* ws */ 5,
+            Default::default(),
+        )
         .expect("calibrate");
     assert!(calib.threshold.is_finite());
     assert!(calib.threshold >= 0.0 && calib.threshold <= 1.0);
@@ -296,7 +301,7 @@ fn search_pipeline_e2e() {
         let q = query_at(&flat, 3);
         let jl_ds = orion.ensure_quantized_dataset_jl();
         let pf = JlPrefilter::new(jl_ds);
-        let pf_opt: Option<&JlPrefilter<DIM, 9>> = Some(&pf);
+        let pf_opt: Option<&JlPrefilter<9>> = Some(&pf);
         let r = orion
             .search_unified(&q, 3, 32, 5, 0.0, usize::MAX, pf_opt, &admission, &rerank)
             .expect("JL prefilter cascade");
@@ -332,7 +337,7 @@ fn search_pipeline_e2e() {
         let q = query_at(&flat, 5);
         let rabitq_ds = orion.ensure_quantized_dataset_rabitq();
         let pf = RabitqPrefilter::new(rabitq_ds);
-        let pf_opt: Option<&RabitqPrefilter<DIM>> = Some(&pf);
+        let pf_opt: Option<&RabitqPrefilter> = Some(&pf);
         let r = orion
             .search_unified(&q, 3, 32, 5, 0.0, usize::MAX, pf_opt, &admission, &rerank)
             .expect("RaBitQ prefilter cascade");
@@ -344,7 +349,7 @@ fn search_pipeline_e2e() {
         let q = query_at(&flat, 6);
         let jlh_ds = orion.ensure_quantized_dataset_jl_hadamard();
         let pf = JlHadamardPrefilter::new(jlh_ds);
-        let pf_opt: Option<&JlHadamardPrefilter<DIM>> = Some(&pf);
+        let pf_opt: Option<&JlHadamardPrefilter> = Some(&pf);
         let r = orion
             .search_unified(&q, 3, 32, 5, 0.0, usize::MAX, pf_opt, &admission, &rerank)
             .expect("JL Hadamard prefilter cascade");
@@ -498,7 +503,12 @@ fn search_pipeline_e2e() {
     {
         let warmup: Vec<[f32; DIM]> = (0..16).map(|i| query_at(&flat, i)).collect();
         let diag = orion
-            .calibrate_with_diagnostics(&warmup, /* sls */ 32, /* ws */ 5, Default::default())
+            .calibrate_with_diagnostics(
+                &warmup,
+                /* sls */ 32,
+                /* ws */ 5,
+                Default::default(),
+            )
             .expect("calibrate_with_diagnostics");
         assert!(diag.params.threshold.is_finite());
         assert!(diag.params.early_exit_limit > 0);
@@ -561,7 +571,7 @@ fn search_pipeline_e2e() {
         let q = query_at(&flat, 11);
         let jl_mips_ds = orion.ensure_quantized_dataset_jl_mips();
         let pf = JlMipsPrefilter::new(jl_mips_ds);
-        let pf_opt: Option<&JlMipsPrefilter<DIM>> = Some(&pf);
+        let pf_opt: Option<&JlMipsPrefilter> = Some(&pf);
         let r = orion
             .search_unified(&q, 3, 32, 5, 0.0, usize::MAX, pf_opt, &admission, &rerank)
             .expect("JL-MIPS prefilter cascade");
@@ -570,7 +580,7 @@ fn search_pipeline_e2e() {
 
     // ── Scenario 17: save + load_from_cache round trip ──
     //   `save` writes metadata + pgraph; `load_from_cache` reads them
-    //   back into a fresh `Orion`. The reloaded instance
+    //   back into a fresh `StaticOrion`. The reloaded instance
     //   should produce identical search results to the original.
     //   Covers ~80 lines of `compressed_index.rs` (the IO paths) plus
     //   `PhasedGraph::save / load` round trips.
@@ -587,8 +597,7 @@ fn search_pipeline_e2e() {
         // Reload with the same f32 dataset attached.
         let mut empty_ds = InmemDataset::<f32, DIM>::new(N_POINTS, 1.0).unwrap();
         empty_ds.data.memcpy(&flat[..N_POINTS * DIM]).unwrap();
-        let reloaded =
-            Orion::<DIM>::load_from_cache(&tmp, empty_ds).expect("load_from_cache");
+        let reloaded = StaticOrion::<DIM>::load_from_cache(&tmp, empty_ds).expect("load_from_cache");
 
         // Search through both — top-1 must agree on the same query.
         let q = query_at(&flat, 12);
@@ -606,7 +615,7 @@ fn search_pipeline_e2e() {
         // `load_from_cache` failure path: pass a non-existent path.
         let missing = std::env::temp_dir().join("orion_e2e_definitely_does_not_exist.bin");
         let empty_ds = InmemDataset::<f32, DIM>::new(0, 1.0).unwrap();
-        let err = Orion::<DIM>::load_from_cache(&missing, empty_ds);
+        let err = StaticOrion::<DIM>::load_from_cache(&missing, empty_ds);
         assert!(err.is_err(), "expected error on missing cache file");
 
         let _ = std::fs::remove_file(&tmp);
@@ -627,25 +636,25 @@ fn search_pipeline_e2e() {
         // JL Hadamard round trip.
         let tmp_jlh = std::env::temp_dir().join("orion_e2e_jl_hadamard.qjlh");
         let _ = std::fs::remove_file(&tmp_jlh);
-        let jlh = JlHadamardDataset::<DIM, 1024>::build_from(&orion.dataset, 0x42);
+        let jlh = JlHadamardDataset::build_with_padding(&orion.dataset, 0x42, 1024);
         jlh.save(&tmp_jlh).expect("save jl_hadamard");
-        let _loaded = JlHadamardDataset::<DIM, 1024>::load(&tmp_jlh).expect("load jl_hadamard");
+        let _loaded = JlHadamardDataset::load(&tmp_jlh).expect("load jl_hadamard");
         let _ = std::fs::remove_file(&tmp_jlh);
 
         // L2-KT round trip.
         let tmp_kt = std::env::temp_dir().join("orion_e2e_l2_kt.qdsl2kt");
         let _ = std::fs::remove_file(&tmp_kt);
-        let kt = L2KTDataset::<DIM>::build_from(&orion.dataset);
+        let kt = L2KTDataset::build_from(&orion.dataset);
         kt.save(&tmp_kt).expect("save l2_kt");
-        let _loaded = L2KTDataset::<DIM>::load(&tmp_kt).expect("load l2_kt");
+        let _loaded = L2KTDataset::load(&tmp_kt).expect("load l2_kt");
         let _ = std::fs::remove_file(&tmp_kt);
 
         // JL Sparse round trip.
         let tmp_jl = std::env::temp_dir().join("orion_e2e_jl_sparse.jls");
         let _ = std::fs::remove_file(&tmp_jl);
-        let jl = JLSparseDataset::<DIM, 1024>::build_from(&orion.dataset, 0x42);
+        let jl = JLSparseDataset::<1024>::build_from(&orion.dataset, 0x42);
         jl.save(&tmp_jl).expect("save jl_sparse");
-        let _loaded = JLSparseDataset::<DIM, 1024>::load(&tmp_jl).expect("load jl_sparse");
+        let _loaded = JLSparseDataset::<1024>::load(&tmp_jl).expect("load jl_sparse");
         let _ = std::fs::remove_file(&tmp_jl);
     }
 

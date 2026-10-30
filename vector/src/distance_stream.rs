@@ -46,8 +46,8 @@
 //!    iter's prefetches are in DRAM, extending the effective
 //!    compute window — the latency-hiding shape we want.
 
-use crate::distance_fn::DistanceFn;
 use crate::CACHE_LINE_BYTES;
+use crate::distance_fn::DistanceFn;
 
 /// Maximum far-prefetch requests per compute group. The historical value
 /// 12 benefited GIST L2-KT with the old per-vertex scheduler; it remains
@@ -126,8 +126,8 @@ impl BurstSchedule {
 }
 
 /// Iterator-shaped fetch + compute + sink pipeline. Generic over the
-/// kernel `K` (any [`DistanceFn`] impl) and the vector dim `N`. The
-/// streaming loop is monomorphised per (kernel, dim) so `K::step`
+/// kernel `K` (any [`DistanceFn`] impl). Dimensions are runtime byte spans.
+/// The streaming loop is monomorphised per kernel and sink so `K::step`
 /// and `K::reduce` get fully inlined into the hot path; the sink
 /// closure is also inlined so the OoO backend can reorder its
 /// instructions across the next iter's prefetch issue.
@@ -142,7 +142,7 @@ impl BurstSchedule {
 /// `prfm` for `aux_ptr + ids[pf_front] × aux_elem_bytes` alongside the
 /// existing base prefetch — turning that cold load into a warm one
 /// without any new closure plumbing.
-pub struct DistanceStream<'a, K: DistanceFn, const N: usize> {
+pub struct DistanceStream<'a, K: DistanceFn> {
     /// Pointer to the start of the (quantized) base buffer.
     base_ptr: *const u8,
     /// Per-vertex byte stride: `v_ptr = base_ptr + id × id_stride_bytes`.
@@ -164,7 +164,7 @@ pub struct DistanceStream<'a, K: DistanceFn, const N: usize> {
     _phantom: std::marker::PhantomData<&'a K>,
 }
 
-impl<'a, K: DistanceFn, const N: usize> DistanceStream<'a, K, N> {
+impl<'a, K: DistanceFn> DistanceStream<'a, K> {
     /// Construct. Prefetch addresses are computed inline in `run()`
     /// from `(base_ptr, ids[v], id_stride_bytes, line_offset)` —
     /// no pre-built queue needed.
@@ -221,10 +221,10 @@ impl<'a, K: DistanceFn, const N: usize> DistanceStream<'a, K, N> {
     }
 
     /// Drive the stream. **Not** `#[inline(always)]` — at each search
-    /// call site we monomorphise per (K, N) and there are typically
+    /// call site we monomorphise per kernel and sink and there are typically
     /// 2 such instantiations per query (i8 beam + f32 rerank). Forcing
     /// inline-always blows up icache; `#[inline]` lets LLVM share the
-    /// monomorphic body across all call sites with the same (K, N).
+    /// monomorphic body across all call sites with the same kernel and sink.
     ///
     /// Compute is grouped by logical cache-line consumption. Low-dimensional
     /// vectors share one far burst; high-dimensional vectors can form a group

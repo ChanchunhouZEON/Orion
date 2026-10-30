@@ -24,21 +24,24 @@ use crate::model::{L2U16, QuantizedDataset};
 /// Pairs with [`super::super::admission::L2U16Admission`] for PA-
 /// aligned recipes that want the u16 admission tier to also be the
 /// rerank precision.
-pub struct U16Rerank<'a, const N: usize> {
-    pub dataset: &'a QuantizedDataset<L2U16, N>,
+pub struct U16Rerank<'a> {
+    pub dataset: &'a QuantizedDataset<L2U16>,
 }
 
-impl<'a, const N: usize> U16Rerank<'a, N> {
+impl<'a> U16Rerank<'a> {
     #[inline]
-    pub fn new(dataset: &'a QuantizedDataset<L2U16, N>) -> Self {
+    pub fn new(dataset: &'a QuantizedDataset<L2U16>) -> Self {
         Self { dataset }
     }
 }
 
-impl<'a, const N: usize> RerankStage<N> for U16Rerank<'a, N> {
+impl<'a> RerankStage for U16Rerank<'a> {
+    fn shape(&self) -> Option<(usize, usize)> {
+        Some((self.dataset.dimension, self.dataset.n))
+    }
     fn rerank(
         &self,
-        query: &[f32; N],
+        query: &[f32],
         pq_entries: &[Neighbor],
         k: usize,
         rerank_factor: usize,
@@ -56,7 +59,7 @@ impl<'a, const N: usize> RerankStage<N> for U16Rerank<'a, N> {
         // stride); compute_bytes = STRIDE × 2 B is therefore already
         // a multiple of the kernel's 32-byte chunk size — no extra
         // padding needed.
-        let stride_elems = QuantizedDataset::<L2U16, N>::STRIDE;
+        let stride_elems = self.dataset.stride;
         let stride_bytes = stride_elems * std::mem::size_of::<u16>();
         let q_query_padded = self.dataset.quantize_query_padded(query);
 
@@ -68,7 +71,7 @@ impl<'a, const N: usize> RerankStage<N> for U16Rerank<'a, N> {
         let mut rerank_buf: Vec<(u32, f32)> = Vec::with_capacity(num_check);
         unsafe {
             let id_in = std::slice::from_raw_parts(scratch.id_scratch.as_ptr(), num_check);
-            vector::DistanceStream::<vector::L2U16Distance, N>::new(
+            vector::DistanceStream::<vector::L2U16Distance>::new(
                 self.dataset.data.as_slice().as_ptr() as *const u8,
                 stride_bytes,
                 stride_bytes,

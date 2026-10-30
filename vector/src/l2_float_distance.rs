@@ -48,13 +48,21 @@ pub fn distance_l2_vector_f16<const N: usize>(a: &[Half; N], b: &[Half; N]) -> f
 #[cfg(target_arch = "x86_64")]
 #[inline(never)]
 pub fn distance_l2_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32 {
+    distance_l2_slice_f32(a, b)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub fn distance_l2_slice_f32(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len());
+    let n = a.len();
     // Array references guarantee element alignment only. Load unaligned and
     // stop before the tail so this safe API also accepts arbitrary dimensions.
 
     unsafe {
         let mut sum = _mm256_setzero_ps();
 
-        for i in (0..N / 8 * 8).step_by(8) {
+        for i in (0..n / 8 * 8).step_by(8) {
             let a_vec = _mm256_loadu_ps(&a[i]);
             let b_vec = _mm256_loadu_ps(&b[i]);
             let diff = _mm256_sub_ps(a_vec, b_vec);
@@ -65,7 +73,7 @@ pub fn distance_l2_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
         let x64: __m128 = _mm_add_ps(x128, _mm_movehl_ps(x128, x128));
         let x32: __m128 = _mm_add_ss(x64, _mm_shuffle_ps(x64, x64, 0x55));
         let mut total = _mm_cvtss_f32(x32);
-        for i in N / 8 * 8..N {
+        for i in n / 8 * 8..n {
             let diff = a[i] - b[i];
             total += diff * diff;
         }

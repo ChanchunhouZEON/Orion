@@ -5,8 +5,9 @@
 
 //! Auto-calibration of convergence threshold and early exit limit.
 
-use crate::Orion;
+use crate::StaticOrion;
 use crate::algorithm::search::utils::AlignedQuery;
+use crate::index::compressed_index::CompressedIndex;
 use crate::model::Neighbor as DNeighbor;
 use crate::model::scratch::InMemSearchScratch;
 use diskann::common::{ANNError, ANNResult};
@@ -168,10 +169,7 @@ pub struct CalibratedParams {
     pub early_exit_limit: usize,
 }
 
-impl<const N: usize, T: CalibrationElement> Orion<N, T>
-where
-    [T; N]: FullPrecisionDistance<T, N>,
-{
+impl<D, S> CompressedIndex<D, S> {
     /// Calibrate convergence and early exit parameters from warmup queries.
     ///
     /// Runs full-graph search (no convergence, no early exit) and tracks:
@@ -181,16 +179,16 @@ where
     ///    derive `early_exit_limit` from P95 of inter-useful-admission gaps.
     /// `config` selects the top-k target and exact metric. Pass
     /// `CalibrationConfig::default()` for the legacy top-10 L2 behavior.
-    pub fn calibrate(
+    pub(crate) fn calibrate_scored(
         &self,
-        warmup_queries: &[[f32; N]],
+        query_count: usize,
         search_list_size: usize,
         window_size: usize,
         config: CalibrationConfig,
+        distance: impl Fn(usize, u32) -> ANNResult<f32>,
     ) -> ANNResult<CalibratedParams> {
         config.validate(search_list_size, window_size)?;
         let entry = self.entry;
-        let dataset = &self.dataset;
         let graph = &self.graph;
         let k = config.k;
 
@@ -206,15 +204,11 @@ where
         let mut useful_gaps: Vec<usize> = Vec::new();
         let mut tail_gaps: Vec<usize> = Vec::new();
 
-        for query in warmup_queries {
-            let aligned = AlignedQuery(*query);
+        for query in 0..query_count {
             scratch.prepare_for_query(search_list_size);
 
             scratch.seen.insert(entry);
-            let entry_dist = {
-                let v = dataset.get_vertex(entry)?;
-                T::calibration_distance(config.metric, &aligned.0, v.vector())?
-            };
+            let entry_dist = distance(query, entry)?;
             scratch.pq.insert(DNeighbor::new(entry, entry_dist));
 
             // Track: for each node ID, which step it was admitted.
@@ -245,8 +239,7 @@ where
 
                 for m in 0..n_unseen {
                     let nn = scratch.id_scratch[m];
-                    let v = dataset.get_vertex(nn)?;
-                    let dist = T::calibration_distance(config.metric, &aligned.0, v.vector())?;
+                    let dist = distance(query, nn)?;
                     if dist < pq_worst || scratch.pq.size() < search_list_size {
                         admitted = true;
                         admit_step.insert(nn, step);
@@ -344,7 +337,7 @@ where
 
         log::info!(
             "calibrate: {} queries, {} gaps, gap_p50={}, gap_p90={}, gap_p95={}, tail_p50={}",
-            warmup_queries.len(),
+            query_count,
             useful_gaps.len(),
             gap_p50,
             gap_p90,
@@ -410,21 +403,18 @@ pub struct CalibrationDiagnostics {
     pub params: CalibratedParams,
 }
 
-impl<const N: usize, T: CalibrationElement> Orion<N, T>
-where
-    [T; N]: FullPrecisionDistance<T, N>,
-{
+impl<D, S> CompressedIndex<D, S> {
     /// Calibrate with full diagnostics using the same target as `calibrate`.
-    pub fn calibrate_with_diagnostics(
+    pub(crate) fn calibrate_diagnostics_scored(
         &self,
-        warmup_queries: &[[f32; N]],
+        query_count: usize,
         search_list_size: usize,
         window_size: usize,
         config: CalibrationConfig,
+        distance: impl Fn(usize, u32) -> ANNResult<f32>,
     ) -> ANNResult<CalibrationDiagnostics> {
         config.validate(search_list_size, window_size)?;
         let entry = self.entry;
-        let dataset = &self.dataset;
         let graph = &self.graph;
         let k = config.k;
 
@@ -436,15 +426,11 @@ where
         let mut tail_gaps: Vec<usize> = Vec::new();
         let mut useful_gaps: Vec<usize> = Vec::new();
 
-        for query in warmup_queries {
-            let aligned = AlignedQuery(*query);
+        for query in 0..query_count {
             scratch.prepare_for_query(search_list_size);
 
             scratch.seen.insert(entry);
-            let entry_dist = {
-                let v = dataset.get_vertex(entry)?;
-                T::calibration_distance(config.metric, &aligned.0, v.vector())?
-            };
+            let entry_dist = distance(query, entry)?;
             scratch.pq.insert(DNeighbor::new(entry, entry_dist));
 
             let mut admit_step: std::collections::HashMap<u32, usize> =
@@ -473,8 +459,7 @@ where
 
                 for m in 0..n_unseen {
                     let nn = scratch.id_scratch[m];
-                    let v = dataset.get_vertex(nn)?;
-                    let dist = T::calibration_distance(config.metric, &aligned.0, v.vector())?;
+                    let dist = distance(query, nn)?;
                     if dist < pq_worst || scratch.pq.size() < search_list_size {
                         admitted = true;
                         admit_step.insert(nn, step);
@@ -567,15 +552,11 @@ where
             let mut per_step_coverage_sum = vec![0.0f64; max_steps_seen];
             let mut n_queries = 0usize;
 
-            for query in warmup_queries {
-                let aligned = AlignedQuery(*query);
+            for query in 0..query_count {
                 scratch.prepare_for_query(search_list_size);
 
                 scratch.seen.insert(entry);
-                let entry_dist = {
-                    let v = dataset.get_vertex(entry)?;
-                    T::calibration_distance(config.metric, &aligned.0, v.vector())?
-                };
+                let entry_dist = distance(query, entry)?;
                 scratch.pq.insert(DNeighbor::new(entry, entry_dist));
 
                 let mut admit_step_map: std::collections::HashMap<u32, usize> =
@@ -599,8 +580,7 @@ where
                     };
                     for m in 0..scratch.id_scratch.len() {
                         let nn = scratch.id_scratch[m];
-                        let v = dataset.get_vertex(nn)?;
-                        let dist = T::calibration_distance(config.metric, &aligned.0, v.vector())?;
+                        let dist = distance(query, nn)?;
                         if dist < pq_worst || scratch.pq.size() < search_list_size {
                             admit_step_map.insert(nn, step);
                         }
@@ -656,6 +636,44 @@ fn percentile(sorted: &[usize], p: usize) -> usize {
     }
     let idx = (sorted.len() * p / 100).min(sorted.len() - 1);
     sorted[idx]
+}
+
+impl<const N: usize, T: CalibrationElement> StaticOrion<N, T>
+where
+    [T; N]: FullPrecisionDistance<T, N>,
+{
+    pub fn calibrate(
+        &self,
+        queries: &[[f32; N]],
+        beam: usize,
+        window: usize,
+        config: CalibrationConfig,
+    ) -> ANNResult<CalibratedParams> {
+        let aligned: Vec<_> = queries.iter().map(|q| AlignedQuery(*q)).collect();
+        self.calibrate_scored(queries.len(), beam, window, config, |q, id| {
+            T::calibration_distance(
+                config.metric,
+                &aligned[q].0,
+                self.dataset.get_vertex(id)?.vector(),
+            )
+        })
+    }
+    pub fn calibrate_with_diagnostics(
+        &self,
+        queries: &[[f32; N]],
+        beam: usize,
+        window: usize,
+        config: CalibrationConfig,
+    ) -> ANNResult<CalibrationDiagnostics> {
+        let aligned: Vec<_> = queries.iter().map(|q| AlignedQuery(*q)).collect();
+        self.calibrate_diagnostics_scored(queries.len(), beam, window, config, |q, id| {
+            T::calibration_distance(
+                config.metric,
+                &aligned[q].0,
+                self.dataset.get_vertex(id)?.vector(),
+            )
+        })
+    }
 }
 
 #[cfg(test)]

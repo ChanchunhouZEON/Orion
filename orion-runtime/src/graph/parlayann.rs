@@ -4,7 +4,7 @@
  */
 
 //! Load a ParlayANN-built Orion index (`.staged` v3) and pass the
-//! `(local, remote, extra)` partitions through to `Orion::new`.
+//! `(local, remote, extra)` partitions through to `Orion::from_phased_graph`.
 //!
 //! File format (from `ParlayANN/algorithms/utils/staged_export.h`, v3):
 //!   [u32 magic=0x53544147 "STAG"][u32 version=3]
@@ -166,7 +166,15 @@ pub fn load_from_staged_file<P: AsRef<Path>>(
 
 /// Preserve the historical PA importer entry selection without owning partitions.
 pub fn sampled_medoid<T: Copy + Sync + Into<f32>>(base_flat: &[T], dim: usize) -> u32 {
-    let n = base_flat.len() / dim;
+    sampled_medoid_rows(base_flat.len() / dim, |id| {
+        &base_flat[id * dim..(id + 1) * dim]
+    })
+}
+
+pub fn sampled_medoid_rows<'a, T: Copy + Sync + Into<f32> + 'a>(
+    n: usize,
+    row: impl Fn(usize) -> &'a [T] + Sync,
+) -> u32 {
     // Recompute medoid: smallest sum-of-distances to a stride sample.
     let sample_size = 1024.min(n);
     let step = (n / sample_size).max(1);
@@ -176,11 +184,8 @@ pub fn sampled_medoid<T: Copy + Sync + Into<f32>>(base_flat: &[T], dim: usize) -
         .into_par_iter()
         .step_by(candidate_stride)
         .map(|i| {
-            let i_vec = &base_flat[i * dim..(i + 1) * dim];
-            let sum: f32 = sample
-                .iter()
-                .map(|&s| dist_l2(i_vec, &base_flat[s * dim..(s + 1) * dim]))
-                .sum();
+            let i_vec = row(i);
+            let sum: f32 = sample.iter().map(|&s| dist_l2(i_vec, row(s))).sum();
             (sum, i as u32)
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))

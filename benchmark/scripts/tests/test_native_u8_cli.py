@@ -39,12 +39,26 @@ class NativeByteCliTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
         return result
 
+    def test_nonpreset_dimension_search_and_reload(self):
+        for name in ("base.bvecs", "query.bvecs"):
+            path = self.root / name
+            original = path.read_bytes()
+            path.write_bytes(b"".join(struct.pack("<I", 31) + original[i + 4:i + 35]
+                                      for i in range(0, len(original), 132)))
+        for storage in ("u8", "f32"):
+            flags = ["--dimension", "31", "--vector-storage", storage]
+            if storage == "f32":
+                flags += ["--admission", "l2-u8", "--rerank", "f32"]
+            for _ in range(2):
+                result = self.run_cli("sift10m", *flags)
+                self.assertRegex(result.stdout + result.stderr, r"R@1=1\.0000")
+
     def test_all_large_presets_use_one_byte_base(self):
         for dataset in ["sift10m", "sift100m", "sift1b"]:
             with self.subTest(dataset=dataset):
                 report = json.loads(self.run_cli(dataset, "--preflight").stdout)
                 self.assertEqual(report["vector_storage"], "u8")
-                self.assertEqual(report["base_u8_bytes"], 16 * 128 + 64)
+                self.assertEqual(report["base_u8_bytes"], 16 * 128)
                 self.assertEqual(report["base_f32_bytes"], 0)
                 self.assertEqual(report["l2_u8_admission_bytes"], 0)
 

@@ -2,7 +2,7 @@
  * Copyright (c) Chanchunhou. All rights reserved.
  * Licensed under the MIT License.
  */
-use crate::Orion;
+use crate::StaticOrion;
 use diskann::common::ANNResult;
 use vector::FullPrecisionDistance;
 
@@ -114,7 +114,7 @@ use diskann::common::ANNError;
 use diskann::model::FixedChunkPQTable;
 use std::sync::Arc;
 
-impl<const N: usize> Orion<N>
+impl<const N: usize> StaticOrion<N>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {

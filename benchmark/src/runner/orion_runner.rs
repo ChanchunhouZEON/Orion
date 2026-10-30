@@ -7,8 +7,7 @@ use crate::report::table::BuildTiming;
 use crate::runner::cascade::{AdmissionChoice, PrefilterChoice, RerankChoice};
 use crate::runner::common::{AlgorithmRunner, SearchResult};
 use orion::{
-    build_diskann_index, Orion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_784,
-    DIM_960,
+    build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_784, DIM_960,
 };
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -18,9 +17,10 @@ use std::time::{Duration, Instant};
 ///
 /// Both `search` (single query) and `search_batch` (multi-query) route to the
 /// metric's dedicated kernel — the latter calls
-/// `Orion::search_batch_*` which has the L-adaptive `par_chunks(BATCH)`
+/// `StaticOrion::search_batch_*` which has the L-adaptive `par_chunks(BATCH)`
 /// rayon shape, instead of the trait's default per-query `par_iter`.
 pub struct OrionRunner {
+    #[allow(dead_code)]
     name: &'static str,
     alpha: f32,
     graph_degree: usize,
@@ -49,13 +49,13 @@ pub struct OrionRunner {
 }
 
 enum OrionInner {
-    Dim32 { idx: Orion<32> },
-    Dim100 { idx: Orion<100> },
-    Dim128 { idx: Orion<128> },
-    Dim768 { idx: Orion<768> },
-    Dim784 { idx: Orion<784> },
-    Dim960 { idx: Orion<960> },
-    Dim1536 { idx: Orion<1536> },
+    Dim32 { idx: StaticOrion<32> },
+    Dim100 { idx: StaticOrion<100> },
+    Dim128 { idx: StaticOrion<128> },
+    Dim768 { idx: StaticOrion<768> },
+    Dim784 { idx: StaticOrion<784> },
+    Dim960 { idx: StaticOrion<960> },
+    Dim1536 { idx: StaticOrion<1536> },
 }
 
 macro_rules! build_orion {
@@ -68,7 +68,7 @@ macro_rules! build_orion {
 
         let t1 = Instant::now();
         let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-        let mut idx = Orion::<$N>::new(
+        let mut idx = StaticOrion::<$N>::new(
             empty_ds,
             &$result.partitions,
             $result.entry_point,
@@ -94,12 +94,15 @@ macro_rules! build_orion {
                 q
             })
             .collect();
-        if let Ok(calib) =
-            idx.calibrate(&calib_queries, $self.search_list_size, $self.window_size, orion::CalibrationConfig {
+        if let Ok(calib) = idx.calibrate(
+            &calib_queries,
+            $self.search_list_size,
+            $self.window_size,
+            orion::CalibrationConfig {
                 metric: $self.admission.calibration_metric(),
                 ..Default::default()
-            })
-        {
+            },
+        ) {
             $self.epsilon = calib.threshold;
             $self.early_exit_limit = calib.early_exit_limit;
             log::info!(
@@ -122,14 +125,11 @@ macro_rules! search_orion {
         let ws = $self.window_size;
         let eps = $self.epsilon;
         let ee = $self.early_exit_limit;
-        let pf = crate::runner::cascade::build_prefilter::<$N>(
-            $idx,
-            $self.prefilter,
-            $self.admission,
-        );
-        let ad = crate::runner::cascade::build_admission::<$N>($idx, $self.admission)
+        let pf =
+            crate::runner::cascade::build_prefilter::<_>($idx, $self.prefilter, $self.admission);
+        let ad = crate::runner::cascade::build_admission::<_>($idx, $self.admission)
             .expect("f32 OrionRunner does not support native-l2-u8 admission");
-        let rr = crate::runner::cascade::build_rerank::<$N>($idx, $self.rerank);
+        let rr = crate::runner::cascade::build_rerank::<_>($idx, $self.rerank);
         $idx.search_unified(
             &q,
             $k,
@@ -159,9 +159,9 @@ macro_rules! search_batch_orion {
         let ws = $self.window_size;
         let eps = $self.epsilon;
         let ee = $self.early_exit_limit;
-        crate::runner::cascade::search_batch_compose::<$N>(
+        crate::runner::cascade::search_batch_compose::<_>(
             $idx,
-            &qs,
+            qs.as_flattened(),
             $k,
             sls,
             ws,
@@ -186,12 +186,7 @@ macro_rules! pin_orion_hot {
         let ds_len = $idx.dataset.data.len() * std::mem::size_of::<f32>();
         crate::utils::mlock_bytes("orion dataset (f32)", ds_ptr, ds_len);
 
-        crate::runner::cascade::pin_cascade(
-            $idx,
-            $self.prefilter,
-            $self.admission,
-            $self.rerank,
-        );
+        crate::runner::cascade::pin_cascade($idx, $self.prefilter, $self.admission, $self.rerank);
 
         // PhasedGraph slot slab.
         let pg = $idx.graph.buffer_bytes();
@@ -233,7 +228,10 @@ impl OrionRunner {
         let n = sample.min(queries.len());
         let sls = orion::calibration_search_list_size!(self.search_list_size, k);
         let ws = self.window_size;
-        let config = orion::CalibrationConfig { k, metric: self.admission.calibration_metric() };
+        let config = orion::CalibrationConfig {
+            k,
+            metric: self.admission.calibration_metric(),
+        };
         macro_rules! recal {
             ($idx:ident, $N:literal) => {{
                 let qs: Vec<[f32; $N]> = queries[..n]
@@ -323,8 +321,8 @@ impl AlgorithmRunner for OrionRunner {
                     ($N:literal, $variant:ident) => {{
                         let empty_ds =
                             diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                        let mut idx = Orion::<$N>::load_from_cache(&cache, empty_ds)
-                            .expect("Orion::load_from_cache failed");
+                        let mut idx = StaticOrion::<$N>::load_from_cache(&cache, empty_ds)
+                            .expect("StaticOrion::load_from_cache failed");
                         let mut ds =
                             diskann::model::InmemDataset::<f32, $N>::new(num_points, 1.0).unwrap();
                         ds.data.memcpy(&data[..num_points * $N]).unwrap();

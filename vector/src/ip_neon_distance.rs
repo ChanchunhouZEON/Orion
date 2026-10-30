@@ -25,7 +25,15 @@ use std::arch::aarch64::*;
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
 pub fn distance_ip_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32 {
-    debug_assert_eq!(N % 4, 0);
+    distance_ip_slice_f32(a, b)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub fn distance_ip_slice_f32(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len());
+    let n = a.len();
+
     unsafe {
         let mut s0 = vdupq_n_f32(0.0);
         let mut s1 = vdupq_n_f32(0.0);
@@ -36,7 +44,7 @@ pub fn distance_ip_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
         let b_ptr = b.as_ptr();
 
         const PF_AHEAD: usize = 4;
-        let chunks = N / 16;
+        let chunks = n / 16;
         for i in 0..chunks {
             let offset = i * 16;
 
@@ -71,14 +79,18 @@ pub fn distance_ip_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
         }
 
         let remaining_start = chunks * 16;
-        for i in (remaining_start..N).step_by(4) {
+        for i in (remaining_start..n / 4 * 4).step_by(4) {
             let av = vld1q_f32(a_ptr.add(i));
             let bv = vld1q_f32(b_ptr.add(i));
             s0 = vfmaq_f32(s0, av, bv);
         }
 
         let total = vaddq_f32(vaddq_f32(s0, s1), vaddq_f32(s2, s3));
-        -vaddvq_f32(total)
+        let mut result = vaddvq_f32(total);
+        for i in n / 4 * 4..n {
+            result += a[i] * b[i];
+        }
+        -result
     }
 }
 
@@ -86,8 +98,16 @@ pub fn distance_ip_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
 #[cfg(not(target_arch = "aarch64"))]
 #[inline(never)]
 pub fn distance_ip_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32 {
+    distance_ip_slice_f32(a, b)
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+pub fn distance_ip_slice_f32(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len());
+    let n = a.len();
     let mut s = 0.0f32;
-    for i in 0..N {
+    for i in 0..n {
         s += a[i] * b[i];
     }
     -s

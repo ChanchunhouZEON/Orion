@@ -56,7 +56,13 @@ pub fn distance_l2_vector_f16<const N: usize>(a: &[Half; N], b: &[Half; N]) -> f
 /// satisfy 64-byte alignment by default.
 #[inline(never)]
 pub fn distance_l2_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32 {
-    debug_assert_eq!(N % 4, 0);
+    distance_l2_slice_f32(a, b)
+}
+
+#[inline(always)]
+pub fn distance_l2_slice_f32(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len());
+    let n = a.len();
 
     unsafe {
         let mut sum0 = _mm512_setzero_ps();
@@ -70,7 +76,7 @@ pub fn distance_l2_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
         // 4 outer iters of prefetch lead = 4 × 64 floats = 1024
         // bytes (16 cache lines) — enough to hide L2 latency.
         const PF_AHEAD: usize = 4;
-        let chunks = N / 64;
+        let chunks = n / 64;
         for i in 0..chunks {
             let offset = i * 64;
 
@@ -101,19 +107,19 @@ pub fn distance_l2_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
             sum3 = _mm512_fmadd_ps(d3, d3, sum3);
         }
 
-        // Tail: process the remaining `N % 64` floats in 16-wide
+        // Tail: process the remaining `n % 64` floats in 16-wide
         // strides plus a final masked tail for the < 16 residue.
         // This covers dim=100 (chunks=1, tail=36) and dim=25
         // (chunks=0, tail=25) cleanly.
         let mut tail_start = chunks * 64;
-        while tail_start + 16 <= N {
+        while tail_start + 16 <= n {
             let av = _mm512_loadu_ps(a_ptr.add(tail_start));
             let bv = _mm512_loadu_ps(b_ptr.add(tail_start));
             let d = _mm512_sub_ps(av, bv);
             sum0 = _mm512_fmadd_ps(d, d, sum0);
             tail_start += 16;
         }
-        let residue = N - tail_start;
+        let residue = n - tail_start;
         if residue > 0 {
             // `_mm512_maskz_loadu_ps` reads only the elements
             // selected by the mask, zeros the rest. Same trick
@@ -142,7 +148,12 @@ pub fn distance_l2_adsampling_f32<const N: usize>(
     upper_bound: f32,
     epsilon: f32,
 ) -> f32 {
-    debug_assert_eq!(N % 4, 0);
+    distance_l2_adsampling_slice_f32(a, b, upper_bound, epsilon)
+}
+#[inline(always)]
+pub fn distance_l2_adsampling_slice_f32(a: &[f32], b: &[f32], upper_bound: f32, epsilon: f32) -> f32 {
+    assert_eq!(a.len(), b.len());
+    let n = a.len();
 
     unsafe {
         let mut sum0 = _mm512_setzero_ps();
@@ -154,8 +165,8 @@ pub fn distance_l2_adsampling_f32<const N: usize>(
         let b_ptr = b.as_ptr();
 
         const PF_AHEAD: usize = 4;
-        let chunks = N / 64;
-        let n_f = N as f32;
+        let chunks = n / 64;
+        let n_f = n as f32;
 
         for i in 0..chunks {
             let offset = i * 64;
@@ -201,14 +212,14 @@ pub fn distance_l2_adsampling_f32<const N: usize>(
 
         // Tail (same shape as `distance_l2_vector_f32`).
         let mut tail_start = chunks * 64;
-        while tail_start + 16 <= N {
+        while tail_start + 16 <= n {
             let av = _mm512_loadu_ps(a_ptr.add(tail_start));
             let bv = _mm512_loadu_ps(b_ptr.add(tail_start));
             let d = _mm512_sub_ps(av, bv);
             sum0 = _mm512_fmadd_ps(d, d, sum0);
             tail_start += 16;
         }
-        let residue = N - tail_start;
+        let residue = n - tail_start;
         if residue > 0 {
             let mask: __mmask16 = ((1u32 << residue) - 1) as __mmask16;
             let av = _mm512_maskz_loadu_ps(mask, a_ptr.add(tail_start));
@@ -307,10 +318,6 @@ pub fn distance_l2_early_abandon_f32<const N: usize>(
 
         let total = _mm512_add_ps(_mm512_add_ps(sum0, sum1), _mm512_add_ps(sum2, sum3));
         let dist = reduce_add_ps(total);
-        if dist >= upper_bound {
-            -1.0
-        } else {
-            dist
-        }
+        if dist >= upper_bound { -1.0 } else { dist }
     }
 }

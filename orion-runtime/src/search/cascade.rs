@@ -11,16 +11,16 @@
 
 use diskann::common::ANNResult;
 use orion::algorithm::search::stage::admission::{
-    AdsF32Admission, L2KTAdmission, L2U16Admission, L2U8Admission, MipsI16Admission,
-    MipsI8Admission,
+    L2KTAdmission, L2U8Admission, L2U16Admission, MipsI8Admission, MipsI16Admission,
 };
 use orion::algorithm::search::stage::prefilter::{
     JlHadamardPrefilter, JlMipsPrefilter, JlPrefilter, RabitqPrefilter,
 };
-use orion::algorithm::search::stage::rerank::{F32Rerank, IpF32Rerank, NoRerank, U16Rerank};
-use orion::Orion;
+use orion::algorithm::search::stage::rerank::{NoRerank, U16Rerank};
+use orion::index::compressed_index::CompressedIndex;
+use orion::model::dataset::rows::CascadeData;
+use orion::{DynamicCascade, DynamicSearchConfig};
 use std::str::FromStr;
-use vector::FullPrecisionDistance;
 
 /// Distance / similarity objective used by the search pipeline.
 ///
@@ -204,9 +204,10 @@ mod selector_tests {
             assert_eq!(c.rerank, RerankChoice::IpF32);
             c.validate_cascade_options(metric).unwrap();
         }
-        assert!(low
-            .validate_cascade_options(SearchMetric::InnerProduct)
-            .is_err());
+        assert!(
+            low.validate_cascade_options(SearchMetric::InnerProduct)
+                .is_err()
+        );
         assert!(high.validate_cascade_options(SearchMetric::L2).is_ok());
     }
 }
@@ -352,14 +353,11 @@ impl FromStr for RerankChoice {
 /// MIPS scoring rules diverge once the base vectors aren't unit-norm,
 /// so the prefilter must agree with what the admission tier is
 /// computing.
-pub fn build_prefilter<'a, const N: usize>(
-    orion: &'a Orion<N>,
+pub fn build_prefilter<'a, D: CascadeData>(
+    orion: &'a CompressedIndex<D>,
     choice: PrefilterChoice,
     admission: AdmissionChoice,
-) -> Option<Box<dyn orion::algorithm::search::stage::PrefilterStage<N> + 'a>>
-where
-    [f32; N]: FullPrecisionDistance<f32, N>,
-{
+) -> Option<Box<dyn orion::algorithm::search::stage::PrefilterStage + 'a>> {
     let admission_is_mips = matches!(
         admission,
         AdmissionChoice::MipsI8 | AdmissionChoice::MipsI16
@@ -395,13 +393,10 @@ where
 ///
 /// Returns a configuration error for native-byte admission, including callers
 /// that do not use the standalone CLI validation.
-pub fn build_admission<'a, const N: usize>(
-    orion: &'a Orion<N>,
+pub fn build_admission<'a, D: CascadeData>(
+    orion: &'a CompressedIndex<D>,
     choice: AdmissionChoice,
-) -> ANNResult<Box<dyn orion::algorithm::search::stage::AdmissionStage<N> + 'a>>
-where
-    [f32; N]: FullPrecisionDistance<f32, N>,
-{
+) -> ANNResult<Box<dyn orion::algorithm::search::stage::AdmissionStage + 'a>> {
     Ok(match choice {
         AdmissionChoice::NativeL2U8 => {
             return Err(diskann::common::ANNError::log_index_config_error(
@@ -423,21 +418,18 @@ where
         AdmissionChoice::MipsI16 => Box::new(MipsI16Admission::new(
             orion.ensure_quantized_dataset_mips_i16(),
         )),
-        AdmissionChoice::AdsF32 => Box::new(AdsF32Admission::new(&orion.dataset, ads_epsilon())),
+        AdmissionChoice::AdsF32 => orion.dataset.ads(ads_epsilon()),
     })
 }
 
 /// Build the rerank adapter.
-pub fn build_rerank<'a, const N: usize>(
-    orion: &'a Orion<N>,
+pub fn build_rerank<'a, D: CascadeData>(
+    orion: &'a CompressedIndex<D>,
     choice: RerankChoice,
-) -> Box<dyn orion::algorithm::search::stage::RerankStage<N> + 'a>
-where
-    [f32; N]: FullPrecisionDistance<f32, N>,
-{
+) -> Box<dyn orion::algorithm::search::stage::RerankStage + 'a> {
     match choice {
-        RerankChoice::F32 => Box::new(F32Rerank::new(&orion.dataset)),
-        RerankChoice::IpF32 => Box::new(IpF32Rerank::new(&orion.dataset)),
+        RerankChoice::F32 => orion.dataset.truth(false),
+        RerankChoice::IpF32 => orion.dataset.truth(true),
         RerankChoice::U16 => Box::new(U16Rerank::new(orion.ensure_quantized_dataset_l2_u16())),
         RerankChoice::None => Box::new(NoRerank),
     }
@@ -446,13 +438,11 @@ where
 /// Pin the JL sidecar when the prefilter is JL. Uses the
 /// admission-family hint to pick the L2 (NZ=9) vs MIPS (NZ=11)
 /// sidecar — matches `build_prefilter`'s dispatch.
-pub fn pin_prefilter<const N: usize>(
-    orion: &Orion<N>,
+pub fn pin_prefilter<D: CascadeData>(
+    orion: &CompressedIndex<D>,
     choice: PrefilterChoice,
     admission: AdmissionChoice,
-) where
-    [f32; N]: FullPrecisionDistance<f32, N>,
-{
+) {
     let admission_is_mips = matches!(
         admission,
         AdmissionChoice::MipsI8 | AdmissionChoice::MipsI16
@@ -532,10 +522,7 @@ pub fn pin_prefilter<const N: usize>(
 
 /// Pin the admission sidecar. L2-KT pins both i8 base + per-vertex
 /// `‖x‖²` companion (sink touches both every hop).
-pub fn pin_admission<const N: usize>(orion: &Orion<N>, choice: AdmissionChoice)
-where
-    [f32; N]: FullPrecisionDistance<f32, N>,
-{
+pub fn pin_admission<D: CascadeData>(orion: &CompressedIndex<D>, choice: AdmissionChoice) {
     match choice {
         AdmissionChoice::NativeL2U8 => {} // Native storage is pinned with its base.
         AdmissionChoice::L2U8 => {
@@ -590,8 +577,8 @@ where
             // `U16` rerank, the f32 base would go un-pinned; in that
             // (currently unused) combination, ADS still needs the f32
             // base resident, so pin it here as a safety net.
-            if !matches!(orion.dataset.data.len(), 0) {
-                let d = orion.dataset.data.as_slice();
+            if !matches!(orion.dataset.allocation().len(), 0) {
+                let d = orion.dataset.allocation();
                 crate::search::utils::mlock_bytes(
                     "admission (ADS f32 base)",
                     d.as_ptr() as *const u8,
@@ -604,13 +591,10 @@ where
 
 /// Pin the rerank base. `F32`/`IpF32` share the f32 base; `U16` pins
 /// the u16 sidecar (idempotent if `AdmissionChoice::L2U16` already did).
-pub fn pin_rerank<const N: usize>(orion: &Orion<N>, choice: RerankChoice)
-where
-    [f32; N]: FullPrecisionDistance<f32, N>,
-{
+pub fn pin_rerank<D: CascadeData>(orion: &CompressedIndex<D>, choice: RerankChoice) {
     match choice {
         RerankChoice::F32 | RerankChoice::IpF32 => {
-            let d = orion.dataset.data.as_slice();
+            let d = orion.dataset.allocation();
             crate::search::utils::mlock_bytes(
                 "rerank (f32 base)",
                 d.as_ptr() as *const u8,
@@ -634,14 +618,12 @@ where
 /// idempotent so calling this in both warmup and timed-sweep is fine.
 /// Does **not** pin the `PhasedGraph` slab — the caller pins that
 /// once regardless of cascade choice.
-pub fn pin_cascade<const N: usize>(
-    orion: &Orion<N>,
+pub fn pin_cascade<D: CascadeData>(
+    orion: &CompressedIndex<D>,
     prefilter: PrefilterChoice,
     admission: AdmissionChoice,
     rerank: RerankChoice,
-) where
-    [f32; N]: FullPrecisionDistance<f32, N>,
-{
+) {
     pin_prefilter(orion, prefilter, admission);
     pin_admission(orion, admission);
     pin_rerank(orion, rerank);
@@ -652,9 +634,9 @@ pub fn pin_cascade<const N: usize>(
 /// instead of `search_batch_unified`. Used by per-query diagnostic
 /// loops in `main.rs` (ablation study, search_profile, etc.).
 #[allow(clippy::too_many_arguments)]
-pub fn search_compose<const N: usize>(
-    orion: &Orion<N>,
-    query: &[f32; N],
+pub fn search_compose<D: CascadeData>(
+    orion: &CompressedIndex<D>,
+    query: &[f32],
     k: usize,
     search_list_size: usize,
     window_size: usize,
@@ -663,23 +645,24 @@ pub fn search_compose<const N: usize>(
     prefilter: PrefilterChoice,
     admission: AdmissionChoice,
     rerank: RerankChoice,
-) -> ANNResult<Vec<u32>>
-where
-    [f32; N]: FullPrecisionDistance<f32, N>,
-{
+) -> ANNResult<Vec<u32>> {
     let ad = build_admission(orion, admission)?;
     let pf = build_prefilter(orion, prefilter, admission);
     let rr = build_rerank(orion, rerank);
-    orion.search_unified(
+    orion.search_cascade(
         query,
-        k,
-        search_list_size,
-        window_size,
-        epsilon,
-        early_exit_limit,
-        pf.as_deref(),
-        ad.as_ref(),
-        rr.as_ref(),
+        DynamicSearchConfig {
+            k,
+            search_list_size,
+            window_size,
+            epsilon,
+            early_exit_limit,
+        },
+        DynamicCascade {
+            prefilter: pf.as_deref(),
+            admission: ad.as_ref(),
+            rerank: rr.as_ref(),
+        },
     )
 }
 
@@ -690,9 +673,9 @@ where
 /// hot loop). Call `pin_cascade` once before the timed loop to keep
 /// every sidecar resident.
 #[allow(clippy::too_many_arguments)]
-pub fn search_batch_compose<const N: usize>(
-    orion: &Orion<N>,
-    queries: &[[f32; N]],
+pub fn search_batch_compose<D: CascadeData>(
+    orion: &CompressedIndex<D>,
+    queries: &[f32],
     k: usize,
     search_list_size: usize,
     window_size: usize,
@@ -701,22 +684,23 @@ pub fn search_batch_compose<const N: usize>(
     prefilter: PrefilterChoice,
     admission: AdmissionChoice,
     rerank: RerankChoice,
-) -> ANNResult<Vec<Vec<u32>>>
-where
-    [f32; N]: FullPrecisionDistance<f32, N>,
-{
+) -> ANNResult<Vec<Vec<u32>>> {
     let ad = build_admission(orion, admission)?;
     let pf = build_prefilter(orion, prefilter, admission);
     let rr = build_rerank(orion, rerank);
-    orion.search_batch_unified(
+    orion.search_batch_cascade(
         queries,
-        k,
-        search_list_size,
-        window_size,
-        epsilon,
-        early_exit_limit,
-        pf.as_deref(),
-        ad.as_ref(),
-        rr.as_ref(),
+        DynamicSearchConfig {
+            k,
+            search_list_size,
+            window_size,
+            epsilon,
+            early_exit_limit,
+        },
+        DynamicCascade {
+            prefilter: pf.as_deref(),
+            admission: ad.as_ref(),
+            rerank: rr.as_ref(),
+        },
     )
 }

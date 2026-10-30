@@ -28,7 +28,8 @@ plan and execution operations also live in `orion-runtime`. Python uses programm
 
 `SearchPlan` validates storage, input encodings, metric and cascade together.
 Serialized `vector_storage` and `cascade` are derived from it. Native u8 requires
-128-dimensional L2, byte base/query input, and `none/native-l2-u8/none` with PA.
+L2, byte base/query input, and `none/native-l2-u8/none` with PA. Dimensions
+are inferred at runtime, with internal row padding for the selected SIMD kernel.
 It does not silently quantize f32 input or fall back to a Rust build.
 
 ## Preset construction recipes

@@ -1,15 +1,15 @@
 //! An owned index session for embedded applications. No CLI parsing or process-wide pool.
 use crate::{
+    IndexOptions,
     config::{GraphSource, GraphSourcePolicy, ResolvedRunConfig, VectorStorageKind},
     data::memory as resources,
     data::{
-        inspect_vector_file, validate_and_normalize_vectors, BaseElement, LoadedBase, VectorFormat,
+        BaseElement, LoadedBase, VectorFormat, inspect_vector_file, validate_and_normalize_vectors,
     },
     graph::cache::CachePlan,
     search::{F32CascadeBackend, NativeU8L2Backend, SearchBackend},
-    IndexOptions,
 };
-use diskann::common::AlignedBoxWithSlice;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -41,21 +41,17 @@ fn copy_array<T: BaseElement>(values: &[T], dimension: usize) -> Result<LoadedBa
     if count >= u32::MAX as usize {
         return Err("base point count exceeds u32 IDs".into());
     }
-    let len = values
-        .len()
-        .checked_add(64 / std::mem::size_of::<T>())
-        .ok_or("base size overflow")?;
-    let mut base = AlignedBoxWithSlice::new(len, 64).map_err(|e| e.to_string())?;
-    base[..values.len()].copy_from_slice(values);
+    let layout = vector::PaddedLayout::for_kernel::<T::Kernel>(dimension)?;
+    let base = diskann::model::PaddedDataset::from_packed(values, layout)?;
     Ok(LoadedBase {
-        base: Some(base),
+        base: Some(base.into_allocation()),
         num_points: count,
+        layout,
     })
 }
 
 impl BaseInput {
     pub fn from_f32(values: &[f32], dimension: usize) -> Result<Self, String> {
-        crate::with_supported_dimension!(dimension, |N| Ok::<_, String>(N))?;
         Ok(Self::F32 {
             data: copy_array(values, dimension)?,
             dimension,
@@ -63,9 +59,6 @@ impl BaseInput {
     }
 
     pub fn from_u8(values: &[u8], dimension: usize) -> Result<Self, String> {
-        if dimension != 128 {
-            return Err("native u8 storage requires dimension 128".into());
-        }
         Ok(Self::U8 {
             data: copy_array(values, dimension)?,
             dimension,
@@ -95,14 +88,22 @@ impl BaseInput {
             Self::F32 { data, dimension } => {
                 // Hash the owned, unnormalized allocation after the Python GIL
                 // has been released. Hashes stay stable across host byte order.
-                let values =
-                    &data.base.as_ref().ok_or("missing array base")?[..data.num_points * dimension];
+                let base = data.base.as_ref().ok_or("missing array base")?;
                 let mut hash = Sha256::new();
-                if cfg!(target_endian = "little") {
-                    hash.update(bytemuck::cast_slice(values));
+                if cfg!(target_endian = "little") && data.layout.stride_elements() == *dimension {
+                    hash.update(bytemuck::cast_slice(base.as_slice()));
                 } else {
-                    for value in values {
-                        hash.update(value.to_le_bytes());
+                    for row in base
+                        .chunks_exact(data.layout.stride_elements())
+                        .take(data.num_points)
+                    {
+                        if cfg!(target_endian = "little") {
+                            hash.update(bytemuck::cast_slice(&row[..*dimension]));
+                        } else {
+                            for value in &row[..*dimension] {
+                                hash.update(value.to_le_bytes());
+                            }
+                        }
                     }
                 }
                 self.describe_array(
@@ -115,13 +116,19 @@ impl BaseInput {
                 )
             }
             Self::U8 { data, dimension } => {
-                let values =
-                    &data.base.as_ref().ok_or("missing array base")?[..data.num_points * dimension];
+                let base = data.base.as_ref().ok_or("missing array base")?;
+                let mut hash = Sha256::new();
+                for row in base
+                    .chunks_exact(data.layout.stride_elements())
+                    .take(data.num_points)
+                {
+                    hash.update(&row[..*dimension]);
+                }
                 self.describe_array(
                     options,
                     data.num_points,
                     *dimension,
-                    &format!("{:x}", Sha256::digest(values)),
+                    &format!("{:x}", hash.finalize()),
                     VectorFormat::U8bin,
                     VectorStorageKind::U8,
                 )
@@ -245,16 +252,10 @@ trait Engine: Send + Sync {
     fn save(&self, path: &Path) -> Result<(), String>;
 }
 
-struct TypedEngine<const N: usize, B: SearchBackend>
-where
-    [B::Element; N]: vector::FullPrecisionDistance<B::Element, N>,
-{
-    index: orion::Orion<N, B::Element>,
+struct DynamicEngine<B: SearchBackend> {
+    index: orion::Orion<B::Element>,
 }
-impl<const N: usize, B: SearchBackend> Engine for TypedEngine<N, B>
-where
-    [B::Element; N]: vector::FullPrecisionDistance<B::Element, N>,
-{
+impl<B: SearchBackend> Engine for DynamicEngine<B> {
     fn calibrate(
         &self,
         q: &[f32],
@@ -263,7 +264,7 @@ where
     ) -> Result<orion::CalibratedParams, String> {
         self.index
             .calibrate(
-                q.as_chunks::<N>().0,
+                q,
                 beam,
                 c.window_size,
                 orion::CalibrationConfig {
@@ -280,23 +281,19 @@ where
         beam: usize,
         params: orion::CalibratedParams,
     ) -> Result<Vec<Vec<u32>>, String> {
-        B::search_batch(&self.index, q.as_chunks::<N>().0, c, beam, params)
-            .map_err(|e| e.to_string())
+        B::search_batch(&self.index, q, c, beam, params).map_err(|e| e.to_string())
     }
     fn save(&self, path: &Path) -> Result<(), String> {
         self.index.save(path).map_err(|e| e.to_string())
     }
 }
 
-fn prepare<const N: usize, B: SearchBackend + 'static>(
+fn prepare<B: SearchBackend + 'static>(
     c: &ResolvedRunConfig,
     mut data: LoadedBase<B::Element>,
-) -> Result<Box<dyn Engine>, String>
-where
-    [B::Element; N]: vector::FullPrecisionDistance<B::Element, N>,
-{
-    let index = B::load_index::<N>(c, &mut data)?;
-    Ok(Box::new(TypedEngine::<N, B> { index }))
+) -> Result<Box<dyn Engine>, String> {
+    let index = B::load_index(c, &mut data)?;
+    Ok(Box::new(DynamicEngine::<B> { index }))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -407,34 +404,27 @@ impl Index {
         let engine = match input {
             BaseInput::File(_) if config.search_plan().storage().kind == VectorStorageKind::F32 => {
                 let data = LoadedBase::<f32>::load(&config)?;
-                pool.install(|| {
-                    crate::with_supported_dimension!(
-                        dimension,
-                        |N| prepare::<N, F32CascadeBackend>(&config, data)
-                    )
-                })?
+                pool.install(|| prepare::<F32CascadeBackend>(&config, data))?
             }
             BaseInput::File(_) => {
                 let data = LoadedBase::<u8>::load(&config)?;
-                pool.install(|| prepare::<128, NativeU8L2Backend>(&config, data))?
+                pool.install(|| prepare::<NativeU8L2Backend>(&config, data))?
             }
             BaseInput::F32 { mut data, .. } => {
                 data.num_points = points;
-                f32::normalize(
-                    &mut data.base.as_mut().ok_or("missing base")?[..points * dimension],
-                    dimension,
-                    config.metric,
-                )?;
-                pool.install(|| {
-                    crate::with_supported_dimension!(
-                        dimension,
-                        |N| prepare::<N, F32CascadeBackend>(&config, data)
-                    )
-                })?
+                for row in data
+                    .base
+                    .as_mut()
+                    .ok_or("missing base")?
+                    .chunks_exact_mut(data.layout.stride_elements())
+                {
+                    f32::normalize(&mut row[..dimension], dimension, config.metric)?;
+                }
+                pool.install(|| prepare::<F32CascadeBackend>(&config, data))?
             }
             BaseInput::U8 { mut data, .. } => {
                 data.num_points = points;
-                pool.install(|| prepare::<128, NativeU8L2Backend>(&config, data))?
+                pool.install(|| prepare::<NativeU8L2Backend>(&config, data))?
             }
         };
         // Retain the provenance of the graph actually loaded. Saving later

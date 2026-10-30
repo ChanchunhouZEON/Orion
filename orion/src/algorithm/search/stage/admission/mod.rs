@@ -63,12 +63,16 @@ use crate::model::Neighbor;
 /// session owns its per-query state (padded SIMD query, reconstruction
 /// constants like `q_norm_sq`, etc.) and exposes the hot-loop methods.
 /// Trait shape is object-safe so the runner can build the cascade via
-/// `Box<dyn AdmissionStage<N>>` without naming the concrete type.
-pub trait AdmissionStage<const N: usize>: Send + Sync {
+/// `Box<dyn AdmissionStage>` without naming the concrete type.
+pub trait AdmissionStage: Send + Sync {
+    /// Logical dimension and row count, for checking recipe/base compatibility.
+    fn shape(&self) -> Option<(usize, usize)> {
+        None
+    }
     /// Materialise a per-query session. Called once per search;
     /// drives the quantization + any reconstruction-constant setup
     /// (e.g. `‖q‖²` for kernel-trick).
-    fn open<'a>(&'a self, q: &[f32; N]) -> Box<dyn AdmissionSession + 'a>;
+    fn open<'a>(&'a self, q: &[f32]) -> Box<dyn AdmissionSession + 'a>;
 }
 
 /// Per-query admission state. Created by [`AdmissionStage::open`];
@@ -88,6 +92,7 @@ pub trait AdmissionSession: Send + Sync {
     /// method writes into the slice starting at `out`.
     ///
     /// # Safety
+    /// - Every ID must address a row in the session's base dataset.
     /// - `out` must point to at least `id_scratch.len()` `Neighbor`
     ///   slots (the upper bound for cmov-compact admits).
     /// - `lookahead_lines` should match `dstream_la_q()`.

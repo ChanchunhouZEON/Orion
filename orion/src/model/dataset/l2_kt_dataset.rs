@@ -62,8 +62,8 @@
 //! [num_vertices × 4 bytes — i32 norms_sq]
 //! ```
 
+use super::rows::F32Rows;
 use diskann::common::AlignedBoxWithSlice;
-use diskann::model::InmemDataset;
 use rayon::prelude::*;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -79,11 +79,19 @@ pub const L2_KT_MAGIC: u32 = 0x5144_4B54; // "QDKT"
 /// q,q` load) and the trailing `STRIDE - N` slots are zero-padded.
 #[inline]
 pub const fn l2_kt_stride(n: usize) -> usize {
+    let bytes = l2_kt_stride_disk(n);
+    let block = <vector::IpI8Distance as vector::DistanceFn>::CHUNK_BYTES;
+    bytes.div_ceil(block) * block
+}
+
+pub const fn l2_kt_stride_disk(n: usize) -> usize {
     (n + 31) & !31
 }
 
 /// L2-kernel-trick sidecar: i8 base + per-vertex squared L2 norms.
-pub struct L2KTDataset<const N: usize> {
+pub struct L2KTDataset {
+    pub dimension: usize,
+    pub stride: usize,
     /// i8 quantized base, `num_vertices × STRIDE` bytes, 32-B aligned.
     pub data: AlignedBoxWithSlice<i8>,
     /// Per-vertex `‖x_i8‖²` in i32. Read once per candidate by the
@@ -97,33 +105,32 @@ pub struct L2KTDataset<const N: usize> {
     pub params: QuantParamsL2,
 }
 
-impl<const N: usize> L2KTDataset<N> {
+impl L2KTDataset {
     /// Per-vertex stride in i8 elements (= bytes). 32-element aligned.
-    pub const STRIDE: usize = l2_kt_stride(N);
+    pub fn stride(&self) -> usize {
+        self.stride
+    }
 
     /// Build the sidecar from an f32 base. Quantization params are
     /// derived from the f32 base's `(min, max)` range — same shape as
     /// [`L2U8::build_params`]. Per-vertex `‖x_i8‖²` is computed in the
     /// same parallel pass, no second sweep.
-    pub fn build_from(dataset: &InmemDataset<f32, N>) -> Self {
-        let num_vertices = dataset.num_points;
-        let stride = Self::STRIDE;
+    pub fn build_from(dataset: &impl F32Rows) -> Self {
+        let dim = dataset.dimension();
+        assert!(
+            dim > 0
+                && dim <= <vector::IpI8Distance as vector::DistanceFn>::MAX_COORDINATES
+                && dim <= i32::MAX as usize / (128 * 128)
+        );
+        assert!(!dataset.is_empty());
+        let num_vertices = dataset.len();
+        let stride = l2_kt_stride(dim);
 
         // 1. Derive quantization params from the f32 base. Same scheme
         //    as `L2U8::build_params` so the i8 representation matches
         //    `u8 - 128` element-for-element.
-        let base = dataset.data.as_slice();
-        let (min_val, max_val) = base
-            .par_iter()
-            .copied()
-            .fold(
-                || (f32::INFINITY, f32::NEG_INFINITY),
-                |(lo, hi), v| (lo.min(v), hi.max(v)),
-            )
-            .reduce(
-                || (f32::INFINITY, f32::NEG_INFINITY),
-                |(la, ha), (lb, hb)| (la.min(lb), ha.max(hb)),
-            );
+
+        let (min_val, max_val) = dataset.range();
         let params = QuantParamsL2::from_range(min_val, max_val);
 
         // 2. Allocate the i8 base slab + norms_sq companion.
@@ -140,18 +147,20 @@ impl<const N: usize> L2KTDataset<N> {
             .zip(norms_slice.par_iter_mut())
             .enumerate()
             .for_each(|(vid, (out, norm_slot))| {
-                let f32_v = &base[vid * N..(vid + 1) * N];
+                let f32_v = dataset.row(vid);
                 let mut sum: i32 = 0;
-                for j in 0..N {
+                for j in 0..dim {
                     let q = quantize_to_i8(&params, f32_v[j]);
                     out[j] = q;
                     sum += (q as i32) * (q as i32);
                 }
-                // out[N..STRIDE] is already zero (alloc_zeroed).
+                // out[dim..STRIDE] is already zero (alloc_zeroed).
                 *norm_slot = sum;
             });
 
         Self {
+            dimension: dim,
+            stride,
             data,
             norms_sq,
             num_vertices,
@@ -160,16 +169,22 @@ impl<const N: usize> L2KTDataset<N> {
     }
 
     /// Quantize a query into a `[i8; N]` (short form, no padding).
-    pub fn quantize_query(&self, query: &[f32; N]) -> [i8; N] {
-        std::array::from_fn(|i| quantize_to_i8(&self.params, query[i]))
+    pub fn quantize_query(&self, query: &[f32]) -> Vec<i8> {
+        assert_eq!(query.len(), self.dimension);
+        query
+            .iter()
+            .map(|&v| quantize_to_i8(&self.params, v))
+            .collect()
     }
 
     /// Quantize a query padded to `STRIDE` elements (trailing zeros).
     /// Matches the layout of base vertices so the streaming kernel
     /// can read full `STRIDE`-byte windows per vertex.
-    pub fn quantize_query_padded(&self, query: &[f32; N]) -> Vec<i8> {
-        let mut out = vec![0i8; Self::STRIDE];
-        for i in 0..N {
+    pub fn quantize_query_padded(&self, query: &[f32]) -> Vec<i8> {
+        assert_eq!(query.len(), self.dimension);
+        let dim = self.dimension;
+        let mut out = vec![0i8; self.stride];
+        for i in 0..dim {
             out[i] = quantize_to_i8(&self.params, query[i]);
         }
         out
@@ -180,8 +195,9 @@ impl<const N: usize> L2KTDataset<N> {
     /// once per query, sub-µs at production dims.
     #[inline]
     pub fn query_norm_sq(&self, q_query_padded: &[i8]) -> i32 {
+        let dim = self.dimension;
         let mut sum: i32 = 0;
-        for j in 0..N {
+        for j in 0..dim {
             let v = q_query_padded[j] as i32;
             sum += v * v;
         }
@@ -197,13 +213,14 @@ impl<const N: usize> L2KTDataset<N> {
     ///   [num_vertices × STRIDE i8 base]
     ///   [num_vertices × 4 i32 norms_sq]
     pub fn save<P: AsRef<Path>>(&self, path: P) -> ANNResult<()> {
+        let dim = self.dimension;
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
         let mut hdr = [0u8; 40];
         hdr[0..4].copy_from_slice(&L2_KT_MAGIC.to_le_bytes());
         hdr[4..8].copy_from_slice(&1u32.to_le_bytes());
         hdr[8..12].copy_from_slice(&(self.num_vertices as u32).to_le_bytes());
-        hdr[12..16].copy_from_slice(&(Self::STRIDE as u32).to_le_bytes());
-        hdr[16..20].copy_from_slice(&(N as u32).to_le_bytes());
+        hdr[12..16].copy_from_slice(&(l2_kt_stride_disk(dim) as u32).to_le_bytes());
+        hdr[16..20].copy_from_slice(&(dim as u32).to_le_bytes());
         // hdr[20..24]: pad
         hdr[24..28].copy_from_slice(&self.params.slope.to_le_bytes());
         hdr[28..32].copy_from_slice(&self.params.offset.to_le_bytes());
@@ -211,10 +228,12 @@ impl<const N: usize> L2KTDataset<N> {
         w.write_all(&hdr)?;
 
         // i8 base — reinterpret as u8 bytes for the byte writer.
-        let data_bytes = unsafe {
-            std::slice::from_raw_parts(self.data.as_slice().as_ptr() as *const u8, self.data.len())
-        };
-        w.write_all(data_bytes)?;
+        super::rows::write_rows(
+            &mut w,
+            self.data.as_slice(),
+            self.stride,
+            l2_kt_stride_disk(dim),
+        )?;
 
         // i32 norms_sq.
         let norms_bytes = unsafe {
@@ -232,6 +251,13 @@ impl<const N: usize> L2KTDataset<N> {
         let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
         let mut hdr = [0u8; 40];
         r.read_exact(&mut hdr)?;
+        if u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported sidecar version",
+            )
+            .into());
+        }
         let magic = u32::from_le_bytes(hdr[0..4].try_into().unwrap());
         if magic != L2_KT_MAGIC {
             return Err(std::io::Error::new(
@@ -244,19 +270,25 @@ impl<const N: usize> L2KTDataset<N> {
             .into());
         }
         let num_vertices = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
+        let dim = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
         let stride = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
-        if stride != Self::STRIDE {
+        if stride != l2_kt_stride_disk(dim) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
+                format!(
+                    "stride mismatch: file={stride} expected={}",
+                    l2_kt_stride(dim)
+                ),
             )
             .into());
         }
-        let dim = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
-        if dim != N {
+        if dim == 0
+            || dim > <vector::IpI8Distance as vector::DistanceFn>::MAX_COORDINATES
+            || dim > i32::MAX as usize / (128 * 128)
+        {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("dim mismatch: file={dim} expected={N}"),
+                "zero sidecar dimension",
             )
             .into());
         }
@@ -265,12 +297,9 @@ impl<const N: usize> L2KTDataset<N> {
         let params = QuantParamsL2 { slope, offset };
 
         // i8 base.
-        let mut data = AlignedBoxWithSlice::<i8>::new(num_vertices * stride, 32)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
-        let data_bytes = unsafe {
-            std::slice::from_raw_parts_mut(data.as_mut_slice().as_mut_ptr() as *mut u8, data.len())
-        };
-        r.read_exact(data_bytes)?;
+        let disk_stride = stride;
+        let stride = l2_kt_stride(dim);
+        let data = super::rows::read_rows::<i8>(&mut r, num_vertices, stride, disk_stride)?;
 
         // i32 norms_sq.
         let mut norms_sq = AlignedBoxWithSlice::<i32>::new(num_vertices, 32)
@@ -284,6 +313,8 @@ impl<const N: usize> L2KTDataset<N> {
         r.read_exact(norms_bytes)?;
 
         Ok(Self {
+            dimension: dim,
+            stride,
             data,
             norms_sq,
             num_vertices,
@@ -305,6 +336,7 @@ fn quantize_to_i8(p: &QuantParamsL2, v: f32) -> i8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use diskann::model::InmemDataset;
 
     #[test]
     fn stride_matches_alignment() {
@@ -375,11 +407,11 @@ mod tests {
         let flat: Vec<f32> = (0..num * D).map(|i| (i % 200) as f32).collect();
         let mut ds = InmemDataset::<f32, D>::new(num, 1.0).unwrap();
         ds.data.memcpy(&flat).unwrap();
-        let kt = L2KTDataset::<D>::build_from(&ds);
+        let kt = L2KTDataset::build_from(&ds);
 
         // Per-vertex norms_sq must match a direct compute from the
         // stored i8 data.
-        let stride = L2KTDataset::<D>::STRIDE;
+        let stride = kt.stride;
         for vid in 0..num {
             let off = vid * stride;
             let mut expected: i32 = 0;

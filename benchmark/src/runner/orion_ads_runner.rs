@@ -7,17 +7,18 @@
 //!
 //! Builds the orion two-phase graph on pre-rotated vectors, then at search
 //! time rotates the query with the same matrix and calls
-//! `Orion::search_adsampling` which reuses the τ/ee convergence loop
+//! `StaticOrion::search_adsampling` which reuses the τ/ee convergence loop
 //! but with the scaled-partial early-abort distance kernel.
 
 use crate::report::table::BuildTiming;
 use crate::runner::common::{AlgorithmRunner, SearchResult};
 use adsampling::Rotator;
-use orion::{build_diskann_index, Orion, DIM_100, DIM_128, DIM_32, DIM_960};
+use orion::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
 use std::path::PathBuf;
 use std::time::Instant;
 
 pub struct OrionAdsRunner {
+    #[allow(dead_code)]
     name: &'static str,
     alpha: f32,
     graph_degree: usize,
@@ -39,10 +40,10 @@ pub struct OrionAdsRunner {
 }
 
 enum OrionInner {
-    Dim32 { orion: Orion<32> },
-    Dim100 { orion: Orion<100> },
-    Dim128 { orion: Orion<128> },
-    Dim960 { orion: Orion<960> },
+    Dim32 { orion: StaticOrion<32> },
+    Dim100 { orion: StaticOrion<100> },
+    Dim128 { orion: StaticOrion<128> },
+    Dim960 { orion: StaticOrion<960> },
 }
 
 enum RotatorKind {
@@ -67,7 +68,7 @@ macro_rules! build_orion_ads {
             Some(p) => (Some(p.clone()), true),
             None => (None, false),
         };
-        let mut orion = Orion::<$N>::new(
+        let mut orion = StaticOrion::<$N>::new(
             empty_ds,
             &$result.partitions,
             $result.entry_point,
@@ -93,9 +94,12 @@ macro_rules! build_orion_ads {
                 q
             })
             .collect();
-        if let Ok(calib) =
-            orion.calibrate(&calib_queries, $self.search_list_size, $self.window_size, Default::default())
-        {
+        if let Ok(calib) = orion.calibrate(
+            &calib_queries,
+            $self.search_list_size,
+            $self.window_size,
+            Default::default(),
+        ) {
             $self.epsilon = calib.threshold;
             $self.early_exit_limit = calib.early_exit_limit;
         }
@@ -114,11 +118,12 @@ macro_rules! search_orion_ads {
         // is now a first-class admission tier and reuses every search-
         // loop optimisation in `search_unified` (peeled hops, 3-way
         // merge cadence, two-slice rerank, sharded counters, ...).
-        let ad = crate::runner::cascade::build_admission::<$N>(
+        let ad = crate::runner::cascade::build_admission::<_>(
             $orion,
             crate::runner::cascade::AdmissionChoice::AdsF32,
-        ).expect("ADS uses supported f32 admission");
-        let rr = crate::runner::cascade::build_rerank::<$N>(
+        )
+        .expect("ADS uses supported f32 admission");
+        let rr = crate::runner::cascade::build_rerank::<_>(
             $orion,
             crate::runner::cascade::RerankChoice::F32,
         );
@@ -251,8 +256,8 @@ impl AlgorithmRunner for OrionAdsRunner {
                     ($N:literal, $variant:ident) => {{
                         let empty_ds =
                             diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                        let mut orion = Orion::<$N>::load_from_cache(&cache, empty_ds)
-                            .expect("Orion::load_from_cache failed");
+                        let mut orion = StaticOrion::<$N>::load_from_cache(&cache, empty_ds)
+                            .expect("StaticOrion::load_from_cache failed");
                         let mut ds =
                             diskann::model::InmemDataset::<f32, $N>::new(num_points, 1.0).unwrap();
                         ds.data.memcpy(&rotated[..num_points * $N]).unwrap();

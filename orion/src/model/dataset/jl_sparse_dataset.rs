@@ -49,9 +49,9 @@
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 use std::arch::aarch64::*;
 
+use super::rows::F32Rows;
 use diskann::common::ANNResult;
 use diskann::common::AlignedBoxWithSlice;
-use diskann::model::InmemDataset;
 use rayon::prelude::*;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -108,12 +108,19 @@ pub const NZ_MIPS: usize = 11;
 /// Per-vertex code stride in bytes. Returns the padded length of the
 /// sign-bit packed code so `vld1q_u8` loads stay 16-byte aligned.
 pub const fn jl_sparse_stride(bits: usize) -> usize {
+    let bytes = jl_sparse_stride_disk(bits);
+    let block = <vector::JLHammingDistance as vector::DistanceFn>::CHUNK_BYTES;
+    bytes.div_ceil(block) * block
+}
+
+pub const fn jl_sparse_stride_disk(bits: usize) -> usize {
     let raw = (bits + 7) / 8;
     (raw + 15) & !15
 }
 
 /// JL Sparse signature dataset.
-pub struct JLSparseDataset<const N: usize, const BITS: usize = 1024, const NZ: usize = 9> {
+pub struct JLSparseDataset<const BITS: usize = 1024, const NZ: usize = 9> {
+    pub dimension: usize,
     /// Packed sign bits, `num_vertices × STRIDE` bytes, 16-byte
     /// aligned. Bit `i` of byte `b` encodes signature bit `b × 8 + i`.
     pub codes: AlignedBoxWithSlice<u8>,
@@ -130,7 +137,7 @@ pub struct JLSparseDataset<const N: usize, const BITS: usize = 1024, const NZ: u
     pub seed: u64,
 }
 
-impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS, NZ> {
+impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
     pub const STRIDE: usize = jl_sparse_stride(BITS);
     /// First `NZ_POS` indices contribute positively, the remaining
     /// `NZ - NZ_POS` contribute negatively. Derived as `NZ / 2` so
@@ -140,8 +147,10 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
 
     /// Build the signature dataset from an `InmemDataset`. Parallelised
     /// over vertices via rayon. Deterministic for a given seed.
-    pub fn build_from(dataset: &InmemDataset<f32, N>, seed: u64) -> Self {
-        let num_vertices = dataset.num_points;
+    pub fn build_from(dataset: &impl F32Rows, seed: u64) -> Self {
+        let dim = dataset.dimension();
+        assert!(dim > 0);
+        let num_vertices = dataset.len();
         let stride = Self::STRIDE;
 
         // 1. Derive the index table from the seed via **balanced
@@ -158,10 +167,10 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
         //      * still produces a deterministic projection from `seed`
         //        (same xorshift drives both fill and shuffle).
         let total_slots = BITS * NZ;
-        let base_hits = total_slots / N;
-        let extras = total_slots - base_hits * N;
+        let base_hits = total_slots / dim;
+        let extras = total_slots - base_hits * dim;
         let mut indices = Vec::with_capacity(total_slots);
-        for d in 0..N {
+        for d in 0..dim {
             let hits = base_hits + if d < extras { 1 } else { 0 };
             for _ in 0..hits {
                 indices.push(d as u32);
@@ -180,18 +189,18 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
         let mut codes = AlignedBoxWithSlice::<u8>::new(num_vertices * stride, 16)
             .expect("JLSparseDataset codes alloc");
 
-        let base = dataset.data.as_slice();
         let codes_slice = codes.as_mut_slice();
 
         codes_slice
             .par_chunks_mut(stride)
             .enumerate()
             .for_each(|(vid, code)| {
-                let x = &base[vid * N..(vid + 1) * N];
-                encode_vertex_scalar::<N, BITS, NZ>(x, &indices, code);
+                let x = dataset.row(vid);
+                encode_vertex_scalar::<BITS, NZ>(x, &indices, code);
             });
 
         Self {
+            dimension: dim,
             codes,
             indices,
             num_vertices,
@@ -203,9 +212,11 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
     /// Encode a query into a fixed-size signature. Allocates a small
     /// stride-sized buffer on the heap; the caller is expected to do
     /// this once per query in the search setup phase.
-    pub fn encode_query(&self, q: &[f32; N]) -> Box<[u8]> {
+    pub fn encode_query(&self, q: &[f32]) -> Box<[u8]> {
+        assert_eq!(q.len(), self.dimension);
+
         let mut out = vec![0u8; self.stride].into_boxed_slice();
-        encode_vertex_scalar::<N, BITS, NZ>(q, &self.indices, &mut out);
+        encode_vertex_scalar::<BITS, NZ>(q, &self.indices, &mut out);
         out
     }
 
@@ -221,7 +232,7 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
 
     /// Sidecar header (32 B):
     ///   [u32 magic = JL_SPARSE_MAGIC]
-    ///   [u32 version = 1]
+    ///   [u32 version = 2]
     ///   [u32 num_vertices][u32 bits]
     ///   [u32 stride][u32 dim = N]
     ///   [u32 nz][u32 _pad]
@@ -230,14 +241,15 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
     ///   [BITS × NZ u32 indices]
     ///   [num_vertices × STRIDE u8 codes]
     pub fn save<P: AsRef<Path>>(&self, path: P) -> ANNResult<()> {
+        let dim = self.dimension;
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
         let mut hdr = [0u8; 40];
         hdr[0..4].copy_from_slice(&JL_SPARSE_MAGIC.to_le_bytes());
         hdr[4..8].copy_from_slice(&2u32.to_le_bytes());
         hdr[8..12].copy_from_slice(&(self.num_vertices as u32).to_le_bytes());
         hdr[12..16].copy_from_slice(&(BITS as u32).to_le_bytes());
-        hdr[16..20].copy_from_slice(&(self.stride as u32).to_le_bytes());
-        hdr[20..24].copy_from_slice(&(N as u32).to_le_bytes());
+        hdr[16..20].copy_from_slice(&(jl_sparse_stride_disk(BITS) as u32).to_le_bytes());
+        hdr[20..24].copy_from_slice(&(dim as u32).to_le_bytes());
         hdr[24..28].copy_from_slice(&(NZ as u32).to_le_bytes());
         // hdr[28..32]: _pad
         hdr[32..40].copy_from_slice(&self.seed.to_le_bytes());
@@ -253,7 +265,12 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
         w.write_all(idx_bytes)?;
 
         // Codes.
-        w.write_all(self.codes.as_slice())?;
+        super::rows::write_rows(
+            &mut w,
+            self.codes.as_slice(),
+            self.stride,
+            jl_sparse_stride_disk(BITS),
+        )?;
         w.flush()?;
         Ok(())
     }
@@ -262,6 +279,13 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
         let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
         let mut hdr = [0u8; 40];
         r.read_exact(&mut hdr)?;
+        if u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != 2 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported sidecar version",
+            )
+            .into());
+        }
         let magic = u32::from_le_bytes(hdr[0..4].try_into().unwrap());
         if magic != JL_SPARSE_MAGIC {
             return Err(std::io::Error::new(
@@ -283,7 +307,7 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
             .into());
         }
         let stride = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
-        if stride != Self::STRIDE {
+        if stride != jl_sparse_stride_disk(BITS) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
@@ -291,10 +315,10 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
             .into());
         }
         let dim = u32::from_le_bytes(hdr[20..24].try_into().unwrap()) as usize;
-        if dim != N {
+        if dim == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("dim mismatch: file={dim} expected={N}"),
+                "zero sidecar dimension",
             )
             .into());
         }
@@ -317,13 +341,21 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
             )
         };
         r.read_exact(idx_bytes)?;
+        if indices.iter().any(|&index| index as usize >= dim) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "projection index exceeds logical dimension",
+            )
+            .into());
+        }
 
         // Codes.
-        let mut codes = AlignedBoxWithSlice::<u8>::new(num_vertices * stride, 16)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
-        r.read_exact(codes.as_mut_slice())?;
+        let disk_stride = stride;
+        let stride = jl_sparse_stride(BITS);
+        let codes = super::rows::read_rows::<u8>(&mut r, num_vertices, stride, disk_stride)?;
 
         Ok(Self {
+            dimension: dim,
             codes,
             indices,
             num_vertices,
@@ -338,7 +370,7 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDataset<N, BITS
 /// Encode one vector into a signature byte buffer of length
 /// `STRIDE`. `code` is zero-filled before encoding.
 #[inline]
-fn encode_vertex_scalar<const N: usize, const BITS: usize, const NZ: usize>(
+fn encode_vertex_scalar<const BITS: usize, const NZ: usize>(
     x: &[f32],
     indices: &[u32],
     code: &mut [u8],
@@ -380,7 +412,8 @@ pub const JL_SPARSE_MIPS_MAGIC: u32 = 0x4A4C_4D38; // "JLM8"
 /// empirical sweep below. The encoding shape is identical to
 /// [`JLSparseDataset`], so the two share
 /// [`encode_vertex_scalar`].
-pub struct JLSparseDatasetMips<const N: usize, const BITS: usize = 1024, const NZ: usize = 9> {
+pub struct JLSparseDatasetMips<const BITS: usize = 1024, const NZ: usize = 9> {
+    pub dimension: usize,
     /// Same sign-bit code layout as [`JLSparseDataset::codes`].
     pub codes: AlignedBoxWithSlice<u8>,
     /// Same `BITS × NZ` index table as [`JLSparseDataset::indices`].
@@ -395,21 +428,23 @@ pub struct JLSparseDatasetMips<const N: usize, const BITS: usize = 1024, const N
     pub seed: u64,
 }
 
-impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, BITS, NZ> {
+impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
     pub const STRIDE: usize = jl_sparse_stride(BITS);
     pub const NZ_POS: usize = NZ / 2;
 
-    pub fn build_from(dataset: &diskann::model::InmemDataset<f32, N>, seed: u64) -> Self {
-        let num_vertices = dataset.num_points;
+    pub fn build_from(dataset: &impl F32Rows, seed: u64) -> Self {
+        let dim = dataset.dimension();
+        assert!(dim > 0);
+        let num_vertices = dataset.len();
         let stride = Self::STRIDE;
 
         // Same balanced-coverage index layout as the L2 variant —
         // only `NZ` differs.
         let total_slots = BITS * NZ;
-        let base_hits = total_slots / N;
-        let extras = total_slots - base_hits * N;
+        let base_hits = total_slots / dim;
+        let extras = total_slots - base_hits * dim;
         let mut indices = Vec::with_capacity(total_slots);
-        for d in 0..N {
+        for d in 0..dim {
             let hits = base_hits + if d < extras { 1 } else { 0 };
             for _ in 0..hits {
                 indices.push(d as u32);
@@ -429,7 +464,6 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
         let mut norms = AlignedBoxWithSlice::<f32>::new(num_vertices, 32)
             .expect("JLSparseDatasetMips norms alloc");
 
-        let base = dataset.data.as_slice();
         let codes_slice = codes.as_mut_slice();
         let norms_slice = norms.as_mut_slice();
 
@@ -438,8 +472,8 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
             .zip(norms_slice.par_iter_mut())
             .enumerate()
             .for_each(|(vid, (code, norm_slot))| {
-                let x = &base[vid * N..(vid + 1) * N];
-                encode_vertex_scalar::<N, BITS, NZ>(x, &indices, code);
+                let x = dataset.row(vid);
+                encode_vertex_scalar::<BITS, NZ>(x, &indices, code);
                 let mut s = 0.0f64;
                 for &v in x {
                     s += (v as f64) * (v as f64);
@@ -448,6 +482,7 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
             });
 
         Self {
+            dimension: dim,
             codes,
             indices,
             norms,
@@ -457,9 +492,11 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
         }
     }
 
-    pub fn encode_query(&self, q: &[f32; N]) -> Box<[u8]> {
+    pub fn encode_query(&self, q: &[f32]) -> Box<[u8]> {
+        assert_eq!(q.len(), self.dimension);
+
         let mut out = vec![0u8; self.stride].into_boxed_slice();
-        encode_vertex_scalar::<N, BITS, NZ>(q, &self.indices, &mut out);
+        encode_vertex_scalar::<BITS, NZ>(q, &self.indices, &mut out);
         out
     }
 
@@ -486,14 +523,15 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
     /// Body: `BITS × NZ` u32 indices, then `num_vertices × STRIDE`
     /// u8 codes, then `num_vertices` × f32 norms.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> ANNResult<()> {
+        let dim = self.dimension;
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
         let mut hdr = [0u8; 40];
         hdr[0..4].copy_from_slice(&JL_SPARSE_MIPS_MAGIC.to_le_bytes());
         hdr[4..8].copy_from_slice(&1u32.to_le_bytes());
         hdr[8..12].copy_from_slice(&(self.num_vertices as u32).to_le_bytes());
         hdr[12..16].copy_from_slice(&(BITS as u32).to_le_bytes());
-        hdr[16..20].copy_from_slice(&(self.stride as u32).to_le_bytes());
-        hdr[20..24].copy_from_slice(&(N as u32).to_le_bytes());
+        hdr[16..20].copy_from_slice(&(jl_sparse_stride_disk(BITS) as u32).to_le_bytes());
+        hdr[20..24].copy_from_slice(&(dim as u32).to_le_bytes());
         hdr[24..28].copy_from_slice(&(NZ as u32).to_le_bytes());
         hdr[32..40].copy_from_slice(&self.seed.to_le_bytes());
         w.write_all(&hdr)?;
@@ -505,7 +543,12 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
             )
         };
         w.write_all(idx_bytes)?;
-        w.write_all(self.codes.as_slice())?;
+        super::rows::write_rows(
+            &mut w,
+            self.codes.as_slice(),
+            self.stride,
+            jl_sparse_stride_disk(BITS),
+        )?;
         let norm_bytes = unsafe {
             std::slice::from_raw_parts(
                 self.norms.as_slice().as_ptr() as *const u8,
@@ -521,6 +564,13 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
         let mut r = std::io::BufReader::new(std::fs::File::open(path)?);
         let mut hdr = [0u8; 40];
         r.read_exact(&mut hdr)?;
+        if u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported sidecar version",
+            )
+            .into());
+        }
         let magic = u32::from_le_bytes(hdr[0..4].try_into().unwrap());
         if magic != JL_SPARSE_MIPS_MAGIC {
             return Err(std::io::Error::new(
@@ -542,7 +592,7 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
             .into());
         }
         let stride = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
-        if stride != Self::STRIDE {
+        if stride != jl_sparse_stride_disk(BITS) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("stride mismatch: file={stride} expected={}", Self::STRIDE),
@@ -550,10 +600,10 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
             .into());
         }
         let dim = u32::from_le_bytes(hdr[20..24].try_into().unwrap()) as usize;
-        if dim != N {
+        if dim == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("dim mismatch: file={dim} expected={N}"),
+                "zero sidecar dimension",
             )
             .into());
         }
@@ -575,10 +625,17 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
             )
         };
         r.read_exact(idx_bytes)?;
+        if indices.iter().any(|&index| index as usize >= dim) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "projection index exceeds logical dimension",
+            )
+            .into());
+        }
 
-        let mut codes = AlignedBoxWithSlice::<u8>::new(num_vertices * stride, 16)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
-        r.read_exact(codes.as_mut_slice())?;
+        let disk_stride = stride;
+        let stride = jl_sparse_stride(BITS);
+        let codes = super::rows::read_rows::<u8>(&mut r, num_vertices, stride, disk_stride)?;
 
         let mut norms = AlignedBoxWithSlice::<f32>::new(num_vertices, 32)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
@@ -591,6 +648,7 @@ impl<const N: usize, const BITS: usize, const NZ: usize> JLSparseDatasetMips<N, 
         r.read_exact(norm_bytes)?;
 
         Ok(Self {
+            dimension: dim,
             codes,
             indices,
             norms,
@@ -796,6 +854,7 @@ impl XorShift64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use diskann::model::InmemDataset;
 
     #[test]
     fn stride_matches_paper_examples() {
@@ -804,7 +863,11 @@ mod tests {
         // BITS=512: 64 bytes.
         assert_eq!(jl_sparse_stride(512), 64);
         // BITS=100: ceil(100/8)=13 bytes → padded to 16.
-        assert_eq!(jl_sparse_stride(100), 16);
+        assert_eq!(jl_sparse_stride_disk(100), 16);
+        assert_eq!(
+            jl_sparse_stride(100) % <vector::JLHammingDistance as vector::DistanceFn>::CHUNK_BYTES,
+            0
+        );
     }
 
     #[test]
@@ -853,7 +916,7 @@ mod tests {
         }
         let mut ds = InmemDataset::<f32, D>::new(num, 1.0).unwrap();
         ds.data.memcpy(&flat).unwrap();
-        let jl = JLSparseDataset::<D, BITS>::build_from(&ds, 99);
+        let jl = JLSparseDataset::<BITS>::build_from(&ds, 99);
 
         // Query equal to vertex 0 → Hamming distance to vertex 0 must
         // be 0 (since the encoder is deterministic).
@@ -883,11 +946,11 @@ mod tests {
         }
         let mut ds = InmemDataset::<f32, D>::new(num, 1.0).unwrap();
         ds.data.memcpy(&flat).unwrap();
-        let a = JLSparseDataset::<D, BITS>::build_from(&ds, 777);
+        let a = JLSparseDataset::<BITS>::build_from(&ds, 777);
 
         let path = std::env::temp_dir().join(format!("jl_test_{}.jls", std::process::id()));
         a.save(&path).expect("save");
-        let b = JLSparseDataset::<D, BITS>::load(&path).expect("load");
+        let b = JLSparseDataset::<BITS>::load(&path).expect("load");
         std::fs::remove_file(&path).ok();
 
         assert_eq!(a.num_vertices, b.num_vertices);

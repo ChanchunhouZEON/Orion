@@ -13,38 +13,32 @@ use crate::{
     data::{BaseElement, LoadedBase},
     graph::cache::CachePlan,
 };
-use diskann::model::InmemDataset;
-use orion::{build_diskann_index, Orion};
+use diskann::model::PaddedDataset;
+use orion::{Orion, build_diskann_index};
 use std::{path::Path, time::Instant};
 
 /// Consumes the base allocation. Query and evaluation inputs are owned separately.
 /// Check the export path/header before transferring ownership of the allocation.
 /// The graph payload itself is validated later, during streaming import.
-pub fn load_index<const N: usize>(
-    config: &ResolvedRunConfig,
-    data: &mut LoadedBase,
-) -> Result<Orion<N>, String> {
-    load_index_impl(config, data, build_in_process::<N>)
+pub fn load_index(config: &ResolvedRunConfig, data: &mut LoadedBase) -> Result<Orion, String> {
+    load_index_impl(config, data, build_in_process)
 }
 
-pub fn load_u8_index<const N: usize>(
+pub fn load_u8_index(
     config: &ResolvedRunConfig,
     data: &mut LoadedBase<u8>,
-) -> Result<Orion<N, u8>, String> {
+) -> Result<Orion<u8>, String> {
     load_index_impl(config, data, |_, _| {
         Err("native u8 construction requires a ParlayANN STAG export".into())
     })
 }
 
-fn load_index_impl<const N: usize, T: BaseElement>(
+fn load_index_impl<T: BaseElement>(
     config: &ResolvedRunConfig,
     data: &mut LoadedBase<T>,
-    build: impl FnOnce(&ResolvedRunConfig, InmemDataset<T, N>) -> Result<Orion<N, T>, String>,
-) -> Result<Orion<N, T>, String>
-where
-    [T; N]: vector::FullPrecisionDistance<T, N>,
-{
-    if config.dimension != N {
+    build: impl FnOnce(&ResolvedRunConfig, PaddedDataset<T>) -> Result<Orion<T>, String>,
+) -> Result<Orion<T>, String> {
+    if config.dimension != data.layout.logical_dim() {
         return Err("index dimension does not match input".into());
     }
 
@@ -56,13 +50,14 @@ where
         None
     };
 
-    let dataset = data.take_index_dataset::<N>()?;
+    let dataset = data.take_index_dataset()?;
     let index = if cache.is_hit {
         log::info!(
             "Loading cached PhasedGraph from {:?}",
             cache.metadata_path.with_extension("pgraph")
         );
-        Orion::<N, T>::load_from_cache(&cache.metadata_path, dataset).map_err(|e| e.to_string())?
+        Orion::<T>::load_from_cache_with_provenance(&cache.metadata_path, dataset)
+            .map_err(|e| e.to_string())?
     } else {
         let start = Instant::now();
         let mut index = match config.graph_source {
@@ -94,25 +89,45 @@ where
     Ok(index)
 }
 
-fn build_in_process<const N: usize>(
+fn build_in_process(
     config: &ResolvedRunConfig,
-    dataset: InmemDataset<f32, N>,
-) -> Result<Orion<N>, String>
-where
-    [f32; N]: vector::FullPrecisionDistance<f32, N>,
-{
+    dataset: PaddedDataset<f32>,
+) -> Result<Orion, String> {
     log::info!(
-        "Building Orion ({N}-dim, R={}, L={}, α={}, ex={})",
+        "Building Orion ({}-dim, R={}, L={}, α={}, ex={})",
+        config.dimension,
         config.graph_degree,
         config.build_l,
         config.alpha,
         config.max_extra
     );
-    let num_points = dataset.num_points;
+    let num_points = dataset.len();
+    // DiskANN's builder still owns typed storage. Pack only when SIMD row
+    // padding differs from its input; cached/STAG paths never make this copy.
+    let dimension = config.dimension;
+    let build_dimension = [32, 100, 104, 128, 256, 768, 784, 960, 1536].into_iter()
+        .find(|&d| d >= dimension)
+        .ok_or("Rust/DiskANN builder supports at most 1536 dimensions; import a ParlayANN STAG graph for larger inputs")?;
+    let packed;
+    let input = if dataset.layout().stride_elements() == build_dimension {
+        dataset.as_slice()
+    } else {
+        let count = num_points
+            .checked_mul(build_dimension)
+            .ok_or("builder input size overflow")?;
+        packed = {
+            let mut values = vec![0.; count];
+            for (id, row) in values.chunks_exact_mut(build_dimension).enumerate() {
+                row[..dimension].copy_from_slice(dataset.row(id).unwrap());
+            }
+            values
+        };
+        &packed
+    };
     let build = build_diskann_index(
-        &dataset.data[..num_points * N],
+        input,
         num_points,
-        N,
+        build_dimension,
         config.alpha,
         config.graph_degree,
         config.build_l as u32,
@@ -129,38 +144,30 @@ where
     drop(build.index);
 
     // PQ sidecars are not supplied here; load_index saves the completed graph.
-    Ok(Orion::new(
-        dataset,
+    let graph = orion::PhasedGraph::build_from_partitions(
         &build.partitions,
-        entry,
         config.graph_degree,
         config.max_extra,
-        None,
-        None,
-        None,
-        false,
-    ))
+    );
+    Ok(Orion::from_phased_graph(dataset, graph, entry, None, None))
 }
 
-fn import_staged_graph<const N: usize, T: BaseElement>(
+fn import_staged_graph<T: BaseElement>(
     config: &ResolvedRunConfig,
-    dataset: InmemDataset<T, N>,
+    dataset: PaddedDataset<T>,
     staged_path: &Path,
-) -> Result<Orion<N, T>, String>
-where
-    [T; N]: vector::FullPrecisionDistance<T, N>,
-{
+) -> Result<Orion<T>, String> {
     log::info!(
         "Streaming ParlayANN .staged export from {}",
         staged_path.display()
     );
-    let num_points = dataset.num_points;
+    let num_points = dataset.len();
     let graph = orion::PhasedGraph::load_staged(staged_path, num_points, config.graph_degree)
         .map_err(|e| format!("ParlayANN import failed: {e}"))?;
 
     // Keep the historical sampled-medoid choice; storage refactoring must not
     // silently change the search entry point to the export's header hint.
-    let entry = parlayann_bridge::sampled_medoid(&dataset.data[..num_points * N], N);
+    let entry = parlayann_bridge::sampled_medoid_rows(num_points, |id| dataset.row(id).unwrap());
     Ok(Orion::from_phased_graph(dataset, graph, entry, None, None))
 }
 
@@ -176,9 +183,6 @@ mod large_input_tests {
 
     #[test]
     fn native_byte_import_and_reload_keep_one_buffer_and_no_sidecars() {
-        use orion::algorithm::search::stage::{
-            admission::NativeU8Admission, prefilter::NoPrefilter, rerank::NoRerank,
-        };
         let directory = std::env::temp_dir().join(format!(
             "orion-native-{}-{}",
             std::process::id(),
@@ -242,22 +246,21 @@ mod large_input_tests {
         for reload in [false, true] {
             let mut data = LoadedDataset::<u8>::load(&config).unwrap();
             let pointer = data.base.as_ref().unwrap().as_ptr();
-            let index = load_u8_index::<128>(&config, &mut data).unwrap();
+            let index = load_u8_index(&config, &mut data).unwrap();
             assert!(data.base.is_none());
-            assert_eq!(index.dataset.data.as_ptr(), pointer);
-            assert_eq!(index.dataset.data.len(), 4 * 128 + 64);
-            assert_eq!(&index.dataset.data[384..512], &[3; 128]);
+            assert_eq!(index.dataset.as_slice().as_ptr(), pointer);
+            assert_eq!(index.dataset.as_slice().len(), 4 * 128);
+            assert_eq!(&index.dataset.as_slice()[384..512], &[3; 128]);
             let result = index
-                .search_unified(
-                    &[0.; 128],
-                    1,
-                    4,
-                    2,
-                    1.,
-                    100,
-                    None::<&NoPrefilter>,
-                    &NativeU8Admission::new(&index.dataset),
-                    &NoRerank,
+                .search_l2(
+                    &[0u8; 128],
+                    orion::DynamicSearchConfig {
+                        k: 1,
+                        search_list_size: 4,
+                        window_size: 2,
+                        epsilon: 1.,
+                        early_exit_limit: 100,
+                    },
                 )
                 .unwrap();
             assert_eq!(result, vec![0]);
@@ -346,9 +349,9 @@ mod large_input_tests {
             128,
         )
         .unwrap();
-        let index = load_index::<128>(&config, &mut data).unwrap();
+        let index = load_index(&config, &mut data).unwrap();
         assert!(data.base.is_none());
-        assert_eq!(ptr, index.dataset.data.as_ptr());
+        assert_eq!(ptr, index.dataset.as_slice().as_ptr());
         assert_eq!(index.entry, old.entry_point);
         // Even callers that bypass CLI resolution cannot run native admission
         // against an f32 index or silently allocate a quantized replacement.
@@ -370,10 +373,10 @@ mod large_input_tests {
         drop(index);
         let mut again = LoadedDataset::load(&config).unwrap();
         let ptr = again.base.as_ref().unwrap().as_ptr();
-        let cached = load_index::<128>(&config, &mut again).unwrap();
-        assert_eq!(cached.dataset.data.as_ptr(), ptr);
+        let cached = load_index(&config, &mut again).unwrap();
+        assert_eq!(cached.dataset.as_slice().as_ptr(), ptr);
         assert_eq!(cached.graph.buffer_bytes(), saved);
-        assert_eq!(&cached.dataset.data[384..512], &[3.; 128]);
+        assert_eq!(&cached.dataset.as_slice()[384..512], &[3.; 128]);
         drop(cached);
         std::fs::remove_dir_all(dir).unwrap();
     }
