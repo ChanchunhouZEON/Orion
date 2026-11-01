@@ -4,7 +4,7 @@
  */
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use diskann::common::ANNResult;
+use orion_ann_diskann::common::ANNResult;
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::Path;
@@ -40,7 +40,7 @@ pub fn read_fvecs<P: AsRef<Path>>(path: P) -> ANNResult<Vec<Vec<f32>>> {
 }
 
 /// Read a .ivecs file (binary format: [dim: u32, i32 * dim] per vector).
-/// Returns as Vec<Vec<u32>> (neighbor indices are non-negative).
+/// Returns as `Vec<Vec<u32>>` (neighbor indices are non-negative).
 pub fn read_ivecs<P: AsRef<Path>>(path: P) -> ANNResult<Vec<Vec<u32>>> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);

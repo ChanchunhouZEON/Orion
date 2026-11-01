@@ -35,8 +35,8 @@
 //! for dense-per-bit signal — still <1% of total wall-time at L=192.
 
 use super::rows::F32Rows;
-use diskann::common::ANNResult;
-use diskann::common::AlignedBoxWithSlice;
+use orion_ann_diskann::common::ANNResult;
+use orion_ann_diskann::common::AlignedBoxWithSlice;
 use rayon::prelude::*;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -65,7 +65,7 @@ pub const fn next_pow2(n: usize) -> usize {
 /// in the tail), so the padding doesn't bias Hamming distance.
 pub const fn jl_hadamard_stride(d_pad: usize) -> usize {
     let bytes = jl_hadamard_stride_disk(d_pad);
-    let block = <vector::JLHammingDistance as vector::DistanceFn>::CHUNK_BYTES;
+    let block = <orion_ann_vector::JLHammingDistance as orion_ann_vector::DistanceKernelBackend>::CHUNK_BYTES;
     bytes.div_ceil(block) * block
 }
 

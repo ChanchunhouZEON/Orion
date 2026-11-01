@@ -1,8 +1,8 @@
 # Orion Python interface
 
-`orion-py` exposes the shared `orion-runtime` through PyO3 and NumPy. The import
-name is `orion_py`; the extension is private (`orion_py._native`). No wheel is
-published as part of this work.
+The distribution `orion-ann` exposes `orion-ann-runtime` through PyO3 and NumPy.
+Import it as `orion_ann`; the extension `orion_ann._native` is private.
+The source directory remains `orion-py`.
 
 ## Local development
 
@@ -12,7 +12,7 @@ Rust 1.92 and a Python environment with NumPy and maturin installed:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install numpy 'maturin>=1.5,<2'
+python -m pip install numpy 'maturin>=1.9,<2'
 maturin develop --manifest-path orion-py/Cargo.toml --profile python
 ```
 
@@ -36,7 +36,7 @@ update figures, install a package globally, or publish anything.
 ## File inputs
 
 ```python
-from orion_py import Index, GraphConfig
+from orion_ann import Index, GraphConfig
 
 index = Index.from_file(
     '/data/base.fbin', metric='l2', threads=8,
@@ -67,7 +67,7 @@ if byte files should be widened; otherwise byte inputs select native u8.
 
 ```python
 import numpy as np
-from orion_py import Index
+from orion_ann import Index
 
 base = np.ascontiguousarray(my_vectors, dtype=np.float32)
 queries = np.ascontiguousarray(my_queries, dtype=np.float32)
@@ -90,13 +90,15 @@ result = index.search(queries, k=10, search_list_size=100)
 - Dimensions are inferred at runtime; each resident row is padded for SIMD.
   The Rust/DiskANN graph builder supports logical dimensions up to 1536 by
   padding its working input; larger dimensions need a PA graph.
-  Native u8 requires L2 and a PA cache or STAG export. It does
+  Native u8 requires L2 and uses the bundled PA builder or a PA cache/STAG export. It does
   not fall back to Rust construction, allocate a quantized admission copy, or
   rerank. Native-u8 ndarray queries must also be uint8.
 
-For native SIFT bytes, supply `GraphConfig(source='parlayann', staged_file=...,
-degree=..., build_l=..., max_extra=...)`. `source='auto'` follows the CLI policy:
-PA cache, PA export, then Rust cache/build for f32. Explicit sources stay strict.
+For native SIFT bytes, `GraphConfig()` can build directly from the array or file.
+Use `staged_file=...` to import an existing export. `source='auto'` follows the
+CLI policy: PA cache, PA export, then in-memory PA build. Explicit sources stay
+strict. Building from source requires a C++17 compiler; no external ParlayANN
+executable or checkout is required.
 
 ## Calibration, results and persistence
 
@@ -134,3 +136,41 @@ with an empty result.
 `memory_budget_gib=` applies the shared lower-bound preflight to base/index
 preparation; it is not a hard RSS cap or a bound on Python arrays, query/result
 batches, allocator overhead or all builder scratch allocations.
+
+## Errors
+
+Orion validation, configuration, storage and search failures raise `OrionError`,
+a subclass of `RuntimeError`. The Rust API, CLI and Python binding share one
+error model. Python does not rephrase the backend message:
+
+```python
+from orion_ann import OrionError
+
+try:
+    result = index.search(queries, k=10)
+except OrionError as error:
+    print(error.code)       # e.g. ORION_INVALID_STATE
+    print(error.message)    # human-readable explanation
+    print(error.operation)  # closest operation when available
+    print(error.details)    # expected/actual shape, path, memory components, ...
+    print(error.causes)     # preserved source chain
+    print(error.report)     # same JSON-compatible report used by the CLI
+```
+
+Use `code` and `details` to handle errors; do not parse exception text. Correcting
+an ordinary validation error permits retrying the same index. `ORION_INTERNAL`
+with `requires_reopen` indicates an unexpected Rust panic: discard/reopen that
+index. Further calls on a poisoned handle return `ORION_INVALID_STATE`.
+Python argument-binding errors (such as an unknown keyword or an integer that
+cannot fit a Rust argument) remain normal Python exceptions.
+
+The extension requires the `python` Cargo profile (`panic="unwind"`); an abort
+build is rejected. The boundary catches unwinding panics, including those
+propagated from Rayon workers. It cannot recover from aborts, process termination
+or allocator failures that abort. It does not replace the process-wide panic
+hook. The `test-hooks` Cargo feature is only for the local fault-injection suite
+and is excluded from normal builds.
+
+CLI services can request `--error-format json`; error reports go to stderr and
+successful JSONL output is unchanged. For the embedded Rust API and signatures,
+run `cargo doc -p orion-ann -p orion-ann-runtime --no-deps`.

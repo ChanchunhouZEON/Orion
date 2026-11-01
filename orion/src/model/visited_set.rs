@@ -423,7 +423,11 @@ impl HashsetSeen {
             HashsetInner::Linear(s) => &s.entries,
             HashsetInner::Bucketed(s) => &s.entries,
         };
-        let mut ids: Vec<_> = entries.iter().copied().filter(|&id| id != SENTINEL).collect();
+        let mut ids: Vec<_> = entries
+            .iter()
+            .copied()
+            .filter(|&id| id != SENTINEL)
+            .collect();
         ids.sort_unstable();
         ids
     }

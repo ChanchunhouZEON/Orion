@@ -1,6 +1,14 @@
 [package]
-name = "orion"
+name = "orion-ann"
 version = "0.1.0"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Adaptive graph search for approximate nearest neighbors"
+readme = "README.md"
+keywords = ["ann", "vector-search", "similarity"]
+categories = ["algorithms"]
+include = ["src/**", "tests/**", "configs/**", "Cargo.toml", "README.md", "LICENSE"]
 edition = "2024"
 
 [features]
@@ -9,14 +17,15 @@ indicatif = ["dep:indicatif"]
 
 [dependencies]
 bytemuck = { workspace = true }
-platform = { path = "../platform" }
-vector = { path = "../vector" }
-diskann = { path = "../diskann", features = ["orion"]}
+orion-ann-platform = { version = "0.1.0", path = "../platform" }
+orion-ann-vector = { version = "0.1.0", path = "../vector" }
+orion-ann-diskann = { version = "0.1.0", path = "../orion-diskann", features = ["orion"]}
 rand = { workspace = true }
 rayon = { workspace = true }
 crossbeam = { workspace = true }
 ndarray = { workspace = true }
 serde = { workspace = true }
+serde_json.workspace = true
 bincode = { workspace = true}
 memmap2 = { workspace = true }
 thiserror = { workspace = true }

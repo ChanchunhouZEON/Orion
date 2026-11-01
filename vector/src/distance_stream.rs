@@ -3,51 +3,26 @@
  * Licensed under the MIT License.
  */
 
-//! [`DistanceStream`] — queue-driven prefetch + 32-byte-chunk
-//! compute + sink pipeline.
+//! Ordered prefetch, distance computation and sink pipeline.
 //!
-//! ## Why a queue?
+//! The stream resolves a logical sequence of cache lines from vertex IDs,
+//! row stride and padded compute span; it does not allocate an address queue.
+//! Each random vertex contributes `ceil(compute_bytes / CACHE_LINE_BYTES)`
+//! logical lines, including short rows that may physically share a line.
 //!
-//! The previous "prefetch_vertex(ids[i + lookahead])" form coupled
-//! prefetch granularity to vertex granularity. That's only the
-//! right shape for **single-line vertices** (one cache line per
-//! vertex, e.g. SIFT u8 N=128 / glove100 i8 N=100). It under-issues
-//! for multi-line vertices (i16 N=100 = 2-3 lines, GIST f32 = 30
-//! lines) — the prefetch runway only covers the first line of each
-//! upcoming vertex, leaving the trailing lines as demand-fetches
-//! mid-compute.
+//! Startup prefetch fills the near lookahead window. The selected
+//! [`DistanceKernelBackend`] then advances near prefetch once per completed
+//! cache line of computation, plus one final credit for a partial line. Kernel
+//! chunk width determines the compile-time trigger positions, not the amount
+//! of lookahead. Base and auxiliary addresses remain the stream's responsibility.
 //!
-//! The queue-based shape decouples them: the caller pre-builds a
-//! flat list of cache-line addresses **in the order they'll be
-//! accessed**, and the stream walks that queue with a fixed-line
-//! lookahead. Per-vertex the caller also records boundaries in
-//! `vertex_starts` so the stream knows when to wrap one vertex's
-//! accumulator + sink and start the next.
-//!
-//! ## Layout
-//!
-//! ```text
-//! cache_lines:        [v0_l0, v0_l1, v0_l2, v1_l0, v2_l0, v2_l1, ...]
-//!                   ▲────── vertex 0 ─────▲   ▲ v1 ▲──── vertex 2 ─────
-//! vertex_starts:    0                       3       4
-//! ids:             [id0,                   id1,    id2, ...]
-//! ```
-//!
-//! ## Pipeline (steady state, per vertex)
-//!
-//! 1. For each cache line of this vertex, issue `prfm` on the line
-//!    `lookahead_lines` ahead in `cache_lines`. Multi-line vertices
-//!    issue multiple prefetches per outer iter; sub-/single-line
-//!    vertices issue exactly one.
-//! 2. Fold the vertex's `chunks_per_vert` × 32-byte windows into the
-//!    SIMD accumulator (`K::step` is `#[inline(always)]`, accumulator
-//!    stays in a register across chunks).
-//! 3. Reduce + invoke `sink(id, dist)`. Sink runs while the next
-//!    iter's prefetches are in DRAM, extending the effective
-//!    compute window — the latency-hiding shape we want.
+//! Group boundaries and bounded far bursts are independent of chunk width.
+//! Near and far requests may intentionally overlap; this repeats the cache
+//! hint without promising that the hardware will retain a line. Far requests
+//! are issued before the group's final sink to provide additional lead time.
 
+use crate::distance_kernel::DistanceKernelBackend;
 use crate::CACHE_LINE_BYTES;
-use crate::distance_fn::DistanceFn;
 
 /// Maximum far-prefetch requests per compute group. The historical value
 /// 12 benefited GIST L2-KT with the old per-vertex scheduler; it remains
@@ -125,8 +100,49 @@ impl BurstSchedule {
     }
 }
 
+/// The cursor denotes the next request, including immediately after startup.
+/// Near and far cursors are independent: their intentional overlap is retained.
+struct NearCursor {
+    next: usize,
+    end: usize,
+}
+
+impl NearCursor {
+    #[inline(always)]
+    fn take(&mut self) -> Option<usize> {
+        if self.next == self.end {
+            return None;
+        }
+        let line = self.next;
+        self.next += 1;
+        Some(line)
+    }
+}
+
+/// Concrete receiver avoids the out-of-line FnMut adapter that LLVM can
+/// otherwise leave between a SIMD accumulation and the next prefetch.
+struct NearPrefetch<'s, 'a, K: DistanceKernelBackend> {
+    stream: &'s DistanceStream<'a, K>,
+    cursor: &'s mut NearCursor,
+}
+impl<K: DistanceKernelBackend> crate::stream_kernels::compute::LinePrefetch
+    for NearPrefetch<'_, '_, K>
+{
+    #[inline(always)]
+    fn advance(&mut self) {
+        if let Some(line) = self.cursor.take() {
+            unsafe {
+                DistanceStream::<K>::prfm_l1(self.stream.resolve(line));
+                if !self.stream.aux_ptr.is_null() && self.stream.aux_at_idx(line) {
+                    DistanceStream::<K>::prfm_l1(self.stream.aux_resolve(line));
+                }
+            }
+        }
+    }
+}
+
 /// Iterator-shaped fetch + compute + sink pipeline. Generic over the
-/// kernel `K` (any [`DistanceFn`] impl). Dimensions are runtime byte spans.
+/// kernel `K` (any [`DistanceKernelBackend`] impl). Dimensions are runtime byte spans.
 /// The streaming loop is monomorphised per kernel and sink so `K::step`
 /// and `K::reduce` get fully inlined into the hot path; the sink
 /// closure is also inlined so the OoO backend can reorder its
@@ -142,7 +158,7 @@ impl BurstSchedule {
 /// `prfm` for `aux_ptr + ids[pf_front] × aux_elem_bytes` alongside the
 /// existing base prefetch — turning that cold load into a warm one
 /// without any new closure plumbing.
-pub struct DistanceStream<'a, K: DistanceFn> {
+pub struct DistanceStream<'a, K: DistanceKernelBackend> {
     /// Pointer to the start of the (quantized) base buffer.
     base_ptr: *const u8,
     /// Per-vertex byte stride: `v_ptr = base_ptr + id × id_stride_bytes`.
@@ -164,7 +180,7 @@ pub struct DistanceStream<'a, K: DistanceFn> {
     _phantom: std::marker::PhantomData<&'a K>,
 }
 
-impl<'a, K: DistanceFn> DistanceStream<'a, K> {
+impl<'a, K: DistanceKernelBackend> DistanceStream<'a, K> {
     /// Construct. Prefetch addresses are computed inline in `run()`
     /// from `(base_ptr, ids[v], id_stride_bytes, line_offset)` —
     /// no pre-built queue needed.
@@ -187,7 +203,7 @@ impl<'a, K: DistanceFn> DistanceStream<'a, K> {
         ids: &'a [u32],
         lookahead_lines: usize,
     ) -> Self {
-        debug_assert!(compute_bytes % K::CHUNK_BYTES == 0);
+        debug_assert!(compute_bytes.is_multiple_of(K::CHUNK_BYTES));
         Self {
             base_ptr,
             id_stride_bytes,
@@ -197,6 +213,30 @@ impl<'a, K: DistanceFn> DistanceStream<'a, K> {
             lookahead_lines: lookahead_lines.max(1),
             aux_ptr: std::ptr::null(),
             aux_elem_bytes: 0,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    pub(crate) fn compute_bytes(&self) -> usize {
+        self.compute_bytes
+    }
+
+    /// Rebind only the accumulator implementation; storage and prefetch inputs
+    /// are unchanged. The caller proves the new block width divides the span.
+    #[inline(always)]
+    pub(crate) unsafe fn with_kernel<J: DistanceKernelBackend<Storage = K::Storage>>(
+        self,
+    ) -> DistanceStream<'a, J> {
+        debug_assert!(self.compute_bytes.is_multiple_of(J::CHUNK_BYTES));
+        DistanceStream {
+            base_ptr: self.base_ptr,
+            id_stride_bytes: self.id_stride_bytes,
+            compute_bytes: self.compute_bytes,
+            query_ptr: self.query_ptr,
+            ids: self.ids,
+            lookahead_lines: self.lookahead_lines,
+            aux_ptr: self.aux_ptr,
+            aux_elem_bytes: self.aux_elem_bytes,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -232,7 +272,17 @@ impl<'a, K: DistanceFn> DistanceStream<'a, K> {
     /// The ordinary compute-time drip is retained, including repeat requests
     /// for lines previously touched by the independent far cursor.
     #[inline]
-    pub fn run<Sink>(self, mut sink: Sink)
+    pub fn run<Sink>(self, sink: Sink)
+    where
+        Sink: FnMut(u32, f32),
+    {
+        K::run_stream(self, sink);
+    }
+
+    /// The single scheduling implementation, inlined into a selected backend.
+    /// This entry must bypass runtime dispatch to avoid recursive selection.
+    #[inline(always)]
+    pub(crate) fn run_static<Sink>(self, mut sink: Sink)
     where
         Sink: FnMut(u32, f32),
     {
@@ -261,7 +311,7 @@ impl<'a, K: DistanceFn> DistanceStream<'a, K> {
         //   lpv = 2, stride = 256  → SIFT i16
         //   lpv = 4, stride = 512  → SIFT f32, glove-100 f32
         //   lpv = 30, stride = 3840→ GIST f32 (non-pow2 lpv)
-        let lpv: usize = (self.compute_bytes + CACHE_LINE_BYTES - 1) / CACHE_LINE_BYTES;
+        let lpv: usize = self.compute_bytes.div_ceil(CACHE_LINE_BYTES);
         let n_lines = n_verts * lpv;
 
         // Prologue: prfm first `min(pf_batch, n_lines)` cache lines —
@@ -276,7 +326,10 @@ impl<'a, K: DistanceFn> DistanceStream<'a, K> {
             }
         }
 
-        let mut pf_front: usize = pf_batch.min(n_lines);
+        let mut pf_front = NearCursor {
+            next: pf_batch.min(n_lines),
+            end: n_lines,
+        };
         let mut far_next = pf_batch.min(n_lines);
         let burst = sink_burst();
         let (trigger_lines, ahead_vectors) = burst_group_config();
@@ -404,131 +457,26 @@ impl<'a, K: DistanceFn> DistanceStream<'a, K> {
         } else if lpv_is_pow2 {
             (idx & lpv_mask) == 0
         } else {
-            idx % lpv == 0
+            idx.is_multiple_of(lpv)
         }
     }
 
     #[inline(always)]
-    fn compute_vertex(&self, vi: usize, pf_front: &mut usize) -> f32 {
-        let base = self.base_ptr;
-        let stride = self.id_stride_bytes;
-        let chunks_per_vert = self.compute_bytes / K::CHUNK_BYTES;
-        let main_chunks_end = chunks_per_vert & !3;
-
-        let mut acc = K::init();
-        let mut acc1 = K::init();
-        let mut acc2 = K::init();
-        let mut acc3 = K::init();
+    fn compute_vertex(&self, vi: usize, pf_front: &mut NearCursor) -> f32 {
         unsafe {
-            let v_ptr = base.add(self.ids[vi] as usize * stride);
-            let mut c = 0;
-            while c < main_chunks_end {
-                let off0 = c * K::CHUNK_BYTES;
-                let off1 = (c + 1) * K::CHUNK_BYTES;
-                let off2 = (c + 2) * K::CHUNK_BYTES;
-                let off3 = (c + 3) * K::CHUNK_BYTES;
-
-                K::step(
-                    &mut acc,
-                    v_ptr.add(off0) as *const K::Storage,
-                    self.query_ptr.add(off0) as *const K::Storage,
-                );
-                K::step(
-                    &mut acc1,
-                    v_ptr.add(off1) as *const K::Storage,
-                    self.query_ptr.add(off1) as *const K::Storage,
-                );
-                *pf_front += 1;
-                Self::prfm_l1(self.resolve(*pf_front));
-                if !self.aux_ptr.is_null() && self.aux_at_idx(*pf_front) {
-                    Self::prfm_l1(self.aux_resolve(*pf_front));
-                }
-                K::step(
-                    &mut acc2,
-                    v_ptr.add(off2) as *const K::Storage,
-                    self.query_ptr.add(off2) as *const K::Storage,
-                );
-                K::step(
-                    &mut acc3,
-                    v_ptr.add(off3) as *const K::Storage,
-                    self.query_ptr.add(off3) as *const K::Storage,
-                );
-                #[cfg(target_arch = "x86_64")]
-                {
-                    *pf_front += 1;
-                    Self::prfm_l1(self.resolve(*pf_front));
-                    if !self.aux_ptr.is_null() && self.aux_at_idx(*pf_front) {
-                        Self::prfm_l1(self.aux_resolve(*pf_front));
-                    }
-                }
-
-                c += 4;
-            }
-
-            // ── Trailing-line prefetch ────────────────────────────
-            // Per-iter drip above fires one prfm per `4 chunks`
-            // = 128 B of compute = exactly one cache line. But
-            // when `compute_bytes % CACHE_LINE_BYTES != 0`, the
-            // tail loop below consumes a partial cache line that
-            // the drip never covered — the per-vertex prfm count
-            // is then `lpv - 1` instead of `lpv`, leaking one line
-            // of runway per vertex.
-            //
-            // GIST L2-KT (stride=960 → 30 chunks → 28+2 split,
-            // lpv=8 vs 7 drips) is the only production kernel that
-            // trips this today; for kernels with
-            // `chunks_per_vert % 4 == 0` this branch is provably
-            // false and LLVM hoists it away.
-            if chunks_per_vert > main_chunks_end {
-                *pf_front += 1;
-                Self::prfm_l1(self.resolve(*pf_front));
-                if !self.aux_ptr.is_null() && self.aux_at_idx(*pf_front) {
-                    Self::prfm_l1(self.aux_resolve(*pf_front));
-                }
-            }
-
-            // On x86, consume a remaining pair with independent
-            // accumulators before reducing the four-way loop. Native
-            // SIFT128 uses two 64-byte chunks, so it takes this path
-            // instead of serially updating one accumulator twice.
-            // After the pair, advance the prefetch front once more.
-            // Together with the trailing prefetch above, SIFT128
-            // issues two regular prefetches for its two cache lines.
-            #[cfg(target_arch = "x86_64")]
-            if c + 1 < chunks_per_vert {
-                let off0 = c * K::CHUNK_BYTES;
-                let off1 = (c + 1) * K::CHUNK_BYTES;
-                K::step(
-                    &mut acc,
-                    v_ptr.add(off0) as *const K::Storage,
-                    self.query_ptr.add(off0) as *const K::Storage,
-                );
-                K::step(
-                    &mut acc1,
-                    v_ptr.add(off1) as *const K::Storage,
-                    self.query_ptr.add(off1) as *const K::Storage,
-                );
-                c += 2;
-                *pf_front += 1;
-                Self::prfm_l1(self.resolve(*pf_front));
-            }
-
-            K::merge(&mut acc, acc1);
-            K::merge(&mut acc2, acc3);
-            K::merge(&mut acc, acc2);
-
-            while c < chunks_per_vert {
-                let off = c * K::CHUNK_BYTES;
-                K::step(
-                    &mut acc,
-                    v_ptr.add(off) as *const K::Storage,
-                    self.query_ptr.add(off) as *const K::Storage,
-                );
-                c += 1;
-            }
+            let base = self
+                .base_ptr
+                .add(self.ids[vi] as usize * self.id_stride_bytes);
+            crate::stream_kernels::compute::compute_vertex::<K, _, CACHE_LINE_BYTES>(
+                base.cast(),
+                self.query_ptr.cast(),
+                self.compute_bytes,
+                NearPrefetch {
+                    stream: self,
+                    cursor: pf_front,
+                },
+            )
         }
-
-        K::reduce(acc)
     }
 
     /// `prfm pldl1strm` — pull line into L1d with **streaming** retention
@@ -632,5 +580,68 @@ mod burst_schedule_tests {
         let schedule = BurstSchedule::new(8, 10, 4, 4, 0);
         let mut next = 10;
         assert!(schedule.requests(&mut next, 8, 100).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod near_cursor_tests {
+    use super::*;
+    use crate::L2U8Distance;
+
+    #[test]
+    fn startup_cursor_does_not_skip_first_uncovered_line_or_repeat_the_end() {
+        for end in [0, 1, 2, 31, 32, 33, 97] {
+            for lookahead in [0, 1, 16, 32, 128] {
+                let head = lookahead.min(end);
+                let mut cursor = NearCursor { next: head, end };
+                let lines: Vec<_> = (0..end + 4).filter_map(|_| cursor.take()).collect();
+                assert_eq!(lines, (head..end).collect::<Vec<_>>());
+                assert_eq!(cursor.next, end);
+            }
+        }
+    }
+
+    #[test]
+    fn near_and_far_windows_keep_their_intentional_overlap() {
+        let mut near = NearCursor { next: 32, end: 128 };
+        let mut far = 32;
+        let schedule = BurstSchedule::new(1, 32, 8, 4, 32);
+        let burst = schedule.requests(&mut far, 8, 128);
+        assert!(burst.contains(&near.take().unwrap()));
+        assert_eq!(near.next, 33);
+        assert_eq!(far, 44);
+    }
+
+    #[test]
+    fn near_addresses_and_auxiliary_follow_shuffled_vertex_order() {
+        let ids = [2, 0, 3, 1];
+        let row_bytes = 2 * CACHE_LINE_BYTES;
+        let base = vec![0u8; 4 * row_bytes];
+        let query = vec![0u8; row_bytes];
+        let aux = [0u64; 4];
+        let stream = unsafe {
+            DistanceStream::<L2U8Distance>::new(
+                base.as_ptr(),
+                row_bytes,
+                row_bytes,
+                query.as_ptr(),
+                &ids,
+                1,
+            )
+            .with_aux(aux.as_ptr().cast(), 8)
+        };
+        let mut cursor = NearCursor { next: 1, end: 8 };
+        let mut actual = Vec::new();
+        while let Some(line) = cursor.take() {
+            let row = ids[line / 2] as usize;
+            assert_eq!(
+                stream.resolve(line) as usize - base.as_ptr() as usize,
+                row * row_bytes + (line % 2) * CACHE_LINE_BYTES
+            );
+            if stream.aux_at_idx(line) {
+                actual.push(stream.aux_resolve(line) as usize - aux.as_ptr() as usize);
+            }
+        }
+        assert_eq!(actual, vec![0, 24, 8]);
     }
 }

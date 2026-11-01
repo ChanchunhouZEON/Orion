@@ -1,5 +1,6 @@
 //! Validated configuration; independent of CLI flags, presets, and environment variables.
 // Preset/CLI resolution is optional; embedded callers use IndexOptions.
+use crate::{Error, Result};
 #[cfg(feature = "cli")]
 pub mod cli;
 #[cfg(feature = "cli")]
@@ -18,8 +19,7 @@ use std::{
 
 /// Source used to obtain the base proximity graph.
 ///
-/// The graph can either be constructed by DiskANN native Rust builder or imported
-/// from a ParlayANN-generated staged graph.
+/// Construct with the ParlayANN or Rust builder, or import a STAG export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
@@ -28,7 +28,7 @@ pub enum GraphSource {
     /// candidates complemented.
     Rust,
 
-    /// Import a graph produced by ParlayANN.
+    /// Import a ParlayANN graph or construct it with the in-memory backend.
     #[cfg_attr(feature = "cli", value(alias = "pa"))]
     Parlayann,
 }
@@ -38,7 +38,7 @@ pub enum GraphSource {
 #[serde(rename_all = "kebab-case")]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum GraphSourcePolicy {
-    /// Prefer a PA cache/export, then use the Rust builder for f32 storage.
+    /// Prefer a PA cache/export, then build with ParlayANN. Without that feature, f32 can use Rust.
     Auto,
     Rust,
     #[cfg_attr(feature = "cli", value(alias = "pa"))]
@@ -129,7 +129,7 @@ pub struct ResolvedRunConfig {
 impl ResolvedRunConfig {
     /// Only absence allows fallback. Invalid PA caches/exports and permission
     /// errors are surfaced instead of quietly changing the experiment's graph.
-    pub fn select_automatic_graph(&mut self, custom_cache_dir: bool) -> Result<(), String> {
+    pub fn select_automatic_graph(&mut self, custom_cache_dir: bool) -> Result<()> {
         use crate::graph::cache::CachePlan;
 
         let count = match self.num_points {
@@ -139,17 +139,19 @@ impl ResolvedRunConfig {
                     Some(crate::data::inspect_vector_file(&self.base, self.base_format)?.count)
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                Err(e) => return Err(format!("{}: {e}", self.base.display())),
+                Err(e) => return Err(Error::io("metadata", &self.base, e)),
             },
         }
         .map(|n| n.min(self.max_points));
 
         if let Some(n) = count {
             let cache = CachePlan::resolve(self, n).map_err(|error| {
-                format!(
-                    "automatic PA cache lookup failed in {}: {error}; no Rust graph was substituted",
-                    self.cache_dir.display()
-                )
+                let message = format!(
+                    "automatic PA cache lookup failed in {}: {}; no Rust graph was substituted",
+                    self.cache_dir.display(),
+                    error.message()
+                );
+                error.with_message(message).at("resolve_graph")
             })?;
             if cache.is_hit {
                 self.graph_selection_reason = "PA cache available";
@@ -162,6 +164,10 @@ impl ResolvedRunConfig {
             }
             self.staged_file = Some(path);
             self.graph_selection_reason = "PA staged export available";
+            return Ok(());
+        }
+        if cfg!(feature = "parlay") {
+            self.graph_selection_reason = "PA in-memory build required";
             return Ok(());
         }
         if self.search_plan().storage().kind == VectorStorageKind::U8 {

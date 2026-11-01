@@ -13,21 +13,21 @@
 //! ├─── Data ────────────────────────────────────────────────────────────────────────┤
 //! │ local_neighbors  [u32 × L]       ← navigation + reranking                       │
 //! │ remote_neighbors [u32 × (R − L)] ← navigation only                              │
-//! │ extra_candidates [u32 × E]       ← reranking only(starts at `start+ max_degree`)│
-//! │ padding to max_extra * u32                                                      │
+//! │ extra_candidates [u32 × E]       ← reranking only (after actual degree)│
+//! │ unused capacity + cache-line padding                                                      │
 //! └─────────────────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! Backed by `AlignedBoxWithSlice<u32>` with per-node reader tracking
 //! and bounded write queue, mirroring `NodeSlabBuffer`'s concurrency model.
 
-use diskann::common::ANNResult;
-use diskann::common::AlignedBoxWithSlice;
-use platform::buffered_io::{FILE_WRITE_BYTES, write_in_blocks};
+use crate::{Error, Result};
+use orion_ann_diskann::common::AlignedBoxWithSlice;
+use orion_ann_platform::buffered_io::{FILE_WRITE_BYTES, write_in_blocks};
 use std::collections::VecDeque;
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const CACHE_LINE_BYTES: usize = 64;
 const HEADER_U32: usize = 4;
@@ -105,6 +105,130 @@ impl PhasedGraph {
         }
     }
 
+    /// Allocate an empty graph for incremental, validated partition import.
+    /// All nodes initially have no edges. No temporary per-node vectors are kept.
+    ///
+    /// # Errors
+    /// Rejects zero/overflowing shapes and reports allocation failure.
+    pub fn try_empty(num_nodes: usize, max_degree: u32, max_extra: usize) -> Result<Self> {
+        if num_nodes == 0 || num_nodes >= u32::MAX as usize || max_degree == 0 {
+            return Err(Error::invalid_argument("invalid graph shape"));
+        }
+        let max_data = (max_degree as usize)
+            .checked_add(max_extra)
+            .filter(|&n| n <= u32::MAX as usize - 4)
+            .ok_or_else(|| Error::invalid_argument("graph capacity overflow"))?;
+        let stride = compute_stride(max_data);
+        let total = num_nodes
+            .checked_mul(stride)
+            .ok_or_else(|| Error::invalid_argument("graph allocation overflow"))?;
+        let mut readers = Vec::new();
+        readers.try_reserve_exact(num_nodes).map_err(|e| {
+            Error::new(
+                crate::ErrorCode::ResourceExhausted,
+                "graph reader allocation failed",
+            )
+            .with_source(e)
+        })?;
+        readers.extend((0..num_nodes).map(|_| AtomicUsize::new(0)));
+        Ok(Self {
+            buffer: AlignedBoxWithSlice::new(total, CACHE_LINE_BYTES)?,
+            node_readers: readers.into_boxed_slice(),
+            write_blocked: AtomicBool::new(false),
+            write_queue: Mutex::new(VecDeque::new()),
+            write_queue_capacity: DEFAULT_WRITE_QUEUE_CAPACITY,
+            num_nodes,
+            stride,
+            max_degree,
+            base_local_count: 0,
+        })
+    }
+
+    /// Construct directly in the final slab, publishing only validated rows.
+    ///
+    /// The callback exclusively borrows all words plus the node stride (in u32s).
+    /// Each row must finish as `[degree, extras, local, 0, IDs..., padding...]`,
+    /// with navigation IDs followed by extras. A backend may use a temporary
+    /// layout during the callback, but must join all workers before returning.
+    /// The slab stays owned here and is dropped on any error, without publication.
+    ///
+    /// # Example
+    /// ```
+    /// use orion_ann::PhasedGraph;
+    /// let graph = PhasedGraph::try_build_with(4, 1, 0, |words, stride| {
+    ///     for (node, row) in words.chunks_exact_mut(stride).enumerate() {
+    ///         row[0] = 1; // One navigation edge.
+    ///         row[2] = 1; // That edge belongs to the local partition.
+    ///         row[4] = ((node + 1) % 4) as u32;
+    ///     }
+    ///     Ok(())
+    /// })?;
+    /// assert_eq!(graph.local_neighbors(0), &[1]);
+    /// # Ok::<(), orion_ann::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    /// Allocation/backend failures are propagated. Invalid counts, reserved
+    /// fields, or neighbor IDs in the completed rows return `InvalidData`.
+    pub fn try_build_with(
+        num_nodes: usize,
+        max_degree: u32,
+        max_extra: usize,
+        build: impl FnOnce(&mut [u32], usize) -> Result<()>,
+    ) -> Result<Self> {
+        let mut graph = Self::try_empty(num_nodes, max_degree, max_extra)?;
+        build(graph.buffer.as_mut_slice(), graph.stride)?;
+        for row in graph.buffer.as_slice().chunks_exact(graph.stride) {
+            let degree = row[0] as usize;
+            let extra = row[1] as usize;
+            if degree > max_degree as usize
+                || extra > max_extra
+                || row[2] as usize > degree
+                || row[3] != 0
+                || row[HEADER_U32..HEADER_U32 + degree + extra]
+                    .iter()
+                    .any(|&id| id as usize >= num_nodes)
+            {
+                return Err(Error::invalid_data("backend produced invalid graph slab"));
+            }
+        }
+        Ok(graph)
+    }
+
+    /// Set one node while exclusively constructing the graph.
+    ///
+    /// # Errors
+    /// Rejects invalid node/neighbor IDs or counts exceeding the slab capacity.
+    pub fn set_partition(
+        &mut self,
+        node: usize,
+        local: &[u32],
+        remote: &[u32],
+        extra: &[u32],
+    ) -> Result<()> {
+        if node >= self.num_nodes
+            || local
+                .len()
+                .checked_add(remote.len())
+                .is_none_or(|n| n > self.max_degree as usize)
+            || extra.len() > self.stride - 4 - self.max_degree as usize
+            || local
+                .iter()
+                .chain(remote)
+                .chain(extra)
+                .any(|&id| id as usize >= self.num_nodes)
+        {
+            return Err(Error::invalid_data(
+                "graph partition exceeds capacity or contains invalid IDs",
+            ));
+        }
+        // Exclusive access plus the validated counts/IDs satisfies the slab writer.
+        unsafe {
+            self.write_node_unchecked(node, local, remote, extra);
+        }
+        Ok(())
+    }
+
     /// Build from pre-computed partitions (from extract_graph_and_candidates).
     ///
     /// Each element: `(local_ids, remote_ids, extra_ids)`.
@@ -137,7 +261,7 @@ impl PhasedGraph {
         path: P,
         expected_nodes: usize,
         expected_degree: u32,
-    ) -> ANNResult<Self> {
+    ) -> Result<Self> {
         use std::io::{Error, ErrorKind};
         let bad = |message: &str| Error::new(ErrorKind::InvalidData, message);
         let file = std::fs::File::open(path)?;
@@ -317,7 +441,7 @@ impl PhasedGraph {
     /// Prefetch node slot into L1 cache.
     #[inline]
     pub fn prefetch_node(&self, i: usize) {
-        vector::prefetch_vector(self.slot(i));
+        orion_ann_vector::prefetch_vector(self.slot(i));
     }
 
     // ── Guarded read (per-node reader tracking) ─────────────────────────
@@ -379,7 +503,12 @@ impl PhasedGraph {
     /// Build-phase direct write. No concurrent readers on `node`.
     ///
     /// # Safety
-    /// Different threads must target different nodes.
+    /// `node < num_nodes`; local + remote length must not exceed max_degree,
+    /// and local + remote + extra must fit the allocated slot. All IDs must refer
+    /// to existing nodes and lengths must fit u32. Inputs must not alias the
+    /// destination slab. No reader or other writer may access this node until
+    /// this write completes; parallel writers must target distinct nodes.
+    /// The caller must publish the completed graph before exposing its slices.
     pub unsafe fn write_node_unchecked(
         &self,
         node: usize,
@@ -400,7 +529,7 @@ impl PhasedGraph {
             std::ptr::write(ptr.add(base + 1), extra.len() as u32);
             std::ptr::write(ptr.add(base + 2), local.len() as u32);
             std::ptr::write(ptr.add(base + 3), 0); // reserved
-                                                   // Data: local | remote | extra
+            // Data: local | remote | extra
             let data_start = base + HEADER_U32;
             std::ptr::copy_nonoverlapping(local.as_ptr(), ptr.add(data_start), local.len());
             std::ptr::copy_nonoverlapping(
@@ -444,7 +573,7 @@ impl PhasedGraph {
 
     // ── IO ──────────────────────────────────────────────────────────────
 
-    pub fn save<P: AsRef<std::path::Path>>(&self, path: P) -> ANNResult<()> {
+    pub fn save<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
         let f = std::fs::File::create(path)?;
         let mut w = BufWriter::with_capacity(FILE_WRITE_BYTES, f);
         // File header: [num_nodes, max_degree, stride, base_local_count]
@@ -467,8 +596,10 @@ impl PhasedGraph {
         Ok(())
     }
 
-    pub fn load<P: AsRef<std::path::Path>>(path: P) -> ANNResult<Self> {
-        let f = std::fs::File::open(path)?;
+    pub fn load<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
+        let f =
+            std::fs::File::open(path.as_ref()).map_err(|e| Error::io("open", path.as_ref(), e))?;
+        let file_bytes = f.metadata()?.len();
         let mut r = BufReader::new(f);
         let mut hdr_bytes = [0u8; 16];
         r.read_exact(&mut hdr_bytes)?;
@@ -478,10 +609,24 @@ impl PhasedGraph {
         let stride = header[2] as usize;
         let base_local_count = header[3];
 
-        let total = num_nodes * stride;
+        let total = num_nodes
+            .checked_mul(stride)
+            .ok_or_else(|| Error::invalid_data("graph size overflow"))?;
+        let expected = total
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(16))
+            .ok_or_else(|| Error::invalid_data("graph byte size overflow"))?;
+        if stride < 4 || max_degree as usize > stride - 4 || expected as u64 != file_bytes {
+            return Err(
+                Error::invalid_data("invalid graph header or payload length")
+                    .at("load_graph")
+                    .with_detail("path", path.as_ref().to_string_lossy().into_owned())
+                    .with_detail("expected_bytes", expected)
+                    .with_detail("actual_bytes", file_bytes),
+            );
+        }
         let mut pg = Self {
-            buffer: AlignedBoxWithSlice::<u32>::new(total, CACHE_LINE_BYTES)
-                .expect("PhasedGraph load alloc"),
+            buffer: AlignedBoxWithSlice::<u32>::new(total, CACHE_LINE_BYTES)?,
             node_readers: (0..num_nodes)
                 .map(|_| AtomicUsize::new(0))
                 .collect::<Vec<_>>()
@@ -515,7 +660,9 @@ impl PhasedGraph {
         log::info!("PhasedGraph ({} nodes):", n);
         log::info!(
             "  R={}, base_local={}, stride={} u32",
-            self.max_degree, self.base_local_count, self.stride
+            self.max_degree,
+            self.base_local_count,
+            self.stride
         );
         log::info!("  Avg degree:       {:.1}", total_deg as f64 / n as f64);
         log::info!(

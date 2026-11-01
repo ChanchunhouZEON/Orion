@@ -1,5 +1,5 @@
 //! Low-dimensional groups and the high-dimensional signed-byte GIST kernel.
-use vector::{DistanceFn, DistanceStream, IpI8Distance};
+use orion_ann_vector::{DistanceKernelBackend, DistanceStream, IpI8Distance};
 
 fn check<const N: usize>() {
     // Stream kernels consume whole chunks: 32 bytes on NEON, 64 on

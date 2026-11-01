@@ -7,6 +7,7 @@
 //! Benchmark-only helpers are explicit calls and are not run by Index sessions.
 
 #![allow(dead_code)]
+use crate::{Error, Result};
 
 use std::hint::black_box;
 
@@ -23,13 +24,13 @@ macro_rules! with_supported_dimension {
             784 => { const $d: usize = 784; $body }
             960 => { const $d: usize = 960; $body }
             1536 => { const $d: usize = 1536; $body }
-            other => Err(format!("unsupported physical dimension {other}; explicitly pad data or add a compiled specialization")),
+            other => Err(format!("unsupported physical dimension {other}; explicitly pad data or add a compiled specialization").into()),
         }
     };
 }
 
 /// Validate without silently clamping, reordering, or repeating experiments.
-pub fn validate_search_list_sizes(k: usize, values: &[usize]) -> Result<(), String> {
+pub fn validate_search_list_sizes(k: usize, values: &[usize]) -> Result<()> {
     if k == 0 {
         return Err("k must be positive".into());
     }
@@ -37,7 +38,9 @@ pub fn validate_search_list_sizes(k: usize, values: &[usize]) -> Result<(), Stri
         return Err("search-list-sizes must not be empty".into());
     }
     if values.iter().any(|&l| l < k) {
-        return Err(format!("every search L must be >= k={k}; got {values:?}"));
+        return Err(Error::from(format!(
+            "every search L must be >= k={k}; got {values:?}"
+        )));
     }
     if values.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err("search-list-sizes must be strictly increasing (no duplicates)".into());
@@ -45,12 +48,12 @@ pub fn validate_search_list_sizes(k: usize, values: &[usize]) -> Result<(), Stri
     Ok(())
 }
 
-pub fn validate_ground_truth(gt: &[Vec<u32>], queries: usize, k: usize) -> Result<(), String> {
+pub fn validate_ground_truth(gt: &[Vec<u32>], queries: usize, k: usize) -> Result<()> {
     if k == 0 || queries == 0 || gt.len() < queries || gt[..queries].iter().any(|row| row.len() < k)
     {
-        return Err(format!(
+        return Err(Error::from(format!(
             "ground truth must contain {queries} query rows with at least k={k} IDs each"
-        ));
+        )));
     }
     Ok(())
 }

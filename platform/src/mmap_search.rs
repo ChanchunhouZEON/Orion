@@ -7,7 +7,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use hashbrown::HashSet;
-use vector::{FullPrecisionDistance, Metric};
+use orion_ann_vector::{FullPrecisionDistance, Metric};
 
 use crate::graph_mmap::MmapGraph;
 

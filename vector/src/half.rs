@@ -13,6 +13,7 @@ use std::fmt;
 
 /// Half-precision floating point wrapper around f16.
 /// Memory layout is identical to f16 (2 bytes, 2-byte aligned).
+#[repr(transparent)]
 pub struct Half(f16);
 
 unsafe impl Pod for Half {}
@@ -48,7 +49,7 @@ impl Default for Half {
 
 impl Clone for Half {
     fn clone(&self) -> Self {
-        Half(self.0)
+        *self
     }
 }
 

@@ -24,10 +24,10 @@
 use crate::algorithm::search::convergence::SearchConvergenceChecker;
 use crate::model::{FixedChunkPQTable, Neighbor, NeighborPriorityQueue};
 use crate::storage::MmapStorage;
+use orion_ann_vector::{FullPrecisionDistance, Metric};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
-use vector::{FullPrecisionDistance, Metric};
 
 /// Global IO limiter that bounds total concurrent disk reads across all queries.
 pub struct IoLimiter {

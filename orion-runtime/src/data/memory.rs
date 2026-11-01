@@ -26,6 +26,7 @@ use crate::{
     data::inspect_vector_file,
     graph::cache::CachePlan,
 };
+use crate::{Error, Result};
 use std::{io::Read, path::PathBuf};
 
 const BYTES_PER_GIB: f64 = 1_073_741_824.0;
@@ -50,7 +51,7 @@ const CACHE_LINE_BYTES: u64 = 64;
 /// Returns an error if base scale is unknown, existing files cannot be read,
 /// declared counts/dimensions conflict, graph metadata is invalid, or the estimate
 /// overflows. Budget excess is recorded in the report.
-pub fn preflight_report(config: &ResolvedRunConfig) -> Result<serde_json::Value, String> {
+pub fn preflight_report(config: &ResolvedRunConfig) -> Result<serde_json::Value> {
     let (base_count, base_source) = resolve_vector_count(
         &config.base,
         config.base_format,
@@ -74,7 +75,7 @@ fn resolve_vector_count(
     dimension: usize,
     declared: Option<usize>,
     offline: bool,
-) -> Result<(Option<usize>, &'static str), String> {
+) -> Result<(Option<usize>, &'static str)> {
     if path == std::path::Path::new("-") {
         return Ok((None, "stream"));
     }
@@ -82,19 +83,19 @@ fn resolve_vector_count(
         Ok(metadata) if metadata.is_file() => {
             let actual = inspect_vector_file(path, format)?;
             if actual.dimension != dimension {
-                return Err(format!(
+                return Err(Error::from(format!(
                     "{}: file dimension {} != configured dimension {dimension}",
                     path.display(),
                     actual.dimension
-                ));
+                )));
             }
             if declared.is_some_and(|count| count != actual.count) {
-                return Err(format!(
+                return Err(Error::from(format!(
                     "{}: file count {} != declared count {}; update the preset or explicitly override the input path",
                     path.display(),
                     actual.count,
                     declared.unwrap()
-                ));
+                )));
             }
             Ok((Some(actual.count), "file"))
         }
@@ -107,7 +108,7 @@ fn resolve_vector_count(
                 "unknown"
             },
         )),
-        Err(error) => Err(format!("{}: {error}", path.display())),
+        Err(error) => Err(Error::from(format!("{}: {error}", path.display()))),
     }
 }
 
@@ -129,7 +130,7 @@ fn resolve_memory_inputs(
     num_points: usize,
     offline: bool,
     base_source: &'static str,
-) -> Result<MemoryInputs, String> {
+) -> Result<MemoryInputs> {
     let cache = CachePlan::resolve(config, num_points)?;
     let (stride_bytes, staged_source) = resolve_graph_layout(config, &cache, num_points, offline)?;
     let graph_source = if cache.is_hit {
@@ -169,7 +170,7 @@ fn resolve_memory_inputs(
     })
 }
 
-/// Computes the cache-line-aligned node stride for [`PhasedGraph`](orion::model::PhasedGraph).
+/// Computes the cache-line-aligned node stride for [`PhasedGraph`](orion_ann::model::PhasedGraph).
 ///
 /// `max_degree` is the combined capacity of the local and remote adjacency
 /// regions; `max_extra` is the capacity of the extra-candidate region.
@@ -179,14 +180,14 @@ fn graph_stride_bytes(max_degree: u64, max_extra: u64) -> u64 {
     (record_bytes + CACHE_LINE_BYTES - 1) / CACHE_LINE_BYTES * CACHE_LINE_BYTES
 }
 
-/// Resolves the resident per-node stride used by [`PhasedGraph`](orion::model::PhasedGraph)
+/// Resolves the resident per-node stride used by [`PhasedGraph`](orion_ann::model::PhasedGraph)
 /// for memory preflight.
 ///
 /// The stride is obtained from the most authoritative representation available:
 ///
 /// 1. an existing graph cache, whose header already stores the padded stride;
 /// 2. a ParlayANN/STAG export, whose recorded capacities are converted into the
-///    corresponding [`PhasedGraph`](orion::model::PhasedGraph) layout;
+///    corresponding [`PhasedGraph`](orion_ann::model::PhasedGraph) layout;
 /// 3. the resolved graph-construction settings when no materialized graph exists.
 ///
 /// The primary graph capacity is shared by the local and remote neighbor regions,
@@ -207,12 +208,12 @@ fn resolve_graph_layout(
     cache: &CachePlan,
     num_points: usize,
     offline: bool,
-) -> Result<(u64, Option<PathBuf>), String> {
+) -> Result<(u64, Option<PathBuf>)> {
     if cache.is_hit {
         let mut header = [0; 16];
         std::fs::File::open(cache.metadata_path.with_extension("pgraph"))
             .and_then(|mut file| file.read_exact(&mut header))
-            .map_err(|e| e.to_string())?;
+            .map_err(Error::from)?;
 
         // The cached graph header stores its already-padded stride in u32 words.
         let stride_words = u32::from_le_bytes(header[8..12].try_into().unwrap()) as u64;
@@ -223,12 +224,15 @@ fn resolve_graph_layout(
     // Permission errors and existing malformed exports remain errors.
     let export_missing = config.graph_source != GraphSource::Parlayann
         || CachePlan::available_staged_export(config)?.is_none();
-    if config.graph_source == GraphSource::Parlayann && !(offline && export_missing) {
+    if config.graph_source == GraphSource::Parlayann
+        && !(export_missing
+            && (offline || (cfg!(feature = "parlay") && !config.staged_file_explicit)))
+    {
         let staged_path = CachePlan::resolve_staged_export(config, num_points)?;
         let mut header = [0; 24];
         std::fs::File::open(&staged_path)
             .and_then(|mut file| file.read_exact(&mut header))
-            .map_err(|e| e.to_string())?;
+            .map_err(Error::from)?;
 
         // STAG stores capacities, so reconstruct the resident graph stride from them.
         let max_degree = u32::from_le_bytes(header[12..16].try_into().unwrap()) as u64;
@@ -249,7 +253,7 @@ fn resolve_graph_layout(
     ))
 }
 
-fn checked_mul_bytes(count: u64, bytes_per_item: u64) -> Result<u64, String> {
+fn checked_mul_bytes(count: u64, bytes_per_item: u64) -> Result<u64> {
     count
         .checked_mul(bytes_per_item)
         .ok_or_else(|| "memory estimate overflow".into())
@@ -280,7 +284,7 @@ fn checked_mul_bytes(count: u64, bytes_per_item: u64) -> Result<u64, String> {
 pub fn estimate_resident_memory(
     config: &ResolvedRunConfig,
     num_points: usize,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value> {
     let base_source = if config.base_content_id.is_some() {
         "array"
     } else {
@@ -291,10 +295,7 @@ pub fn estimate_resident_memory(
 }
 
 /// Pure accounting shared by offline planning and strict runtime budget checks.
-fn calculate_memory(
-    config: &ResolvedRunConfig,
-    input: MemoryInputs,
-) -> Result<serde_json::Value, String> {
+fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<serde_json::Value> {
     let MemoryInputs {
         num_points,
         base_source,
@@ -309,25 +310,25 @@ fn calculate_memory(
         || num_points > u32::MAX as usize
         || (!config.prepare_only && config.sweep.k > num_points)
     {
-        return Err(format!(
+        return Err(Error::from(format!(
             "invalid loaded point count {num_points} or k={}: require 1..={} points and k <= loaded count for search (base {}, max-points {})",
             config.sweep.k,
             u32::MAX,
             config.base.display(),
             config.max_points
-        ));
+        )));
     }
 
     // Resident storage is selected explicitly. A native-byte admission stage
     // borrows this buffer; it does not allocate a second quantized dataset.
     let storage = config.search_plan().storage();
     let layout = match storage.kind {
-        VectorStorageKind::F32 => {
-            vector::PaddedLayout::for_kernel::<vector::L2F32Distance>(config.dimension)?
-        }
-        VectorStorageKind::U8 => {
-            vector::PaddedLayout::for_kernel::<vector::L2U8Distance>(config.dimension)?
-        }
+        VectorStorageKind::F32 => orion_ann_vector::PaddedLayout::for_kernel::<
+            orion_ann_vector::L2F32Distance,
+        >(config.dimension)?,
+        VectorStorageKind::U8 => orion_ann_vector::PaddedLayout::for_kernel::<
+            orion_ann_vector::L2U8Distance,
+        >(config.dimension)?,
     };
     let base_bytes = checked_mul_bytes(num_points as u64, layout.stride_bytes() as u64)?;
     let graph_bytes = checked_mul_bytes(num_points as u64, stride_bytes)?;
@@ -337,9 +338,10 @@ fn calculate_memory(
     // Only the L2U8 representation is accounted for here. Other cascade buffers
     // remain explicitly excluded, rather than presented as a complete estimate.
     let admission_bytes = if storage.has_l2_u8_sidecar && !config.prepare_only {
-        let aligned_dimension =
-            vector::PaddedLayout::for_kernel::<vector::L2U8Distance>(config.dimension)?
-                .stride_bytes() as u64;
+        let aligned_dimension = orion_ann_vector::PaddedLayout::for_kernel::<
+            orion_ann_vector::L2U8Distance,
+        >(config.dimension)?
+        .stride_bytes() as u64;
         checked_mul_bytes(num_points as u64, aligned_dimension)?
     } else {
         0
@@ -406,9 +408,19 @@ fn calculate_memory(
         .and_then(|v| v.checked_add(result_bytes))
         .and_then(|v| v.checked_add(gt_bytes))
         .ok_or("memory estimate overflow: query/result/GT buffers")?;
+    // ParlayANN borrows the final slab for both adjacency and extras. There is
+    // no independent N-sized graph/extras allocation in the production path.
+    // Sidecars are prepared later; candidate/statistics scratch is listed below.
+    let working_bytes = 0u64;
+    let build_lower_bound = base_bytes
+        .checked_add(graph_bytes)
+        .and_then(|v| v.checked_add(node_reader_bytes))
+        .and_then(|v| v.checked_add(working_bytes))
+        .ok_or("memory estimate overflow: ParlayANN build")?;
+    let required = accounted.max(build_lower_bound);
     let exceeded = config
         .memory_budget_gib
-        .is_some_and(|budget| accounted as f64 > budget * BYTES_PER_GIB);
+        .is_some_and(|budget| required as f64 > budget * BYTES_PER_GIB);
     let cascade = config.search_plan().cascade();
     let other_sidecars = cascade.prefilter != crate::search::cascade::PrefilterChoice::None
         || !matches!(
@@ -428,7 +440,11 @@ fn calculate_memory(
         {"name":"ground truth IDs", "bytes":if unknown_replay_buffers && config.groundtruth.is_some() { None } else { Some(gt_bytes) }, "basis":"replay keeps all top-k rows; streaming keeps one row; absent GT uses none", "phase":"evaluation"},
         {"name":"other cascade sidecars", "bytes":if other_sidecars {None} else {Some(0u64)}, "basis":"selected prefilter/admission/rerank; not yet estimated when allocated", "phase":"resident"},
         {"name":"worker scratch", "bytes":null, "basis":format!("{} workers; beam schedule {:?}; visited sets and candidate buffers grow dynamically", config.sweep.threads, config.sweep.search_list_sizes), "phase":"search"},
-        {"name":"graph construction temporary memory", "bytes":null, "basis":if cache.is_hit {"cache load; decoder and allocator overhead not estimated"} else if config.graph_source == GraphSource::Parlayann {"streamed STAG import; no in-process builder"} else {"Rust builder retains working dataset and graph partitions; peak not estimated"}, "phase":"build/import"},
+        {"name":"ParlayANN working graph and extras", "bytes":working_bytes, "basis":"adjacency and extras share the final graph slab; no independent graph allocation", "phase":"build/import"},
+        {"name":"graph construction temporary memory", "bytes":null, "basis":if cache.is_hit {"cache load; decoder and allocator overhead not estimated"} else if config.graph_source == GraphSource::Parlayann {
+            if CachePlan::available_staged_export(config)?.is_some() { "streamed STAG import; no in-process builder" }
+            else { "ParlayANN borrows base and graph slab; construction statistics, insertion batches and worker candidate/partition scratch remain additional" }
+        } else {"Rust builder retains working dataset and graph partitions; peak not estimated"}, "phase":"build/import"},
         {"name":"allocator/runtime/OS overhead", "bytes":null, "basis":"not included in payload bounds", "phase":"all"}
     ]);
 
@@ -437,6 +453,7 @@ fn calculate_memory(
         part["source"] = serde_json::json!(match part["name"].as_str().unwrap() {
             "base vectors" | "node reader counters" | "L2U8 admission sidecar" => base_source,
             "graph slab" => graph_source,
+            "ParlayANN working graph and extras" => "configuration",
             "query buffers" | "result IDs" | "ground truth IDs" => query_source,
             _ => "not estimated",
         });
@@ -447,6 +464,8 @@ fn calculate_memory(
         "query_count": query_count,
         "query_buffered_rows": if unknown_replay_buffers { None } else { Some(buffered) },
         "accounted_lower_bound_bytes": accounted,
+        "build_lower_bound_bytes": build_lower_bound,
+        "required_lower_bound_bytes": required,
         "budget_exceeded": exceeded,
         "num_points": num_points,
         "num_queries": query_count,
@@ -467,7 +486,7 @@ fn calculate_memory(
         "graph_source_policy": config.graph_source_policy,
         "graph_source": config.graph_source,
         "graph_selection_reason": config.graph_selection_reason,
-        "graph_action": if cache.is_hit { "load cache" } else if config.graph_source == GraphSource::Rust { "build Rust graph" } else if staged_source.is_some() { "import PA staged export" } else { "PA input required" },
+        "graph_action": if cache.is_hit { "load cache" } else if config.graph_source == GraphSource::Rust { "build Rust graph" } else if staged_source.is_some() { "import PA staged export" } else if cfg!(feature = "parlay") { "build ParlayANN graph" } else { "PA input required" },
         "cache_hit": cache.is_hit,
         "cache_path": cache.metadata_path,
         "staged_source": staged_source,
@@ -488,18 +507,28 @@ fn calculate_memory(
 
 /// Reject a known over-budget allocation before the base is loaded. Passing
 /// this check is not a promise that builder scratch and sidecars will also fit.
-pub fn check_memory_budget(config: &ResolvedRunConfig, num_points: usize) -> Result<(), String> {
+pub fn check_memory_budget(config: &ResolvedRunConfig, num_points: usize) -> Result<()> {
     let report = estimate_resident_memory(config, num_points)?;
     log::info!("Resource preflight:\n{}", format_report(&report));
     enforce_budget(&report)
 }
 
-pub fn enforce_budget(report: &serde_json::Value) -> Result<(), String> {
+pub fn enforce_budget(report: &serde_json::Value) -> Result<()> {
     if report["budget_exceeded"].as_bool() == Some(true) {
-        return Err(format!(
-            "memory budget exceeded (known lower bound):\n{}",
-            format_report(report)
-        ));
+        return Err(Error::new(
+            crate::ErrorCode::ResourceExhausted,
+            format!(
+                "memory budget exceeded (known lower bound):\n{}",
+                format_report(report)
+            ),
+        )
+        .at("preflight")
+        .with_detail(
+            "required_bytes",
+            report["required_lower_bound_bytes"].clone(),
+        )
+        .with_detail("budget_gib", report["memory_budget_gib"].clone())
+        .with_detail("components", report["components"].clone()));
     }
     Ok(())
 }
@@ -510,7 +539,7 @@ pub fn enforce_budget(report: &serde_json::Value) -> Result<(), String> {
 pub fn print_report(
     report: &serde_json::Value,
     format: crate::config::PreflightFormat,
-) -> Result<(), String> {
+) -> Result<()> {
     use crate::config::PreflightFormat;
     use std::io::IsTerminal;
     let table = match format {
@@ -523,7 +552,7 @@ pub fn print_report(
     } else {
         println!(
             "{}",
-            serde_json::to_string_pretty(report).map_err(|e| e.to_string())?
+            serde_json::to_string_pretty(report).map_err(Error::from)?
         );
     }
     Ok(())
@@ -602,6 +631,12 @@ pub fn format_report(report: &serde_json::Value) -> String {
     text.push_str(&format!(
         "\n\nAccounted search lower bound: {known:.3} GiB\n"
     ));
+    let required =
+        report["required_lower_bound_bytes"].as_u64().unwrap_or(0) as f64 / BYTES_PER_GIB;
+    let build = report["build_lower_bound_bytes"].as_u64().unwrap_or(0) as f64 / BYTES_PER_GIB;
+    text.push_str(&format!(
+        "Accounted build/import lower bound: {build:.3} GiB\n"
+    ));
     if let Some(budget) = report["memory_budget_gib"].as_f64() {
         let status = if report["budget_exceeded"].as_bool() == Some(true) {
             "EXCEEDED"
@@ -610,7 +645,7 @@ pub fn format_report(report: &serde_json::Value) -> String {
         };
         text.push_str(&format!(
             "Budget: {budget:.3} GiB | excess: {:.3} GiB | {status}\n",
-            (known - budget).max(0.0)
+            (required - budget).max(0.0)
         ));
     } else {
         text.push_str("Budget: not specified (estimate only)\n");
@@ -692,6 +727,29 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
+    #[cfg(feature = "parlay")]
+    #[test]
+    fn slab_build_counts_graph_once() {
+        let mut config = crate::config::cli::Args::try_parse_from(["orion", "sift1b"])
+            .unwrap()
+            .resolve_for_sweep()
+            .unwrap();
+        config.cache_dir =
+            std::env::temp_dir().join(format!("orion-slab-budget-{}", std::process::id()));
+        config.staged_file = None;
+        config.staged_file_explicit = false;
+        let report = preflight_report(&config).unwrap();
+        assert_eq!(report["graph_action"], "build ParlayANN graph");
+        assert_eq!(report["build_lower_bound_bytes"], 520_000_000_000u64);
+        let working = report["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "ParlayANN working graph and extras")
+            .unwrap();
+        assert_eq!(working["bytes"], 0);
+    }
+
     #[test]
     fn billion_lower_bound_and_budget_guard() {
         let args = crate::config::cli::Args::try_parse_from([
@@ -730,7 +788,10 @@ mod tests {
             "excess:",
             "unknown",
         ] {
-            assert!(error.contains(component), "missing {component}: {error}");
+            assert!(
+                error.to_string().contains(component),
+                "missing {component}: {error}"
+            );
         }
         assert!(report["components"].as_array().unwrap().len() >= 10);
     }

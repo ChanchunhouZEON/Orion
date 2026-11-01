@@ -4,15 +4,16 @@
  */
 
 //! Orion sweep driver: resolve config, load padded data, search with runtime dimensions.
-//! The shared runtime uses runtime-dimensional `orion::Orion` for every recipe.
+//! The shared runtime uses runtime-dimensional `orion_ann::Orion` for every recipe.
 
+use orion_ann::{Error, Result};
 use std::time::Instant;
 
 use clap::Parser;
-use orion_runtime::{
-    config::{ResolvedRunConfig, cli::Args, plan::SearchPlan},
-    data::{LoadedDataset, memory},
-    search::{F32CascadeBackend, NativeU8L2Backend, SearchBackend, utils},
+use orion_ann_runtime::{
+    config::{cli::Args, plan::SearchPlan, ResolvedRunConfig},
+    data::{memory, LoadedDataset},
+    search::{utils, F32CascadeBackend, NativeU8L2Backend, SearchBackend},
 };
 
 /// Promote the calling thread to the highest QoS tier (`USER_INTERACTIVE`,
@@ -152,7 +153,7 @@ macro_rules! log_search_metrics {
 fn run_sweep<B: SearchBackend>(
     config: &ResolvedRunConfig,
     mut data: LoadedDataset<B::Element>,
-) -> Result<(), String> {
+) -> Result<()> {
     let run = &config.sweep;
     let k = run.k;
     let num_threads = run.threads;
@@ -179,7 +180,7 @@ fn run_sweep<B: SearchBackend>(
             &calib_qs,
             run.calibration_l,
             config.window_size,
-            orion::CalibrationConfig {
+            orion_ann::CalibrationConfig {
                 k,
                 metric: config.metric.calibration_metric(),
             },
@@ -286,7 +287,7 @@ fn run_sweep<B: SearchBackend>(
     // Reset the per-phase atomic counters so the warmup's stats
     // don't contaminate the first timed L's averages.
     {
-        use orion::algorithm::search::{
+        use orion_ann::algorithm::search::{
             NDC_F32, NDC_I8, POST_CONV_ADMITS, POST_CONV_HOPS, PRE_CONV_ADMITS, PRE_CONV_HOPS,
             QUERY_COUNT, RAW_VISIT_COUNT, SETUP_NS, VISIT_COUNT,
         };
@@ -327,7 +328,7 @@ fn run_sweep<B: SearchBackend>(
         // Compares directly against PA's `average visited` and
         // exposes pre/post-convergence yield for diagnosis.
 
-        use orion::algorithm::search::{
+        use orion_ann::algorithm::search::{
             NDC_F32, NDC_I8, POST_CONV_ADMITS, POST_CONV_HOPS, PRE_CONV_ADMITS, PRE_CONV_HOPS,
             QUERY_COUNT, RAW_VISIT_COUNT, SETUP_NS, VISIT_COUNT,
         };
@@ -435,9 +436,9 @@ fn mean_recall(results: &[Vec<u32>], gt: &[Vec<u32>], k: usize) -> f64 {
     sum / n as f64
 }
 
-fn execute(args: Args) -> Result<(), String> {
+fn execute(args: Args) -> Result<()> {
     let config = args.resolve_for_sweep()?;
-    let resolved = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    let resolved = serde_json::to_string_pretty(&config).map_err(Error::from)?;
     if args.print_config {
         log::info!("{resolved}");
         return Ok(());

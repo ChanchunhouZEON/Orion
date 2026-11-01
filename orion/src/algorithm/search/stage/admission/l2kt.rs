@@ -21,7 +21,7 @@ use crate::model::{L2KTDataset, Neighbor};
 ///
 /// The sink performs the reconstruction inline; the norms slab is
 /// prefetched alongside the i8 base via
-/// [`vector::DistanceStream::with_aux`].
+/// [`orion_ann_vector::DistanceStream::with_aux`].
 pub struct L2KTAdmission<'a> {
     pub dataset: &'a L2KTDataset,
 }
@@ -60,7 +60,7 @@ pub struct L2KTSession<'a> {
 impl<'a> AdmissionSession for L2KTSession<'a> {
     #[inline]
     fn entry_distance(&self, vid: u32) -> f32 {
-        use vector::DistanceFn;
+        use orion_ann_vector::DistanceKernelBackend;
         let stride_elems = self.dataset.stride;
         unsafe {
             let v_ptr = self
@@ -69,14 +69,18 @@ impl<'a> AdmissionSession for L2KTSession<'a> {
                 .as_slice()
                 .as_ptr()
                 .add(vid as usize * stride_elems);
-            let block = vector::IpI8Distance::CHUNK_BYTES;
+            let block = orion_ann_vector::IpI8Distance::CHUNK_BYTES;
             let chunks = stride_elems / block;
-            let mut acc = vector::IpI8Distance::init();
+            let mut acc = orion_ann_vector::IpI8Distance::init();
             for c in 0..chunks {
                 let off = c * block;
-                vector::IpI8Distance::step(&mut acc, v_ptr.add(off), self.padded.as_ptr().add(off));
+                orion_ann_vector::IpI8Distance::step(
+                    &mut acc,
+                    v_ptr.add(off),
+                    self.padded.as_ptr().add(off),
+                );
             }
-            let neg_ip = vector::IpI8Distance::reduce(acc);
+            let neg_ip = orion_ann_vector::IpI8Distance::reduce(acc);
             let x_sq = *self.dataset.norms_sq.as_slice().as_ptr().add(vid as usize) as f32;
             self.q_norm_sq + x_sq + 2.0 * neg_ip
         }
@@ -98,7 +102,7 @@ impl<'a> AdmissionSession for L2KTSession<'a> {
 
         let mut w = 0usize;
         unsafe {
-            vector::DistanceStream::<vector::IpI8Distance>::new(
+            orion_ann_vector::DistanceStream::<orion_ann_vector::IpI8Distance>::new(
                 base_ptr,
                 stride_bytes,
                 stride_bytes,
@@ -121,7 +125,7 @@ impl<'a> AdmissionSession for L2KTSession<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diskann::model::InmemDataset;
+    use orion_ann_diskann::model::InmemDataset;
 
     #[test]
     fn l2kt_session_smoke() {

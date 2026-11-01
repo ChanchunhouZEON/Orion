@@ -20,7 +20,7 @@
 //!    accumulated chunk-accs into its single per-vertex
 //!    `running_acc`, emitting completed `f32` distances to `dists`.
 //!    The fast path uses a `#[inline(always)]` 4-way tree-reduce
-//!    helper ([`merge4_into`]); the slow path handles vertex
+//!    helper (`merge4_into`); the slow path handles vertex
 //!    boundaries and tail accs serially.
 //!
 //! ## State carried across triggers
@@ -39,7 +39,7 @@
 //! chunk accs without overflow. Grows on demand if the caller
 //! reserves past the current capacity.
 
-use crate::distance_fn::DistanceFn;
+use crate::distance_kernel::DistanceKernelBackend;
 use std::mem::MaybeUninit;
 
 /// Maximum `size_of::<K::Acc>()` across every NEON kernel we ship
@@ -72,7 +72,7 @@ struct AlignedAccBuf([u8; MAX_ACC_BYTES]);
 /// elements to NEON registers (no L1 round-trip), and lets the
 /// caller fuse the `K::merge` chain into surrounding compute.
 #[inline(always)]
-fn merge4_into<K: DistanceFn>(running: &mut K::Acc, accs: &[K::Acc; 4]) {
+fn merge4_into<K: DistanceKernelBackend>(running: &mut K::Acc, accs: &[K::Acc; 4]) {
     let mut p01 = accs[0];
     K::merge(&mut p01, accs[1]);
     let mut p23 = accs[2];
@@ -178,7 +178,7 @@ impl CacheLineDistanceBuffer {
     /// so the per-slot init is essentially free in the optimised
     /// codegen.
     #[inline]
-    pub fn slots_mut<K: DistanceFn>(&mut self, n: usize) -> &mut [MaybeUninit<K::Acc>] {
+    pub fn slots_mut<K: DistanceKernelBackend>(&mut self, n: usize) -> &mut [MaybeUninit<K::Acc>] {
         let acc_size = std::mem::size_of::<K::Acc>();
         let extra = n * acc_size;
         self.ensure_room(extra);
@@ -200,7 +200,7 @@ impl CacheLineDistanceBuffer {
     /// distances to `dists`. Resets `scratch_filled` to 0 so the
     /// next round writes from the start of scratch again.
     ///
-    /// Fast path: 4-way tree-reduce via [`merge4_into`] when at
+    /// Fast path: 4-way tree-reduce via `merge4_into` when at
     /// least 4 accs are available and the next 4 don't cross a
     /// vertex boundary. Slow path handles tails and boundaries one
     /// chunk at a time.
@@ -209,7 +209,7 @@ impl CacheLineDistanceBuffer {
     /// merge — used by the streaming caller to defer excess
     /// vertices to a later trigger.
     #[inline]
-    pub fn merge_buffered<K: DistanceFn>(
+    pub fn merge_buffered<K: DistanceKernelBackend>(
         &mut self,
         chunks_per_vert: usize,
         max_verts: usize,
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn slots_mut_advances_scratch_filled() {
         let mut buf = CacheLineDistanceBuffer::new();
-        let acc_size = std::mem::size_of::<<L2F32Distance as DistanceFn>::Acc>();
+        let acc_size = std::mem::size_of::<<L2F32Distance as DistanceKernelBackend>::Acc>();
         let slots = buf.slots_mut::<L2F32Distance>(4);
         assert_eq!(slots.len(), 4);
         assert_eq!(buf.scratch_filled, 4 * acc_size);

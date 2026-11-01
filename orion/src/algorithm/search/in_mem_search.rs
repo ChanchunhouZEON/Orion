@@ -12,13 +12,14 @@
 //! instrumentation and legacy diagnostic searches live in `super::diagnostics`.
 
 use super::diagnostics::{NeighborMode, NoopObserver, SearchObserver};
+use crate::Result;
 use crate::StaticOrion;
 use crate::index::compressed_index::CompressedIndex;
 use crate::model::Neighbor as DNeighbor;
 use crate::model::scratch::{InMemScratchPool, InMemSearchScratch};
-use diskann::common::ANNResult;
+
+use orion_ann_vector::FullPrecisionDistance;
 use rayon::prelude::*;
-use vector::FullPrecisionDistance;
 
 use super::stage::{
     AdmissionSession, AdmissionStage, PrefilterSession, PrefilterStage, RerankStage,
@@ -167,7 +168,7 @@ where
         prefilter: Option<&P>,
         admission: &A,
         rerank: &R,
-    ) -> ANNResult<Vec<u32>>
+    ) -> Result<Vec<u32>>
     where
         P: ?Sized + PrefilterStage,
         A: ?Sized + AdmissionStage,
@@ -208,7 +209,7 @@ where
         rerank: &R,
         mode: NeighborMode,
         observer: &mut O,
-    ) -> ANNResult<Vec<u32>>
+    ) -> Result<Vec<u32>>
     where
         P: ?Sized + PrefilterStage,
         A: ?Sized + AdmissionStage,
@@ -258,7 +259,7 @@ where
         prefilter: Option<&P>,
         admission: &A,
         rerank: &R,
-    ) -> ANNResult<Vec<Vec<u32>>>
+    ) -> Result<Vec<Vec<u32>>>
     where
         P: ?Sized + PrefilterStage + Sync,
         A: ?Sized + AdmissionStage + Sync,
@@ -273,7 +274,7 @@ where
         results
             .par_iter_mut()
             .zip(queries.par_iter())
-            .try_for_each(|(out, query)| -> ANNResult<()> {
+            .try_for_each(|(out, query)| -> Result<()> {
                 *out = self.search_unified(
                     query,
                     k,
@@ -396,7 +397,7 @@ impl<D, S> CompressedIndex<D, S> {
         observer: &mut O,
         t_setup: std::time::Instant,
         finish: impl FnOnce(&mut InMemSearchScratch, usize) -> Vec<u32>,
-    ) -> ANNResult<Vec<u32>> {
+    ) -> Result<Vec<u32>> {
         let entry = self.entry;
         let graph = &self.graph;
         // ── Scratch pool ─────────────────────────────────────────

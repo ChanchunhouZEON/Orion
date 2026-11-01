@@ -1,5 +1,5 @@
 //! Borrow logical rows from either storage layout, without packing a second base.
-use diskann::model::{InmemDataset, PaddedDataset};
+use orion_ann_diskann::model::{InmemDataset, PaddedDataset};
 
 pub trait F32Rows: Sync {
     fn dimension(&self) -> usize;
@@ -68,7 +68,7 @@ pub fn read_rows<T: bytemuck::Pod>(
     rows: usize,
     memory_stride: usize,
     disk_stride: usize,
-) -> diskann::common::ANNResult<diskann::common::AlignedBoxWithSlice<T>> {
+) -> orion_ann_diskann::common::ANNResult<orion_ann_diskann::common::AlignedBoxWithSlice<T>> {
     use std::io::{Error, ErrorKind};
     let count = rows
         .checked_mul(memory_stride)
@@ -76,7 +76,7 @@ pub fn read_rows<T: bytemuck::Pod>(
     if rows == 0 || disk_stride == 0 || disk_stride > memory_stride {
         return Err(Error::new(ErrorKind::InvalidData, "invalid sidecar row layout").into());
     }
-    let mut data = diskann::common::AlignedBoxWithSlice::<T>::new(count, 64)?;
+    let mut data = orion_ann_diskann::common::AlignedBoxWithSlice::<T>::new(count, 64)?;
     if memory_stride == disk_stride {
         reader.read_exact(bytemuck::cast_slice_mut(data.as_mut_slice()))?;
         return Ok(data);
@@ -111,9 +111,13 @@ impl CascadeData for PaddedDataset<f32> {
     fn truth(&self, ip: bool) -> Box<dyn crate::algorithm::search::stage::RerankStage + '_> {
         use crate::algorithm::search::stage::rerank::DynamicF32Rerank;
         if ip {
-            Box::new(DynamicF32Rerank::<vector::IpF32Distance>::new(self))
+            Box::new(DynamicF32Rerank::<orion_ann_vector::IpF32Distance>::new(
+                self,
+            ))
         } else {
-            Box::new(DynamicF32Rerank::<vector::L2F32Distance>::new(self))
+            Box::new(DynamicF32Rerank::<orion_ann_vector::L2F32Distance>::new(
+                self,
+            ))
         }
     }
 }

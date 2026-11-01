@@ -6,7 +6,7 @@
 
 use std::mem::{align_of, size_of};
 
-use crate::DistanceFn;
+use crate::DistanceKernelBackend;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaddedLayout {
@@ -20,7 +20,7 @@ impl PaddedLayout {
     /// Round rows to a whole number of kernel blocks. The block width is
     /// independent of the machine's cache-line width. All current kernels
     /// use power-of-two blocks of at least 16 bytes.
-    pub fn for_kernel<K: DistanceFn>(logical_dim: usize) -> Result<Self, String> {
+    pub fn for_kernel<K: DistanceKernelBackend>(logical_dim: usize) -> Result<Self, String> {
         if logical_dim > K::MAX_COORDINATES {
             return Err("dimension exceeds kernel accumulator range".into());
         }
@@ -33,7 +33,7 @@ impl PaddedLayout {
             || element_bytes == 0
             || block_bytes < 16
             || !block_bytes.is_power_of_two()
-            || block_bytes % element_bytes != 0
+            || !block_bytes.is_multiple_of(element_bytes)
         {
             return Err("invalid dimension, element size, or SIMD block size".into());
         }

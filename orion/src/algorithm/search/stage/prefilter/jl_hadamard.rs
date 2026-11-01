@@ -68,7 +68,7 @@ impl<'a> PrefilterSession for JlHadamardSession<'a> {
 
         let mut w = 0usize;
         unsafe {
-            vector::DistanceStream::<vector::JLHammingDistance>::new(
+            orion_ann_vector::DistanceStream::<orion_ann_vector::JLHammingDistance>::new(
                 base_ptr,
                 stride_bytes,
                 stride_bytes,

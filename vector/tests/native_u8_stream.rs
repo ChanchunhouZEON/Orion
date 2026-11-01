@@ -1,7 +1,7 @@
 //! Numerical parity for the kernels used by native SIFT admission.
 //! Run on the target architecture to exercise its stream unrolling.
 
-use vector::{
+use orion_ann_vector::{
     distance_l2_vector_u8_batch4, DistanceStream, FullPrecisionDistance, L2U8Distance, Metric,
 };
 
@@ -114,7 +114,7 @@ fn u8_stream_tail_shapes_match_scalar() {
 
 #[test]
 fn u8_kernel_all_byte_pairs_match_squared_difference() {
-    use vector::{DistanceFn, L2U8Distance};
+    use orion_ann_vector::{DistanceKernelBackend, L2U8Distance};
 
     // Exercise the kernel directly, including every negative difference and
     // both extreme byte values. Run in debug too: release wrapping masked a

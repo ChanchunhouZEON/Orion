@@ -4,13 +4,14 @@
  */
 
 //! Bounded-buffer vector loading into the allocation transferred to Orion.
+use crate::{Error, Result};
 pub mod memory;
 pub mod padded;
 pub mod query;
 
 use crate::config::{ResolvedRunConfig, VectorStorageKind};
 use crate::search::cascade::SearchMetric;
-use diskann::common::AlignedBoxWithSlice;
+use orion_ann_diskann::common::AlignedBoxWithSlice;
 use std::io::{BufReader, Read};
 #[cfg(test)]
 use std::io::{Seek, SeekFrom};
@@ -53,16 +54,16 @@ impl VectorFormat {
     ///
     /// Paths without an extension _default_ to `fvecs` for backward
     /// compatibility. Unknown extensions require an explicit CLI format.
-    pub fn infer(path: &Path) -> Result<Self, String> {
+    pub fn infer(path: &Path) -> Result<Self> {
         match path.extension().and_then(|x| x.to_str()) {
             None | Some("fvecs") => Ok(Self::Fvecs),
             Some("bvecs") => Ok(Self::Bvecs),
             Some("fbin") => Ok(Self::Fbin),
             Some("u8bin") => Ok(Self::U8bin),
-            _ => Err(format!(
+            _ => Err(Error::from(format!(
                 "unknown vector format for {}; specify --base-format/--query-format",
                 path.display()
-            )),
+            ))),
         }
     }
 
@@ -99,15 +100,14 @@ pub struct VectorHeader {
 /// For `fvecs` / `bvecs`, the first record supplies the dimension and the row
 /// count is inferred from the total file size. Dimensions on subsequent records
 /// are intentionally validated later while decoding the requested prefix.
-pub fn inspect_vector_file(path: &Path, format: VectorFormat) -> Result<VectorHeader, String> {
-    let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+pub fn inspect_vector_file(path: &Path, format: VectorFormat) -> Result<VectorHeader> {
+    let mut file = std::fs::File::open(path).map_err(|e| Error::io("open", path, e))?;
 
-    let file_bytes = file.metadata().map_err(|e| e.to_string())?.len();
+    let file_bytes = file.metadata().map_err(Error::from)?.len();
 
-    let read_header_word = |file: &mut std::fs::File| -> Result<usize, String> {
+    let read_header_word = |file: &mut std::fs::File| -> Result<usize> {
         let mut word_bytes = [0; 4];
-        file.read_exact(&mut word_bytes)
-            .map_err(|e| e.to_string())?;
+        file.read_exact(&mut word_bytes).map_err(Error::from)?;
 
         Ok(u32::from_le_bytes(word_bytes) as usize)
     };
@@ -126,16 +126,20 @@ pub fn inspect_vector_file(path: &Path, format: VectorFormat) -> Result<VectorHe
         // dimension values are checked later during actual decoding.
         let record_bytes = 4 + first_header_word as u64 * format.coordinate_bytes() as u64;
         if file_bytes % record_bytes != 0 {
-            return Err("truncated vector records".into());
+            return Err(Error::invalid_data("truncated vector records")
+                .at("read_vectors")
+                .with_detail("path", path.to_string_lossy().into_owned()));
         }
         (
-            usize::try_from(file_bytes / record_bytes).map_err(|e| e.to_string())?,
+            usize::try_from(file_bytes / record_bytes).map_err(Error::from)?,
             first_header_word,
         )
     };
 
     if dimension == 0 || count == 0 {
-        return Err("empty vectors".into());
+        return Err(Error::invalid_data("empty vectors")
+            .at("read_vectors")
+            .with_detail("path", path.to_string_lossy().into_owned()));
     }
 
     // For file-header formats, verify that the declared shape exactly accounts
@@ -157,7 +161,11 @@ pub fn inspect_vector_file(path: &Path, format: VectorFormat) -> Result<VectorHe
     };
 
     if expected_file_bytes != file_bytes {
-        return Err("binary header/file length mismatch".into());
+        return Err(Error::invalid_data("binary header/file length mismatch")
+            .at("read_vectors")
+            .with_detail("path", path.to_string_lossy().into_owned())
+            .with_detail("expected_bytes", expected_file_bytes)
+            .with_detail("actual_bytes", file_bytes));
     }
 
     Ok(VectorHeader { count, dimension })
@@ -176,7 +184,7 @@ pub fn inspect_vector_file(path: &Path, format: VectorFormat) -> Result<VectorHe
 /// - whether encoded `f32` coordinates are accepted,
 /// - what post-load normalization is required by the search metric.
 pub trait BaseElement:
-    Default + Copy + Send + Sync + Into<f32> + orion::index::compressed_index::DynamicElement
+    Default + Copy + Send + Sync + Into<f32> + orion_ann::index::compressed_index::DynamicElement
 {
     /// Resident storage representation selected by this element type.
     const STORAGE: VectorStorageKind;
@@ -194,10 +202,10 @@ pub trait BaseElement:
     ///
     /// Implementations may reject this conversion when doing so would require
     /// an implicit lossy transformation such as quantization.
-    fn from_float(value: f32) -> Result<Self, String>;
+    fn from_float(value: f32) -> Result<Self>;
 
     /// Performs representation-specific validation or normalization after load.
-    fn normalize(data: &mut [Self], dimension: usize, metric: SearchMetric) -> Result<(), String>;
+    fn normalize(data: &mut [Self], dimension: usize, metric: SearchMetric) -> Result<()>;
 }
 
 impl BaseElement for f32 {
@@ -207,11 +215,11 @@ impl BaseElement for f32 {
         f32::from(value)
     }
 
-    fn from_float(value: f32) -> Result<Self, String> {
+    fn from_float(value: f32) -> Result<Self> {
         Ok(value)
     }
 
-    fn normalize(data: &mut [Self], dimension: usize, metric: SearchMetric) -> Result<(), String> {
+    fn normalize(data: &mut [Self], dimension: usize, metric: SearchMetric) -> Result<()> {
         validate_and_normalize_vectors(data, dimension, metric)
     }
 }
@@ -227,15 +235,11 @@ impl BaseElement for u8 {
         value
     }
 
-    fn from_float(_value: f32) -> Result<Self, String> {
+    fn from_float(_value: f32) -> Result<Self> {
         Err("native u8 loader does not quantize f32 input".into())
     }
 
-    fn normalize(
-        _data: &mut [Self],
-        _dimension: usize,
-        metric: SearchMetric,
-    ) -> Result<(), String> {
+    fn normalize(_data: &mut [Self], _dimension: usize, metric: SearchMetric) -> Result<()> {
         if metric != SearchMetric::L2 {
             return Err("native u8 requires L2".into());
         }
@@ -257,17 +261,17 @@ fn read_vectors_into<T: BaseElement>(
     format: VectorFormat,
     dimension: usize,
     output: &mut [T],
-) -> Result<(), String> {
+) -> Result<()> {
     if dimension == 0 || output.len() % dimension != 0 {
         return Err("invalid output vector shape".into());
     }
-    let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut file = std::fs::File::open(path).map_err(|e| Error::io("open", path, e))?;
     if format == VectorFormat::U8bin {
         if let Some(bytes) = T::native_bytes_mut(output) {
             // The caller has validated the header and total length. Read only
             // the requested prefix, leaving the resident SIMD tail untouched.
-            file.seek(SeekFrom::Start(8)).map_err(|e| e.to_string())?;
-            return read_native_bytes(&mut file, bytes).map_err(|e| e.to_string());
+            file.seek(SeekFrom::Start(8)).map_err(Error::from)?;
+            return read_native_bytes(&mut file, bytes).map_err(Error::from);
         }
     }
     let mut reader = BufReader::with_capacity(VECTOR_READ_BUFFER_BYTES, file);
@@ -276,7 +280,7 @@ fn read_vectors_into<T: BaseElement>(
     // Shape validation has already been performed by `inspect_vector_file`, so
     // decoding can start directly at the coordinate payload.
     if format.has_file_header() {
-        reader.seek(SeekFrom::Start(8)).map_err(|e| e.to_string())?;
+        reader.seek(SeekFrom::Start(8)).map_err(Error::from)?;
     }
 
     // Reuse a single encoded-row buffer. The resident output is filled in place,
@@ -301,7 +305,7 @@ fn read_vector_row<T: BaseElement, R: Read>(
     dimension: usize,
     encoded_row: &mut [u8],
     values: &mut [T],
-) -> Result<(), String> {
+) -> Result<()> {
     if !format.has_file_header() {
         // Vecs formats repeat the dimension before every record.
         //
@@ -313,14 +317,14 @@ fn read_vector_row<T: BaseElement, R: Read>(
 
         reader
             .read_exact(&mut dimension_header)
-            .map_err(|e| e.to_string())?;
+            .map_err(Error::from)?;
 
         if u32::from_le_bytes(dimension_header) as usize != dimension {
             return Err("inconsistent per-record dimension".into());
         }
     }
 
-    reader.read_exact(encoded_row).map_err(|e| e.to_string())?;
+    reader.read_exact(encoded_row).map_err(Error::from)?;
 
     if format.coordinate_bytes() == 1 {
         // Byte-valued formats can be written directly into either native
@@ -358,7 +362,7 @@ fn read_native_bytes<R: Read>(reader: &mut R, output: &mut [u8]) -> std::io::Res
 /// The base vectors are stored in an [`AlignedBoxWithSlice<T>`] and are owned
 /// by this struct until [`take_index_dataset`](Self::take_index_dataset) is
 /// called. That method transfers the allocation directly into an
-/// [`PaddedDataset`](diskann::model::PaddedDataset) without reallocating or
+/// [`PaddedDataset`](orion_ann_diskann::model::PaddedDataset) without reallocating or
 /// copying the base vectors.
 ///
 /// After the transfer, [`base`](Self::base) becomes `None`.
@@ -368,7 +372,7 @@ fn read_native_bytes<R: Read>(reader: &mut R, output: &mut [u8]) -> std::io::Res
 /// A `LoadedBase` is normally constructed from a validated
 /// [`ResolvedRunConfig`] using [`load`](Self::load). The resulting base
 /// allocation can then be moved into an
-/// [`Orion`](orion::Orion) index via
+/// [`Orion`](orion_ann::Orion) index via
 /// [`take_index_dataset`](Self::take_index_dataset).
 ///
 /// This ownership-transfer path avoids keeping a second copy of the original
@@ -378,7 +382,7 @@ pub struct LoadedBase<T = f32> {
     /// Padded allocation, transferred to the index without copying.
     pub base: Option<AlignedBoxWithSlice<T>>,
     pub num_points: usize,
-    pub layout: vector::PaddedLayout,
+    pub layout: orion_ann_vector::PaddedLayout,
 }
 
 /// Replayable experiment inputs. Ordinary search uses LoadedBase + QuerySource.
@@ -402,7 +406,7 @@ impl<T> std::ops::DerefMut for LoadedDataset<T> {
 
 impl<T: BaseElement> LoadedBase<T> {
     /// Transfers ownership of the base-vector allocation into an
-    /// [`PaddedDataset`](diskann::model::PaddedDataset).
+    /// [`PaddedDataset`](orion_ann_diskann::model::PaddedDataset).
     ///
     /// The underlying allocation is moved rather than copied. After a
     /// successful call, [`Self::base`] is `None`, so the allocation cannot be
@@ -411,12 +415,17 @@ impl<T: BaseElement> LoadedBase<T> {
     /// # Errors
     ///
     /// Returns an error if the base allocation has already been transferred.
-    pub fn take_index_dataset(&mut self) -> Result<diskann::model::PaddedDataset<T>, String> {
+    pub fn take_index_dataset(&mut self) -> Result<orion_ann_diskann::model::PaddedDataset<T>> {
         let allocation = self
             .base
             .take()
             .ok_or("base allocation already transferred")?;
-        diskann::model::PaddedDataset::from_allocation(allocation, self.num_points, self.layout)
+        orion_ann_diskann::model::PaddedDataset::from_allocation(
+            allocation,
+            self.num_points,
+            self.layout,
+        )
+        .map_err(Error::from)
     }
 
     /// Loads the benchmark dataset described by `config` into memory.
@@ -432,16 +441,16 @@ impl<T: BaseElement> LoadedBase<T> {
     /// dataset dimensions are inconsistent, the point count is invalid,
     /// memory-budget validation fails, allocation fails, or any input file
     /// cannot be loaded or validated.
-    pub fn load(config: &ResolvedRunConfig) -> Result<Self, String> {
+    pub fn load(config: &ResolvedRunConfig) -> Result<Self> {
         if config.search_plan().storage().kind != T::STORAGE {
             return Err("this executable expects f32 storage; use the orion binary for native u8, or --vector-storage f32 --admission l2-u8".into());
         }
         let base_header = inspect_vector_file(&config.base, config.base_format)?;
         if base_header.dimension != config.dimension {
-            return Err(format!(
+            return Err(Error::from(format!(
                 "base dimension {} != configured dimension {}",
                 base_header.dimension, config.dimension
-            ));
+            )));
         }
 
         let num_points = base_header.count.min(config.max_points);
@@ -455,7 +464,7 @@ impl<T: BaseElement> LoadedBase<T> {
 
         crate::data::memory::check_memory_budget(config, num_points)?;
 
-        let layout = vector::PaddedLayout::for_kernel::<T::Kernel>(dimension)?;
+        let layout = orion_ann_vector::PaddedLayout::for_kernel::<T::Kernel>(dimension)?;
         let dataset = padded::load::<T>(
             &config.base,
             config.base_format,
@@ -473,7 +482,7 @@ impl<T: BaseElement> LoadedBase<T> {
 }
 
 impl<T: BaseElement> LoadedDataset<T> {
-    pub fn load(config: &ResolvedRunConfig) -> Result<Self, String> {
+    pub fn load(config: &ResolvedRunConfig) -> Result<Self> {
         if config.prepare_only {
             return Ok(Self {
                 base_data: LoadedBase::load(config)?,
@@ -484,7 +493,10 @@ impl<T: BaseElement> LoadedDataset<T> {
         let path = config.query.as_deref().ok_or("--query is required")?;
         if path == Path::new("-")
             || !std::fs::metadata(path)
-                .map_err(|e| format!("{}: {e}", path.display()))?
+                .map_err(|e| {
+                    let message = format!("{}: {e}", path.display());
+                    Error::from(e).with_message(message)
+                })?
                 .is_file()
         {
             return Err("sweep/diagnostics require a replayable query file; use orion for streaming queries".into());
@@ -501,7 +513,7 @@ impl<T: BaseElement> LoadedDataset<T> {
             .count
             .min(config.max_points);
         let ground_truth = if let Some(path) = &config.groundtruth {
-            let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let file = std::fs::File::open(path).map_err(|e| Error::io("open", path, e))?;
             let mut reader = crate::data::query::GroundTruthReader::new(
                 BufReader::new(file),
                 config.sweep.k,
@@ -537,11 +549,11 @@ fn read_dimensioned_records<R: Read + Seek, T>(
     reader: &mut R,
     limit: usize,
     decode: fn([u8; 4]) -> T,
-) -> Result<(Vec<T>, usize), String> {
-    let bytes = reader.seek(SeekFrom::End(0)).map_err(|e| e.to_string())?;
-    reader.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+) -> Result<(Vec<T>, usize)> {
+    let bytes = reader.seek(SeekFrom::End(0)).map_err(Error::from)?;
+    reader.seek(SeekFrom::Start(0)).map_err(Error::from)?;
     let mut header = [0; 4];
-    reader.read_exact(&mut header).map_err(|e| e.to_string())?;
+    reader.read_exact(&mut header).map_err(Error::from)?;
     let dimension = u32::from_le_bytes(header) as usize;
     if dimension == 0 || limit == 0 {
         return Err("empty vectors or zero record limit".into());
@@ -551,7 +563,7 @@ fn read_dimensioned_records<R: Read + Seek, T>(
         return Err("truncated or inconsistent vector records".into());
     }
     let count = usize::try_from(bytes / record_bytes)
-        .map_err(|e| e.to_string())?
+        .map_err(Error::from)?
         .min(limit);
 
     let element_count = count.checked_mul(dimension).ok_or("vector size overflow")?;
@@ -559,13 +571,13 @@ fn read_dimensioned_records<R: Read + Seek, T>(
     let mut data = Vec::with_capacity(element_count);
     let mut record = vec![0; record_bytes];
 
-    reader.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    reader.seek(SeekFrom::Start(0)).map_err(Error::from)?;
     for _ in 0..count {
-        reader.read_exact(&mut header).map_err(|e| e.to_string())?;
+        reader.read_exact(&mut header).map_err(Error::from)?;
         if u32::from_le_bytes(header) as usize != dimension {
             return Err("inconsistent per-record dimension".into());
         }
-        reader.read_exact(&mut record).map_err(|e| e.to_string())?;
+        reader.read_exact(&mut record).map_err(Error::from)?;
         data.extend(
             record
                 .chunks_exact(4)
@@ -580,7 +592,7 @@ pub(crate) fn validate_and_normalize_vectors(
     data: &mut [f32],
     dimension: usize,
     metric: SearchMetric,
-) -> Result<(), String> {
+) -> Result<()> {
     for vector in data.chunks_exact_mut(dimension) {
         if vector.iter().any(|v| !v.is_finite()) {
             return Err("non-finite vector coordinate".into());
@@ -625,18 +637,18 @@ mod tests {
                 .unwrap();
         assert_eq!((read, d), (vec![1.0, 2.0], 2));
         let invalid = bytes(&[(2, [1.0, 2.0]), (3, [3.0, 4.0])]);
-        assert!(
-            read_dimensioned_records(&mut Cursor::new(invalid), usize::MAX, f32::from_le_bytes)
-                .is_err()
-        );
-        assert!(
-            read_dimensioned_records(
-                &mut Cursor::new(&data[..data.len() - 1]),
-                usize::MAX,
-                f32::from_le_bytes
-            )
-            .is_err()
-        );
+        assert!(read_dimensioned_records(
+            &mut Cursor::new(invalid),
+            usize::MAX,
+            f32::from_le_bytes
+        )
+        .is_err());
+        assert!(read_dimensioned_records(
+            &mut Cursor::new(&data[..data.len() - 1]),
+            usize::MAX,
+            f32::from_le_bytes
+        )
+        .is_err());
     }
 
     #[test]

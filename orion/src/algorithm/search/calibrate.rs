@@ -10,8 +10,9 @@ use crate::algorithm::search::utils::AlignedQuery;
 use crate::index::compressed_index::CompressedIndex;
 use crate::model::Neighbor as DNeighbor;
 use crate::model::scratch::InMemSearchScratch;
-use diskann::common::{ANNError, ANNResult};
-use vector::{FullPrecisionDistance, Metric};
+use crate::{Error, Result};
+
+use orion_ann_vector::{FullPrecisionDistance, Metric};
 
 /// Default calibration headroom relative to the requested top-k.
 /// This is an empirical policy, not a coverage or recall guarantee.
@@ -42,7 +43,7 @@ pub enum CalibrationMetric {
 }
 
 impl CalibrationMetric {
-    fn distance<const N: usize>(self, a: &[f32; N], b: &[f32; N]) -> ANNResult<f32>
+    fn distance<const N: usize>(self, a: &[f32; N], b: &[f32; N]) -> Result<f32>
     where
         [f32; N]: FullPrecisionDistance<f32, N>,
     {
@@ -51,7 +52,7 @@ impl CalibrationMetric {
             Self::InnerProduct => {
                 // The SIMD IP kernel requires dimensions divisible by four.
                 if N % 4 == 0 {
-                    vector::distance_ip_vector_f32(a, b)
+                    orion_ann_vector::distance_ip_vector_f32(a, b)
                 } else {
                     -a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>()
                 }
@@ -92,7 +93,7 @@ pub trait CalibrationElement: Default + Copy + Send + Sync + Into<f32> {
         metric: CalibrationMetric,
         query: &[f32; N],
         vertex: &[Self; N],
-    ) -> ANNResult<f32>;
+    ) -> Result<f32>;
 }
 
 impl CalibrationElement for f32 {
@@ -100,7 +101,7 @@ impl CalibrationElement for f32 {
         metric: CalibrationMetric,
         query: &[f32; N],
         vertex: &[Self; N],
-    ) -> ANNResult<f32> {
+    ) -> Result<f32> {
         metric.distance(query, vertex)
     }
 }
@@ -110,7 +111,7 @@ impl CalibrationElement for u8 {
         metric: CalibrationMetric,
         query: &[f32; N],
         vertex: &[Self; N],
-    ) -> ANNResult<f32> {
+    ) -> Result<f32> {
         if metric != CalibrationMetric::L2 {
             return Err(calibration_error("metric", "native u8 requires L2"));
         }
@@ -135,7 +136,7 @@ impl Default for CalibrationConfig {
 }
 
 impl CalibrationConfig {
-    fn validate(self, search_list_size: usize, window_size: usize) -> ANNResult<()> {
+    fn validate(self, search_list_size: usize, window_size: usize) -> Result<()> {
         if self.k == 0 || self.k > search_list_size {
             return Err(calibration_error("k", "require 1 <= k <= search_list_size"));
         }
@@ -155,11 +156,8 @@ impl CalibrationConfig {
     }
 }
 
-fn calibration_error(parameter: &str, err: &str) -> ANNError {
-    ANNError::IndexConfigError {
-        parameter: parameter.into(),
-        err: err.into(),
-    }
+fn calibration_error(parameter: &str, err: &str) -> Error {
+    Error::configuration(parameter, err).at("calibrate")
 }
 
 /// Calibrated search parameters.
@@ -185,8 +183,8 @@ impl<D, S> CompressedIndex<D, S> {
         search_list_size: usize,
         window_size: usize,
         config: CalibrationConfig,
-        distance: impl Fn(usize, u32) -> ANNResult<f32>,
-    ) -> ANNResult<CalibratedParams> {
+        distance: impl Fn(usize, u32) -> Result<f32>,
+    ) -> Result<CalibratedParams> {
         config.validate(search_list_size, window_size)?;
         let entry = self.entry;
         let graph = &self.graph;
@@ -411,8 +409,8 @@ impl<D, S> CompressedIndex<D, S> {
         search_list_size: usize,
         window_size: usize,
         config: CalibrationConfig,
-        distance: impl Fn(usize, u32) -> ANNResult<f32>,
-    ) -> ANNResult<CalibrationDiagnostics> {
+        distance: impl Fn(usize, u32) -> Result<f32>,
+    ) -> Result<CalibrationDiagnostics> {
         config.validate(search_list_size, window_size)?;
         let entry = self.entry;
         let graph = &self.graph;
@@ -648,7 +646,7 @@ where
         beam: usize,
         window: usize,
         config: CalibrationConfig,
-    ) -> ANNResult<CalibratedParams> {
+    ) -> Result<CalibratedParams> {
         let aligned: Vec<_> = queries.iter().map(|q| AlignedQuery(*q)).collect();
         self.calibrate_scored(queries.len(), beam, window, config, |q, id| {
             T::calibration_distance(
@@ -664,7 +662,7 @@ where
         beam: usize,
         window: usize,
         config: CalibrationConfig,
-    ) -> ANNResult<CalibrationDiagnostics> {
+    ) -> Result<CalibrationDiagnostics> {
         let aligned: Vec<_> = queries.iter().map(|q| AlignedQuery(*q)).collect();
         self.calibrate_diagnostics_scored(queries.len(), beam, window, config, |q, id| {
             T::calibration_distance(

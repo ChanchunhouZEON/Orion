@@ -14,9 +14,9 @@ Resolution selects one concrete source before preflight or payload loading:
 
 1. Validate an existing PA cache for the current inputs and construction recipe.
 2. Otherwise use an available PA STAG v3 export.
-3. Otherwise, for f32 storage, use a Rust cache or build in-process.
-4. For native u8, retain PA as required and report the missing input. There is
-   no silent widening or native-u8 Rust construction path.
+3. Otherwise build in memory with bundled ParlayANN, for f32 or native u8.
+4. When the default `parlay` feature is disabled, f32 may use a Rust cache/build;
+   native u8 reports that the builder or a PA cache/export is required.
 
 Only absence permits fallback. An incomplete cache pair, incompatible manifest,
 malformed existing STAG header, or permission error is an error. Payload checks
@@ -29,7 +29,7 @@ An explicit staged path selects PA strictly, including alongside `auto`.
 PA settings. A YAML `source: parlayann` or `source: rust` is strict as well;
 `--graph-source auto` can override that policy.
 
-Explicit PA requires a cache or an export; it never switches builders. Explicit
+Explicit PA loads/imports/builds with PA; it never substitutes the Rust builder. Explicit
 Rust ignores PA exports. Native u8 rejects explicit Rust before loading data.
 For reproducible experiments, pin a concrete source even when auto would pick it.
 
@@ -37,8 +37,8 @@ For reproducible experiments, pin a concrete source even when auto would pick it
 
 Default cache roots are `cache/orion_parlayann` and `cache/orion`, chosen by the
 **effective source**. A custom `--cache-dir` is shared as a location, but PA and
-Rust still have separate namespace keys. Auto probes the PA root before the
-Rust root; a PA export has priority over an existing Rust cache.
+Rust still have separate namespace keys. With the default backend, auto uses the PA root even if a Rust cache exists.
+Rust fallback is available only without the `parlay` feature.
 
 Preset STAG paths expand `${PA_ROOT}` (default `../ParlayANN`) and
 `${max_extra}`. The historical `_pct60.staged` suffix is accepted for default
@@ -50,7 +50,7 @@ degree. Export capacity determines the imported slab stride.
 never loads vector/graph payloads. `--preflight` uses the same resolved source
 and reports `graph_action`, `cache_path`, and memory components. When inputs are
 absent, an offline estimate can still succeed, including a PA estimate labeled
-`PA input required`; this is not an executable-input validation success.
+`build ParlayANN graph`; this is not an executable-input validation success.
 
 ## Identity and provenance
 
@@ -64,7 +64,10 @@ manifest. New manifests record `graph_source` and, for imports, the export's
 path, size and modification time. These identify inputs rather than provide
 cryptographic content verification. Existing version-1 manifests without the
 new source field remain readable; their namespace already separates sources.
-A conflicting source field is rejected.
+A conflicting source field is rejected. In-memory builds record `builder_recipe`
+(`parlay-memory-v1-unquantized-two-pass`); unknown recipes are rejected. The recipe
+identifies two unquantized passes, the vendored builder version, and the shared
+extras/partition behavior. Imported caches retain their source-file provenance.
 
 Preset-compatible legacy names are considered only when the input-keyed cache
 is absent. Matching requires the original dataset path/format and construction
@@ -76,7 +79,13 @@ provided the requested path still matches recorded provenance.
 
 ## Builder differences
 
-PA imports topology from the STAG-capable
+The bundled PA backend borrows padded rows, builds with L2 (or f32 inner product),
+and constructs adjacency/extras directly in the final Orion slab. After workers
+join, partitions are finalized in place using bounded per-worker node scratch.
+Cosine rows are normalized before L2 construction. Preflight counts the slab once;
+construction statistics, insertion batches and scratch remain additional unknown memory.
+
+PA can also import topology from the STAG-capable
 [ParlayANN fork](https://github.com/ChanchunhouZEON/ParlayANN-staged). Rust builds
 via `build_diskann_index`, using the configured construction parameters and
 collecting extra candidates. The current Rust builder uses L2 even when search

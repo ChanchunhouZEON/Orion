@@ -71,7 +71,7 @@ impl<'a> RerankStage for U16Rerank<'a> {
         let mut rerank_buf: Vec<(u32, f32)> = Vec::with_capacity(num_check);
         unsafe {
             let id_in = std::slice::from_raw_parts(scratch.id_scratch.as_ptr(), num_check);
-            vector::DistanceStream::<vector::L2U16Distance>::new(
+            orion_ann_vector::DistanceStream::<orion_ann_vector::L2U16Distance>::new(
                 self.dataset.data.as_slice().as_ptr() as *const u8,
                 stride_bytes,
                 stride_bytes,

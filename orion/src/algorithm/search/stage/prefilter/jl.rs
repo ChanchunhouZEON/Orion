@@ -88,7 +88,7 @@ impl<'a, const NZ: usize> PrefilterSession for JlSession<'a, NZ> {
 
         let mut w = 0usize;
         unsafe {
-            vector::DistanceStream::<vector::JLHammingDistance>::new(
+            orion_ann_vector::DistanceStream::<orion_ann_vector::JLHammingDistance>::new(
                 q_jl_base_ptr,
                 q_jl_stride_bytes,
                 q_jl_stride_bytes,
@@ -174,7 +174,7 @@ impl<'a, const NZ: usize> PrefilterSession for JlMipsSession<'a, NZ> {
 
         let mut w = 0usize;
         unsafe {
-            vector::DistanceStream::<vector::JLHammingDistance>::new(
+            orion_ann_vector::DistanceStream::<orion_ann_vector::JLHammingDistance>::new(
                 q_jl_base_ptr,
                 q_jl_stride_bytes,
                 q_jl_stride_bytes,

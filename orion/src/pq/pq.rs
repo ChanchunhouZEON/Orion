@@ -3,8 +3,8 @@
  * Licensed under the MIT License.
  */
 
-use diskann::common::ANNResult;
 use ndarray::{ArcArray2, prelude::*};
+use orion_ann_diskann::common::ANNResult;
 use rand::seq::SliceRandom;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};

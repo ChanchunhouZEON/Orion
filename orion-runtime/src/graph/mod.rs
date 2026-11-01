@@ -4,8 +4,14 @@
  */
 
 //! Resolve graph provenance, transfer the base allocation, then load/build/import.
+use crate::{Error, Result};
+#[cfg(feature = "parlay")]
+pub mod build_parlay;
 pub mod cache;
 pub mod parlayann;
+
+/// Fingerprint of the vendored builder and its fixed construction recipe.
+pub const PARLAY_RECIPE: &str = "parlay-memory-v1-unquantized-two-pass";
 
 use crate::graph::parlayann as parlayann_bridge;
 use crate::{
@@ -13,31 +19,56 @@ use crate::{
     data::{BaseElement, LoadedBase},
     graph::cache::CachePlan,
 };
-use diskann::model::PaddedDataset;
-use orion::{Orion, build_diskann_index};
+use orion_ann::{build_diskann_index, Orion};
+use orion_ann_diskann::model::PaddedDataset;
 use std::{path::Path, time::Instant};
 
 /// Consumes the base allocation. Query and evaluation inputs are owned separately.
 /// Check the export path/header before transferring ownership of the allocation.
 /// The graph payload itself is validated later, during streaming import.
-pub fn load_index(config: &ResolvedRunConfig, data: &mut LoadedBase) -> Result<Orion, String> {
-    load_index_impl(config, data, build_in_process)
+pub fn load_index(config: &ResolvedRunConfig, data: &mut LoadedBase) -> Result<Orion> {
+    load_index_impl(config, data, build_in_process, |config, dataset| {
+        #[cfg(feature = "parlay")]
+        {
+            build_parlay::build_f32(config, dataset)
+        }
+        #[cfg(not(feature = "parlay"))]
+        {
+            let _ = (config, dataset);
+            Err(Error::unsupported("ParlayANN builder is not enabled"))
+        }
+    })
 }
 
-pub fn load_u8_index(
-    config: &ResolvedRunConfig,
-    data: &mut LoadedBase<u8>,
-) -> Result<Orion<u8>, String> {
-    load_index_impl(config, data, |_, _| {
-        Err("native u8 construction requires a ParlayANN STAG export".into())
-    })
+pub fn load_u8_index(config: &ResolvedRunConfig, data: &mut LoadedBase<u8>) -> Result<Orion<u8>> {
+    load_index_impl(
+        config,
+        data,
+        |_, _| {
+            Err(Error::unsupported(
+                "native u8 construction requires ParlayANN",
+            ))
+        },
+        |config, dataset| {
+            #[cfg(feature = "parlay")]
+            {
+                build_parlay::build_u8(config, dataset)
+            }
+            #[cfg(not(feature = "parlay"))]
+            {
+                let _ = (config, dataset);
+                Err(Error::unsupported("ParlayANN builder is not enabled"))
+            }
+        },
+    )
 }
 
 fn load_index_impl<T: BaseElement>(
     config: &ResolvedRunConfig,
     data: &mut LoadedBase<T>,
-    build: impl FnOnce(&ResolvedRunConfig, PaddedDataset<T>) -> Result<Orion<T>, String>,
-) -> Result<Orion<T>, String> {
+    build: impl FnOnce(&ResolvedRunConfig, PaddedDataset<T>) -> Result<Orion<T>>,
+    build_pa: impl FnOnce(&ResolvedRunConfig, PaddedDataset<T>) -> Result<Orion<T>>,
+) -> Result<Orion<T>> {
     if config.dimension != data.layout.logical_dim() {
         return Err("index dimension does not match input".into());
     }
@@ -45,7 +76,7 @@ fn load_index_impl<T: BaseElement>(
     let num_points = data.num_points;
     let cache = CachePlan::resolve(config, num_points)?;
     let import_source = if !cache.is_hit && config.graph_source == GraphSource::Parlayann {
-        Some(CachePlan::resolve_staged_export(config, num_points)?)
+        CachePlan::parlay_input(config, num_points)?
     } else {
         None
     };
@@ -57,26 +88,24 @@ fn load_index_impl<T: BaseElement>(
             cache.metadata_path.with_extension("pgraph")
         );
         Orion::<T>::load_from_cache_with_provenance(&cache.metadata_path, dataset)
-            .map_err(|e| e.to_string())?
+            .map_err(Error::from)?
     } else {
         let start = Instant::now();
         let mut index = match config.graph_source {
             GraphSource::Rust => build(config, dataset)?,
             GraphSource::Parlayann => {
-                let staged_path = import_source
-                    .as_deref()
-                    .ok_or("missing staged_file on cache miss")?;
-
-                import_staged_graph(config, dataset, staged_path)?
+                if let Some(staged_path) = import_source.as_deref() {
+                    import_staged_graph(config, dataset, staged_path)?
+                } else {
+                    build_pa(config, dataset)?
+                }
             }
         };
 
         // Both constructors defer saving. Publish once and propagate IO failures
         // before recording provenance, so an incomplete cache is never advertised.
         index.cache_base_path = cache.metadata_path.clone();
-        index
-            .save(&cache.metadata_path)
-            .map_err(|e| e.to_string())?;
+        index.save(&cache.metadata_path).map_err(Error::from)?;
         index.is_save = true;
         log::info!(
             "Graph preparation+save took {:.1}s (n={num_points})",
@@ -89,10 +118,7 @@ fn load_index_impl<T: BaseElement>(
     Ok(index)
 }
 
-fn build_in_process(
-    config: &ResolvedRunConfig,
-    dataset: PaddedDataset<f32>,
-) -> Result<Orion, String> {
+fn build_in_process(config: &ResolvedRunConfig, dataset: PaddedDataset<f32>) -> Result<Orion> {
     log::info!(
         "Building Orion ({}-dim, R={}, L={}, α={}, ex={})",
         config.dimension,
@@ -137,14 +163,14 @@ fn build_in_process(
         true,
         config.max_extra,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(Error::from)?;
 
     // Release the builder's working index before allocating the final graph slab.
     let entry = build.entry_point;
     drop(build.index);
 
     // PQ sidecars are not supplied here; load_index saves the completed graph.
-    let graph = orion::PhasedGraph::build_from_partitions(
+    let graph = orion_ann::PhasedGraph::build_from_partitions(
         &build.partitions,
         config.graph_degree,
         config.max_extra,
@@ -156,14 +182,17 @@ fn import_staged_graph<T: BaseElement>(
     config: &ResolvedRunConfig,
     dataset: PaddedDataset<T>,
     staged_path: &Path,
-) -> Result<Orion<T>, String> {
+) -> Result<Orion<T>> {
     log::info!(
         "Streaming ParlayANN .staged export from {}",
         staged_path.display()
     );
     let num_points = dataset.len();
-    let graph = orion::PhasedGraph::load_staged(staged_path, num_points, config.graph_degree)
-        .map_err(|e| format!("ParlayANN import failed: {e}"))?;
+    let graph = orion_ann::PhasedGraph::load_staged(staged_path, num_points, config.graph_degree)
+        .map_err(|e| {
+        let message = format!("ParlayANN import failed: {}", e.message());
+        Error::from(e).with_message(message)
+    })?;
 
     // Keep the historical sampled-medoid choice; storage refactoring must not
     // silently change the search entry point to the export's header hint.
@@ -254,7 +283,7 @@ mod large_input_tests {
             let result = index
                 .search_l2(
                     &[0u8; 128],
-                    orion::DynamicSearchConfig {
+                    orion_ann::DynamicSearchConfig {
                         k: 1,
                         search_list_size: 4,
                         window_size: 2,

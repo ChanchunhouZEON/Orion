@@ -121,7 +121,7 @@ unsafe fn l2_sq_neon(a: &[f32], b: &[f32]) -> f32 {
 
 // ─── x86_64 / AVX2 + FMA ────────────────────────────────────────────────────
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 #[target_feature(enable = "avx2", enable = "fma")]
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn l2_sq_avx2(a: &[f32], b: &[f32]) -> f32 {

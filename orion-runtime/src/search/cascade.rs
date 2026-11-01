@@ -9,17 +9,17 @@
 //! explicit hook for benchmark callers; embedded searches do not lock memory
 //! or flush the cache as part of normal API execution.
 
-use diskann::common::ANNResult;
-use orion::algorithm::search::stage::admission::{
-    L2KTAdmission, L2U8Admission, L2U16Admission, MipsI8Admission, MipsI16Admission,
+use crate::{Error, Result};
+use orion_ann::algorithm::search::stage::admission::{
+    L2KTAdmission, L2U16Admission, L2U8Admission, MipsI16Admission, MipsI8Admission,
 };
-use orion::algorithm::search::stage::prefilter::{
+use orion_ann::algorithm::search::stage::prefilter::{
     JlHadamardPrefilter, JlMipsPrefilter, JlPrefilter, RabitqPrefilter,
 };
-use orion::algorithm::search::stage::rerank::{NoRerank, U16Rerank};
-use orion::index::compressed_index::CompressedIndex;
-use orion::model::dataset::rows::CascadeData;
-use orion::{DynamicCascade, DynamicSearchConfig};
+use orion_ann::algorithm::search::stage::rerank::{NoRerank, U16Rerank};
+use orion_ann::index::compressed_index::CompressedIndex;
+use orion_ann::model::dataset::rows::CascadeData;
+use orion_ann::{DynamicCascade, DynamicSearchConfig};
 use std::str::FromStr;
 
 /// Distance / similarity objective used by the search pipeline.
@@ -51,11 +51,11 @@ pub enum SearchMetric {
 }
 
 impl SearchMetric {
-    pub fn calibration_metric(self) -> orion::CalibrationMetric {
+    pub fn calibration_metric(self) -> orion_ann::CalibrationMetric {
         match self {
-            Self::L2 => orion::CalibrationMetric::L2,
-            Self::InnerProduct => orion::CalibrationMetric::InnerProduct,
-            Self::Cosine => orion::CalibrationMetric::Cosine,
+            Self::L2 => orion_ann::CalibrationMetric::L2,
+            Self::InnerProduct => orion_ann::CalibrationMetric::InnerProduct,
+            Self::Cosine => orion_ann::CalibrationMetric::Cosine,
         }
     }
 }
@@ -127,7 +127,7 @@ impl Cascade {
     ///
     /// `RerankChoice::None` is valid for either metric family because it simply
     /// disables the final precision stage.
-    pub fn validate_cascade_options(self, metric: SearchMetric) -> Result<(), String> {
+    pub fn validate_cascade_options(self, metric: SearchMetric) -> Result<()> {
         // Cosine shares the same stage family as inner-product search; any
         // normalization needed for cosine is handled outside this compatibility
         // check.
@@ -204,10 +204,9 @@ mod selector_tests {
             assert_eq!(c.rerank, RerankChoice::IpF32);
             c.validate_cascade_options(metric).unwrap();
         }
-        assert!(
-            low.validate_cascade_options(SearchMetric::InnerProduct)
-                .is_err()
-        );
+        assert!(low
+            .validate_cascade_options(SearchMetric::InnerProduct)
+            .is_err());
         assert!(high.validate_cascade_options(SearchMetric::L2).is_ok());
     }
 }
@@ -255,10 +254,10 @@ pub enum AdmissionChoice {
 
 impl AdmissionChoice {
     /// Full-precision metric corresponding to the admission ordering.
-    pub fn calibration_metric(self) -> orion::CalibrationMetric {
+    pub fn calibration_metric(self) -> orion_ann::CalibrationMetric {
         match self {
-            Self::MipsI8 | Self::MipsI16 => orion::CalibrationMetric::InnerProduct,
-            _ => orion::CalibrationMetric::L2,
+            Self::MipsI8 | Self::MipsI16 => orion_ann::CalibrationMetric::InnerProduct,
+            _ => orion_ann::CalibrationMetric::L2,
         }
     }
 }
@@ -296,22 +295,22 @@ pub enum RerankChoice {
 }
 
 impl FromStr for PrefilterChoice {
-    type Err = String;
+    type Err = Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
             "none" | "no" | "off" => Ok(Self::None),
             "jl" | "jl-sparse" => Ok(Self::Jl),
             "jl-hadamard" | "jl-h" | "jlh" => Ok(Self::JlHadamard),
             "rabitq" | "rbq" => Ok(Self::Rabitq),
-            other => Err(format!(
+            other => Err(Error::from(format!(
                 "unknown prefilter '{other}' (expected none|jl|jl-hadamard|rabitq)"
-            )),
+            ))),
         }
     }
 }
 
 impl FromStr for AdmissionChoice {
-    type Err = String;
+    type Err = Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
             "l2-u8" | "l2u8" => Ok(Self::L2U8),
@@ -321,25 +320,25 @@ impl FromStr for AdmissionChoice {
             "mips-i8" | "mipsi8" => Ok(Self::MipsI8),
             "mips-i16" | "mipsi16" => Ok(Self::MipsI16),
             "ads-f32" | "adsf32" | "ads" => Ok(Self::AdsF32),
-            other => Err(format!(
+            other => Err(Error::from(format!(
                 "unknown admission '{other}' \
                  (expected native-l2-u8|l2-u8|l2-u16|l2-kt|mips-i8|mips-i16|ads-f32)"
-            )),
+            ))),
         }
     }
 }
 
 impl FromStr for RerankChoice {
-    type Err = String;
+    type Err = Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
             "f32" => Ok(Self::F32),
             "ip-f32" | "ipf32" => Ok(Self::IpF32),
             "u16" => Ok(Self::U16),
             "none" | "no" | "off" => Ok(Self::None),
-            other => Err(format!(
+            other => Err(Error::from(format!(
                 "unknown rerank '{other}' (expected f32|ip-f32|u16|none)"
-            )),
+            ))),
         }
     }
 }
@@ -357,7 +356,7 @@ pub fn build_prefilter<'a, D: CascadeData>(
     orion: &'a CompressedIndex<D>,
     choice: PrefilterChoice,
     admission: AdmissionChoice,
-) -> Option<Box<dyn orion::algorithm::search::stage::PrefilterStage + 'a>> {
+) -> Option<Box<dyn orion_ann::algorithm::search::stage::PrefilterStage + 'a>> {
     let admission_is_mips = matches!(
         admission,
         AdmissionChoice::MipsI8 | AdmissionChoice::MipsI16
@@ -396,13 +395,12 @@ pub fn build_prefilter<'a, D: CascadeData>(
 pub fn build_admission<'a, D: CascadeData>(
     orion: &'a CompressedIndex<D>,
     choice: AdmissionChoice,
-) -> ANNResult<Box<dyn orion::algorithm::search::stage::AdmissionStage + 'a>> {
+) -> Result<Box<dyn orion_ann::algorithm::search::stage::AdmissionStage + 'a>> {
     Ok(match choice {
         AdmissionChoice::NativeL2U8 => {
-            return Err(diskann::common::ANNError::log_index_config_error(
-                "admission".into(),
-                "native-l2-u8 requires a native u8 index; the f32 dispatcher cannot execute it"
-                    .into(),
+            return Err(Error::configuration(
+                "admission",
+                "native-l2-u8 requires a native u8 index; the f32 dispatcher cannot execute it",
             ));
         }
         AdmissionChoice::L2U8 => Box::new(L2U8Admission::new(orion.ensure_quantized_dataset())),
@@ -426,7 +424,7 @@ pub fn build_admission<'a, D: CascadeData>(
 pub fn build_rerank<'a, D: CascadeData>(
     orion: &'a CompressedIndex<D>,
     choice: RerankChoice,
-) -> Box<dyn orion::algorithm::search::stage::RerankStage + 'a> {
+) -> Box<dyn orion_ann::algorithm::search::stage::RerankStage + 'a> {
     match choice {
         RerankChoice::F32 => orion.dataset.truth(false),
         RerankChoice::IpF32 => orion.dataset.truth(true),
@@ -645,7 +643,7 @@ pub fn search_compose<D: CascadeData>(
     prefilter: PrefilterChoice,
     admission: AdmissionChoice,
     rerank: RerankChoice,
-) -> ANNResult<Vec<u32>> {
+) -> Result<Vec<u32>> {
     let ad = build_admission(orion, admission)?;
     let pf = build_prefilter(orion, prefilter, admission);
     let rr = build_rerank(orion, rerank);
@@ -684,7 +682,7 @@ pub fn search_batch_compose<D: CascadeData>(
     prefilter: PrefilterChoice,
     admission: AdmissionChoice,
     rerank: RerankChoice,
-) -> ANNResult<Vec<Vec<u32>>> {
+) -> Result<Vec<Vec<u32>>> {
     let ad = build_admission(orion, admission)?;
     let pf = build_prefilter(orion, prefilter, admission);
     let rr = build_rerank(orion, rerank);

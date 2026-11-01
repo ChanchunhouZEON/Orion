@@ -1,20 +1,20 @@
-use diskann::model::InmemDataset;
-use orion::{CalibrationConfig, CalibrationMetric, StaticOrion};
+use orion_ann::{CalibrationConfig, CalibrationMetric, StaticOrion};
+use orion_ann_diskann::model::InmemDataset;
 
 const DIM: usize = 32;
 const POINTS: usize = 128;
 
 #[test]
 fn calibration_beam_policy_preserves_base_and_adds_headroom() {
-    assert_eq!(orion::calibration_search_list_size!(48, 10), 48);
-    assert_eq!(orion::calibration_search_list_size!(48, 100), 200);
-    assert_eq!(orion::calibration_search_list_size!(256, 100), 256);
+    assert_eq!(orion_ann::calibration_search_list_size!(48, 10), 48);
+    assert_eq!(orion_ann::calibration_search_list_size!(48, 100), 200);
+    assert_eq!(orion_ann::calibration_search_list_size!(256, 100), 256);
     assert_eq!(
-        orion::calibration_search_list_size!(48, usize::MAX),
+        orion_ann::calibration_search_list_size!(48, usize::MAX),
         usize::MAX
     );
     let mut calls = 0;
-    let beam = orion::calibration_search_list_size!(
+    let beam = orion_ann::calibration_search_list_size!(
         {
             calls += 1;
             48

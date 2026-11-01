@@ -32,16 +32,16 @@
 //! Mirrors `orion`'s headline-line shape so
 //! `collect_sweep_medians.py` consumes it with the same regex.
 
-use orion_runtime::search::utils;
+use orion_ann_runtime::search::utils;
 
-use diskann::index::{create_inmem_index, ANNInmemIndex};
-use diskann::model::{IndexConfiguration, IndexWriteParametersBuilder};
+use orion_ann_diskann::index::{create_inmem_index, ANNInmemIndex};
+use orion_ann_diskann::model::{IndexConfiguration, IndexWriteParametersBuilder};
 #[path = "diskann_sweep_support/input.rs"]
 mod input;
-use orion_runtime::data::{inspect_vector_file, VectorFormat};
+use orion_ann_runtime::data::{inspect_vector_file, VectorFormat};
+use orion_ann_vector::Metric;
 use std::path::Path;
 use std::time::Instant;
-use vector::Metric;
 
 const DEFAULT_K: usize = 10;
 const NUM_THREADS: usize = 8;

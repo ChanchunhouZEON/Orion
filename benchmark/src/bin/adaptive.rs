@@ -4,17 +4,18 @@
  */
 
 //! EE-disabled same-graph neighbor-policy experiment.
-use orion_runtime::{
+use orion_ann::{Error, Result};
+use orion_ann_runtime::search::cascade;
+use orion_ann_runtime::search::utils;
+use orion_ann_runtime::with_supported_dimension;
+use orion_ann_runtime::{
     config::{cli::Args as RunArgs, ResolvedRunConfig},
     data::{memory, LoadedDataset},
     graph,
 };
-use orion_runtime::search::cascade;
-use orion_runtime::with_supported_dimension;
-use orion_runtime::search::utils;
 
 use clap::Parser;
-use orion::algorithm::search::diagnostics::{NeighborMode, NoopObserver, SearchTrace};
+use orion_ann::algorithm::search::diagnostics::{NeighborMode, NoopObserver, SearchTrace};
 use rayon::prelude::*;
 use serde_json::{json, Value};
 use std::{path::PathBuf, time::Instant};
@@ -60,17 +61,19 @@ fn run<const N: usize>(
     args: &AdaptiveArgs,
     config: &ResolvedRunConfig,
     mut data: LoadedDataset,
-) -> Result<(), String>
+) -> Result<()>
 where
-    [f32; N]: vector::FullPrecisionDistance<f32, N>,
+    [f32; N]: orion_ann_vector::FullPrecisionDistance<f32, N>,
 {
     if config.prepare_only {
         graph::load_index(config, &mut data)?;
         return Ok(());
     }
-    let ground_truth = data.ground_truth.take().ok_or("this diagnostic requires --groundtruth; ordinary orion search does not")?;
+    let ground_truth = data
+        .ground_truth
+        .take()
+        .ok_or("this diagnostic requires --groundtruth; ordinary orion search does not")?;
     let idx = graph::load_index(config, &mut data)?;
-
 
     let queries: Vec<[f32; N]> = data
         .queries
@@ -78,14 +81,14 @@ where
         .map(|q| q.as_slice().try_into().expect("validated dimension"))
         .collect();
     let settings = &config.sweep;
-    if queries.is_empty() || settings.threads > orion::algorithm::search::MAX_WORKERS {
+    if queries.is_empty() || settings.threads > orion_ann::algorithm::search::MAX_WORKERS {
         return Err("Queries must be nonempty and threads must not exceed MAX_WORKERS".into());
     }
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(settings.threads)
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(Error::from)?;
 
     let calib = pool
         .install(|| {
@@ -93,16 +96,21 @@ where
                 queries[..settings.calibration_samples.min(queries.len())].as_flattened(),
                 settings.calibration_l,
                 config.window_size,
-                orion::CalibrationConfig {
+                orion_ann::CalibrationConfig {
                     k: settings.k,
                     metric: config.metric.calibration_metric(),
                 },
             )
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(Error::from)?;
 
-    let pf = cascade::build_prefilter(&idx, config.search_plan().cascade().prefilter, config.search_plan().cascade().admission);
-    let ad = cascade::build_admission(&idx, config.search_plan().cascade().admission).map_err(|e| e.to_string())?;
+    let pf = cascade::build_prefilter(
+        &idx,
+        config.search_plan().cascade().prefilter,
+        config.search_plan().cascade().admission,
+    );
+    let ad = cascade::build_admission(&idx, config.search_plan().cascade().admission)
+        .map_err(Error::from)?;
     let rr = cascade::build_rerank(&idx, config.search_plan().cascade().rerank);
     let count = if args.diagnostic_queries == 0 {
         queries.len()
@@ -130,13 +138,13 @@ where
                 mode,
                 observer,
             )
-            .map_err(|e| e.to_string())
+            .map_err(Error::from)
         };
         let mut arms = Vec::new();
         let mut discoveries = Vec::new();
         // Instrumentation pass is separate from all timed trials.
         for mode in NeighborMode::ALL {
-            let rows: Result<Vec<_>, String> = pool.install(|| {
+            let rows: Result<Vec<_>> = pool.install(|| {
                 sample
                     .par_iter()
                     .map(|&qi| {
@@ -158,15 +166,17 @@ where
                                 mode,
                                 &mut trace,
                             )
-                            .map_err(|e| e.to_string())?;
+                            .map_err(Error::from)?;
 
                         if ids != search(qi, mode, &mut NoopObserver)? {
-                            return Err(format!(
+                            return Err(Error::from(format!(
                                 "Trace changed results: query={qi}, L={l}, mode={mode:?}"
-                            ));
+                            )));
                         }
 
-                        let rerank_ndc = if config.search_plan().cascade().rerank == cascade::RerankChoice::None {
+                        let rerank_ndc = if config.search_plan().cascade().rerank
+                            == cascade::RerankChoice::None
+                        {
                             0
                         } else {
                             trace.rerank_candidates
@@ -241,7 +251,7 @@ where
         }
 
         // Iterate three different neighbor modes with collecting the `qps` and `recalls`.
-        let batch = |mode| -> Result<Vec<Vec<u32>>, String> {
+        let batch = |mode| -> Result<Vec<Vec<u32>>> {
             pool.install(|| {
                 (0..queries.len())
                     .into_par_iter()
@@ -313,17 +323,16 @@ where
         .map(|&target| {
             let arms: Vec<_> = (0..3)
                 .map(|arm| {
-                    let best = points.iter()
+                    let best = points
+                        .iter()
                         .filter(|point| point["arms"][arm]["recall"].as_f64().unwrap() >= target)
-                        .max_by(|a, b|
+                        .max_by(|a, b| {
                             a["arms"][arm]["qps_median"]
                                 .as_f64()
                                 .unwrap()
-                            .total_cmp(
-                                &b["arms"][arm]["qps_median"]
-                                    .as_f64()
-                                    .unwrap()));
-                json!({
+                                .total_cmp(&b["arms"][arm]["qps_median"].as_f64().unwrap())
+                        });
+                    json!({
                     "mode": NeighborMode::ALL[arm].name(),
                     "best_measured": best.map(
                         |p| json!(
@@ -361,18 +370,18 @@ where
         "matched_recall": matched_recall,
     });
     if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(parent).map_err(Error::from)?;
     }
     std::fs::write(
         &out,
-        serde_json::to_vec_pretty(&result).map_err(|e| e.to_string())?,
+        serde_json::to_vec_pretty(&result).map_err(Error::from)?,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(Error::from)?;
     log::info!("Saved {}", out.display());
     Ok(())
 }
 
-fn execute(args: AdaptiveArgs) -> Result<(), String> {
+fn execute(args: AdaptiveArgs) -> Result<()> {
     if args.recall_targets.is_empty()
         || args
             .recall_targets
@@ -385,12 +394,16 @@ fn execute(args: AdaptiveArgs) -> Result<(), String> {
     if args.run.print_config {
         println!(
             "{}",
-            serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?
+            serde_json::to_string_pretty(&config).map_err(Error::from)?
         );
         return Ok(());
     }
     if args.run.preflight {
-        println!("{}", serde_json::to_string_pretty(&memory::preflight_report(&config)?).map_err(|e| e.to_string())?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&memory::preflight_report(&config)?)
+                .map_err(Error::from)?
+        );
         return Ok(());
     }
     let data = LoadedDataset::load(&config)?;

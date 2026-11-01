@@ -151,7 +151,12 @@ pub fn distance_l2_adsampling_f32<const N: usize>(
     distance_l2_adsampling_slice_f32(a, b, upper_bound, epsilon)
 }
 #[inline(always)]
-pub fn distance_l2_adsampling_slice_f32(a: &[f32], b: &[f32], upper_bound: f32, epsilon: f32) -> f32 {
+pub fn distance_l2_adsampling_slice_f32(
+    a: &[f32],
+    b: &[f32],
+    upper_bound: f32,
+    epsilon: f32,
+) -> f32 {
     assert_eq!(a.len(), b.len());
     let n = a.len();
 
@@ -318,6 +323,10 @@ pub fn distance_l2_early_abandon_f32<const N: usize>(
 
         let total = _mm512_add_ps(_mm512_add_ps(sum0, sum1), _mm512_add_ps(sum2, sum3));
         let dist = reduce_add_ps(total);
-        if dist >= upper_bound { -1.0 } else { dist }
+        if dist >= upper_bound {
+            -1.0
+        } else {
+            dist
+        }
     }
 }

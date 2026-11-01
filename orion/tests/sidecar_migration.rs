@@ -1,7 +1,6 @@
 //! Immutable pre-migration artifacts: catch changes to quantization and calibration.
 #![cfg(target_arch = "aarch64")]
-use diskann::model::{InmemDataset, PaddedDataset};
-use orion::model::dataset::{
+use orion_ann::model::dataset::{
     jl_hadamard_dataset::JlHadamardDataset,
     jl_sparse_dataset::{JLSparseDataset, JLSparseDatasetMips},
     l2_kt_dataset::L2KTDataset,
@@ -9,7 +8,8 @@ use orion::model::dataset::{
     rabitq_b4_dataset::RabitQ4Dataset,
     rabitq_dataset::RabitQDataset,
 };
-use orion::{CalibrationConfig, Orion, StaticOrion, PhasedGraph};
+use orion_ann::{CalibrationConfig, Orion, PhasedGraph, StaticOrion};
+use orion_ann_diskann::model::{InmemDataset, PaddedDataset};
 use std::path::Path;
 
 #[test]
@@ -62,7 +62,7 @@ fn frozen_sidecars_and_calibration() {
     // Same immutable files through padded logical rows, not just the adapter.
     let padded = PaddedDataset::from_packed(
         &base.data[..48 * 32],
-        vector::PaddedLayout::new::<f32>(32, 256).unwrap(),
+        orion_ann_vector::PaddedLayout::new::<f32>(32, 256).unwrap(),
     )
     .unwrap();
     save!(

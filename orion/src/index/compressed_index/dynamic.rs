@@ -1,12 +1,10 @@
 //! Orion query preparation and exact native-storage search.
 
+use crate::{Error, Result};
 use bytemuck::Pod;
-use diskann::{
-    common::{ANNError, ANNResult},
-    model::PaddedDataset,
-};
+use orion_ann_diskann::model::PaddedDataset;
+use orion_ann_vector::{DistanceKernelBackend, L2F32Distance, L2U8Distance};
 use rayon::prelude::*;
-use vector::{DistanceFn, L2F32Distance, L2U8Distance};
 
 use super::{CompressedIndex, IndexData};
 use crate::algorithm::search::calibrate::CalibrationMetric;
@@ -23,7 +21,7 @@ mod sealed {
 }
 
 pub trait DynamicElement: sealed::Sealed + Pod + Send + Sync {
-    type Kernel: DistanceFn<Storage = Self>;
+    type Kernel: DistanceKernelBackend<Storage = Self>;
     fn valid_coordinate(value: Self) -> bool;
     fn supports_calibration(metric: CalibrationMetric) -> bool;
     fn calibration_distance(
@@ -31,7 +29,7 @@ pub trait DynamicElement: sealed::Sealed + Pod + Send + Sync {
         query: &[f32],
         row: &[Self],
         scratch: &mut [f32],
-    ) -> ANNResult<f32>;
+    ) -> Result<f32>;
 }
 impl DynamicElement for f32 {
     type Kernel = L2F32Distance;
@@ -43,7 +41,7 @@ impl DynamicElement for f32 {
         query: &[f32],
         row: &[Self],
         _: &mut [f32],
-    ) -> ANNResult<f32> {
+    ) -> Result<f32> {
         super::calibration::exact_distance(metric, query, row)
     }
     fn valid_coordinate(value: Self) -> bool {
@@ -60,7 +58,7 @@ impl DynamicElement for u8 {
         query: &[f32],
         row: &[Self],
         scratch: &mut [f32],
-    ) -> ANNResult<f32> {
+    ) -> Result<f32> {
         for (out, &v) in scratch.iter_mut().zip(row) {
             *out = f32::from(v);
         }
@@ -93,8 +91,8 @@ impl Default for DynamicSearchConfig {
     }
 }
 
-fn error(message: impl Into<String>) -> ANNError {
-    ANNError::log_index_error(message.into())
+fn error(message: impl Into<String>) -> Error {
+    Error::invalid_argument(message)
 }
 
 struct ExactSession<'a, T: DynamicElement> {
@@ -111,11 +109,11 @@ impl CompressedIndex<PaddedDataset<u8>> {
         &self,
         queries: &[f32],
         config: DynamicSearchConfig,
-    ) -> ANNResult<Vec<Vec<u32>>> {
+    ) -> Result<Vec<Vec<u32>>> {
         self.validate_search(config)?;
         let dim = self.dataset.dimension();
         if queries.len() % dim != 0 {
-            return Err(error("invalid packed query shape"));
+            return Err(Error::packed_shape("queries", dim, queries.len()).at("read_queries"));
         }
         queries
             .par_chunks(dim)
@@ -169,7 +167,7 @@ impl<T: DynamicElement> AdmissionSession for ExactSession<'_, T> {
 }
 
 impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
-    pub(super) fn validate_search(&self, config: DynamicSearchConfig) -> ANNResult<()> {
+    pub(super) fn validate_search(&self, config: DynamicSearchConfig) -> Result<()> {
         self.validate_dataset_graph()?;
         if config.k == 0
             || config.k > self.num_nodes
@@ -195,11 +193,18 @@ impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
 
     /// Search a logical, unpadded query. Padding is prepared once before the
     /// existing graph loop. u8 callers keep native bytes throughout.
-    pub fn search_l2(&self, query: &[T], config: DynamicSearchConfig) -> ANNResult<Vec<u32>> {
+    pub fn search_l2(&self, query: &[T], config: DynamicSearchConfig) -> Result<Vec<u32>> {
         self.validate_search(config)?;
-        if query.len() != self.dataset.dimension() || query.iter().any(|&x| !T::valid_coordinate(x))
-        {
-            return Err(error("query dimension mismatch or non-finite coordinate"));
+        if query.len() != self.dataset.dimension() {
+            return Err(Error::dimension(
+                "queries.dimension",
+                self.dataset.dimension(),
+                query.len(),
+            )
+            .at("read_queries"));
+        }
+        if query.iter().any(|&x| !T::valid_coordinate(x)) {
+            return Err(error("query contains a non-finite coordinate"));
         }
         let t_setup = std::time::Instant::now();
         let queries = PaddedDataset::from_packed(query, self.dataset.layout()).map_err(error)?;
@@ -212,7 +217,7 @@ impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
         &self,
         queries: &[T],
         config: DynamicSearchConfig,
-    ) -> ANNResult<Vec<Vec<u32>>> {
+    ) -> Result<Vec<Vec<u32>>> {
         self.validate_search(config)?;
         let dim = self.dataset.dimension();
         if queries.len() % dim != 0 || queries.iter().any(|&x| !T::valid_coordinate(x)) {
@@ -234,7 +239,7 @@ impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
         query_id: usize,
         config: DynamicSearchConfig,
         started: std::time::Instant,
-    ) -> ANNResult<Vec<u32>> {
+    ) -> Result<Vec<u32>> {
         let session = ExactSession {
             base: &self.dataset,
             queries,

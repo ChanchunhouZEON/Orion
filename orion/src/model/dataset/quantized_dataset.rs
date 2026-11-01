@@ -40,9 +40,9 @@
 //! padding is reintroduced at load time.
 
 use super::rows::F32Rows;
-use diskann::common::ANNResult;
-use diskann::common::AlignedBoxWithSlice;
-use vector::{DistanceFn, IpI8Distance, IpI16Distance, L2U8Distance, Metric};
+use orion_ann_diskann::common::ANNResult;
+use orion_ann_diskann::common::AlignedBoxWithSlice;
+use orion_ann_vector::{DistanceKernelBackend, IpI8Distance, IpI16Distance, L2U8Distance, Metric};
 
 // ─── Trait: per-storage / per-metric specification ────────────────────────
 
@@ -87,7 +87,7 @@ pub trait QuantSpec: 'static {
     /// MIPS it returns `−Σ a · b × 1/scale²`-scaled f32. Both obey
     /// the "smaller == closer" contract and are directly comparable
     /// against an f32 truth distance scaled via
-    /// [`distance_scale_sq`].
+    /// [`Self::distance_scale_sq`].
     ///
     /// # Safety
     /// Both pointers must be valid `[Self::Storage; N]` regions.
@@ -119,18 +119,18 @@ pub trait QuantSpec: 'static {
     fn truth_distance<const N: usize>(query: &[f32; N], vertex: &[f32; N]) -> f32;
 
     /// 32-byte-chunk distance kernel that drives the Stage-1
-    /// prefilter loop in `search<Q>` via [`vector::DistanceStream`].
+    /// prefilter loop in `search<Q>` via [`orion_ann_vector::DistanceStream`].
     /// Pairs with the storage / metric: `L2U8Distance` for [`L2U8`],
     /// `IpI8Distance` for [`MipsI8`], `IpI16Distance` for [`MipsI16`].
-    type QuantDistanceFn: DistanceFn<Storage = Self::Storage>;
+    type QuantKernel: DistanceKernelBackend<Storage = Self::Storage>;
 
     /// 32-byte-chunk distance kernel for the **f32 truth** Stage-2
-    /// loop. Drives [`vector::DistanceStream`] over the in-memory
+    /// loop. Drives [`orion_ann_vector::DistanceStream`] over the in-memory
     /// f32 base. Same metric as `truth_distance` (sum-of-squares for
     /// L2, negated inner product for MIPS), but in chunked-SIMD
     /// streaming form so Stage-2 enjoys the same pipelined-prefetch
     /// benefits as Stage-1.
-    type TruthDistanceFn: DistanceFn<Storage = f32>;
+    type TruthKernel: DistanceKernelBackend<Storage = f32>;
 }
 
 // ─── Param structs ────────────────────────────────────────────────────────
@@ -151,7 +151,7 @@ impl QuantParamsL2 {
         Self { slope, offset }
     }
 
-    /// Twin of [`from_range`] for u16 storage. Maps the input range
+    /// Twin of [`Self::from_range`] for u16 storage. Maps the input range
     /// to `[0, 65535]` (256× finer per-dim resolution than u8). Used
     /// by the [`L2U16`] codec as the precise PQ-admission tier of
     /// the L2 cascade.
@@ -169,7 +169,7 @@ impl QuantParamsL2 {
     }
 
     /// Quantize a single f32 into the u16 range. Mirrors
-    /// [`quantize_scalar`] but with the u16 clamp.
+    /// [`Self::quantize_scalar`] but with the u16 clamp.
     #[inline]
     pub fn quantize_scalar_u16(&self, v: f32) -> u16 {
         let x = (v * self.slope).round() as i32 - self.offset;
@@ -195,7 +195,7 @@ impl QuantParamsMips {
 
 /// L2 squared-Euclidean prefilter on u8 quantized base. Two-parameter
 /// affine quantization (`slope`, `offset`); kernel
-/// `vector::distance_l2_vector_u8` (`vabd_u8 + vmlal_u8`).
+/// `orion_ann_vector::distance_l2_vector_u8` (`vabd_u8 + vmlal_u8`).
 #[derive(Debug, Clone, Copy)]
 pub struct L2U8;
 
@@ -232,7 +232,7 @@ impl QuantSpec for L2U8 {
     unsafe fn distance<const N: usize>(a: *const u8, b: *const u8) -> f32 {
         let aa = unsafe { &*(a as *const [u8; N]) };
         let bb = unsafe { &*(b as *const [u8; N]) };
-        vector::distance_l2_vector_u8::<N>(aa, bb)
+        orion_ann_vector::distance_l2_vector_u8::<N>(aa, bb)
     }
 
     #[inline]
@@ -248,7 +248,7 @@ impl QuantSpec for L2U8 {
         let v2 = unsafe { &*(a2 as *const [u8; N]) };
         let v3 = unsafe { &*(a3 as *const [u8; N]) };
         let qq = unsafe { &*(q as *const [u8; N]) };
-        vector::distance_l2_vector_u8_batch4::<N>(v0, v1, v2, v3, qq)
+        orion_ann_vector::distance_l2_vector_u8_batch4::<N>(v0, v1, v2, v3, qq)
     }
 
     #[inline]
@@ -258,17 +258,17 @@ impl QuantSpec for L2U8 {
 
     #[inline]
     fn truth_distance<const N: usize>(query: &[f32; N], vertex: &[f32; N]) -> f32 {
-        vector::distance_l2_vector_f32::<N>(query, vertex)
+        orion_ann_vector::distance_l2_vector_f32::<N>(query, vertex)
     }
 
-    type QuantDistanceFn = L2U8Distance;
-    type TruthDistanceFn = vector::L2F32Distance;
+    type QuantKernel = L2U8Distance;
+    type TruthKernel = orion_ann_vector::L2F32Distance;
 }
 
 /// L2 squared-Euclidean on **u16** quantized base. Precise
 /// PQ-admission tier of the L2 cascade — 256× finer per-dim
 /// resolution than [`L2U8`] at the cost of 2× storage. Distance
-/// kernel goes through [`vector::L2U16Distance`] which has the
+/// kernel goes through [`orion_ann_vector::L2U16Distance`] which has the
 /// same `DistanceStream` lookahead-prefetch pipeline as the u8 path.
 #[derive(Debug, Clone, Copy)]
 pub struct L2U16;
@@ -311,14 +311,14 @@ impl QuantSpec for L2U16 {
     #[inline]
     unsafe fn distance<const N: usize>(a: *const u16, b: *const u16) -> f32 {
         unsafe {
-            use vector::DistanceFn;
-            let mut acc = vector::L2U16Distance::init();
+            use orion_ann_vector::DistanceKernelBackend;
+            let mut acc = orion_ann_vector::L2U16Distance::init();
             let chunks = N / 16; // 16 u16 per 32-byte chunk
             for i in 0..chunks {
                 let off = i * 16;
-                vector::L2U16Distance::step(&mut acc, a.add(off), b.add(off));
+                orion_ann_vector::L2U16Distance::step(&mut acc, a.add(off), b.add(off));
             }
-            vector::L2U16Distance::reduce(acc)
+            orion_ann_vector::L2U16Distance::reduce(acc)
         }
     }
 
@@ -353,15 +353,15 @@ impl QuantSpec for L2U16 {
 
     #[inline]
     fn truth_distance<const N: usize>(query: &[f32; N], vertex: &[f32; N]) -> f32 {
-        vector::distance_l2_vector_f32::<N>(query, vertex)
+        orion_ann_vector::distance_l2_vector_f32::<N>(query, vertex)
     }
 
-    type QuantDistanceFn = vector::L2U16Distance;
-    type TruthDistanceFn = vector::L2F32Distance;
+    type QuantKernel = orion_ann_vector::L2U16Distance;
+    type TruthKernel = orion_ann_vector::L2F32Distance;
 }
 
 /// MIPS-i8: 8-bit symmetric inner product. Kernel
-/// `vector::distance_ip_vector_i8` (`vmull_s8 + vpadalq_s16`).
+/// `orion_ann_vector::distance_ip_vector_i8` (`vmull_s8 + vpadalq_s16`).
 #[derive(Debug, Clone, Copy)]
 pub struct MipsI8;
 
@@ -395,7 +395,7 @@ impl QuantSpec for MipsI8 {
     unsafe fn distance<const N: usize>(a: *const i8, b: *const i8) -> f32 {
         let aa = unsafe { &*(a as *const [i8; N]) };
         let bb = unsafe { &*(b as *const [i8; N]) };
-        vector::distance_ip_vector_i8::<N>(aa, bb) as f32
+        orion_ann_vector::distance_ip_vector_i8::<N>(aa, bb) as f32
     }
 
     #[inline]
@@ -411,7 +411,7 @@ impl QuantSpec for MipsI8 {
         let v2 = unsafe { &*(a2 as *const [i8; N]) };
         let v3 = unsafe { &*(a3 as *const [i8; N]) };
         let qq = unsafe { &*(q as *const [i8; N]) };
-        let r = vector::distance_ip_vector_i8_batch4::<N>(v0, v1, v2, v3, qq);
+        let r = orion_ann_vector::distance_ip_vector_i8_batch4::<N>(v0, v1, v2, v3, qq);
         [r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32]
     }
 
@@ -422,16 +422,16 @@ impl QuantSpec for MipsI8 {
 
     #[inline]
     fn truth_distance<const N: usize>(query: &[f32; N], vertex: &[f32; N]) -> f32 {
-        vector::distance_ip_vector_f32::<N>(query, vertex)
+        orion_ann_vector::distance_ip_vector_f32::<N>(query, vertex)
     }
 
-    type QuantDistanceFn = IpI8Distance;
-    type TruthDistanceFn = vector::IpF32Distance;
+    type QuantKernel = IpI8Distance;
+    type TruthKernel = orion_ann_vector::IpF32Distance;
 }
 
 /// MIPS-i16: 16-bit symmetric inner product (PA's
 /// `-quantize_bits 16 -quantize_mode 1` recipe). Kernel
-/// `vector::distance_ip_vector_i16` (`vmull_s16 + vpadalq_s32`).
+/// `orion_ann_vector::distance_ip_vector_i16` (`vmull_s16 + vpadalq_s32`).
 #[derive(Debug, Clone, Copy)]
 pub struct MipsI16;
 
@@ -465,7 +465,7 @@ impl QuantSpec for MipsI16 {
     unsafe fn distance<const N: usize>(a: *const i16, b: *const i16) -> f32 {
         let aa = unsafe { &*(a as *const [i16; N]) };
         let bb = unsafe { &*(b as *const [i16; N]) };
-        vector::distance_ip_vector_i16::<N>(aa, bb) as f32
+        orion_ann_vector::distance_ip_vector_i16::<N>(aa, bb) as f32
     }
 
     #[inline]
@@ -481,7 +481,7 @@ impl QuantSpec for MipsI16 {
         let v2 = unsafe { &*(a2 as *const [i16; N]) };
         let v3 = unsafe { &*(a3 as *const [i16; N]) };
         let qq = unsafe { &*(q as *const [i16; N]) };
-        let r = vector::distance_ip_vector_i16_batch4::<N>(v0, v1, v2, v3, qq);
+        let r = orion_ann_vector::distance_ip_vector_i16_batch4::<N>(v0, v1, v2, v3, qq);
         [r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32]
     }
 
@@ -492,11 +492,11 @@ impl QuantSpec for MipsI16 {
 
     #[inline]
     fn truth_distance<const N: usize>(query: &[f32; N], vertex: &[f32; N]) -> f32 {
-        vector::distance_ip_vector_f32::<N>(query, vertex)
+        orion_ann_vector::distance_ip_vector_f32::<N>(query, vertex)
     }
 
-    type QuantDistanceFn = IpI16Distance;
-    type TruthDistanceFn = vector::IpF32Distance;
+    type QuantKernel = IpI16Distance;
+    type TruthKernel = orion_ann_vector::IpF32Distance;
 }
 
 // ─── Generic dataset ──────────────────────────────────────────────────────
@@ -519,8 +519,8 @@ impl<Q: QuantSpec> QuantizedDataset<Q> {
         let dimension = ds.dimension();
         let n = ds.len();
         assert!(dimension > 0 && n > 0);
-        assert!(dimension <= Q::QuantDistanceFn::MAX_COORDINATES);
-        let layout = vector::PaddedLayout::for_kernel::<Q::QuantDistanceFn>(dimension)
+        assert!(dimension <= Q::QuantKernel::MAX_COORDINATES);
+        let layout = orion_ann_vector::PaddedLayout::for_kernel::<Q::QuantKernel>(dimension)
             .expect("valid quantized row layout");
         let stride = layout.stride_elements();
         // Padding is not a sample: only logical values may fit the quantizer.
@@ -569,10 +569,10 @@ impl<Q: QuantSpec> QuantizedDataset<Q> {
     }
 
     /// Quantize a query into a heap-allocated `Vec<Storage>` of size
-    /// [`self.stride`] — the same per-vertex element span as the base
+    /// `self.stride` — the same per-vertex element span as the base
     /// buffer, with the trailing `STRIDE - N` slots zero-padded so
     /// the kernel sees the same byte footprint per vertex on both
-    /// sides. This is the form [`vector::DistanceStream`] expects:
+    /// sides. This is the form [`orion_ann_vector::DistanceStream`] expects:
     /// it reads complete kernel blocks from
     /// both the base and the query, so any byte the base touches must
     /// also be present (and zero) in the query. Allocated once per
@@ -608,7 +608,7 @@ impl<Q: QuantSpec> QuantizedDataset<Q> {
         let ids = [id];
         let mut distance = 0.;
         unsafe {
-            vector::DistanceStream::<Q::QuantDistanceFn>::new(
+            orion_ann_vector::DistanceStream::<Q::QuantKernel>::new(
                 self.data.as_ptr().cast(),
                 self.stride * std::mem::size_of::<Q::Storage>(),
                 self.stride * std::mem::size_of::<Q::Storage>(),
@@ -638,7 +638,7 @@ impl<Q: QuantSpec> QuantizedDataset<Q> {
     pub fn prefetch_vector(&self, id: u32) {
         unsafe {
             let v = self.get_vertex_unchecked(id);
-            vector::prefetch_vector(v);
+            orion_ann_vector::prefetch_vector(v);
         }
     }
 
@@ -706,7 +706,7 @@ impl<Q: QuantSpec> QuantizedDataset<Q> {
         }
         let n = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
         let dim = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
-        if dim == 0 || n == 0 || dim > Q::QuantDistanceFn::MAX_COORDINATES {
+        if dim == 0 || n == 0 || dim > Q::QuantKernel::MAX_COORDINATES {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "invalid quantized shape",
@@ -724,7 +724,7 @@ impl<Q: QuantSpec> QuantizedDataset<Q> {
             )
             .into());
         }
-        let layout = vector::PaddedLayout::for_kernel::<Q::QuantDistanceFn>(dim)
+        let layout = orion_ann_vector::PaddedLayout::for_kernel::<Q::QuantKernel>(dim)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let stride = layout.stride_elements();
         let param_bytes = std::mem::size_of::<Q::Params>();
@@ -750,7 +750,7 @@ impl<Q: QuantSpec> QuantizedDataset<Q> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diskann::model::InmemDataset;
+    use orion_ann_diskann::model::InmemDataset;
 
     fn make_ds<const N: usize>(num_points: usize) -> InmemDataset<f32, N> {
         let mut ds = InmemDataset::<f32, N>::new(num_points, 1.0).unwrap();

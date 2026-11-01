@@ -12,10 +12,10 @@
 //! so caches can be repadded on a different architecture.
 //!
 //! ```
-//! use diskann::model::PaddedDataset;
-//! use orion::{Orion, DynamicCascade, DynamicSearchConfig, CalibrationConfig, PhasedGraph};
-//! use orion::algorithm::search::stage::{admission::L2U8Admission, rerank::DynamicF32Rerank};
-//! use vector::{L2F32Distance, PaddedLayout};
+//! use orion_ann_diskann::model::PaddedDataset;
+//! use orion_ann::{Orion, DynamicCascade, DynamicSearchConfig, CalibrationConfig, PhasedGraph};
+//! use orion_ann::algorithm::search::stage::{admission::L2U8Admission, rerank::DynamicF32Rerank};
+//! use orion_ann_vector::{L2F32Distance, PaddedLayout};
 //!
 //! let base = PaddedDataset::from_packed(
 //!     &[1.0f32,2.,3., 4.,5.,6., 7.,8.,9.],
@@ -40,11 +40,11 @@
 use crate::model::FixedChunkPQTable;
 use crate::model::PhasedGraph;
 use crate::model::scratch::InMemScratchPool;
-use diskann::model::InmemDataset;
+use orion_ann_diskann::model::InmemDataset;
+use orion_ann_vector::FullPrecisionDistance;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
-use vector::FullPrecisionDistance;
 
 mod cache;
 mod calibration;
@@ -63,7 +63,7 @@ pub type StaticOrion<const N: usize, T = f32> =
     CompressedIndex<InmemDataset<T, N>, DynamicSidecars>;
 /// Primary runtime-dimensional index: padded storage, quantized cascades and
 /// automatic calibration. `StaticOrion<N,T>` remains a compatibility adapter.
-pub type Orion<T = f32> = CompressedIndex<diskann::model::PaddedDataset<T>>;
+pub type Orion<T = f32> = CompressedIndex<orion_ann_diskann::model::PaddedDataset<T>>;
 
 /// Orion index with PhasedGraph-based two-phase search.
 ///
@@ -128,7 +128,7 @@ where
         log::info!(
             "🏗️: PhasedGraph built in {:.3}s  mem={}",
             t_graph.elapsed().as_secs_f32(),
-            diskann::utils::mem_usage(),
+            orion_ann_diskann::utils::mem_usage(),
         );
         graph.print_stats();
 

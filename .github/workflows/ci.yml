@@ -10,14 +10,15 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'vector/**'
-      - 'diskann/**'
+      - 'orion-diskann/**'
       - 'orion/**'
       - 'orion-cli/**'
       - 'orion-runtime/**'
+      - 'orion-parlay/**'
       - 'orion-py/**'
       - 'platform/**'
       - 'adsampling/**'
-      - 'logger/**'
+      - 'orion-logger/**'
       - 'benchmark/**'
       - '.cargo/**'
       - '.github/**'
@@ -27,14 +28,15 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'vector/**'
-      - 'diskann/**'
+      - 'orion-diskann/**'
       - 'orion/**'
       - 'orion-cli/**'
       - 'orion-runtime/**'
+      - 'orion-parlay/**'
       - 'orion-py/**'
       - 'platform/**'
       - 'adsampling/**'
-      - 'logger/**'
+      - 'orion-logger/**'
       - 'benchmark/**'
       - '.cargo/**'
       - '.github/**'
@@ -75,7 +77,7 @@ jobs:
             features: '+avx2,+fma,+f16c,+avx512f,+avx512bw,+avx512dq,+avx512vl,+avx512vpopcntdq'
             cpu_flags: 'avx2 fma f16c avx512f avx512bw avx512dq avx512vl avx512_vpopcntdq'
     env:
-      RUSTFLAGS: '-C target-cpu=x86-64 -C target-feature=${{ matrix.features }}'
+      RUSTFLAGS: '-C target-cpu=x86-64 -C target-feature=${{ matrix.features }} -D warnings'
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
@@ -96,20 +98,22 @@ jobs:
       # Explicit --target keeps SIMD flags out of host build scripts/proc macros.
       # Even on an AVX2-only host we can compile and link AVX-512 test binaries.
       - name: Compile libraries and CLI
-        run: cargo check --locked -p vector -p orion -p diskann -p orion-cli -p orion-runtime --target x86_64-unknown-linux-gnu
+        run: cargo check --locked -p orion-ann-vector -p orion-ann -p orion-ann-diskann -p orion-ann-cli -p orion-ann-runtime --target x86_64-unknown-linux-gnu
       - name: Compile tests and benchmark executables
         run: |
-          cargo test --locked -p vector --release --no-run --target x86_64-unknown-linux-gnu
-          cargo test --locked -p diskann --test padded_dataset --release --no-run --target x86_64-unknown-linux-gnu
-          cargo test --locked -p orion --release --lib --test dynamic_index --test dynamic_cascade --test sidecar_migration --test native_u8_search --no-run --target x86_64-unknown-linux-gnu
+          cargo test --locked -p orion-ann-vector --release --no-run --target x86_64-unknown-linux-gnu
+          cargo test --locked -p orion-ann-diskann --test padded_dataset --release --no-run --target x86_64-unknown-linux-gnu
+          cargo test --locked -p orion-ann --release --lib --test dynamic_index --test dynamic_cascade --test sidecar_migration --test native_u8_search --no-run --target x86_64-unknown-linux-gnu
           cargo build --locked -p benchmark --release --bin orion-sweep --bin diskann_sweep --bin prefilter_progress --target x86_64-unknown-linux-gnu
       - name: Execute SIMD regression tests
         if: steps.cpu.outputs.supported == 'true'
+        env:
+          ORION_TEST_REQUIRED_BACKENDS: ${{ matrix.simd }}
         run: |
-          cargo test --locked -p vector --release --target x86_64-unknown-linux-gnu -- --nocapture
-          cargo test --locked -p diskann --test padded_dataset --release --target x86_64-unknown-linux-gnu
-          cargo test --locked -p orion --release --test dynamic_index --test dynamic_cascade --test sidecar_migration --test native_u8_search --target x86_64-unknown-linux-gnu
-          cargo test --locked -p orion --release --lib model::dataset --target x86_64-unknown-linux-gnu -- --nocapture
+          cargo test --locked -p orion-ann-vector --release --target x86_64-unknown-linux-gnu -- --nocapture
+          cargo test --locked -p orion-ann-diskann --test padded_dataset --release --target x86_64-unknown-linux-gnu
+          cargo test --locked -p orion-ann --release --test dynamic_index --test dynamic_cascade --test sidecar_migration --test native_u8_search --target x86_64-unknown-linux-gnu
+          cargo test --locked -p orion-ann --release --lib model::dataset --target x86_64-unknown-linux-gnu -- --nocapture
           cargo test --locked -p benchmark --release --bin diskann_sweep --bin prefilter_progress --target x86_64-unknown-linux-gnu
           DISKANN_BINARY=target/x86_64-unknown-linux-gnu/release/diskann_sweep python3 benchmark/scripts/tests/check_diskann_streaming.py
       - name: Report runtime coverage
@@ -147,27 +151,31 @@ jobs:
       - name: Verify ARM runner
         run: test "$(uname -m)" = arm64
       - name: Native library and CLI checks
-        run: cargo check --locked -p vector -p orion -p diskann -p orion-cli -p orion-runtime
+        run: cargo check --locked -p orion-ann-vector -p orion-ann -p orion-ann-diskann -p orion-ann-cli -p orion-ann-runtime
       - name: Native NEON regressions
+        env:
+          ORION_TEST_REQUIRED_BACKENDS: 'scalar,neon,dotprod'
         run: |
-          cargo test --locked -p vector --release
-          cargo test --locked -p diskann --test padded_dataset --release
-          cargo test --locked -p orion --release --lib model::dataset
-          cargo test --locked -p orion --release --test dynamic_index --test dynamic_cascade --test sidecar_migration --test native_u8_search
+          cargo test --locked -p orion-ann-vector --release
+          cargo test --locked -p orion-ann-diskann --test padded_dataset --release
+          cargo test --locked -p orion-ann --release --lib model::dataset
+          cargo test --locked -p orion-ann --release --test dynamic_index --test dynamic_cascade --test sidecar_migration --test native_u8_search
+      - name: Native ParlayANN FFI and service regressions
+        run: cargo test --locked -p orion-ann-parlay -p orion-ann-runtime -p orion-ann-cli
+      # Native Linux jobs validate the C++ backend; cross-check Rust without a Linux C++ sysroot.
       - name: Cross-check AVX2 fallback
         env:
           RUSTFLAGS: '-C target-cpu=x86-64 -C target-feature=+avx2,+fma,+f16c'
-        run: cargo check --locked -p vector -p orion -p diskann -p orion-cli -p orion-runtime --target x86_64-unknown-linux-gnu
+        run: cargo check --locked -p orion-ann-vector -p orion-ann -p orion-ann-diskann -p orion-ann-cli -p orion-ann-runtime --no-default-features --target x86_64-unknown-linux-gnu
       - name: Cross-check AVX-512
         env:
           RUSTFLAGS: '-C target-cpu=x86-64 -C target-feature=+avx2,+fma,+f16c,+avx512f,+avx512bw,+avx512dq,+avx512vl,+avx512vpopcntdq'
-        run: cargo check --locked -p vector -p orion -p diskann -p orion-cli -p orion-runtime --target x86_64-unknown-linux-gnu
-      - name: Clippy (informational)
-        continue-on-error: true
-        run: cargo clippy --locked -p vector --release
+        run: cargo check --locked -p orion-ann-vector -p orion-ann -p orion-ann-diskann -p orion-ann-cli -p orion-ann-runtime --no-default-features --target x86_64-unknown-linux-gnu
+      - name: Vector Clippy
+        run: cargo clippy --locked -p orion-ann-vector --release -- -D warnings
 
   summary:
-    needs: [compile-check-cross, build-and-test, python-api]
+    needs: [compile-check-cross, build-and-test, python-api, portable-api]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -175,10 +183,11 @@ jobs:
         env:
           CROSS_RESULT: ${{ needs.compile-check-cross.result }}
           LINUX_RESULT: ${{ needs.build-and-test.result }}
+          PORTABLE_RESULT: ${{ needs.portable-api.result }}
           PYTHON_RESULT: ${{ needs.python-api.result }}
         run: |
-          echo "macOS/cross: $CROSS_RESULT; Linux SIMD matrix: $LINUX_RESULT; Python API: $PYTHON_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          [[ "$CROSS_RESULT" == success && "$LINUX_RESULT" == success && "$PYTHON_RESULT" == success ]]
+          echo "macOS/cross: $CROSS_RESULT; Linux SIMD matrix: $LINUX_RESULT; Python API: $PYTHON_RESULT; portable API: $PORTABLE_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          [[ "$CROSS_RESULT" == success && "$LINUX_RESULT" == success && "$PYTHON_RESULT" == success && "$PORTABLE_RESULT" == success ]]
 
   python-api:
     name: Python API / CLI consistency
@@ -203,7 +212,36 @@ jobs:
       - name: Byte-distance, shared runtime and CLI regressions
         run: |
           # Debug overflow checks cover the scalar stream fallback on AVX2.
-          cargo test --locked -p vector --test native_u8_stream
-          cargo test --locked -p orion-runtime -p orion-cli
+          cargo test --locked -p orion-ann-vector --test native_u8_stream
+          cargo test --locked -p orion-ann-runtime -p orion-ann-cli
+          cargo test --locked -p orion-ann --test error_contract
       - name: NumPy, persistence and CLI parity
-        run: python orion-py/tests/run.py
+        run: |
+          python orion-py/tests/run.py
+          python orion-py/tests/run.py --profile python
+
+  portable-api:
+    name: Portable x86 / public API and docs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Override repository AVX2 flags: exercise runtime feature dispatch.
+      RUSTFLAGS: '-C target-cpu=x86-64 -D warnings'
+      RUSTDOCFLAGS: '-D warnings'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: portable-api
+      - name: Portable distance and service regressions
+        env:
+          ORION_TEST_REQUIRED_BACKENDS: 'scalar,avx2'
+        run: |
+          cargo test --locked -p orion-ann-vector --release
+          cargo test --locked -p orion-ann -p orion-ann-parlay -p orion-ann-runtime -p orion-ann-cli
+          cargo test --locked -p orion-ann-diskann --lib
+      - name: Public API examples and warning-free docs
+        run: |
+          cargo test --locked --doc -p orion-ann -p orion-ann-runtime
+          cargo doc --locked --workspace --no-deps

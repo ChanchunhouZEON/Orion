@@ -4,17 +4,20 @@
  */
 
 //! Same-graph 2x2 neighbor-switching / early-exit experiment.
-use orion_runtime::{
+use orion_ann::{Error, Result};
+use orion_ann_runtime::search::cascade;
+use orion_ann_runtime::search::utils;
+use orion_ann_runtime::with_supported_dimension;
+use orion_ann_runtime::{
     config::{cli::Args as RunArgs, ResolvedRunConfig},
     data::{memory, LoadedDataset},
     graph,
 };
-use orion_runtime::search::cascade;
-use orion_runtime::with_supported_dimension;
-use orion_runtime::search::utils;
 
 use clap::Parser;
-use orion::algorithm::search::diagnostics::{NeighborMode, NoopObserver, PhaseWork, SynergyTrace};
+use orion_ann::algorithm::search::diagnostics::{
+    NeighborMode, NoopObserver, PhaseWork, SynergyTrace,
+};
 use rayon::prelude::*;
 use serde_json::{json, Value};
 use std::{fs::OpenOptions, io::Write, path::PathBuf, time::Instant};
@@ -45,10 +48,26 @@ struct Arm {
 }
 
 const ARMS: [Arm; 4] = [
-    Arm { name: "full",         mode: NeighborMode::FullNeighbor,   ee: false },
-    Arm { name: "adaptive",     mode: NeighborMode::LocalExtra,     ee: false },
-    Arm { name: "ee_only",      mode: NeighborMode::FullNeighbor,   ee: true },
-    Arm { name: "adaptive_ee",  mode: NeighborMode::LocalExtra,     ee: true },
+    Arm {
+        name: "full",
+        mode: NeighborMode::FullNeighbor,
+        ee: false,
+    },
+    Arm {
+        name: "adaptive",
+        mode: NeighborMode::LocalExtra,
+        ee: false,
+    },
+    Arm {
+        name: "ee_only",
+        mode: NeighborMode::FullNeighbor,
+        ee: true,
+    },
+    Arm {
+        name: "adaptive_ee",
+        mode: NeighborMode::LocalExtra,
+        ee: true,
+    },
 ];
 
 fn recall(ids: &[u32], truth: &[u32]) -> f64 {
@@ -78,29 +97,38 @@ fn run<const N: usize>(
     args: &AdaptiveEeAblationArgs,
     config: &ResolvedRunConfig,
     mut data: LoadedDataset,
-) -> Result<(), String>
+) -> Result<()>
 where
-    [f32; N]: vector::FullPrecisionDistance<f32, N>,
+    [f32; N]: orion_ann_vector::FullPrecisionDistance<f32, N>,
 {
     if config.prepare_only {
         graph::load_index(config, &mut data)?;
         return Ok(());
     }
-    let ground_truth = data.ground_truth.take().ok_or("this diagnostic requires --groundtruth; ordinary orion search does not")?;
+    let ground_truth = data
+        .ground_truth
+        .take()
+        .ok_or("this diagnostic requires --groundtruth; ordinary orion search does not")?;
     let settings = &config.sweep;
-    let output = args
-        .output
-        .clone()
-        .unwrap_or_else(
-            || PathBuf::from(format!("visualizations/adaptive_ee_ablation_{}_k{}.json",
-               config.dataset.as_str(), settings.k, )));
+    let output = args.output.clone().unwrap_or_else(|| {
+        PathBuf::from(format!(
+            "visualizations/adaptive_ee_ablation_{}_k{}.json",
+            config.dataset.as_str(),
+            settings.k,
+        ))
+    });
 
     if output.exists() {
-        return Err(format!("Refusing to overwrite {}", output.display()));
+        return Err(Error::from(format!(
+            "Refusing to overwrite {}",
+            output.display()
+        )));
     }
 
-    if settings.threads == 0 || settings.threads > orion::algorithm::search::MAX_WORKERS
-        || settings.trials == 0 || settings.search_list_sizes.is_empty()
+    if settings.threads == 0
+        || settings.threads > orion_ann::algorithm::search::MAX_WORKERS
+        || settings.trials == 0
+        || settings.search_list_sizes.is_empty()
         || settings.calibration_samples == 0
     {
         return Err("Invalid thread, trial, calibration sample count or empty L sweep".into());
@@ -111,87 +139,132 @@ where
         .iter()
         .map(|q| q.as_slice().try_into().expect("validated dimension"))
         .collect();
-    if queries.is_empty() || settings.k == 0 || ground_truth.len() != queries.len()
+    if queries.is_empty()
+        || settings.k == 0
+        || ground_truth.len() != queries.len()
         || ground_truth.iter().any(|gt| gt.len() < settings.k)
     {
-        return Err("Nonempty queries and at least k ground-truth targets per query are required".into());
+        return Err(
+            "Nonempty queries and at least k ground-truth targets per query are required".into(),
+        );
     }
 
-
     let idx = graph::load_index(config, &mut data)?;
-
-
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(settings.threads)
         .build()
-        .map_err(|e| e.to_string())?;
-    let calib = pool.install(|| idx.calibrate(
-        queries[..settings.calibration_samples.min(queries.len())].as_flattened(),
-        settings.calibration_l, config.window_size,
-        orion::CalibrationConfig { k: settings.k, metric: config.metric.calibration_metric() },
-    )).map_err(|e| e.to_string())?;
+        .map_err(Error::from)?;
+    let calib = pool
+        .install(|| {
+            idx.calibrate(
+                queries[..settings.calibration_samples.min(queries.len())].as_flattened(),
+                settings.calibration_l,
+                config.window_size,
+                orion_ann::CalibrationConfig {
+                    k: settings.k,
+                    metric: config.metric.calibration_metric(),
+                },
+            )
+        })
+        .map_err(Error::from)?;
 
     let ee_limit = args.ee_limit.unwrap_or(calib.early_exit_limit);
-    log::info!("Shared calibration: threshold={}, EE limit={ee_limit}", calib.threshold);
+    log::info!(
+        "Shared calibration: threshold={}, EE limit={ee_limit}",
+        calib.threshold
+    );
 
-    let pf = cascade::build_prefilter(&idx, config.search_plan().cascade().prefilter, config.search_plan().cascade().admission);
-    let ad = cascade::build_admission(&idx, config.search_plan().cascade().admission).map_err(|e| e.to_string())?;
+    let pf = cascade::build_prefilter(
+        &idx,
+        config.search_plan().cascade().prefilter,
+        config.search_plan().cascade().admission,
+    );
+    let ad = cascade::build_admission(&idx, config.search_plan().cascade().admission)
+        .map_err(Error::from)?;
     let rr = cascade::build_rerank(&idx, config.search_plan().cascade().rerank);
 
-    let count =
-        if args.diagnostic_queries == 0 { queries.len() }
-        else { args.diagnostic_queries.min(queries.len()) };
+    let count = if args.diagnostic_queries == 0 {
+        queries.len()
+    } else {
+        args.diagnostic_queries.min(queries.len())
+    };
     let sample: Vec<usize> = (0..count).map(|i| i * queries.len() / count).collect();
     let mut points = Vec::new();
 
     for &l in &settings.search_list_sizes {
         let search = |qi: usize, arm: Arm| {
-            idx.search_unified_observed(&queries[qi], settings.k, l, config.window_size,
-                calib.threshold, if arm.ee { ee_limit } else { usize::MAX },
-                pf.as_deref(), ad.as_ref(), rr.as_ref(), arm.mode, &mut NoopObserver)
-                .map_err(|e| e.to_string())
+            idx.search_unified_observed(
+                &queries[qi],
+                settings.k,
+                l,
+                config.window_size,
+                calib.threshold,
+                if arm.ee { ee_limit } else { usize::MAX },
+                pf.as_deref(),
+                ad.as_ref(),
+                rr.as_ref(),
+                arm.mode,
+                &mut NoopObserver,
+            )
+            .map_err(Error::from)
         };
         let mut arms = Vec::new();
         for arm in ARMS {
-            let rows: Result<Vec<Value>, String> = pool.install(|| sample.par_iter().map(|&qi| {
-                let truth = &ground_truth[qi][..settings.k];
-                let mut trace = SynergyTrace::default();
-                let ids = idx
-                    .search_unified_observed(
-                        &queries[qi],
-                        settings.k,
-                        l,
-                        config.window_size,
-                        calib.threshold,
-                        if arm.ee { ee_limit } else { usize::MAX },
-                        pf.as_deref(), ad.as_ref(), rr.as_ref(),
-                        arm.mode,
-                        &mut trace)
-                    .map_err(|e| e.to_string())?;
+            let rows: Result<Vec<Value>> = pool.install(|| {
+                sample
+                    .par_iter()
+                    .map(|&qi| {
+                        let truth = &ground_truth[qi][..settings.k];
+                        let mut trace = SynergyTrace::default();
+                        let ids = idx
+                            .search_unified_observed(
+                                &queries[qi],
+                                settings.k,
+                                l,
+                                config.window_size,
+                                calib.threshold,
+                                if arm.ee { ee_limit } else { usize::MAX },
+                                pf.as_deref(),
+                                ad.as_ref(),
+                                rr.as_ref(),
+                                arm.mode,
+                                &mut trace,
+                            )
+                            .map_err(Error::from)?;
 
-                if ids != search(qi, arm)? {
-                    return Err(format!("Observer changed results: query={qi}, L={l}, arm={}", arm.name));
-                }
+                        if ids != search(qi, arm)? {
+                            return Err(Error::from(format!(
+                                "Observer changed results: query={qi}, L={l}, arm={}",
+                                arm.name
+                            )));
+                        }
 
-                let rerank = if config.search_plan().cascade().rerank == cascade::RerankChoice::None { 0 }
-                    else { trace.rerank_candidates };
+                        let rerank = if config.search_plan().cascade().rerank
+                            == cascade::RerankChoice::None
+                        {
+                            0
+                        } else {
+                            trace.rerank_candidates
+                        };
 
-                Ok(json!({
-                    "query": qi,
-                    "recall": recall(&ids, truth),
-                    "first_converged_step": trace.first_converged_step,
-                    "early_exited": trace.early_exited,
-                    "before": phase_json(&trace.before),
-                    "after": phase_json(&trace.after),
-                    "before_ndc": trace.before.ndc(),
-                    "after_ndc": trace.after.ndc(),
-                    "before_expansions": trace.before.expansions,
-                    "after_expansions": trace.after.expansions,
-                    "rerank_ndc": rerank,
-                    "total_stage_ndc": trace.before.ndc() + trace.after.ndc() + rerank,
-                }))
-            }).collect());
+                        Ok(json!({
+                            "query": qi,
+                            "recall": recall(&ids, truth),
+                            "first_converged_step": trace.first_converged_step,
+                            "early_exited": trace.early_exited,
+                            "before": phase_json(&trace.before),
+                            "after": phase_json(&trace.after),
+                            "before_ndc": trace.before.ndc(),
+                            "after_ndc": trace.after.ndc(),
+                            "before_expansions": trace.before.expansions,
+                            "after_expansions": trace.after.expansions,
+                            "rerank_ndc": rerank,
+                            "total_stage_ndc": trace.before.ndc() + trace.after.ndc() + rerank,
+                        }))
+                    })
+                    .collect()
+            });
 
             let rows = rows?;
             let mut means = serde_json::Map::new();
@@ -204,27 +277,30 @@ where
                 "before_expansions",
                 "after_expansions",
                 "rerank_ndc",
-                "total_stage_ndc"] {
+                "total_stage_ndc",
+            ] {
                 means.insert(
                     key.into(),
                     json!(
-                        rows
-                        .iter()
-                        .map(|r| r[key].as_f64().unwrap())
-                    .sum::<f64>() / count as f64));
+                        rows.iter().map(|r| r[key].as_f64().unwrap()).sum::<f64>() / count as f64
+                    ),
+                );
             }
 
             // Metrics need converting into target `key`.
             for (key, field) in [
                 ("early_exit_fraction", "early_exited"),
-                ("converged_fraction", "first_converged_step")] {
-                let number = rows.
-                    iter()
-                    .filter(|r|
+                ("converged_fraction", "first_converged_step"),
+            ] {
+                let number = rows
+                    .iter()
+                    .filter(|r| {
                         if field == "early_exited" {
                             r[field].as_bool().unwrap()
+                        } else {
+                            !r[field].is_null()
                         }
-                        else { !r[field].is_null() } )
+                    })
                     .count();
                 means.insert(key.into(), json!(number as f64 / count as f64));
             }
@@ -244,20 +320,27 @@ where
                 let base = &arms[0]["queries"][i];
                 let row = &arms[arm]["queries"][i];
                 if base["before"] != row["before"]
-                    || base["first_converged_step"] != row["first_converged_step"] {
-                    return Err(format!("Prefix mismatch: query={}, L={l}", sample[i]));
+                    || base["first_converged_step"] != row["first_converged_step"]
+                {
+                    return Err(Error::from(format!(
+                        "Prefix mismatch: query={}, L={l}",
+                        sample[i]
+                    )));
                 }
             }
         }
-        let batch = |arm| -> Result<Vec<Vec<u32>>, String> {
-            pool.install(||
+        let batch = |arm| -> Result<Vec<Vec<u32>>> {
+            pool.install(|| {
                 (0..queries.len())
                     .into_par_iter()
                     .map(|qi| search(qi, arm))
-                    .collect())
+                    .collect()
+            })
         };
 
-        for arm in ARMS { batch(arm)?; }
+        for arm in ARMS {
+            batch(arm)?;
+        }
         let mut qps: [Vec<f64>; 4] = std::array::from_fn(|_| Vec::new());
         let mut recalls = [0.0; 4];
         for trial in 0..settings.trials {
@@ -267,10 +350,12 @@ where
                 let start = Instant::now();
                 let ids = batch(ARMS[a])?;
                 qps[a].push(queries.len() as f64 / start.elapsed().as_secs_f64());
-                recalls[a] = ids.iter().zip(&ground_truth)
-                    .map(|(ids, gt)|
-                        recall(ids, &gt[..settings.k]))
-                    .sum::<f64>() / queries.len() as f64;
+                recalls[a] = ids
+                    .iter()
+                    .zip(&ground_truth)
+                    .map(|(ids, gt)| recall(ids, &gt[..settings.k]))
+                    .sum::<f64>()
+                    / queries.len() as f64;
             }
         }
         for a in 0..4 {
@@ -280,51 +365,55 @@ where
             arms[a]["qps_trials"] = json!(qps[a]);
             arms[a]["qps_median"] = json!(median);
             arms[a]["recall"] = json!(recalls[a]);
-            log::info!("L={l} {} recall={:.6} QPS={median:.0} NDC={}",
-                ARMS[a].name, recalls[a], arms[a]["diagnostic_means"]["total_stage_ndc"]);
+            log::info!(
+                "L={l} {} recall={:.6} QPS={median:.0} NDC={}",
+                ARMS[a].name,
+                recalls[a],
+                arms[a]["diagnostic_means"]["total_stage_ndc"]
+            );
         }
 
         points.push(json!({"l": l, "arms": arms}));
     }
 
-    let matched: Vec<_> = args.recall_targets.iter().map(|&target| {
-        let arms: Vec<_> = (0..4).map(|arm| {
-            let eligible: Vec<_> =
-                points
-                    .iter()
-                    .filter(|p|
-                        p["arms"][arm]["recall"].as_f64().unwrap() >= target)
-                    .collect();
+    let matched: Vec<_> = args
+        .recall_targets
+        .iter()
+        .map(|&target| {
+            let arms: Vec<_> = (0..4)
+                .map(|arm| {
+                    let eligible: Vec<_> = points
+                        .iter()
+                        .filter(|p| p["arms"][arm]["recall"].as_f64().unwrap() >= target)
+                        .collect();
 
-            let min_ndc =
-                eligible
-                    .iter()
-                    .min_by(|a, b|
-                            a["arms"][arm]["diagnostic_means"]["total_stage_ndc"]
-                                .as_f64()
-                                .unwrap()
-                        .total_cmp(
-                            &b["arms"][arm]["diagnostic_means"]["total_stage_ndc"]
-                                .as_f64()
-                                .unwrap()
-                        ));
+                    let min_ndc = eligible.iter().min_by(|a, b| {
+                        a["arms"][arm]["diagnostic_means"]["total_stage_ndc"]
+                            .as_f64()
+                            .unwrap()
+                            .total_cmp(
+                                &b["arms"][arm]["diagnostic_means"]["total_stage_ndc"]
+                                    .as_f64()
+                                    .unwrap(),
+                            )
+                    });
 
-            let max_qps =
-                eligible
-                    .iter()
-                    .max_by(|a, b|
-                        a["arms"][arm]["qps_median"].as_f64().unwrap()
-                .total_cmp(
-                        &b["arms"][arm]["qps_median"].as_f64().unwrap()
-                ));
+                    let max_qps = eligible.iter().max_by(|a, b| {
+                        a["arms"][arm]["qps_median"]
+                            .as_f64()
+                            .unwrap()
+                            .total_cmp(&b["arms"][arm]["qps_median"].as_f64().unwrap())
+                    });
 
-            json!({
+                    json!({
                 "arm": ARMS[arm].name,
                 "min_ndc_measured": min_ndc.map(|p| selection(p, arm)),
                 "max_qps_measured": max_qps.map(|p| selection(p, arm))})
-        }).collect();
-        json!({"target": target, "arms": arms})
-    }).collect();
+                })
+                .collect();
+            json!({"target": target, "arms": arms})
+        })
+        .collect();
     let result = json!({
         "schema_version": 1,
         "experiment": "adaptive_ee_ablation",
@@ -348,25 +437,29 @@ where
     });
 
     if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(parent).map_err(Error::from)?;
     }
 
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&output)
-        .map_err(|e| e.to_string())?;
+        .map_err(Error::from)?;
 
-    file.write_all(&serde_json::to_vec_pretty(&result).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    file.write_all(&serde_json::to_vec_pretty(&result).map_err(Error::from)?)
+        .map_err(Error::from)?;
     log::info!("Saved {}", output.display());
 
     Ok(())
 }
 
-fn execute(args: AdaptiveEeAblationArgs) -> Result<(), String> {
-    if args.recall_targets.is_empty() || args.recall_targets.iter()
-        .any(|r| !r.is_finite() || *r <= 0.0 || *r > 1.0) {
+fn execute(args: AdaptiveEeAblationArgs) -> Result<()> {
+    if args.recall_targets.is_empty()
+        || args
+            .recall_targets
+            .iter()
+            .any(|r| !r.is_finite() || *r <= 0.0 || *r > 1.0)
+    {
         return Err("recall-targets must be finite values in (0, 1]".into());
     }
     if matches!(args.ee_limit, Some(0 | usize::MAX)) {
@@ -374,11 +467,18 @@ fn execute(args: AdaptiveEeAblationArgs) -> Result<(), String> {
     }
     let config = args.run.resolve_for_sweep()?;
     if args.run.print_config {
-        println!("{}", serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&config).map_err(Error::from)?
+        );
         return Ok(());
     }
     if args.run.preflight {
-        println!("{}", serde_json::to_string_pretty(&memory::preflight_report(&config)?).map_err(|e| e.to_string())?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&memory::preflight_report(&config)?)
+                .map_err(Error::from)?
+        );
         return Ok(());
     }
     let data = LoadedDataset::load(&config)?;

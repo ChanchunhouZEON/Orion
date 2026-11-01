@@ -43,7 +43,7 @@ pub struct NodeCliffStats {
     /// Consecutive distance ratios: `d[i+1] / d[i]` for i in 0..degree-1.
     pub gap_ratios: Vec<f32>,
     /// Index into `gap_ratios` with the maximum value (the primary cliff).
-    /// This means the cliff sits *between* sorted_neighbors[cliff_pos] and
+    /// This means the cliff sits *between* sorted_neighbors`cliff_pos` and
     /// sorted_neighbors[cliff_pos + 1].
     pub cliff_pos: usize,
     /// The maximum gap ratio value.
@@ -572,18 +572,18 @@ pub fn print_node_cliff_detail(s: &NodeCliffStats) {
 pub struct NodeRankPrecisionProfile {
     pub node: u32,
     pub degree: usize,
-    /// precision[k] for k = 0..degree-1.
+    /// `precision[k]` for k in `0..degree`.
     pub precision: Vec<f64>,
     /// Position of maximum precision drop (cliff).
     pub cliff_pos: usize,
-    /// The drop magnitude at cliff_pos: precision[cliff_pos] - precision[cliff_pos+1].
+    /// Drop magnitude: `precision[cliff_pos] - precision[cliff_pos + 1]`.
     pub cliff_drop: f64,
 }
 
 /// Compute rank-precision profiles for sampled nodes.
 ///
 /// `sorted_nbrs[node]` = distance-sorted neighbor IDs.
-/// `bf_knn[si]` = brute-force top-K IDs for sample_nodes[si].
+/// `bf_knn[si]` contains the brute-force top-K IDs for `sample_nodes[si]`.
 pub fn compute_rank_precision_profiles(
     sorted_nbrs: &[Vec<u32>],
     sample_nodes: &[usize],

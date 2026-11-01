@@ -1,10 +1,11 @@
 use super::super::utils::AlignedQuery;
-use crate::model::scratch::InMemScratchPool;
-use crate::model::Neighbor as DNeighbor;
+use crate::Result;
 use crate::StaticOrion;
-use diskann::common::ANNResult;
-use diskann::model::Vertex;
-use vector::{FullPrecisionDistance, Metric};
+use crate::model::Neighbor as DNeighbor;
+use crate::model::scratch::InMemScratchPool;
+
+use orion_ann_diskann::model::Vertex;
+use orion_ann_vector::{FullPrecisionDistance, Metric};
 
 /// Per-operation timing breakdown accumulated across queries.
 #[derive(Default)]
@@ -95,7 +96,7 @@ where
         window_size: usize,
         epsilon: f32,
         early_exit_limit: usize,
-    ) -> ANNResult<(Vec<u32>, usize, usize, usize, usize)> {
+    ) -> Result<(Vec<u32>, usize, usize, usize, usize)> {
         let entry = self.entry;
         let dataset = &self.dataset;
         let graph = &self.graph;
@@ -215,7 +216,7 @@ where
         search_list_size: usize,
         window_size: usize,
         epsilon: f32,
-    ) -> ANNResult<SearchProfileStats> {
+    ) -> Result<SearchProfileStats> {
         use std::time::Instant;
 
         let entry = self.entry;

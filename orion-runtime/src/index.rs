@@ -1,14 +1,15 @@
 //! An owned index session for embedded applications. No CLI parsing or process-wide pool.
 use crate::{
-    IndexOptions,
     config::{GraphSource, GraphSourcePolicy, ResolvedRunConfig, VectorStorageKind},
     data::memory as resources,
     data::{
-        BaseElement, LoadedBase, VectorFormat, inspect_vector_file, validate_and_normalize_vectors,
+        inspect_vector_file, validate_and_normalize_vectors, BaseElement, LoadedBase, VectorFormat,
     },
     graph::cache::CachePlan,
     search::{F32CascadeBackend, NativeU8L2Backend, SearchBackend},
+    IndexOptions,
 };
+use crate::{Error, Result};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -33,7 +34,7 @@ pub enum BaseInput {
     },
 }
 
-fn copy_array<T: BaseElement>(values: &[T], dimension: usize) -> Result<LoadedBase<T>, String> {
+fn copy_array<T: BaseElement>(values: &[T], dimension: usize) -> Result<LoadedBase<T>> {
     if dimension == 0 || values.is_empty() || values.len() % dimension != 0 {
         return Err("base must be a nonempty rectangular matrix".into());
     }
@@ -41,8 +42,8 @@ fn copy_array<T: BaseElement>(values: &[T], dimension: usize) -> Result<LoadedBa
     if count >= u32::MAX as usize {
         return Err("base point count exceeds u32 IDs".into());
     }
-    let layout = vector::PaddedLayout::for_kernel::<T::Kernel>(dimension)?;
-    let base = diskann::model::PaddedDataset::from_packed(values, layout)?;
+    let layout = orion_ann_vector::PaddedLayout::for_kernel::<T::Kernel>(dimension)?;
+    let base = orion_ann_diskann::model::PaddedDataset::from_packed(values, layout)?;
     Ok(LoadedBase {
         base: Some(base.into_allocation()),
         num_points: count,
@@ -50,15 +51,43 @@ fn copy_array<T: BaseElement>(values: &[T], dimension: usize) -> Result<LoadedBa
     })
 }
 
+/// Public array variants can also be assembled by Rust callers. Validate their
+/// declared shape before hashing/slicing, not only in the convenience constructors.
+fn validate_array<T: BaseElement>(data: &LoadedBase<T>, dimension: usize) -> Result<()> {
+    if dimension != data.layout.logical_dim() {
+        return Err(
+            Error::dimension("base.dimension", data.layout.logical_dim(), dimension)
+                .at("validate_base"),
+        );
+    }
+    let elements = data
+        .num_points
+        .checked_mul(data.layout.stride_elements())
+        .ok_or_else(|| Error::invalid_argument("base shape overflows address space"))?;
+    let allocation = data
+        .base
+        .as_ref()
+        .ok_or_else(|| Error::invalid_state("base allocation has already been consumed"))?;
+    if data.num_points == 0 || data.num_points >= u32::MAX as usize || allocation.len() < elements {
+        return Err(
+            Error::invalid_argument("base allocation does not contain its declared rows")
+                .at("validate_base")
+                .with_detail("required_elements", elements)
+                .with_detail("actual_elements", allocation.len()),
+        );
+    }
+    Ok(())
+}
+
 impl BaseInput {
-    pub fn from_f32(values: &[f32], dimension: usize) -> Result<Self, String> {
+    pub fn from_f32(values: &[f32], dimension: usize) -> Result<Self> {
         Ok(Self::F32 {
             data: copy_array(values, dimension)?,
             dimension,
         })
     }
 
-    pub fn from_u8(values: &[u8], dimension: usize) -> Result<Self, String> {
+    pub fn from_u8(values: &[u8], dimension: usize) -> Result<Self> {
         Ok(Self::U8 {
             data: copy_array(values, dimension)?,
             dimension,
@@ -68,12 +97,12 @@ impl BaseInput {
     fn describe(
         &self,
         options: &IndexOptions,
-    ) -> Result<(PathBuf, VectorFormat, usize, usize, BaseIdentity), String> {
+    ) -> Result<(PathBuf, VectorFormat, usize, usize, BaseIdentity)> {
         match self {
             Self::File(path) => {
                 let path = path
                     .canonicalize()
-                    .map_err(|e| format!("base {}: {e}", path.display()))?;
+                    .map_err(|e| Error::io("open", path, e))?;
                 let format = match options.base_format {
                     Some(f) => f,
                     None => VectorFormat::infer(&path)?,
@@ -86,6 +115,7 @@ impl BaseInput {
                 Ok((path, format, header.dimension, header.count, identity))
             }
             Self::F32 { data, dimension } => {
+                validate_array(data, *dimension)?;
                 // Hash the owned, unnormalized allocation after the Python GIL
                 // has been released. Hashes stay stable across host byte order.
                 let base = data.base.as_ref().ok_or("missing array base")?;
@@ -116,6 +146,7 @@ impl BaseInput {
                 )
             }
             Self::U8 { data, dimension } => {
+                validate_array(data, *dimension)?;
                 let base = data.base.as_ref().ok_or("missing array base")?;
                 let mut hash = Sha256::new();
                 for row in base
@@ -144,7 +175,7 @@ impl BaseInput {
         hash: &str,
         format: VectorFormat,
         storage: VectorStorageKind,
-    ) -> Result<(PathBuf, VectorFormat, usize, usize, BaseIdentity), String> {
+    ) -> Result<(PathBuf, VectorFormat, usize, usize, BaseIdentity)> {
         if options.max_points.is_some_and(|n| n < count) {
             return Err("slice array input before construction instead of using max_points".into());
         }
@@ -178,13 +209,13 @@ struct FileStamp {
     modified_ns: u64,
 }
 impl FileStamp {
-    fn read(path: &Path) -> Result<Self, String> {
-        let meta = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    fn read(path: &Path) -> Result<Self> {
+        let meta = fs::metadata(path).map_err(|e| Error::io("metadata", path, e))?;
         let modified_ns = meta
             .modified()
-            .map_err(|e| e.to_string())?
+            .map_err(Error::from)?
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
+            .map_err(Error::from)?
             .as_nanos()
             .try_into()
             .map_err(|_| "file modification time exceeds u64 nanoseconds")?;
@@ -211,6 +242,7 @@ enum BaseIdentity {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// Calibration for a specific index, cascade and top-k; included in snapshots.
 pub struct Calibration {
     pub k: usize,
     pub search_list_size: usize,
@@ -219,8 +251,8 @@ pub struct Calibration {
     pub early_exit_limit: usize,
 }
 impl Calibration {
-    fn params(&self) -> orion::CalibratedParams {
-        orion::CalibratedParams {
+    fn params(&self) -> orion_ann::CalibratedParams {
+        orion_ann::CalibratedParams {
             threshold: self.threshold,
             early_exit_limit: self.early_exit_limit,
         }
@@ -241,19 +273,19 @@ trait Engine: Send + Sync {
         queries: &[f32],
         config: &ResolvedRunConfig,
         beam: usize,
-    ) -> Result<orion::CalibratedParams, String>;
+    ) -> Result<orion_ann::CalibratedParams>;
     fn search(
         &self,
         queries: &[f32],
         config: &ResolvedRunConfig,
         beam: usize,
-        params: orion::CalibratedParams,
-    ) -> Result<Vec<Vec<u32>>, String>;
-    fn save(&self, path: &Path) -> Result<(), String>;
+        params: orion_ann::CalibratedParams,
+    ) -> Result<Vec<Vec<u32>>>;
+    fn save(&self, path: &Path) -> Result<()>;
 }
 
 struct DynamicEngine<B: SearchBackend> {
-    index: orion::Orion<B::Element>,
+    index: orion_ann::Orion<B::Element>,
 }
 impl<B: SearchBackend> Engine for DynamicEngine<B> {
     fn calibrate(
@@ -261,37 +293,37 @@ impl<B: SearchBackend> Engine for DynamicEngine<B> {
         q: &[f32],
         c: &ResolvedRunConfig,
         beam: usize,
-    ) -> Result<orion::CalibratedParams, String> {
+    ) -> Result<orion_ann::CalibratedParams> {
         self.index
             .calibrate(
                 q,
                 beam,
                 c.window_size,
-                orion::CalibrationConfig {
+                orion_ann::CalibrationConfig {
                     k: c.sweep.k,
                     metric: c.metric.calibration_metric(),
                 },
             )
-            .map_err(|e| e.to_string())
+            .map_err(Error::from)
     }
     fn search(
         &self,
         q: &[f32],
         c: &ResolvedRunConfig,
         beam: usize,
-        params: orion::CalibratedParams,
-    ) -> Result<Vec<Vec<u32>>, String> {
-        B::search_batch(&self.index, q, c, beam, params).map_err(|e| e.to_string())
+        params: orion_ann::CalibratedParams,
+    ) -> Result<Vec<Vec<u32>>> {
+        B::search_batch(&self.index, q, c, beam, params).map_err(Error::from)
     }
-    fn save(&self, path: &Path) -> Result<(), String> {
-        self.index.save(path).map_err(|e| e.to_string())
+    fn save(&self, path: &Path) -> Result<()> {
+        self.index.save(path).map_err(Error::from)
     }
 }
 
 fn prepare<B: SearchBackend + 'static>(
     c: &ResolvedRunConfig,
     mut data: LoadedBase<B::Element>,
-) -> Result<Box<dyn Engine>, String> {
+) -> Result<Box<dyn Engine>> {
     let index = B::load_index(c, &mut data)?;
     Ok(Box::new(DynamicEngine::<B> { index }))
 }
@@ -322,28 +354,41 @@ pub struct Index {
 }
 
 impl Index {
-    pub fn new(input: BaseInput, options: IndexOptions) -> Result<Self, String> {
+    /// See the [complete example and contract](crate::guide::build).
+    ///
+    /// Prepare an owned index from a file or copied row-major array.
+    ///
+    /// # Errors
+    /// Returns structured input/configuration, resource, I/O or backend errors.
+    /// Invalid inputs are rejected before graph construction where possible.
+    pub fn new(input: BaseInput, options: IndexOptions) -> Result<Self> {
         Self::load(input, options, None)
     }
 
+    /// See the [complete example and contract](crate::guide::cache).
+    ///
     /// Open a snapshot strictly: validate input identity and graph files before
     /// loading. Missing or stale files never trigger an implicit rebuild.
+    ///
+    /// # Errors
+    /// Returns `CacheIncompatible` for stale provenance/version/configuration,
+    /// `InvalidData` for malformed metadata, or an I/O/input/resource error.
     pub fn open(
         path: &Path,
         input: BaseInput,
         threads: Option<usize>,
         memory_budget_gib: Option<f64>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self> {
         let snapshot: Snapshot = serde_json::from_slice(
             &fs::read(path.join("index.json"))
-                .map_err(|e| format!("cache {}: {e}", path.display()))?,
+                .map_err(|e| Error::io("open", &path.join("index.json"), e))?,
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(Error::from)?;
         if snapshot.version != 1 {
-            return Err("unsupported Index cache version".into());
+            return Err(Error::cache("unsupported Index cache version").at("open"));
         }
         let mut options = snapshot.options.clone();
-        options.cache_dir = path.canonicalize().map_err(|e| e.to_string())?;
+        options.cache_dir = path.canonicalize().map_err(Error::from)?;
         if let Some(n) = threads {
             options.threads = n;
         }
@@ -353,11 +398,7 @@ impl Index {
         Self::load(input, options, Some(snapshot))
     }
 
-    fn load(
-        input: BaseInput,
-        options: IndexOptions,
-        snapshot: Option<Snapshot>,
-    ) -> Result<Self, String> {
+    fn load(input: BaseInput, options: IndexOptions, snapshot: Option<Snapshot>) -> Result<Self> {
         let (path, format, dimension, count, identity) = input.describe(&options)?;
         let content_id = match &identity {
             BaseIdentity::Array { sha256, .. } => Some(sha256.clone()),
@@ -371,17 +412,23 @@ impl Index {
                 || saved.namespace != config.cache_namespace
                 || saved.execution_signature != execution_signature(&config)?
             {
-                return Err("cache base identity or graph configuration mismatch".into());
+                return Err(
+                    Error::cache("cache base identity or graph configuration mismatch").at("open"),
+                );
             }
             let cache = CachePlan::resolve(&config, points)?;
             if !cache.is_hit {
-                return Err("Index.open requires a complete existing graph cache".into());
+                return Err(
+                    Error::cache("Index.open requires a complete existing graph cache").at("open"),
+                );
             }
             if FileStamp::read(&cache.metadata_path)? != saved.metadata_stamp
                 || FileStamp::read(&cache.metadata_path.with_extension("pgraph"))?
                     != saved.graph_stamp
             {
-                return Err("cached graph changed since calibration was saved".into());
+                return Err(
+                    Error::cache("cached graph changed since calibration was saved").at("open"),
+                );
             }
             for (&k, calibration) in &saved.calibrations {
                 validate_search(points, k, calibration.search_list_size)?;
@@ -391,7 +438,7 @@ impl Index {
                     || !(0.0..=1.0).contains(&calibration.threshold)
                     || calibration.early_exit_limit == 0
                 {
-                    return Err("invalid saved calibration".into());
+                    return Err(Error::cache("invalid saved calibration").at("open"));
                 }
             }
             calibrations = saved.calibrations;
@@ -400,7 +447,7 @@ impl Index {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(options.threads)
             .build()
-            .map_err(|e| e.to_string())?;
+            .map_err(Error::from)?;
         let engine = match input {
             BaseInput::File(_) if config.search_plan().storage().kind == VectorStorageKind::F32 => {
                 let data = LoadedBase::<f32>::load(&config)?;
@@ -430,8 +477,8 @@ impl Index {
         // Retain the provenance of the graph actually loaded. Saving later
         // must not fingerprint a staged export that may since have changed.
         let cache = CachePlan::resolve(&config, points)?;
-        let cache_manifest = fs::read(cache.metadata_path.with_extension("cache.json"))
-            .map_err(|e| e.to_string())?;
+        let cache_manifest =
+            fs::read(cache.metadata_path.with_extension("cache.json")).map_err(Error::from)?;
         Ok(Self {
             engine,
             cache_manifest,
@@ -456,9 +503,11 @@ impl Index {
         self.len() == 0
     }
 
-    fn queries(&self, queries: &mut [f32]) -> Result<(), String> {
+    fn queries(&self, queries: &mut [f32]) -> Result<()> {
         if queries.len() % self.dimension() != 0 {
-            return Err("query dimension does not match index".into());
+            return Err(
+                Error::packed_shape("queries", self.dimension(), queries.len()).at("read_queries"),
+            );
         }
         if self.storage() == VectorStorageKind::U8
             && queries
@@ -470,13 +519,20 @@ impl Index {
         validate_and_normalize_vectors(queries, self.dimension(), self.config.metric)
     }
 
+    /// See the [complete example and contract](crate::guide::search).
+    ///
+    /// Calibrate a nonempty packed row-major query batch for a particular k.
+    ///
+    /// # Errors
+    /// Invalid shapes, values, controls and backend failures are returned.
     pub fn calibrate(
         &mut self,
         mut queries: Vec<f32>,
         k: usize,
         search_list_size: Option<usize>,
-    ) -> Result<Calibration, String> {
-        let beam = search_list_size.unwrap_or_else(|| orion::calibration_search_list_size!(48, k));
+    ) -> Result<Calibration> {
+        let beam =
+            search_list_size.unwrap_or_else(|| orion_ann::calibration_search_list_size!(48, k));
         validate_search(self.len(), k, beam)?;
         if queries.is_empty() {
             return Err("calibration requires at least one query".into());
@@ -497,24 +553,39 @@ impl Index {
         Ok(calibration)
     }
 
+    /// See the [complete example and contract](crate::guide::search).
+    ///
+    /// Search packed row-major queries, preserving input order in the results.
+    /// Empty batches are supported. Adaptive search requires calibration for k.
+    ///
+    /// # Errors
+    /// Returns `InvalidState` if calibration is missing, `DimensionMismatch`
+    /// for a malformed packed batch, or an input/backend error. Rejected input
+    /// does not invalidate the index; callers may correct it and retry.
     pub fn search(
         &mut self,
         mut queries: Vec<f32>,
         k: usize,
         beam: usize,
         adaptive: bool,
-    ) -> Result<SearchResult, String> {
+    ) -> Result<SearchResult> {
         validate_search(self.len(), k, beam)?;
         self.queries(&mut queries)?;
         let params = if adaptive {
             self.calibrations
                 .get(&k)
-                .ok_or_else(|| format!("calibrate this index for k={k} before adaptive search"))?
+                .ok_or_else(|| {
+                    Error::invalid_state(format!(
+                        "calibrate this index for k={k} before adaptive search"
+                    ))
+                    .at("search")
+                    .with_detail("k", k)
+                })?
                 .params()
         } else {
             // Admission rates are nonnegative, so a zero threshold disables
             // convergence; early exit cannot fire before convergence either.
-            orion::CalibratedParams {
+            orion_ann::CalibratedParams {
                 threshold: 0.0,
                 early_exit_limit: usize::MAX,
             }
@@ -528,7 +599,7 @@ impl Index {
         let mut counts = Vec::with_capacity(rows.len());
         for (out, row) in ids.chunks_exact_mut(k).zip(rows) {
             if row.len() > k || row.iter().any(|&id| id as usize >= self.len()) {
-                return Err("engine returned invalid result IDs".into());
+                return Err(Error::internal("engine returned invalid result IDs").at("search"));
             }
             out[..row.len()].copy_from_slice(&row);
             counts.push(row.len() as u32);
@@ -536,11 +607,21 @@ impl Index {
         Ok(SearchResult { ids, counts, k })
     }
 
+    /// See the [complete example and contract](crate::guide::cache).
+    ///
     /// Write a self-describing snapshot into a new directory. Base vectors stay
     /// external. A staging directory is published only after all writes succeed.
-    pub fn save(&self, destination: &Path) -> Result<(), String> {
-        if destination.try_exists().map_err(|e| e.to_string())? {
-            return Err("save destination already exists; choose a new directory".into());
+    ///
+    /// # Errors
+    /// Returns an error for an existing destination, changed base identity,
+    /// serialization or I/O failure. The original loaded index remains usable.
+    pub fn save(&self, destination: &Path) -> Result<()> {
+        if destination.try_exists().map_err(Error::from)? {
+            return Err(Error::invalid_state(
+                "save destination already exists; choose a new directory",
+            )
+            .at("save")
+            .with_detail("path", destination.to_string_lossy().into_owned()));
         }
         if let BaseIdentity::File { path, stamp } = &self.base {
             if &FileStamp::read(path)? != stamp {
@@ -551,14 +632,14 @@ impl Index {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent).map_err(Error::from)?;
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let staging = parent.join(format!(
             ".orion-save-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir(&staging).map_err(|e| e.to_string())?;
+        fs::create_dir(&staging).map_err(Error::from)?;
         let result = (|| {
             let mut config = self.config.clone();
             config.cache_dir = staging.clone();
@@ -569,7 +650,7 @@ impl Index {
                 plan.metadata_path.with_extension("cache.json"),
                 &self.cache_manifest,
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(Error::from)?;
             let mut options = self.options.clone();
             // Persist the resolved graph source. Reopening is never automatic.
             options.graph.source = match config.graph_source {
@@ -589,10 +670,10 @@ impl Index {
                 graph_stamp: FileStamp::read(&plan.metadata_path.with_extension("pgraph"))?,
                 metadata_stamp: FileStamp::read(&plan.metadata_path)?,
             };
-            let file = fs::File::create(staging.join("index.json")).map_err(|e| e.to_string())?;
-            serde_json::to_writer_pretty(&file, &snapshot).map_err(|e| e.to_string())?;
-            file.sync_all().map_err(|e| e.to_string())?;
-            fs::rename(&staging, destination).map_err(|e| e.to_string())
+            let file = fs::File::create(staging.join("index.json")).map_err(Error::from)?;
+            serde_json::to_writer_pretty(&file, &snapshot).map_err(Error::from)?;
+            file.sync_all().map_err(Error::from)?;
+            fs::rename(&staging, destination).map_err(Error::from)
         })();
         if result.is_err() {
             let _ = fs::remove_dir_all(&staging);
@@ -609,20 +690,25 @@ impl Index {
     }
 }
 
-fn validate_search(points: usize, k: usize, beam: usize) -> Result<(), String> {
+fn validate_search(points: usize, k: usize, beam: usize) -> Result<()> {
     if k == 0 || k > points || beam < k || beam > u32::MAX as usize / 4 {
-        return Err("require 1 <= k <= num_points and k <= search_list_size <= u32::MAX/4".into());
+        return Err(Error::invalid_argument(
+            "require 1 <= k <= num_points and k <= search_list_size <= u32::MAX/4",
+        )
+        .with_detail("k", k)
+        .with_detail("num_points", points)
+        .with_detail("search_list_size", beam));
     }
     Ok(())
 }
 
-fn execution_signature(config: &ResolvedRunConfig) -> Result<String, String> {
+fn execution_signature(config: &ResolvedRunConfig) -> Result<String> {
     let bytes = serde_json::to_vec(&(
         config.cache_namespace.as_str(),
         config.metric,
         config.search_plan(),
         config.window_size,
     ))
-    .map_err(|e| e.to_string())?;
+    .map_err(Error::from)?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }

@@ -1,6 +1,11 @@
 [package]
-name = "orion_py"
+publish = false
+name = "orion-ann-python"
 version = "0.1.0"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Python extension backend for Orion ANN"
 edition = "2021"
 
 [lib]
@@ -8,8 +13,11 @@ name = "_native"
 crate-type = ["cdylib"]
 test = false
 
+[features]
+test-hooks = []
+
 [dependencies]
-orion-runtime = { path = "../orion-runtime" }
+orion-ann-runtime = { version = "0.1.0", path = "../orion-runtime" }
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
 numpy = "0.22"
 ndarray.workspace = true

@@ -1,14 +1,14 @@
 //! Runtime dimensions must change storage, not graph traversal semantics.
-use diskann::model::{InmemDataset, PaddedDataset};
-use orion::algorithm::search::stage::{
+use orion_ann::algorithm::search::stage::{
     admission::NativeU8Admission, prefilter::NoPrefilter, rerank::NoRerank,
 };
-use orion::{DynamicSearchConfig, Orion, PhasedGraph, StaticOrion};
+use orion_ann::{DynamicSearchConfig, Orion, PhasedGraph, StaticOrion};
+use orion_ann_diskann::model::{InmemDataset, PaddedDataset};
+use orion_ann_vector::{L2F32Distance, L2U8Distance, PaddedLayout};
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
 };
-use vector::{L2F32Distance, L2U8Distance, PaddedLayout};
 
 const ROWS: usize = 16;
 fn graph(rows: usize) -> PhasedGraph {
@@ -309,19 +309,25 @@ fn float_byte_queries_match_native_queries_and_reject_lossy_conversion() {
                 .search_batch_l2_byte_queries(&floats, config())
                 .unwrap()
         );
-        assert!(index
-            .search_batch_l2_byte_queries(&[], config())
-            .unwrap()
-            .is_empty());
-        assert!(index
-            .search_batch_l2_byte_queries(&floats[..dim - 1], config())
-            .is_err());
+        assert!(
+            index
+                .search_batch_l2_byte_queries(&[], config())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            index
+                .search_batch_l2_byte_queries(&floats[..dim - 1], config())
+                .is_err()
+        );
         for invalid in [-1., 0.5, 256., f32::NAN, f32::INFINITY] {
             let mut query = vec![0.; dim];
             query[dim - 1] = invalid;
-            assert!(index
-                .search_batch_l2_byte_queries(&query, config())
-                .is_err());
+            assert!(
+                index
+                    .search_batch_l2_byte_queries(&query, config())
+                    .is_err()
+            );
         }
     }
 }

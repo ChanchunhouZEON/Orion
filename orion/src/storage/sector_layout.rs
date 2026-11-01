@@ -6,9 +6,9 @@
 /// Storage sector layout for Compressed DiskANN.
 ///
 /// Per-node sector layout:
-///   [neighbor_page]  — [count: u32][neighbor_ids: u32 * max_degree] (aligned to SECTOR_SIZE)
-///   [data_page]      — [vector: f32 * dimension]                    (aligned to SECTOR_SIZE)
-///   [cluster_page]   — per-node's same-cluster pruned neighbors     (aligned to SECTOR_SIZE)
+///   `[neighbor_page]`  — [count: u32][neighbor_ids: u32 * max_degree] (aligned to SECTOR_SIZE)
+///   `[data_page]`      — [vector: f32 * dimension]                    (aligned to SECTOR_SIZE)
+///   `[cluster_page]`   — per-node's same-cluster pruned neighbors     (aligned to SECTOR_SIZE)
 ///
 /// The cluster_page stores pruned neighbor info for only the same-cluster nodes
 /// that the current node connects to (not the entire cluster).

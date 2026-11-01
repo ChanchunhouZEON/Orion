@@ -13,7 +13,7 @@
 use crate::report::table::BuildTiming;
 use crate::runner::common::{AlgorithmRunner, SearchResult};
 use adsampling::Rotator;
-use orion::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
+use orion_ann::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -58,7 +58,7 @@ macro_rules! build_orion_ads {
     ($self:ident, $rotated:ident, $num_points:ident, $result:ident, $N:literal, $variant:ident) => {{
         drop($result.index);
         let t1 = Instant::now();
-        let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+        let empty_ds = orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
         // Pass `Some(cache_path)` + save=true on cache-enabled runs so
         // the PhasedGraph slab is written next to the runner's bin
         // path. The next invocation will land on the cache-hit
@@ -81,7 +81,8 @@ macro_rules! build_orion_ads {
         );
         log::info!("Orion+ADS overhead: {:.2}s", t1.elapsed().as_secs_f32());
 
-        let mut ds = diskann::model::InmemDataset::<f32, $N>::new($num_points, 1.0).unwrap();
+        let mut ds =
+            orion_ann_diskann::model::InmemDataset::<f32, $N>::new($num_points, 1.0).unwrap();
         ds.data.memcpy(&$rotated[..$num_points * $N]).unwrap();
         orion.dataset = ds;
 
@@ -127,7 +128,7 @@ macro_rules! search_orion_ads {
             $orion,
             crate::runner::cascade::RerankChoice::F32,
         );
-        $orion.search_unified::<orion::algorithm::search::stage::NoPrefilter, _, _>(
+        $orion.search_unified::<orion_ann::algorithm::search::stage::NoPrefilter, _, _>(
             &q,
             $k,
             $self.search_list_size,
@@ -255,11 +256,12 @@ impl AlgorithmRunner for OrionAdsRunner {
                 macro_rules! load_cached_ads {
                     ($N:literal, $variant:ident) => {{
                         let empty_ds =
-                            diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                            orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
                         let mut orion = StaticOrion::<$N>::load_from_cache(&cache, empty_ds)
                             .expect("StaticOrion::load_from_cache failed");
                         let mut ds =
-                            diskann::model::InmemDataset::<f32, $N>::new(num_points, 1.0).unwrap();
+                            orion_ann_diskann::model::InmemDataset::<f32, $N>::new(num_points, 1.0)
+                                .unwrap();
                         ds.data.memcpy(&rotated[..num_points * $N]).unwrap();
                         orion.dataset = ds;
 

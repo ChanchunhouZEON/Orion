@@ -1,12 +1,13 @@
 //! Per-query prefilter trajectories. Instrumented diagnostics, never QPS timings.
-use orion_runtime::{
+use clap::Parser;
+use orion_ann::algorithm::search::diagnostics::{NeighborMode, NoopObserver, SearchObserver};
+use orion_ann::{Error, Result};
+use orion_ann_runtime::{
     config::{cli::Args as RunArgs, ResolvedRunConfig},
     data::{memory, LoadedDataset},
     graph,
 };
-use clap::Parser;
-use orion::algorithm::search::diagnostics::{NeighborMode, NoopObserver, SearchObserver};
-use orion_runtime::{search::cascade, with_supported_dimension};
+use orion_ann_runtime::{search::cascade, with_supported_dimension};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -75,9 +76,9 @@ fn run<const D: usize>(
     args: &Args,
     config: &ResolvedRunConfig,
     mut data: LoadedDataset,
-) -> Result<(), String>
+) -> Result<()>
 where
-    [f32; D]: vector::FullPrecisionDistance<f32, D>,
+    [f32; D]: orion_ann_vector::FullPrecisionDistance<f32, D>,
 {
     let idx = graph::load_index(config, &mut data)?;
     if config.prepare_only {
@@ -97,16 +98,16 @@ where
             queries[..s.calibration_samples.min(queries.len())].as_flattened(),
             s.calibration_l,
             config.window_size,
-            orion::CalibrationConfig {
+            orion_ann::CalibrationConfig {
                 k: s.k,
                 metric: config.metric.calibration_metric(),
             },
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(Error::from)?;
     let c = config.search_plan().cascade();
     let pf = cascade::build_prefilter(&idx, c.prefilter, c.admission)
         .ok_or("This experiment requires an enabled prefilter; use --prefilter jl")?;
-    let ad = cascade::build_admission(&idx, c.admission).map_err(|e| e.to_string())?;
+    let ad = cascade::build_admission(&idx, c.admission).map_err(Error::from)?;
     let rr = cascade::build_rerank(&idx, c.rerank);
     let limit = if args.disable_ee {
         usize::MAX
@@ -137,7 +138,7 @@ where
                     NeighborMode::LocalExtra,
                     &mut trace,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(Error::from)?;
             let control = idx
                 .search_unified_observed(
                     &queries[qi],
@@ -152,9 +153,11 @@ where
                     NeighborMode::LocalExtra,
                     &mut NoopObserver,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(Error::from)?;
             if ids != control {
-                return Err(format!("Observer changed results: query={qi}, L={l}"));
+                return Err(Error::from(format!(
+                    "Observer changed results: query={qi}, L={l}"
+                )));
             }
             let n = trace.rows.len();
             let bins: Vec<_> = (0..args.progress_bins)
@@ -190,7 +193,7 @@ where
         ))
     });
     if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(parent).map_err(Error::from)?;
     }
     let result = json!({"schema_version": 1, "config": config, "query_count": queries.len(),
         "diagnostic_queries": count, "progress_bins": args.progress_bins,
@@ -202,16 +205,12 @@ where
             "bypass": "Prefilter cutoff null during peeled expansions or before beam full; admission cutoff null until beam full",
             "timing": "Sequential diagnostic queries, no throughput measurements; every result checked against no-op observer"},
         "points": points});
-    std::fs::write(
-        &out,
-        serde_json::to_vec(&result).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    std::fs::write(&out, serde_json::to_vec(&result).map_err(Error::from)?).map_err(Error::from)?;
     log::info!("Saved {}", out.display());
     Ok(())
 }
 
-fn execute(args: Args) -> Result<(), String> {
+fn execute(args: Args) -> Result<()> {
     if args.progress_bins == 0 {
         return Err("progress-bins must be positive".into());
     }
@@ -219,7 +218,7 @@ fn execute(args: Args) -> Result<(), String> {
     if args.run.print_config {
         println!(
             "{}",
-            serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?
+            serde_json::to_string_pretty(&config).map_err(Error::from)?
         );
         return Ok(());
     }
@@ -227,7 +226,7 @@ fn execute(args: Args) -> Result<(), String> {
         println!(
             "{}",
             serde_json::to_string_pretty(&memory::preflight_report(&config)?)
-                .map_err(|e| e.to_string())?
+                .map_err(Error::from)?
         );
         return Ok(());
     }

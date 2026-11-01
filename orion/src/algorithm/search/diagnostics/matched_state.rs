@@ -1,5 +1,5 @@
 use super::{SearchObserver, SearchTrace, SynergyTrace};
-use crate::model::{scratch::InMemSearchScratch, Neighbor};
+use crate::model::{Neighbor, scratch::InMemSearchScratch};
 use std::collections::BTreeSet;
 
 /// Logical state immediately after choosing the expanded vertex and updating DCC,
@@ -18,7 +18,7 @@ pub struct Checkpoint {
     pub seen: Vec<u32>,
     /// Record whether admission happened in each hop.
     pub convergence: Vec<u64>,
-    /// (limit, consecutive_no_admit) mapped from [EarlyExitChecker]
+    /// (limit, consecutive_no_admit) mapped from `EarlyExitChecker`
     pub early_exit: (usize, usize),
     pub prefilter: (u32, u32, u32, u32),
     pub previous_admits: usize,

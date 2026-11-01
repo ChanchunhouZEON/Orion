@@ -5,15 +5,15 @@
 
 //! ADSampling f32 admission tier.
 //!
-//! Uses the scaled-partial-sum L2 kernel from [`vector`]
+//! Uses the scaled-partial-sum L2 kernel from [`orion_ann_vector`]
 //! (`distance_compare_adsampling`) — chunked early-abort against the
 //! per-hop PQ cutoff. The kernel returns `-1.0` when the partial sum
 //! crosses the confidence band before completion, and the L2² sum
 //! otherwise. cmov-compact admits on `dist ≥ 0 && dist < cutoff`.
 //!
 //! Unlike the i8 / i16 admission tiers that route through
-//! `DistanceStream<DistanceFn>`, ADS is fundamentally per-vertex with
-//! sink-side comparison at every chunk boundary — the DistanceFn trait
+//! `DistanceStream<DistanceKernelBackend>`, ADS is fundamentally per-vertex with
+//! sink-side comparison at every chunk boundary — the DistanceKernelBackend trait
 //! has no hook for that mid-loop bail-out, so this tier prefetches
 //! manually and walks the id list directly.
 //!
@@ -22,13 +22,13 @@
 //! **Callers must rotate the dataset and the query with the same
 //! orthogonal matrix** (the ADSampling rotator) before opening a
 //! session. L2 is rotation-invariant so the graph topology is
-//! unaffected. See [`benchmark::runner::orion_ads_runner`]
+//! unaffected. See `benchmark::runner::orion_ads_runner`
 //! for the build-side rotation.
 
 use super::{AdmissionSession, AdmissionStage};
 use crate::model::Neighbor;
-use diskann::model::InmemDataset;
-use vector::FullPrecisionDistance;
+use orion_ann_diskann::model::InmemDataset;
+use orion_ann_vector::FullPrecisionDistance;
 
 /// ADSampling admission stage. Wraps the rotated f32 dataset + the ε
 /// constant that controls the scaled-partial-sum confidence test.
@@ -85,7 +85,7 @@ where
         // L2 to avoid the per-chunk threshold check overhead.
         unsafe {
             let v = self.dataset.get_vertex_unchecked(vid);
-            vector::distance_l2_vector_f32::<N>(&self.query, v)
+            orion_ann_vector::distance_l2_vector_f32::<N>(&self.query, v)
         }
     }
 
@@ -105,7 +105,7 @@ where
         // prefetch can't be reused because the ADS kernel mixes
         // partial-sum accumulation with mid-loop bail-out at every
         // chunk boundary, a control-flow shape the chunk-step
-        // DistanceFn trait doesn't expose.
+        // DistanceKernelBackend trait doesn't expose.
         self.dataset.prefetch_vector(id_scratch[0]);
 
         let mut w = 0usize;
@@ -138,11 +138,11 @@ where
 /// Runtime-dimensional ADS adapter. The caller supplies the same rotated base
 /// and query as for the typed adapter; SIMD padding is excluded from sampling.
 pub struct DynamicAdsF32Admission<'a> {
-    dataset: &'a diskann::model::PaddedDataset<f32>,
+    dataset: &'a orion_ann_diskann::model::PaddedDataset<f32>,
     epsilon: f32,
 }
 impl<'a> DynamicAdsF32Admission<'a> {
-    pub fn new(dataset: &'a diskann::model::PaddedDataset<f32>, epsilon: f32) -> Self {
+    pub fn new(dataset: &'a orion_ann_diskann::model::PaddedDataset<f32>, epsilon: f32) -> Self {
         Self { dataset, epsilon }
     }
 }
@@ -159,18 +159,18 @@ impl AdmissionStage for DynamicAdsF32Admission<'_> {
     }
 }
 struct DynamicAdsSession<'a> {
-    dataset: &'a diskann::model::PaddedDataset<f32>,
+    dataset: &'a orion_ann_diskann::model::PaddedDataset<f32>,
     query: Vec<f32>,
     epsilon: f32,
 }
 impl AdmissionSession for DynamicAdsSession<'_> {
     fn entry_distance(&self, id: u32) -> f32 {
-        vector::distance_l2_slice_f32(&self.query, self.dataset.row(id as usize).unwrap())
+        orion_ann_vector::distance_l2_slice_f32(&self.query, self.dataset.row(id as usize).unwrap())
     }
     unsafe fn admit_stream(&self, ids: &[u32], out: *mut Neighbor, cutoff: f32, _: usize) -> usize {
         let prefetch = |id: u32| {
             let row = self.dataset.row(id as usize).unwrap();
-            vector::prefetch_vector(row);
+            orion_ann_vector::prefetch_vector(row);
         };
         if let Some(&id) = ids.first() {
             prefetch(id);
@@ -180,7 +180,7 @@ impl AdmissionSession for DynamicAdsSession<'_> {
             if let Some(&next) = ids.get(i + 1) {
                 prefetch(next);
             }
-            let distance = vector::distance_l2_adsampling_slice_f32(
+            let distance = orion_ann_vector::distance_l2_adsampling_slice_f32(
                 &self.query,
                 self.dataset.row(id as usize).unwrap(),
                 cutoff,

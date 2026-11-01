@@ -1,8 +1,8 @@
 //! Minimal dataset metadata needed by the graph owner and cache format.
 //! Graph traversal consumes sessions, never this trait's virtual dispatch.
 
-use diskann::model::{InmemDataset, PaddedDataset};
-use vector::FullPrecisionDistance;
+use orion_ann_diskann::model::{InmemDataset, PaddedDataset};
+use orion_ann_vector::FullPrecisionDistance;
 
 pub trait IndexData {
     fn point_count(&self) -> usize;

@@ -63,7 +63,7 @@ impl<'a> AdmissionSession for L2U8Session<'a> {
 
         let mut w = 0usize;
         unsafe {
-            vector::DistanceStream::<vector::L2U8Distance>::new(
+            orion_ann_vector::DistanceStream::<orion_ann_vector::L2U8Distance>::new(
                 base_ptr,
                 stride_bytes,
                 stride_bytes,
@@ -83,7 +83,7 @@ impl<'a> AdmissionSession for L2U8Session<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diskann::model::InmemDataset;
+    use orion_ann_diskann::model::InmemDataset;
 
     fn make_ds<const N: usize>(num_points: usize) -> InmemDataset<f32, N> {
         let mut ds = InmemDataset::<f32, N>::new(num_points, 1.0).unwrap();

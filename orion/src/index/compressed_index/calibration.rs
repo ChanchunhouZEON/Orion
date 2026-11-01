@@ -3,24 +3,18 @@ use super::{CompressedIndex, DynamicElement};
 use crate::algorithm::search::calibrate::{
     CalibratedParams, CalibrationConfig, CalibrationDiagnostics, CalibrationMetric,
 };
-use diskann::{
-    common::{ANNError, ANNResult},
-    model::PaddedDataset,
-};
+use crate::{Error, Result};
+use orion_ann_diskann::model::PaddedDataset;
 use std::cell::RefCell;
 
-pub(super) fn exact_distance(
-    metric: CalibrationMetric,
-    query: &[f32],
-    row: &[f32],
-) -> ANNResult<f32> {
+pub(super) fn exact_distance(metric: CalibrationMetric, query: &[f32], row: &[f32]) -> Result<f32> {
     let distance = match metric {
-        CalibrationMetric::L2 => vector::distance_l2_slice_f32(query, row),
+        CalibrationMetric::L2 => orion_ann_vector::distance_l2_slice_f32(query, row),
         CalibrationMetric::InnerProduct => {
             // Preserve the compatibility facade's scalar accumulation order
             // for dimensions that previously used its odd-dimension fallback.
             if query.len() % 4 == 0 {
-                vector::distance_ip_slice_f32(query, row)
+                orion_ann_vector::distance_ip_slice_f32(query, row)
             } else {
                 -query.iter().zip(row).map(|(x, y)| x * y).sum::<f32>()
             }
@@ -45,12 +39,12 @@ pub(super) fn exact_distance(
         Err(error("calibration distance must be finite"))
     }
 }
-fn error(message: &str) -> ANNError {
-    ANNError::log_index_error(message.into())
+fn error(message: &str) -> Error {
+    Error::invalid_argument(message)
 }
 
 impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
-    fn calibration_inputs(&self, queries: &[f32], metric: CalibrationMetric) -> ANNResult<usize> {
+    fn calibration_inputs(&self, queries: &[f32], metric: CalibrationMetric) -> Result<usize> {
         self.validate_dataset_graph()?;
         let dim = self.dataset.layout().logical_dim();
         if queries.len() % dim != 0 || queries.iter().any(|v| !v.is_finite()) {
@@ -72,7 +66,7 @@ impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
         beam: usize,
         window: usize,
         config: CalibrationConfig,
-    ) -> ANNResult<CalibratedParams> {
+    ) -> Result<CalibratedParams> {
         let dim = self.calibration_inputs(queries, config.metric)?;
         let scratch = RefCell::new(vec![0.; dim]);
         self.calibrate_scored(queries.len() / dim, beam, window, config, |q, id| {
@@ -95,7 +89,7 @@ impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
         beam: usize,
         window: usize,
         config: CalibrationConfig,
-    ) -> ANNResult<CalibrationDiagnostics> {
+    ) -> Result<CalibrationDiagnostics> {
         let dim = self.calibration_inputs(queries, config.metric)?;
         let scratch = RefCell::new(vec![0.; dim]);
         self.calibrate_diagnostics_scored(queries.len() / dim, beam, window, config, |q, id| {

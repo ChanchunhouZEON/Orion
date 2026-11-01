@@ -112,7 +112,7 @@ fn successful(out: Output) -> Vec<Value> {
 }
 
 #[test]
-fn anonymous_without_gt_builds_rust_graph_and_reports_null_recall() {
+fn anonymous_without_gt_builds_graph_and_reports_null_recall() {
     let f = Fixture::new();
     let lines = successful(
         f.command()
@@ -246,7 +246,7 @@ fn anonymous_config_uses_defaults_and_preset_evaluation_can_be_disabled() {
     assert!(out.status.success());
     let config: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(config["dataset"], "anonymous");
-    assert_eq!(config["graph_source"], "rust");
+    assert_eq!(config["graph_source"], "parlayann");
     assert_eq!(config["cascade"]["admission"], "L2U8");
     assert!(config["groundtruth"].is_null());
 
@@ -297,7 +297,7 @@ fn anonymous_config_uses_defaults_and_preset_evaluation_can_be_disabled() {
 impl Fixture {
     fn auto_config(&self) {
         let mut yaml: serde_yaml::Value =
-            serde_yaml::from_str(orion_runtime::config::presets::DEFAULT_CONFIG).unwrap();
+            serde_yaml::from_str(orion_ann_runtime::config::presets::DEFAULT_CONFIG).unwrap();
         yaml["datasets"] = serde_yaml::from_str(
             r#"
 fixture:
@@ -338,7 +338,7 @@ fixture:
 }
 
 #[test]
-fn automatic_selection_prefers_pa_cache_then_export_then_rust_cache_or_build() {
+fn automatic_selection_prefers_pa_cache_then_export_then_memory_build() {
     let f = Fixture::new();
     f.auto_config();
     // Establish a Rust cache first. A PA export still takes precedence over it.
@@ -375,37 +375,31 @@ fn automatic_selection_prefers_pa_cache_then_export_then_rust_cache_or_build() {
     for extension in ["bin", "pgraph", "cache.json"] {
         std::fs::remove_file(path.with_extension(extension)).unwrap();
     }
-    let rust = f.preflight();
-    assert_eq!(rust["graph_source"], "rust");
-    assert_eq!(rust["cache_hit"], true);
-    assert_ne!(rust["cache_path"], pa["cache_path"]);
-    assert_eq!(f.cache_manifest(&rust)["graph_source"], "rust");
-    assert!(f.cache_manifest(&rust)["imported_from"].is_null());
+    let built = f.preflight();
+    assert_eq!(built["graph_source"], "parlayann");
+    assert_eq!(built["cache_hit"], false);
+    assert_eq!(built["graph_action"], "build ParlayANN graph");
     successful(f.auto_command().arg("--prepare-only").output().unwrap());
+    assert_eq!(
+        f.cache_manifest(&built)["builder_recipe"],
+        "parlay-memory-v1-unquantized-two-pass"
+    );
+    assert!(f.cache_manifest(&built)["imported_from"].is_null());
 
     std::fs::remove_dir_all(f.root.join("cache")).unwrap();
-    assert_eq!(f.preflight()["graph_action"], "build Rust graph");
+    assert_eq!(f.preflight()["graph_action"], "build ParlayANN graph");
     successful(f.auto_command().arg("--prepare-only").output().unwrap());
     assert_eq!(f.preflight()["cache_hit"], true);
 }
 
 #[test]
-fn explicit_sources_and_native_u8_never_fall_back() {
+fn explicit_missing_exports_remain_errors_and_native_u8_builds() {
     let f = Fixture::new();
     f.auto_config();
     std::fs::remove_file(f.root.join("graph.staged")).unwrap();
     for args in [
-        vec!["--graph-source", "parlayann"],
         vec!["--staged-file", "graph.staged"],
         vec!["--graph-source", "auto", "--staged-file", "graph.staged"],
-        vec![
-            "--vector-storage",
-            "u8",
-            "--admission",
-            "native-l2-u8",
-            "--rerank",
-            "none",
-        ],
     ] {
         let out = f
             .auto_command()
@@ -418,13 +412,6 @@ fn explicit_sources_and_native_u8_never_fall_back() {
     }
     let out = f
         .auto_command()
-        .env("ORION_GRAPH", "pa")
-        .arg("--prepare-only")
-        .output()
-        .unwrap();
-    assert!(!out.status.success());
-    let out = f
-        .auto_command()
         .env("ORION_STAGED_FILE", "missing.staged")
         .arg("--prepare-only")
         .output()
@@ -432,7 +419,7 @@ fn explicit_sources_and_native_u8_never_fall_back() {
     assert!(!out.status.success());
     assert!(!f.root.join("cache").exists());
 
-    // Offline native-u8 planning stays useful, but reports the missing PA input.
+    // Offline native-u8 planning now identifies the in-memory PA build.
     let out = f
         .auto_command()
         .args([
@@ -449,7 +436,7 @@ fn explicit_sources_and_native_u8_never_fall_back() {
     assert!(out.status.success());
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(report["graph_source"], "parlayann");
-    assert_eq!(report["graph_action"], "PA input required");
+    assert_eq!(report["graph_action"], "build ParlayANN graph");
 }
 
 #[test]
@@ -562,13 +549,13 @@ fn auto_uses_source_specific_default_directories_and_yaml_can_be_strict() {
     assert!(report["cache_path"]
         .as_str()
         .unwrap()
-        .starts_with("cache/orion/"));
+        .starts_with("cache/orion_parlayann/"));
 
     let yaml_path = f.root.join("auto.yaml");
     let mut yaml: serde_yaml::Value =
         serde_yaml::from_slice(&std::fs::read(&yaml_path).unwrap()).unwrap();
     yaml["datasets"]["fixture"]["base_graph"]["source"] = "parlayann".into();
     std::fs::write(yaml_path, serde_yaml::to_string(&yaml).unwrap()).unwrap();
-    assert!(!run(&["--prepare-only"]).status.success());
+    successful(run(&["--prepare-only"]));
     successful(run(&["--graph-source", "auto", "--prepare-only"]));
 }

@@ -5,7 +5,7 @@
 
 //! DiskANN + ADSampling runner.
 //!
-//! Identical graph/build pipeline to [`DiskANNRunner`], but:
+//! Identical graph/build pipeline to [`super::diskann_runner::DiskANNRunner`], but:
 //! 1. a fixed random orthogonal rotation is applied to the dataset before the
 //!    index is built, and
 //! 2. every search call rotates the query with the same matrix and uses the
@@ -18,12 +18,12 @@
 use crate::report::table::BuildTiming;
 use crate::runner::common::{AlgorithmRunner, SearchResult};
 use adsampling::Rotator;
-use diskann::index::{create_inmem_index, ANNInmemIndex};
-use diskann::model::{IndexConfiguration, IndexWriteParametersBuilder};
+use orion_ann_diskann::index::{create_inmem_index, ANNInmemIndex};
+use orion_ann_diskann::model::{IndexConfiguration, IndexWriteParametersBuilder};
+use orion_ann_vector::Metric;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use vector::Metric;
 
 pub struct DiskANNAdsRunner {
     index: Option<Box<dyn ANNInmemIndex<f32>>>,
@@ -36,7 +36,7 @@ pub struct DiskANNAdsRunner {
     temp_data_file: Option<PathBuf>,
     /// Optional cache path. When set and both `<cache>` and
     /// `<cache>.data` exist, `build()` skips the Vamana construction
-    /// and loads from disk (mirrors [`DiskANNRunner::build`]). The
+    /// and loads from disk (mirrors `DiskANNRunner::build`). The
     /// dataset rotation is still re-applied for every query since the
     /// runner needs a live `rotator` handle.
     cache_path: Option<PathBuf>,

@@ -20,16 +20,16 @@
 //! beam-search branches (admission, convergence, early exit) without
 //! the build itself taking longer than a few hundred ms.
 
-use diskann::model::InmemDataset;
-use orion::algorithm::search::stage::PrefilterStage;
-use orion::algorithm::search::stage::admission::{
+use orion_ann::algorithm::search::stage::PrefilterStage;
+use orion_ann::algorithm::search::stage::admission::{
     L2KTAdmission, L2U8Admission, L2U16Admission, MipsI8Admission,
 };
-use orion::algorithm::search::stage::prefilter::{
+use orion_ann::algorithm::search::stage::prefilter::{
     JlHadamardPrefilter, JlPrefilter, RabitqPrefilter,
 };
-use orion::algorithm::search::stage::rerank::{F32Rerank, IpF32Rerank, U16Rerank};
-use orion::{StaticOrion, build_diskann_index};
+use orion_ann::algorithm::search::stage::rerank::{F32Rerank, IpF32Rerank, U16Rerank};
+use orion_ann::{StaticOrion, build_diskann_index};
+use orion_ann_diskann::model::InmemDataset;
 
 const DIM: usize = 32;
 // 128 points (vs the earlier 64) gives Vamana enough candidates that
@@ -130,7 +130,7 @@ fn query_at(flat: &[f32], idx: usize) -> [f32; DIM] {
 // ── Tests ────────────────────────────────────────────────────────
 //
 // All five scenarios run sequentially inside ONE `#[test]` function
-// because the underlying `diskann::create_inmem_index` builder has
+// because the underlying `orion_ann_diskann::create_inmem_index` builder has
 // global state (rayon pool init + shared static buffers) that races
 // when multiple builds run in parallel under `cargo test`'s default
 // multi-threaded harness. A single integration test sidesteps that
@@ -297,7 +297,7 @@ fn search_pipeline_e2e() {
         // covers `jl_sparse_dataset::build_from`, the prefilter
         // session covers `prefilter/jl.rs::open`, and the streaming
         // distance covers the `JLHammingDistance` paths in
-        // `vector/distance_fn.rs` + `distance_stream.rs`.
+        // `vector/distance_kernel.rs` + `distance_stream.rs`.
         let q = query_at(&flat, 3);
         let jl_ds = orion.ensure_quantized_dataset_jl();
         let pf = JlPrefilter::new(jl_ds);
@@ -364,7 +364,7 @@ fn search_pipeline_e2e() {
     //   tracks per-position admission stats. Together they cover the
     //   `analysis/neighbor_contribution.rs` file end-to-end.
     {
-        use orion::algorithm::analysis::neighbor_contribution::{
+        use orion_ann::algorithm::analysis::neighbor_contribution::{
             PositionContributionStats, greedy_search_truncated, search_with_contribution,
             sort_neighbors_by_distance,
         };
@@ -424,7 +424,7 @@ fn search_pipeline_e2e() {
     //   `summarize_cliff_ranks` produce aggregate summaries. Together
     //   they cover the 588-line `cliff_neighbor_stats.rs` file.
     {
-        use orion::algorithm::analysis::cliff_neighbor_stats::{
+        use orion_ann::algorithm::analysis::cliff_neighbor_stats::{
             annotate_bf_ranks, compute_cliff_stats, summarize_cliff_ranks, summarize_cliff_stats,
         };
 
@@ -467,7 +467,7 @@ fn search_pipeline_e2e() {
     //   Exercises the MipsI16, RabitQ-B4, and JL-MIPS sidecar builders
     //   in `compressed_index.rs` that the other scenarios skipped.
     {
-        use orion::algorithm::search::stage::admission::MipsI16Admission;
+        use orion_ann::algorithm::search::stage::admission::MipsI16Admission;
 
         let q = query_at(&flat, 8);
 
@@ -542,7 +542,7 @@ fn search_pipeline_e2e() {
     //   left) plus the ADSampling path inside
     //   `FullPrecisionDistance::distance_compare_adsampling` for f32.
     {
-        use orion::algorithm::search::stage::admission::ads_f32::AdsF32Admission;
+        use orion_ann::algorithm::search::stage::admission::ads_f32::AdsF32Admission;
 
         let q = query_at(&flat, 10);
         let admission_ads = AdsF32Admission::new(&orion.dataset, /* ads_epsilon */ 2.1);
@@ -567,7 +567,7 @@ fn search_pipeline_e2e() {
     //   non-mips half was hit in Scenario 6). Uses the JL-MIPS sidecar
     //   built lazily in Scenario 12.
     {
-        use orion::algorithm::search::stage::prefilter::JlMipsPrefilter;
+        use orion_ann::algorithm::search::stage::prefilter::JlMipsPrefilter;
         let q = query_at(&flat, 11);
         let jl_mips_ds = orion.ensure_quantized_dataset_jl_mips();
         let pf = JlMipsPrefilter::new(jl_mips_ds);
@@ -597,7 +597,8 @@ fn search_pipeline_e2e() {
         // Reload with the same f32 dataset attached.
         let mut empty_ds = InmemDataset::<f32, DIM>::new(N_POINTS, 1.0).unwrap();
         empty_ds.data.memcpy(&flat[..N_POINTS * DIM]).unwrap();
-        let reloaded = StaticOrion::<DIM>::load_from_cache(&tmp, empty_ds).expect("load_from_cache");
+        let reloaded =
+            StaticOrion::<DIM>::load_from_cache(&tmp, empty_ds).expect("load_from_cache");
 
         // Search through both — top-1 must agree on the same query.
         let q = query_at(&flat, 12);
@@ -629,9 +630,9 @@ fn search_pipeline_e2e() {
     //   explicit save() + load() round-trip code that the production
     //   builder uses on cache miss / cache hit.
     {
-        use orion::model::dataset::JLSparseDataset;
-        use orion::model::dataset::jl_hadamard_dataset::JlHadamardDataset;
-        use orion::model::dataset::l2_kt_dataset::L2KTDataset;
+        use orion_ann::model::dataset::JLSparseDataset;
+        use orion_ann::model::dataset::jl_hadamard_dataset::JlHadamardDataset;
+        use orion_ann::model::dataset::l2_kt_dataset::L2KTDataset;
 
         // JL Hadamard round trip.
         let tmp_jlh = std::env::temp_dir().join("orion_e2e_jl_hadamard.qjlh");

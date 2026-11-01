@@ -47,8 +47,8 @@
 //! SIFT/GIST that 1-bit hit at ~0.74/0.94 should clear comfortably.
 
 use super::rows::F32Rows;
-use diskann::common::ANNResult;
-use diskann::common::AlignedBoxWithSlice;
+use orion_ann_diskann::common::ANNResult;
+use orion_ann_diskann::common::AlignedBoxWithSlice;
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -504,73 +504,75 @@ unsafe fn signed_dot_neon(code: *const u8, rotated_q: *const f32, bytes: usize) 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[inline]
 unsafe fn signed_dot_avx512(code: *const u8, rotated_q: *const f32, bytes: usize) -> f32 {
-    use std::arch::x86_64::*;
+    unsafe {
+        use std::arch::x86_64::*;
 
-    // VPSHUFB lookup table: nibble [0..15] → signed i8 [-8..7]
-    // with the two's-complement convention. Replicated across
-    // both 64-bit halves of a __m128i so 8-byte VPSHUFB doesn't
-    // need any mask.
-    let lut = _mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, -8, -7, -6, -5, -4, -3, -2, -1);
-    let low_mask = _mm_set1_epi8(0x0F);
+        // VPSHUFB lookup table: nibble [0..15] → signed i8 [-8..7]
+        // with the two's-complement convention. Replicated across
+        // both 64-bit halves of a __m128i so 8-byte VPSHUFB doesn't
+        // need any mask.
+        let lut = _mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, -8, -7, -6, -5, -4, -3, -2, -1);
+        let low_mask = _mm_set1_epi8(0x0F);
 
-    let mut acc_a = _mm512_setzero_ps();
-    let mut acc_b = _mm512_setzero_ps();
+        let mut acc_a = _mm512_setzero_ps();
+        let mut acc_b = _mm512_setzero_ps();
 
-    let mut b = 0usize;
-    while b < bytes {
-        // Load 8 packed bytes into the low 64 bits of a __m128i.
-        let packed = _mm_loadl_epi64(code.add(b) as *const __m128i);
+        let mut b = 0usize;
+        while b < bytes {
+            // Load 8 packed bytes into the low 64 bits of a __m128i.
+            let packed = _mm_loadl_epi64(code.add(b) as *const __m128i);
 
-        // Split into low + high nibbles.
-        let lo_nibbles = _mm_and_si128(packed, low_mask);
-        // `_mm_srli_epi16` shifts at 16-bit width; mask the
-        // junk that the upper-byte bits leaked into the lower.
-        let hi_nibbles = _mm_and_si128(_mm_srli_epi16(packed, 4), low_mask);
+            // Split into low + high nibbles.
+            let lo_nibbles = _mm_and_si128(packed, low_mask);
+            // `_mm_srli_epi16` shifts at 16-bit width; mask the
+            // junk that the upper-byte bits leaked into the lower.
+            let hi_nibbles = _mm_and_si128(_mm_srli_epi16(packed, 4), low_mask);
 
-        // VPSHUFB lookup: nibble [0..15] → signed i8 [-8..7].
-        let lo_signed = _mm_shuffle_epi8(lut, lo_nibbles);
-        let hi_signed = _mm_shuffle_epi8(lut, hi_nibbles);
+            // VPSHUFB lookup: nibble [0..15] → signed i8 [-8..7].
+            let lo_signed = _mm_shuffle_epi8(lut, lo_nibbles);
+            let hi_signed = _mm_shuffle_epi8(lut, hi_nibbles);
 
-        // Interleave to dim order: PUNPCKLBW produces
-        // [lo0, hi0, lo1, hi1, ..., lo7, hi7] in the low half of
-        // a __m128i.
-        let dims_i8 = _mm_unpacklo_epi8(lo_signed, hi_signed);
+            // Interleave to dim order: PUNPCKLBW produces
+            // [lo0, hi0, lo1, hi1, ..., lo7, hi7] in the low half of
+            // a __m128i.
+            let dims_i8 = _mm_unpacklo_epi8(lo_signed, hi_signed);
 
-        // 16 i8 → 16 i32 → 16 f32. `_mm512_cvtepi8_epi32` reads
-        // the low 16 bytes of its __m128i input.
-        let dims_i32 = _mm512_cvtepi8_epi32(dims_i8);
-        let dims_f32 = _mm512_cvtepi32_ps(dims_i32);
+            // 16 i8 → 16 i32 → 16 f32. `_mm512_cvtepi8_epi32` reads
+            // the low 16 bytes of its __m128i input.
+            let dims_i32 = _mm512_cvtepi8_epi32(dims_i8);
+            let dims_f32 = _mm512_cvtepi32_ps(dims_i32);
 
-        // FMA with 16 query lanes.
-        let q = _mm512_loadu_ps(rotated_q.add(b * 2));
-        acc_a = _mm512_fmadd_ps(q, dims_f32, acc_a);
+            // FMA with 16 query lanes.
+            let q = _mm512_loadu_ps(rotated_q.add(b * 2));
+            acc_a = _mm512_fmadd_ps(q, dims_f32, acc_a);
 
-        // 2-way unroll: next 8 bytes if available.
-        if b + 8 < bytes {
-            let packed2 = _mm_loadl_epi64(code.add(b + 8) as *const __m128i);
-            let lo2 = _mm_and_si128(packed2, low_mask);
-            let hi2 = _mm_and_si128(_mm_srli_epi16(packed2, 4), low_mask);
-            let lo_s2 = _mm_shuffle_epi8(lut, lo2);
-            let hi_s2 = _mm_shuffle_epi8(lut, hi2);
-            let dims2 = _mm_unpacklo_epi8(lo_s2, hi_s2);
-            let i32_2 = _mm512_cvtepi8_epi32(dims2);
-            let f32_2 = _mm512_cvtepi32_ps(i32_2);
-            let q2 = _mm512_loadu_ps(rotated_q.add(b * 2 + 16));
-            acc_b = _mm512_fmadd_ps(q2, f32_2, acc_b);
-            b += 16;
-        } else {
-            b += 8;
+            // 2-way unroll: next 8 bytes if available.
+            if b + 8 < bytes {
+                let packed2 = _mm_loadl_epi64(code.add(b + 8) as *const __m128i);
+                let lo2 = _mm_and_si128(packed2, low_mask);
+                let hi2 = _mm_and_si128(_mm_srli_epi16(packed2, 4), low_mask);
+                let lo_s2 = _mm_shuffle_epi8(lut, lo2);
+                let hi_s2 = _mm_shuffle_epi8(lut, hi2);
+                let dims2 = _mm_unpacklo_epi8(lo_s2, hi_s2);
+                let i32_2 = _mm512_cvtepi8_epi32(dims2);
+                let f32_2 = _mm512_cvtepi32_ps(i32_2);
+                let q2 = _mm512_loadu_ps(rotated_q.add(b * 2 + 16));
+                acc_b = _mm512_fmadd_ps(q2, f32_2, acc_b);
+                b += 16;
+            } else {
+                b += 8;
+            }
         }
-    }
 
-    _mm512_reduce_add_ps(_mm512_add_ps(acc_a, acc_b))
+        _mm512_reduce_add_ps(_mm512_add_ps(acc_a, acc_b))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::dataset::rabitq_dataset::{XorShiftPub, gaussian_pub};
-    use diskann::model::InmemDataset;
+    use orion_ann_diskann::model::InmemDataset;
 
     #[test]
     fn stride_matches_dimensions() {

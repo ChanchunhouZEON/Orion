@@ -4,8 +4,8 @@
  */
 
 use crate::storage::sector_layout::SectorLayout;
-use diskann::common::ANNResult;
 use memmap2::{Mmap, MmapOptions};
+use orion_ann_diskann::common::ANNResult;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -14,7 +14,7 @@ use std::path::Path;
 /// Memory-mapped storage for zero-copy access to per-node graph data.
 ///
 /// Per-node sector layout (redundant cluster page):
-///   [neighbor_page] [data_page] [cluster_page]
+///   `[neighbor_page]` `[data_page]` `[cluster_page]`
 ///
 /// The cluster_page is the same for all nodes in the same cluster,
 /// stored redundantly so a single sequential SSD read gives everything
@@ -221,7 +221,7 @@ impl MmapStorage {
 
     /// Write the full index to a file.
     ///
-    /// Each node's sector: [neighbor_page][data_page][cluster_page_bytes]
+    /// Each node's sector: `[neighbor_page]``[data_page]``[cluster_page_bytes]`
     /// The cluster_page_bytes should be pre-built via `build_cluster_page()`.
     pub fn write_to_file<P: AsRef<Path>>(
         &self,

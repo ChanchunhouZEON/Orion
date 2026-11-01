@@ -1,7 +1,8 @@
 //! Graph persistence shared by typed and runtime-dimensional indexes.
 use super::{CompressedIndex, IndexData};
 use crate::model::PhasedGraph;
-use diskann::common::{ANNError, ANNResult};
+use crate::{Error, Result};
+
 use std::{
     fs::{self, File},
     io::{BufWriter, Write},
@@ -21,7 +22,7 @@ impl<D: IndexData, S: Default> CompressedIndex<D, S> {
 
     /// Check shape without scanning a potentially billion-node graph.
     /// Graph edge validity remains the graph producer's responsibility.
-    pub fn validate_dataset_graph(&self) -> ANNResult<()> {
+    pub fn validate_dataset_graph(&self) -> Result<()> {
         let rows = self.dataset.point_count();
         if rows == 0
             || rows > u32::MAX as usize
@@ -30,7 +31,7 @@ impl<D: IndexData, S: Default> CompressedIndex<D, S> {
             || rows != self.num_nodes
             || self.entry as usize >= rows
         {
-            return Err(ANNError::log_index_error(format!(
+            return Err(Error::cache(format!(
                 "incompatible dataset/graph: rows={rows}, dimension={}, graph_nodes={}, entry={}",
                 self.dataset.dimension(),
                 self.graph.num_nodes(),
@@ -40,7 +41,14 @@ impl<D: IndexData, S: Default> CompressedIndex<D, S> {
         Ok(())
     }
 
-    pub fn save<P: AsRef<Path>>(&self, path: P) -> ANNResult<()> {
+    /// Save native graph metadata plus `.pgraph`; base vectors remain external.
+    ///
+    /// # Errors
+    /// Returns shape, serialization and filesystem errors. Two files are renamed
+    /// in sequence, so this is not a multi-file transaction. Use distinct paths
+    /// for concurrent writers; failed writes may leave temporary files.
+    /// See [`Self::load_from_cache`] for the matching read operation.
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         self.validate_dataset_graph()?;
         let dir = path.as_ref().parent().unwrap_or(Path::new("."));
         fs::create_dir_all(dir)?;
@@ -81,24 +89,40 @@ impl<D: IndexData, S: Default> CompressedIndex<D, S> {
     /// Construct from cached PhasedGraph + metadata on disk.
     /// `path` is the metadata `.bin` file; PhasedGraph is read from `path.with_extension("pgraph")`.
     /// Takes ownership of the caller-provided dataset without copying its payload.
-    pub fn load_from_cache<P: AsRef<Path>>(path: P, dataset: D) -> ANNResult<Self> {
+    ///
+    /// # Example
+    /// ```no_run
+    /// use orion_ann::Orion;
+    /// use orion_ann_diskann::model::PaddedDataset;
+    /// use orion_ann_vector::{L2F32Distance, PaddedLayout};
+    /// let values = vec![0.0f32; 100 * 128]; // Supply the original base here.
+    /// let base = PaddedDataset::from_packed(&values,
+    ///     PaddedLayout::for_kernel::<L2F32Distance>(128)?)?;
+    /// let index: Orion = Orion::load_from_cache("graph.bin", base)?;
+    /// index.save("another/graph.bin")?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors and integrity
+    /// Returns `CacheIncompatible` for mismatched shape/type/version, `InvalidData`
+    /// for malformed metadata and I/O errors. Shape validation is not full edge
+    /// validation or content authentication. Load only trusted native artifacts;
+    /// preserve base row ordering and values. Runtime snapshots additionally
+    /// validate provenance and calibration via `orion_ann_runtime::Index::open`.
+    pub fn load_from_cache<P: AsRef<Path>>(path: P, dataset: D) -> Result<Self> {
         Self::load_cache_impl(path, dataset, false)
     }
 
     /// Load a legacy cache after the caller has checked its manifest against
     /// the input identity, logical dimension, point count and storage type.
-    pub fn load_from_cache_with_provenance<P: AsRef<Path>>(path: P, dataset: D) -> ANNResult<Self> {
+    pub fn load_from_cache_with_provenance<P: AsRef<Path>>(path: P, dataset: D) -> Result<Self> {
         Self::load_cache_impl(path, dataset, true)
     }
 
-    fn load_cache_impl<P: AsRef<Path>>(
-        path: P,
-        dataset: D,
-        verified_legacy: bool,
-    ) -> ANNResult<Self> {
+    fn load_cache_impl<P: AsRef<Path>>(path: P, dataset: D, verified_legacy: bool) -> Result<Self> {
         let graph_path = path.as_ref().with_extension("pgraph");
         if !graph_path.exists() {
-            return Err(ANNError::log_index_error(format!(
+            return Err(Error::cache(format!(
                 "PhasedGraph file not found: {:?}",
                 graph_path
             )));
@@ -119,15 +143,21 @@ impl<D: IndexData, S: Default> CompressedIndex<D, S> {
                     || shape.points != dataset.point_count() as u64
                     || shape.element_type != dataset.element_type()
                 {
-                    return Err(ANNError::log_index_error(
-                        "cached graph dataset dimension, count or element type does not match"
-                            .into(),
-                    ));
+                    return Err(Error::cache(
+                        "cached graph dataset dimension, count or element type does not match",
+                    )
+                    .at("load_cache")
+                    .with_detail("expected_dimension", dataset.dimension())
+                    .with_detail("actual_dimension", shape.dimension)
+                    .with_detail("expected_points", dataset.point_count())
+                    .with_detail("actual_points", shape.points)
+                    .with_detail("expected_element_type", dataset.element_type())
+                    .with_detail("actual_element_type", shape.element_type));
                 }
             }
             5 if D::ACCEPT_LEGACY_CACHE || verified_legacy => {}
             _ => {
-                return Err(ANNError::log_index_error(format!(
+                return Err(Error::cache(format!(
                     "unsupported or unverifiable graph metadata version {}",
                     meta.version
                 )));

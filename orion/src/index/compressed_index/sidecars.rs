@@ -146,7 +146,7 @@ impl<D: F32Rows> CompressedIndex<D, DynamicSidecars> {
             .get_or_init(|| build_jl_sparse(&self.dataset, &self.cache_base_path))
     }
 
-    /// MIPS twin of [`ensure_quantized_dataset_jl`] — builds (or
+    /// MIPS twin of [`Self::ensure_quantized_dataset_jl`] — builds (or
     /// loads from the `.jls_mips` sidecar) the NZ=9
     /// [`JLSparseDatasetMips`] designed for raw-MIPS data, per PA's
     /// `Mips_JL_Sparse_Point_Normalized` recipe. The per-vertex

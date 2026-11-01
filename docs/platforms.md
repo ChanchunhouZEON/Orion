@@ -34,6 +34,27 @@ CI compiles AVX2, AVX-512 and AVX-512-with-vector-popcount variants. Execution i
 conditional on the runner's detected features. It does not guarantee AVX-512
 runtime coverage on every GitHub-hosted runner. See [Testing](testing.md).
 
+For a portable x86 build, override the repository's global AVX2 flags:
+
+```bash
+RUSTFLAGS='-C target-cpu=x86-64' cargo build --locked --release -p orion-ann-cli
+```
+
+The f32/Half L2 entry points detect AVX2/FMA at runtime and cache the selected
+kernel; Half also checks F16C. The full streaming path selects scalar,
+AVX2/FMA, AVX-512, or AVX-512 with vector popcount before entering its loop.
+On AArch64 it selects NEON and optional dot product, with scalar fallback.
+Each backend inlines computation, sink and prefetch scheduling together;
+there is no per-chunk ISA check. A span padded to 32 rather than 64 bytes uses
+AVX2 when a wider kernel would over-read. Existing row layouts are unchanged.
+
+Ordinary downstream Cargo dependencies do not inherit this repository's
+`.cargo/config.toml`, and automatically use these runtime choices without
+application build flags. Explicit supported target features keep direct
+specialized paths. The portable CI job tests automatic dispatch separately
+from explicit SIMD builds. Runtime detection does not make a globally
+AVX-512-compiled binary safe on an AVX2-only CPU.
+
 ## Linux transparent huge pages
 
 `AlignedBoxWithSlice` requests at least 2 MiB alignment for allocations of at

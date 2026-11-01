@@ -14,6 +14,7 @@
 
 use crate::data::{validate_and_normalize_vectors, VectorFormat};
 use crate::search::cascade::SearchMetric;
+use crate::{Error, Result};
 use std::io::Read;
 
 pub trait QuerySource {
@@ -23,14 +24,14 @@ pub trait QuerySource {
     /// Replaces `output` with at most `max_queries` vectors.
     ///
     /// Returns the number of decoded vectors. Zero indicates EOF.
-    fn read_batch(&mut self, output: &mut Vec<f32>, max_queries: usize) -> Result<usize, String>;
+    fn read_batch(&mut self, output: &mut Vec<f32>, max_queries: usize) -> Result<usize>;
 }
 
 /// Reads one little-endian `u32`.
 ///
 /// EOF before any byte is read returns `Ok(None)`. EOF after a partial word is
 /// reported as a truncated header.
-fn read_u32_le(reader: &mut impl Read) -> Result<Option<u32>, String> {
+fn read_u32_le(reader: &mut impl Read) -> Result<Option<u32>> {
     let mut bytes = [0u8; 4];
 
     loop {
@@ -40,13 +41,14 @@ fn read_u32_le(reader: &mut impl Read) -> Result<Option<u32>, String> {
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
                 continue;
             }
-            Err(error) => return Err(error.to_string()),
+            Err(error) => return Err(error.into()),
         }
     }
 
-    reader
-        .read_exact(&mut bytes[1..])
-        .map_err(|error| format!("truncated record header: {error}"))?;
+    reader.read_exact(&mut bytes[1..]).map_err(|error| {
+        let message = format!("truncated record header: {error}");
+        Error::from(error).with_message(message)
+    })?;
 
     Ok(Some(u32::from_le_bytes(bytes)))
 }
@@ -96,7 +98,7 @@ impl<R: Read> VectorReader<R> {
         format: VectorFormat,
         dimension: usize,
         metric: SearchMetric,
-    ) -> Result<Self, String> {
+    ) -> Result<Self> {
         if dimension == 0 {
             return Err("query dimension must be positive".into());
         }
@@ -129,7 +131,7 @@ impl<R: Read> VectorReader<R> {
         reader: &mut R,
         declared_count: u32,
         expected_dimension: usize,
-    ) -> Result<(Option<usize>, Option<u32>), String> {
+    ) -> Result<(Option<usize>, Option<u32>)> {
         if declared_count == 0 {
             return Err("empty query source".into());
         }
@@ -144,17 +146,17 @@ impl<R: Read> VectorReader<R> {
     fn read_record_stream_header(
         first_dimension: u32,
         expected_dimension: usize,
-    ) -> Result<(Option<usize>, Option<u32>), String> {
+    ) -> Result<(Option<usize>, Option<u32>)> {
         Self::validate_dimension(first_dimension, expected_dimension)?;
 
         Ok((None, Some(first_dimension)))
     }
 
-    fn validate_dimension(actual: u32, expected: usize) -> Result<(), String> {
+    fn validate_dimension(actual: u32, expected: usize) -> Result<()> {
         if actual as usize != expected {
-            return Err(format!(
-                "query dimension {actual} != configured dimension {expected}"
-            ));
+            return Err(
+                Error::dimension("queries.dimension", expected, actual as usize).at("read_queries"),
+            );
         }
 
         Ok(())
@@ -163,7 +165,7 @@ impl<R: Read> VectorReader<R> {
     /// Advances to the next row and validates its record header.
     ///
     /// Returns `false` at clean EOF.
-    fn begin_next_row(&mut self) -> Result<bool, String> {
+    fn begin_next_row(&mut self) -> Result<bool> {
         if let Some(declared_count) = self.declared_count {
             return self.begin_binary_row(declared_count);
         }
@@ -171,7 +173,7 @@ impl<R: Read> VectorReader<R> {
         self.begin_record_stream_row()
     }
 
-    fn begin_binary_row(&mut self, declared_count: usize) -> Result<bool, String> {
+    fn begin_binary_row(&mut self, declared_count: usize) -> Result<bool> {
         if self.rows_read < declared_count {
             return Ok(true);
         }
@@ -183,7 +185,7 @@ impl<R: Read> VectorReader<R> {
         Ok(false)
     }
 
-    fn begin_record_stream_row(&mut self) -> Result<bool, String> {
+    fn begin_record_stream_row(&mut self) -> Result<bool> {
         let dimension = match self.first_row_dimension.take() {
             Some(dimension) => Some(dimension),
             None => read_u32_le(&mut self.reader)?,
@@ -194,19 +196,27 @@ impl<R: Read> VectorReader<R> {
         };
 
         if dimension as usize != self.dimension {
-            return Err(format!(
+            return Err(Error::from(format!(
                 "query {} dimension {dimension} != {}",
                 self.rows_read, self.dimension,
-            ));
+            )));
         }
 
         Ok(true)
     }
 
-    fn read_payload(&mut self) -> Result<(), String> {
+    fn read_payload(&mut self) -> Result<()> {
         self.reader
             .read_exact(&mut self.record_buf)
-            .map_err(|error| format!("query {} payload is truncated: {error}", self.rows_read,))
+            .map_err(|error| {
+                Error::invalid_data(format!(
+                    "query {} payload is truncated: {error}",
+                    self.rows_read
+                ))
+                .at("read_queries")
+                .with_detail("row", self.rows_read)
+                .with_source(error)
+            })
     }
 
     fn decode_payload(&self, output: &mut Vec<f32>) {
@@ -231,7 +241,7 @@ impl<R: Read> QuerySource for VectorReader<R> {
         self.declared_count
     }
 
-    fn read_batch(&mut self, output: &mut Vec<f32>, max_queries: usize) -> Result<usize, String> {
+    fn read_batch(&mut self, output: &mut Vec<f32>, max_queries: usize) -> Result<usize> {
         if max_queries == 0 {
             return Err("query batch size must be positive".into());
         }
@@ -278,7 +288,7 @@ impl<R: Read> GroundTruthReader<R> {
         }
     }
 
-    pub fn next(&mut self) -> Result<Option<Vec<u32>>, String> {
+    pub fn next(&mut self) -> Result<Option<Vec<u32>>> {
         let Some(width) = read_u32_le(&mut self.reader)? else {
             return Ok(None);
         };
@@ -292,10 +302,10 @@ impl<R: Read> GroundTruthReader<R> {
             let id = read_u32_le(&mut self.reader)?.ok_or("truncated ground truth row")?;
 
             if id as usize >= self.base_count {
-                return Err(format!(
+                return Err(Error::from(format!(
                     "ground truth ID {id} is outside loaded base count {}",
                     self.base_count,
-                ));
+                )));
             }
 
             if rank < self.k {
@@ -309,15 +319,15 @@ impl<R: Read> GroundTruthReader<R> {
         Ok(Some(ids))
     }
 
-    fn validate_width(&self, width: usize) -> Result<(), String> {
+    fn validate_width(&self, width: usize) -> Result<()> {
         let inconsistent = self.row_width.is_some_and(|previous| previous != width);
 
         if width < self.k || width > self.base_count || inconsistent {
-            return Err(format!(
+            return Err(Error::from(format!(
                 "ground truth row {} has invalid width {width}; \
                  require consistent width >= k={} and <= base count {}",
                 self.rows_read, self.k, self.base_count,
-            ));
+            )));
         }
 
         Ok(())
@@ -328,9 +338,7 @@ impl<R: Read> GroundTruthReader<R> {
 ///
 /// `-` reads from stdin. Any other path is opened as a regular file. Neither
 /// source requires `Seek`.
-pub fn open_queries(
-    config: &crate::config::ResolvedRunConfig,
-) -> Result<Box<dyn QuerySource>, String> {
+pub fn open_queries(config: &crate::config::ResolvedRunConfig) -> Result<Box<dyn QuerySource>> {
     use std::io::BufReader;
 
     let path = config
@@ -341,9 +349,10 @@ pub fn open_queries(
     let reader: Box<dyn Read> = if path == std::path::Path::new("-") {
         Box::new(std::io::stdin())
     } else {
-        Box::new(
-            std::fs::File::open(path).map_err(|error| format!("{}: {error}", path.display(),))?,
-        )
+        Box::new(std::fs::File::open(path).map_err(|error| {
+            let message = format!("{}: {error}", path.display(),);
+            Error::from(error).with_message(message)
+        })?)
     };
 
     let reader = VectorReader::new(

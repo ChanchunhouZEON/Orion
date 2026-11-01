@@ -21,7 +21,7 @@ use crate::l2_float_distance::{distance_l2_vector_f16, distance_l2_vector_f32};
 #[cfg(target_arch = "aarch64")]
 use crate::l2_neon_distance::{distance_l2_vector_f16, distance_l2_vector_f32};
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 use crate::l2_scalar_distance::{distance_l2_vector_f16, distance_l2_vector_f32};
 
 /// Distance contract for full-precision vertex
@@ -116,7 +116,7 @@ impl<const N: usize> FullPrecisionDistance<f32, N> for [f32; N] {
                 let d = a[i] - b[i];
                 sum += d * d;
                 processed += 1;
-                if processed % CHECK_EVERY == 0 && processed < N {
+                if processed.is_multiple_of(CHECK_EVERY) && processed < N {
                     let lhs = sum * (n_f / processed as f32);
                     let rhs = upper_bound * (1.0 + epsilon / (processed as f32).sqrt());
                     if lhs > rhs {
@@ -164,7 +164,7 @@ impl<const N: usize> FullPrecisionDistance<u8, N> for [u8; N] {
         // Existing SIMD kernels consume fixed blocks and use 32-bit accumulators.
         // A multiple of 32 avoids partial-block loads on both NEON and AVX-512;
         // the dimension cap keeps even the signed x86 reduction below i32::MAX.
-        if N % 32 == 0 && N <= 32_768 {
+        if N.is_multiple_of(32) && N <= 32_768 {
             crate::distance_l2_vector_u8::<N>(a, b)
         } else {
             // FullPrecisionDistance accepts arbitrary N. Widen before subtraction,

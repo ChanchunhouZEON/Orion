@@ -2,11 +2,12 @@
 members = [
     "adsampling",
     "benchmark",
-    "diskann",
-    "logger",
+    "orion-diskann",
+    "orion-logger",
     "orion",
     "orion-cli",
     "orion-runtime",
+    "orion-parlay",
     "orion-py",
     "platform",
     "vector",
@@ -17,15 +18,21 @@ members = [
 default-members = [
     "adsampling",
     "benchmark",
-    "diskann",
-    "logger",
+    "orion-diskann",
+    "orion-logger",
     "orion",
     "orion-cli",
     "orion-runtime",
+    "orion-parlay",
     "platform",
     "vector",
 ]
 resolver = "2"
+
+[workspace.package]
+rust-version = "1.92"
+license = "MIT"
+repository = "https://github.com/ChanchunhouZEON/Orion"
 
 [workspace.dependencies]
 # Serialization

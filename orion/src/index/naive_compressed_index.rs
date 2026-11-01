@@ -9,11 +9,12 @@
 //! This module exists to compare against the cluster-aware compression in
 //! `Orion`, isolating the quality benefit of clustering.
 
+use crate::Result;
 use crate::model::scratch::InMemScratchPool;
-use diskann::model::{CsrGraph, InmemDataset};
+use orion_ann_diskann::model::{CsrGraph, InmemDataset};
+use orion_ann_vector::FullPrecisionDistance;
 use rayon::prelude::*;
 use std::sync::OnceLock;
-use vector::FullPrecisionDistance;
 
 /// Naive Orion: two-phase search with prefix-based compression.
 ///
@@ -88,10 +89,10 @@ where
         search_list_size: usize,
         window_size: usize,
         epsilon: f32,
-    ) -> diskann::common::ANNResult<Vec<u32>> {
+    ) -> Result<Vec<u32>> {
         use crate::model::Neighbor as DNeighbor;
-        use diskann::model::Vertex;
-        use vector::Metric;
+        use orion_ann_diskann::model::Vertex;
+        use orion_ann_vector::Metric;
 
         let entry = self.entry;
         let dataset = &self.dataset;
@@ -178,7 +179,7 @@ where
         search_list_size: usize,
         window_size: usize,
         epsilon: f32,
-    ) -> diskann::common::ANNResult<Vec<Vec<u32>>> {
+    ) -> Result<Vec<Vec<u32>>> {
         self.inmem_scratch_pool.get_or_init(|| {
             InMemScratchPool::for_workers(rayon::current_num_threads(), search_list_size)
         });

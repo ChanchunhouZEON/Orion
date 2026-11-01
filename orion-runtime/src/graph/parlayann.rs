@@ -22,7 +22,8 @@
 //! Entry point: the file header's `entry_point` is PA's hard-coded 0; we
 //! recompute medoid over a stride sample instead.
 
-use diskann::common::{ANNError, ANNResult};
+use crate::{Error, Result};
+
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::Read;
@@ -70,7 +71,7 @@ pub fn load_from_staged_file<P: AsRef<Path>>(
     path: P,
     base_flat: &[f32],
     dim: usize,
-) -> ANNResult<StagedInput> {
+) -> Result<StagedInput> {
     // Slurp the whole file (.staged is ~ 1× graph size — fits comfortably
     // alongside the dataset). With the file in RAM we can do an O(n)
     // sequential offset-scan, then parse partitions in parallel via
@@ -79,7 +80,7 @@ pub fn load_from_staged_file<P: AsRef<Path>>(
     let mut buf = Vec::new();
     File::open(&path)?.read_to_end(&mut buf)?;
     if buf.len() < 24 {
-        return Err(ANNError::log_index_error(format!(
+        return Err(Error::invalid_data(format!(
             "staged file too short ({} bytes)",
             buf.len()
         )));
@@ -87,14 +88,14 @@ pub fn load_from_staged_file<P: AsRef<Path>>(
 
     let magic = read_u32_at(&buf, 0);
     if magic != MAGIC {
-        return Err(ANNError::log_index_error(format!(
+        return Err(Error::invalid_data(format!(
             "staged file magic mismatch: got 0x{:08x}, expected 0x{:08x}",
             magic, MAGIC
         )));
     }
     let version = read_u32_at(&buf, 4);
     if version != VERSION {
-        return Err(ANNError::log_index_error(format!(
+        return Err(Error::invalid_data(format!(
             "staged file version mismatch: got {}, expected {}",
             version, VERSION
         )));

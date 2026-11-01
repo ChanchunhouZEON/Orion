@@ -60,33 +60,33 @@ cpu_info() {
 }
 
 phase_vector_check() {
-    banner "Phase 1: cargo check -p vector (x86_64 fallback paths)"
-    time cargo check -p vector --release
+    banner "Phase 1: cargo check -p orion-ann-vector (x86_64 fallback paths)"
+    time cargo check -p orion-ann-vector --release
 }
 
 phase_vector_check_no_default_runtime_detect() {
     # The x86_64 distance.rs uses `is_x86_feature_detected!` to
     # pick AVX2 vs scalar at runtime — verify the scalar arm
     # itself type-checks with feature-gated `--no-default-features`.
-    banner "Phase 2: cargo check -p vector --no-default-features"
-    time cargo check -p vector --release --no-default-features
+    banner "Phase 2: cargo check -p orion-ann-vector --no-default-features"
+    time cargo check -p orion-ann-vector --release --no-default-features
 }
 
 phase_orion_check() {
-    banner "Phase 3: cargo check -p orion (quantized codecs)"
-    time cargo check -p orion --release
+    banner "Phase 3: cargo check -p orion-ann (quantized codecs)"
+    time cargo check -p orion-ann --release
 }
 
 phase_diskann_check() {
     # Confirms our `cblas` feature gate works — the default build
     # path should compile without OpenBLAS / cblas crates.
-    banner "Phase 4: cargo check -p diskann (no-cblas default)"
-    time cargo check -p diskann --release
+    banner "Phase 4: cargo check -p orion-ann-diskann (no-cblas default)"
+    time cargo check -p orion-ann-diskann --release
 }
 
 phase_build_benchmark() {
     banner "Phase 5: cargo build -p benchmark --release --bin benchmark"
-    time cargo build --release -p benchmark -p orion-cli --bins
+    time cargo build --release -p benchmark -p orion-ann-cli --bins
     # Verify the produced ELF is actually x86_64.
     file "$(binary_path benchmark)" "$(binary_path orion)" "$(binary_path orion-sweep)"
 }

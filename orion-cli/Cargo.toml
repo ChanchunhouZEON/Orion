@@ -1,16 +1,28 @@
 [package]
-name = "orion-cli"
+name = "orion-ann-cli"
 version = "0.1.0"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Command-line interface for Orion ANN"
+readme = "README.md"
+keywords = ["ann", "vector-search", "similarity"]
+categories = ["algorithms"]
+include = ["src/**", "tests/**", "configs/**", "Cargo.toml", "README.md", "LICENSE"]
 edition = "2021"
 
 [[bin]]
 name = "orion"
 path = "src/main.rs"
 
+[features]
+default = ["parlay"]
+parlay = ["orion-ann-runtime/parlay"]
+
 [dependencies]
-orion-runtime = { path = "../orion-runtime", features = ["cli"] }
-orion = { path = "../orion" }
-vector = { path = "../vector" }
+orion-ann-runtime = { version = "0.1.0", path = "../orion-runtime", default-features = false, features = ["cli"] }
+orion-ann = { version = "0.1.0", path = "../orion" }
+orion-ann-vector = { version = "0.1.0", path = "../vector" }
 rayon = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }

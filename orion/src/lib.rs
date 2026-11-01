@@ -3,6 +3,11 @@
  * Licensed under the MIT License.
  */
 
+#![doc = include_str!("../README.md")]
+
+pub mod error;
+pub use error::{Error, ErrorCode, ErrorReport, Result};
+
 pub mod algorithm;
 pub mod index;
 pub mod model;

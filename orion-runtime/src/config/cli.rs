@@ -21,12 +21,14 @@
 //! The resulting configuration also derives the graph-cache identity used to distinguish
 //! graphs built from different datasets or construction parameters.
 use crate::config::presets::{
-    load_root, try_resolve_placeholders, RawBaseGraph, RawOrionOverride, RawRoot, SweepOverrides,
+    try_load_root, try_resolve_placeholders, RawBaseGraph, RawOrionOverride, RawRoot,
+    SweepOverrides,
 };
 use crate::data::VectorFormat;
 use crate::search::cascade::{
     AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric,
 };
+use crate::{Error, Result};
 use clap::Parser;
 
 use std::path::PathBuf;
@@ -152,7 +154,7 @@ impl LegacyEnvironment {
     ///
     /// Missing variables are treated as unspecified. Malformed graph-source values
     /// are reported as configuration errors.
-    fn read() -> Result<Self, String> {
+    fn read() -> Result<Self> {
         Ok(Self {
             graph_source: std::env::var("ORION_GRAPH")
                 .ok()
@@ -170,14 +172,14 @@ impl LegacyEnvironment {
 }
 
 /// Parses a legacy graph-source spelling accepted outside Clap's `ValueEnum`.
-fn parse_graph_source(s: &str) -> Result<GraphSourcePolicy, String> {
+fn parse_graph_source(s: &str) -> Result<GraphSourcePolicy> {
     match s.to_ascii_lowercase().as_str() {
         "auto" => Ok(GraphSourcePolicy::Auto),
         "rust" => Ok(GraphSourcePolicy::Rust),
         "pa" | "parlayann" => Ok(GraphSourcePolicy::Parlayann),
-        _ => Err(format!(
+        _ => Err(Error::from(format!(
             "unknown graph source {s:?}; expected auto, rust or parlayann"
-        )),
+        ))),
     }
 }
 
@@ -194,30 +196,40 @@ impl Args {
     /// Returns an error if the custom configuration file cannot be read or parsed,
     /// a referenced dataset preset does not exist, required settings are missing,
     /// or any resolved option combination is invalid.
-    pub fn resolve(&self) -> Result<ResolvedRunConfig, String> {
+    pub fn resolve(&self) -> Result<ResolvedRunConfig> {
         let custom_root: Option<RawRoot> = self
             .config
             .as_ref()
             .map(|path| {
-                let text = std::fs::read_to_string(path)
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
-                serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+                let text = std::fs::read_to_string(path).map_err(|e| {
+                    let message = format!("{}: {e}", path.display());
+                    Error::from(e).with_message(message)
+                })?;
+                serde_yaml::from_str(&text).map_err(|e| {
+                    Error::invalid_data(format!("invalid YAML: {e}"))
+                        .at("read_config")
+                        .with_detail("path", path.to_string_lossy().into_owned())
+                        .with_source(e)
+                })
             })
             .transpose()?;
         self.resolve_with(
-            custom_root.as_ref().unwrap_or_else(|| load_root()),
+            match custom_root.as_ref() {
+                Some(root) => root,
+                None => try_load_root()?,
+            },
             &LegacyEnvironment::read()?,
         )
     }
 
-    pub fn resolve_search(&self) -> Result<ResolvedRunConfig, String> {
+    pub fn resolve_search(&self) -> Result<ResolvedRunConfig> {
         let mut args = self.clone();
         args.single_search = true;
         args.resolve()
     }
 
     /// Experimental sweeps materialize queries so trials can replay identical inputs.
-    pub fn resolve_for_sweep(&self) -> Result<ResolvedRunConfig, String> {
+    pub fn resolve_for_sweep(&self) -> Result<ResolvedRunConfig> {
         let mut config = self.resolve()?;
         config.replay_queries = true;
         Ok(config)
@@ -238,11 +250,7 @@ impl Args {
     /// 6. resolve graph source and staged export,
     /// 7. resolve sweep parameters,
     /// 8. derive cache compatibility and cache identity.
-    fn resolve_with(
-        &self,
-        root: &RawRoot,
-        env: &LegacyEnvironment,
-    ) -> Result<ResolvedRunConfig, String> {
+    fn resolve_with(&self, root: &RawRoot, env: &LegacyEnvironment) -> Result<ResolvedRunConfig> {
         // A preset is optional. Anonymous runs still use metric/dimension defaults.
         let preset_name = self.dataset.as_deref().filter(|name| *name != "anonymous");
         let dataset = preset_name.unwrap_or("anonymous").to_owned();
@@ -315,7 +323,7 @@ impl Args {
             Some(d) => d,
             None => crate::data::inspect_vector_file(&base, base_format)?.dimension,
         };
-        vector::PaddedLayout::for_kernel::<vector::L2F32Distance>(dimension)?;
+        orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::L2F32Distance>(dimension)?;
 
         let defaults = &root.defaults.orion;
         let dataset_overrides = preset.and_then(|p| p.orion.as_ref());
@@ -325,9 +333,9 @@ impl Args {
                 None | Some("f32") => VectorStorageKind::F32,
                 Some("u8") => VectorStorageKind::U8,
                 Some(other) => {
-                    return Err(format!(
+                    return Err(Error::from(format!(
                         "unknown vector_storage {other:?}; expected f32 or u8"
-                    ))
+                    )));
                 }
             },
         };
@@ -508,7 +516,7 @@ impl Args {
         dimension: usize,
         metric: SearchMetric,
         dataset_overrides: Option<&RawOrionOverride>,
-    ) -> Result<Cascade, String> {
+    ) -> Result<Cascade> {
         let mut cascade = Cascade::default_for_specified_dimension_and_metric(dimension, metric);
         if let Some(o) = dataset_overrides {
             if let Some(v) = &o.prefilter {
@@ -546,7 +554,7 @@ impl Args {
         preset_graph: Option<&RawBaseGraph>,
         env: &LegacyEnvironment,
         max_extra: usize,
-    ) -> Result<(GraphSourcePolicy, Option<PathBuf>, bool), String> {
+    ) -> Result<(GraphSourcePolicy, Option<PathBuf>, bool)> {
         let explicit_source = self
             .graph_source
             .or_else(|| {
@@ -639,9 +647,9 @@ mod tests {
     fn root() -> RawRoot {
         serde_yaml::from_str(crate::config::presets::DEFAULT_CONFIG).unwrap()
     }
-    fn resolve(args: &[&str]) -> Result<ResolvedRunConfig, String> {
+    fn resolve(args: &[&str]) -> Result<ResolvedRunConfig> {
         Args::try_parse_from(args)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| Error::invalid_argument(e.to_string()).with_source(e))?
             .resolve_with(&root(), &LegacyEnvironment::default())
     }
 
@@ -702,9 +710,11 @@ mod tests {
         assert_eq!(float.search_plan().cascade(), float.search_plan().cascade());
         assert!(resolve(&["orion", "sift10m", "--vector-storage", "f32"])
             .unwrap_err()
+            .to_string()
             .contains("native-l2-u8 requires --vector-storage u8"));
         assert!(resolve(&["orion", "sift10m", "--admission", "l2-u8"])
             .unwrap_err()
+            .to_string()
             .contains("--admission native-l2-u8"));
         assert_eq!(native.search_plan().storage().element_bytes, 1);
         assert!(!native.search_plan().storage().has_l2_u8_sidecar);
@@ -843,7 +853,14 @@ mod tests {
         assert_eq!(c.dataset, "anonymous");
         assert_eq!(c.search_plan().cascade().admission, AdmissionChoice::L2Kt);
         assert_eq!(c.sweep.calibration_l, 200);
-        assert_eq!(c.graph_source, GraphSource::Rust);
+        assert_eq!(
+            c.graph_source,
+            if cfg!(feature = "parlay") {
+                GraphSource::Parlayann
+            } else {
+                GraphSource::Rust
+            }
+        );
     }
 
     #[test]

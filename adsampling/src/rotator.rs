@@ -73,7 +73,7 @@ impl<const N: usize> Rotator<N> {
 
     /// Apply rotation: `out = R × v`. Not rayon-parallelized — callers should
     /// invoke this in a hot query loop; for one-shot dataset rotation use
-    /// [`apply_batch_inplace`].
+    /// [`Self::apply_batch_inplace`].
     #[inline]
     pub fn apply(&self, v: &[f32; N]) -> [f32; N] {
         let mut out = [0.0f32; N];

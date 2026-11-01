@@ -4,21 +4,22 @@
  */
 
 //! Deterministic-prefix replay and local geometric audits; no timing claims.
-use orion_runtime::search::cascade;
-use orion_runtime::with_supported_dimension;
-use orion_runtime::{
+use orion_ann::{Error, Result};
+use orion_ann_runtime::search::cascade;
+use orion_ann_runtime::with_supported_dimension;
+use orion_ann_runtime::{
     config::{cli::Args as RunArgs, ResolvedRunConfig},
     data::{memory, LoadedDataset},
     graph,
 };
 
 use clap::{Parser, ValueEnum};
-use diskann::model::PaddedDataset;
-use orion::algorithm::search::{
+use orion_ann::algorithm::search::{
     diagnostics::{Checkpoint, MatchedStateTrace, NeighborMode, NoopObserver},
     stage::{rerank::NoRerank, AdmissionSession, AdmissionStage, PrefilterStage, RerankStage},
 };
-use orion::model::Neighbor;
+use orion_ann::model::Neighbor;
+use orion_ann_diskann::model::PaddedDataset;
 use serde_json::{json, Value};
 use std::{collections::BTreeSet, fs::OpenOptions, io::Write, path::PathBuf};
 
@@ -53,7 +54,9 @@ struct Args {
     output: Option<PathBuf>,
 }
 
-fn l2(a: &[f32], b: &[f32]) -> f32 { vector::distance_l2_slice_f32(a, b) }
+fn l2(a: &[f32], b: &[f32]) -> f32 {
+    orion_ann_vector::distance_l2_slice_f32(a, b)
+}
 
 struct ExactAdmission<'a>(&'a PaddedDataset<f32>);
 struct ExactSession<'a> {
@@ -147,7 +150,7 @@ fn summarize(rows: &[Value]) -> Value {
 }
 
 fn audit<const N: usize>(
-    idx: &orion::Orion,
+    idx: &orion_ann::Orion,
     q: &[f32; N],
     truth: &[u32],
     cp: &Checkpoint,
@@ -265,7 +268,7 @@ fn audit<const N: usize>(
 }
 
 fn trace_json<const N: usize>(
-    idx: &orion::Orion,
+    idx: &orion_ann::Orion,
     q: &[f32; N],
     truth: &[u32],
     trace: &MatchedStateTrace,
@@ -304,7 +307,7 @@ fn run<const N: usize>(
     args: &Args,
     config: &ResolvedRunConfig,
     mut data: LoadedDataset,
-) -> Result<(), String> {
+) -> Result<()> {
     if config.prepare_only {
         graph::load_index(config, &mut data)?;
         return Ok(());
@@ -330,7 +333,10 @@ fn run<const N: usize>(
         ))
     });
     if out.exists() {
-        return Err(format!("Refusing to overwrite {}", out.display()));
+        return Err(Error::from(format!(
+            "Refusing to overwrite {}",
+            out.display()
+        )));
     }
     let idx = graph::load_index(config, &mut data)?;
 
@@ -339,12 +345,12 @@ fn run<const N: usize>(
             queries[..settings.calibration_samples.min(queries.len())].as_flattened(),
             settings.calibration_l,
             config.window_size,
-            orion::CalibrationConfig {
+            orion_ann::CalibrationConfig {
                 k: settings.k,
-                metric: orion::CalibrationMetric::L2,
+                metric: orion_ann::CalibrationMetric::L2,
             },
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(Error::from)?;
     let count = if args.diagnostic_queries == 0 {
         queries.len()
     } else {
@@ -372,7 +378,7 @@ fn run<const N: usize>(
             Box::new(ExactAdmission(&idx.dataset))
         } else {
             cascade::build_admission(&idx, config.search_plan().cascade().admission)
-                .map_err(|e| e.to_string())?
+                .map_err(Error::from)?
         };
         let rr: Box<dyn RerankStage + '_> = if exact {
             Box::new(NoRerank)
@@ -402,7 +408,7 @@ fn run<const N: usize>(
                             mode,
                             &mut trace,
                         )
-                        .map_err(|e| e.to_string())?;
+                        .map_err(Error::from)?;
                     let plain = idx
                         .search_unified_observed(
                             q,
@@ -417,11 +423,11 @@ fn run<const N: usize>(
                             mode,
                             &mut NoopObserver,
                         )
-                        .map_err(|e| e.to_string())?;
+                        .map_err(Error::from)?;
                     if ids != plain {
-                        return Err(format!(
+                        return Err(Error::from(format!(
                             "Observer changed results: {track}, L={l}, query={qi}"
-                        ));
+                        )));
                     }
                     traces.push(trace);
                     returned.push(ids);
@@ -430,7 +436,9 @@ fn run<const N: usize>(
                     t.checkpoint != traces[0].checkpoint
                         || t.work.before.ndc() != traces[0].work.before.ndc()
                 }) {
-                    return Err(format!("Checkpoint mismatch: {track}, L={l}, query={qi}"));
+                    return Err(Error::from(format!(
+                        "Checkpoint mismatch: {track}, L={l}, query={qi}"
+                    )));
                 }
                 let checkpoint = traces[0]
                     .checkpoint
@@ -516,20 +524,20 @@ fn run<const N: usize>(
             "budget": "Immediate unseen-neighbor counts and realized continuation NDC; no universal remaining-candidate bound asserted"
         }, "results": results});
     if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(parent).map_err(Error::from)?;
     }
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&out)
-        .map_err(|e| e.to_string())?;
-    file.write_all(&serde_json::to_vec_pretty(&result).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+        .map_err(Error::from)?;
+    file.write_all(&serde_json::to_vec_pretty(&result).map_err(Error::from)?)
+        .map_err(Error::from)?;
     log::info!("Saved {}", out.display());
     Ok(())
 }
 
-fn execute(args: Args) -> Result<(), String> {
+fn execute(args: Args) -> Result<()> {
     let config = args.run.resolve_for_sweep()?;
     if config.metric != cascade::SearchMetric::L2 {
         return Err("Geometric audit currently requires L2".into());
@@ -551,7 +559,7 @@ fn execute(args: Args) -> Result<(), String> {
         println!(
             "{}",
             serde_json::to_string_pretty(&memory::preflight_report(&config)?)
-                .map_err(|e| e.to_string())?
+                .map_err(Error::from)?
         );
         return Ok(());
     }
@@ -560,7 +568,7 @@ fn execute(args: Args) -> Result<(), String> {
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(1)
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(Error::from)?;
     pool.install(|| with_supported_dimension!(config.dimension, |D| run::<D>(&args, &config, data)))
 }
 

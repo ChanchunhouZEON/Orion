@@ -1,6 +1,14 @@
 [package]
-name = "vector"
+name = "orion-ann-vector"
 version = "0.1.0"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SIMD distance kernels and padded vector layouts for Orion ANN"
+readme = "README.md"
+keywords = ["ann", "vector-search", "similarity"]
+categories = ["algorithms"]
+include = ["src/**", "tests/**", "configs/**", "Cargo.toml", "README.md", "LICENSE"]
 edition = "2021"
 
 [dependencies]
@@ -9,5 +17,6 @@ thiserror = { workspace = true }
 bytemuck = { workspace = true }
 
 [dev-dependencies]
+libc.workspace = true
 approx = { workspace = true }
 rand = { workspace = true }

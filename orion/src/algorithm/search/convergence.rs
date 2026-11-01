@@ -31,9 +31,15 @@ pub struct SearchConvergenceChecker {
 impl SearchConvergenceChecker {
     /// Bit-exact active state, excluding unused ring slots retained by scratch reuse.
     pub fn diagnostic_state(&self) -> Vec<u64> {
-        let mut state = vec![self.window_size as u64, self.threshold.to_bits() as u64,
-            self.head as u64, self.count as u64, self.admit_sum as u64,
-            self.total_steps as u64, self.min_steps as u64];
+        let mut state = vec![
+            self.window_size as u64,
+            self.threshold.to_bits() as u64,
+            self.head as u64,
+            self.count as u64,
+            self.admit_sum as u64,
+            self.total_steps as u64,
+            self.min_steps as u64,
+        ];
         state.extend(self.buf[..self.window_size].iter().map(|&v| v as u64));
         state
     }

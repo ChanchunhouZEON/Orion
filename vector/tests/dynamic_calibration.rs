@@ -23,11 +23,11 @@ fn runtime_exact_distances_cover_unaligned_rows_and_tails() {
             .map(|(&x, &y)| f64::from(x) * f64::from(y))
             .sum::<f64>() as f32;
         assert!(
-            (vector::distance_l2_slice_f32(a, b) - l2).abs() <= l2.abs().max(1.) * 3e-6,
+            (orion_ann_vector::distance_l2_slice_f32(a, b) - l2).abs() <= l2.abs().max(1.) * 3e-6,
             "L2 dim={dim}"
         );
         assert!(
-            (vector::distance_ip_slice_f32(a, b) - ip).abs() <= ip.abs().max(1.) * 3e-6,
+            (orion_ann_vector::distance_ip_slice_f32(a, b) - ip).abs() <= ip.abs().max(1.) * 3e-6,
             "IP dim={dim}"
         );
     }
@@ -35,5 +35,5 @@ fn runtime_exact_distances_cover_unaligned_rows_and_tails() {
 #[test]
 #[should_panic]
 fn mismatched_exact_inputs_are_rejected() {
-    vector::distance_l2_slice_f32(&[1., 2.], &[1.]);
+    orion_ann_vector::distance_l2_slice_f32(&[1., 2.], &[1.]);
 }

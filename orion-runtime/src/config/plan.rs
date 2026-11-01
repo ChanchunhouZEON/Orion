@@ -14,6 +14,7 @@ use crate::data::VectorFormat;
 use crate::search::cascade::{
     AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric,
 };
+use crate::{Error, Result};
 
 /// Fully resolved search execution plan.
 ///
@@ -72,13 +73,17 @@ impl SearchPlan {
         query_format: VectorFormat,
         cascade: Cascade,
         graph_source: GraphSource,
-    ) -> Result<Self, String> {
+    ) -> Result<Self> {
         match vector_storage {
             VectorStorageKind::F32 => {
-                vector::PaddedLayout::for_kernel::<vector::L2F32Distance>(dimension)?;
+                orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::L2F32Distance>(
+                    dimension,
+                )?;
             }
             VectorStorageKind::U8 => {
-                vector::PaddedLayout::for_kernel::<vector::L2U8Distance>(dimension)?;
+                orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::L2U8Distance>(
+                    dimension,
+                )?;
             }
         }
 
@@ -87,16 +92,24 @@ impl SearchPlan {
         if vector_storage == VectorStorageKind::F32 {
             match cascade.admission {
                 AdmissionChoice::L2U8 => {
-                    vector::PaddedLayout::for_kernel::<vector::L2U8Distance>(dimension)?;
+                    orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::L2U8Distance>(
+                        dimension,
+                    )?;
                 }
                 AdmissionChoice::L2U16 => {
-                    vector::PaddedLayout::for_kernel::<vector::L2U16Distance>(dimension)?;
+                    orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::L2U16Distance>(
+                        dimension,
+                    )?;
                 }
                 AdmissionChoice::MipsI8 | AdmissionChoice::L2Kt => {
-                    vector::PaddedLayout::for_kernel::<vector::IpI8Distance>(dimension)?;
+                    orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::IpI8Distance>(
+                        dimension,
+                    )?;
                 }
                 AdmissionChoice::MipsI16 => {
-                    vector::PaddedLayout::for_kernel::<vector::IpI16Distance>(dimension)?;
+                    orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::IpI16Distance>(
+                        dimension,
+                    )?;
                 }
                 _ => {}
             }
@@ -110,9 +123,11 @@ impl SearchPlan {
         // quantized sidecar is desired on top of f32 storage.
         if vector_storage == VectorStorageKind::F32 {
             return if cascade.admission == AdmissionChoice::NativeL2U8 {
-                Err("native-l2-u8 requires --vector-storage u8; \
-                     use l2-u8 for a quantized f32 sidecar"
-                    .into())
+                Err(Error::unsupported(
+                    "native-l2-u8 requires --vector-storage u8; \
+                     use l2-u8 for a quantized f32 sidecar",
+                )
+                .at("configure"))
             } else {
                 Ok(Self::F32Cascade { cascade })
             };
@@ -121,7 +136,7 @@ impl SearchPlan {
         // Native byte distances support runtime dimensions but retain exact L2
         // semantics; they do not implicitly quantize or normalize coordinates.
         if metric != SearchMetric::L2 {
-            return Err("native u8 storage requires L2 vectors".into());
+            return Err(Error::unsupported("native u8 storage requires L2 vectors").at("configure"));
         }
 
         // Native byte storage must come from byte-encoded inputs directly.
@@ -131,9 +146,11 @@ impl SearchPlan {
         if !matches!(base_format, VectorFormat::Bvecs | VectorFormat::U8bin)
             || !matches!(query_format, VectorFormat::Bvecs | VectorFormat::U8bin)
         {
-            return Err("native u8 requires bvecs/u8bin base and queries; \
-                 it does not quantize floats"
-                .into());
+            return Err(Error::unsupported(
+                "native u8 requires bvecs/u8bin base and queries; \
+                 it does not quantize floats",
+            )
+            .at("configure"));
         }
 
         // The native-u8 path is not a configurable three-stage cascade:
@@ -146,19 +163,23 @@ impl SearchPlan {
             || cascade.admission != AdmissionChoice::NativeL2U8
             || cascade.rerank != RerankChoice::None
         {
-            return Err("native u8 requires --prefilter none \
-                 --admission native-l2-u8 --rerank none"
-                .into());
+            return Err(Error::unsupported(
+                "native u8 requires --prefilter none \
+                 --admission native-l2-u8 --rerank none",
+            )
+            .at("configure"));
         }
 
-        // Native u8 currently consumes a ParlayANN STAG graph export/cache.
+        // Native u8 uses the ParlayANN in-memory builder or a STAG export/cache.
         // The in-process Rust graph builder still operates on f32 data, so
         // permitting another graph source here would imply a construction path
         // that does not exist.
         if graph_source != GraphSource::Parlayann {
-            return Err("native u8 uses a ParlayANN STAG export/cache; \
-                 the Rust builder remains f32"
-                .into());
+            return Err(Error::unsupported(
+                "native u8 requires a ParlayANN graph; \
+                 the Rust builder remains f32",
+            )
+            .at("configure"));
         }
 
         Ok(Self::NativeU8L2)

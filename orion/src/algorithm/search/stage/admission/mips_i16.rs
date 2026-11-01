@@ -62,7 +62,7 @@ impl<'a> AdmissionSession for MipsI16Session<'a> {
 
         let mut w = 0usize;
         unsafe {
-            vector::DistanceStream::<vector::IpI16Distance>::new(
+            orion_ann_vector::DistanceStream::<orion_ann_vector::IpI16Distance>::new(
                 base_ptr,
                 stride_bytes,
                 stride_bytes,
@@ -82,7 +82,7 @@ impl<'a> AdmissionSession for MipsI16Session<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diskann::model::InmemDataset;
+    use orion_ann_diskann::model::InmemDataset;
 
     #[test]
     fn mips_i16_session_smoke() {

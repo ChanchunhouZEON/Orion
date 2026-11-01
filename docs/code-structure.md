@@ -24,10 +24,16 @@ orion-runtime/src/
     mod.rs                 # Build/import/load and transfer base ownership
     cache.rs               # Cache identity, validation and provenance manifests
     parlayann.rs           # STAG v3 import support
+    build_parlay.rs        # Borrow base rows, map FFI errors, fill final graph slab
   search/
     mod.rs                 # Typed f32/native-u8 backend dispatch
     cascade.rs             # Metric/stage selection and cascade construction
     utils.rs               # Dimension dispatch, validation and benchmark helpers
+
+orion-parlay/
+  src/lib.rs               # Safe borrowed builder handle over a private C ABI
+  cpp/bridge.cpp           # f32/u8 point views, explicit schedulers and error boundary
+  vendor/                  # Pinned ParlayANN/Parlaylib sources and licenses
 
 orion-cli/
   src/main.rs              # One-pass CLI, JSONL results and calibration summary
@@ -35,7 +41,7 @@ orion-cli/
 
 orion-py/
   src/lib.rs               # PyO3 ownership boundary, GIL release and per-index lock
-  python/orion_py/          # Public Index/config/result API
+  python/orion_ann/        # Public Index/config/result API
   tests/                   # NumPy/file/cache and CLI result consistency checks
 
 orion/
@@ -101,16 +107,17 @@ orion/
 
 vector/
   src/
-    distance_stream.rs              # DistanceStream<K,N>: inline-prfm address resolve,
-                                    #   flat 4-way (lpv, stride) dispatch, pldl1strm hint,
-                                    #   prologue + per-iter drip + **sink-time burst (LA=12)**
-                                    #   for long-range L1 lookahead — +20-27% QPS on GIST L2-KT
+    distance_stream.rs              # DistanceStream<K>: address resolution, bounded near cursor,
+                                    #   group/burst scheduling and intentional near/far overlap
+    stream_kernels/                 # Runtime ISA dispatch and inlined arithmetic backends
+      compute.rs                    # Unrolled compute; prefetch credit per CACHE_LINE_BYTES,
+                                    #   including each vector's partial final cache line
     l2_neon_distance.rs             # L2U8Distance, L2F32Distance, L2U16Distance kernels (NEON)
     ip_neon_distance.rs             # IpI8Distance, IpI16Distance, IpF32Distance kernels (NEON)
-    distance_fn.rs                  # DistanceFn trait — kernel ABI for DistanceStream,
-                                    #   JLHammingDistance (XOR+popcount for bit-packed signatures)
+    distance_kernel.rs              # DistanceKernelBackend trait — stream kernel ABI;
+                                    #   JLHammingDistance for bit-packed signatures
 
-diskann/
+orion-diskann/
   src/
     model/graph/
       vertex_and_neighbors.rs       # Distance-sorted neighbor maintenance (add_sorted, neighbor_dists)
@@ -123,7 +130,7 @@ diskann/
 benchmark/
   src/
     bin/
-      orion_sweep.rs               # Replay, calibration and parameter/trial sweeps via runtime
+      orion_sweep.rs                # Replay, calibration and parameter/trial sweeps via runtime
       diskann_sweep.rs              # Microsoft DiskANN L-sweep (in-process via the `diskann` core crate)
                                     #   — third engine for the 3-engine head-to-head
     runner/
@@ -138,7 +145,7 @@ benchmark/
                                     #   cascade triple (replaces the legacy 4-way `metric:` enum)
   scripts/
     prepare_parlayann_data.sh                 # Build PA `.staged` exports (one-time, per dataset)
-    sweep_orion_vs_diskann_vs_parlayann.sh   # 3-engine head-to-head: Orion + MS Vamana + PA Vamana,
+    sweep_orion_vs_diskann_vs_parlayann.sh    # 3-engine head-to-head: Orion + MS Vamana + PA Vamana,
                                               #   3-run × 180 s thermal-isolated
     run_build_memory_profile.sh               # α-matched build + peak-memory profile across 4 datasets
     run_thread_scaling.sh                     # QPS-vs-thread curves on SIFT 1M + GIST 1M

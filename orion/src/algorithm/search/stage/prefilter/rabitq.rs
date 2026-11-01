@@ -26,7 +26,7 @@ use crate::model::dataset::rabitq_dataset::RabitQDataset;
 /// Wraps a [`RabitQDataset`] for use as a [`super::PrefilterStage`].
 ///
 /// Thin reference-holding factory; per-query rotation + sign-pack
-/// happens inside [`RabitqSession::open`].
+/// happens inside [`PrefilterStage::open`].
 pub struct RabitqPrefilter<'a> {
     pub dataset: &'a RabitQDataset,
 }
@@ -107,7 +107,7 @@ impl<'a> PrefilterSession for RabitqSession<'a> {
 
         let mut w = 0usize;
         unsafe {
-            vector::DistanceStream::<vector::JLHammingDistance>::new(
+            orion_ann_vector::DistanceStream::<orion_ann_vector::JLHammingDistance>::new(
                 base_ptr,
                 self.stride,
                 self.stride,
@@ -140,7 +140,7 @@ impl<'a> PrefilterSession for RabitqSession<'a> {
 mod tests {
     use super::super::PrefilterStage;
     use super::*;
-    use diskann::model::InmemDataset;
+    use orion_ann_diskann::model::InmemDataset;
 
     #[test]
     fn rabitq_prefilter_session_smoke() {

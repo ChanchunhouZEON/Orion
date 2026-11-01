@@ -14,7 +14,7 @@ use super::super::super::utils::dstream_la_truth;
 use super::RerankStage;
 use crate::model::Neighbor;
 use crate::model::scratch::InMemSearchScratch;
-use diskann::model::InmemDataset;
+use orion_ann_diskann::model::InmemDataset;
 
 /// L2-based f32 truth rerank stage adapter.
 ///
@@ -78,7 +78,7 @@ impl<'a, const N: usize> RerankStage for F32Rerank<'a, N> {
         let mut rerank_buf: Vec<(u32, f32)> = Vec::with_capacity(num_check);
         unsafe {
             let id_in = std::slice::from_raw_parts(scratch.id_scratch.as_ptr(), num_check);
-            vector::DistanceStream::<vector::L2F32Distance>::new(
+            orion_ann_vector::DistanceStream::<orion_ann_vector::L2F32Distance>::new(
                 dataset_base_ptr,
                 f32_stride_bytes,
                 f32_compute_bytes,

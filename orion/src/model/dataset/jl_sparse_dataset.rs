@@ -50,8 +50,8 @@
 use std::arch::aarch64::*;
 
 use super::rows::F32Rows;
-use diskann::common::ANNResult;
-use diskann::common::AlignedBoxWithSlice;
+use orion_ann_diskann::common::ANNResult;
+use orion_ann_diskann::common::AlignedBoxWithSlice;
 use rayon::prelude::*;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -109,7 +109,7 @@ pub const NZ_MIPS: usize = 11;
 /// sign-bit packed code so `vld1q_u8` loads stay 16-byte aligned.
 pub const fn jl_sparse_stride(bits: usize) -> usize {
     let bytes = jl_sparse_stride_disk(bits);
-    let block = <vector::JLHammingDistance as vector::DistanceFn>::CHUNK_BYTES;
+    let block = <orion_ann_vector::JLHammingDistance as orion_ann_vector::DistanceKernelBackend>::CHUNK_BYTES;
     bytes.div_ceil(block) * block
 }
 
@@ -411,7 +411,7 @@ pub const JL_SPARSE_MIPS_MAGIC: u32 = 0x4A4C_4D38; // "JLM8"
 /// `NZ` defaults to 8 — different from the L2 default (9) per the
 /// empirical sweep below. The encoding shape is identical to
 /// [`JLSparseDataset`], so the two share
-/// [`encode_vertex_scalar`].
+/// `encode_vertex_scalar`.
 pub struct JLSparseDatasetMips<const BITS: usize = 1024, const NZ: usize = 9> {
     pub dimension: usize,
     /// Same sign-bit code layout as [`JLSparseDataset::codes`].
@@ -746,33 +746,35 @@ unsafe fn hamming_neon(p: *const u8, q: *const u8, len: usize) -> u32 {
 ))]
 #[inline]
 unsafe fn hamming_avx512_vpopcnt(p: *const u8, q: *const u8, len: usize) -> u32 {
-    use std::arch::x86_64::*;
-    debug_assert_eq!(len % 16, 0);
-    let mut acc = _mm512_setzero_si512();
-    let n_blocks = len / 64;
-    for i in 0..n_blocks {
-        let vp = _mm512_loadu_si512(p.add(i * 64) as *const __m512i);
-        let vq = _mm512_loadu_si512(q.add(i * 64) as *const __m512i);
-        let vx = _mm512_xor_si512(vp, vq);
-        // 8× i64 lanes each holding popcount of a 64-bit chunk.
-        let pc = _mm512_popcnt_epi64(vx);
-        acc = _mm512_add_epi64(acc, pc);
-    }
-    let mut total = _mm512_reduce_add_epi64(acc) as u32;
+    unsafe {
+        use std::arch::x86_64::*;
+        debug_assert_eq!(len % 16, 0);
+        let mut acc = _mm512_setzero_si512();
+        let n_blocks = len / 64;
+        for i in 0..n_blocks {
+            let vp = _mm512_loadu_si512(p.add(i * 64) as *const __m512i);
+            let vq = _mm512_loadu_si512(q.add(i * 64) as *const __m512i);
+            let vx = _mm512_xor_si512(vp, vq);
+            // 8× i64 lanes each holding popcount of a 64-bit chunk.
+            let pc = _mm512_popcnt_epi64(vx);
+            acc = _mm512_add_epi64(acc, pc);
+        }
+        let mut total = _mm512_reduce_add_epi64(acc) as u32;
 
-    // Tail: 16-byte chunks (NEON's natural stride). Process via
-    // SSE2 + scalar popcount since AVX-512 wants 64-byte aligned
-    // ops at full width.
-    let mut i = n_blocks * 64;
-    while i + 16 <= len {
-        let lo =
-            (p.add(i) as *const u64).read_unaligned() ^ (q.add(i) as *const u64).read_unaligned();
-        let hi = (p.add(i + 8) as *const u64).read_unaligned()
-            ^ (q.add(i + 8) as *const u64).read_unaligned();
-        total += lo.count_ones() + hi.count_ones();
-        i += 16;
+        // Tail: 16-byte chunks (NEON's natural stride). Process via
+        // SSE2 + scalar popcount since AVX-512 wants 64-byte aligned
+        // ops at full width.
+        let mut i = n_blocks * 64;
+        while i + 16 <= len {
+            let lo = (p.add(i) as *const u64).read_unaligned()
+                ^ (q.add(i) as *const u64).read_unaligned();
+            let hi = (p.add(i + 8) as *const u64).read_unaligned()
+                ^ (q.add(i + 8) as *const u64).read_unaligned();
+            total += lo.count_ones() + hi.count_ones();
+            i += 16;
+        }
+        total
     }
-    total
 }
 
 /// AVX-512 fallback when `avx512vpopcntdq` isn't available
@@ -789,50 +791,52 @@ unsafe fn hamming_avx512_vpopcnt(p: *const u8, q: *const u8, len: usize) -> u32 
 ))]
 #[inline]
 unsafe fn hamming_avx512_harley_seal(p: *const u8, q: *const u8, len: usize) -> u32 {
-    use std::arch::x86_64::*;
-    debug_assert_eq!(len % 16, 0);
+    unsafe {
+        use std::arch::x86_64::*;
+        debug_assert_eq!(len % 16, 0);
 
-    // Per-nibble popcount LUT broadcast to all 64 lanes of a __m512i.
-    // _mm512_shuffle_epi8 selects per-byte; we shuffle low nibbles
-    // and shifted-high nibbles separately and add.
-    let lut = _mm512_set_epi8(
-        4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0, 4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1,
-        1, 0, 4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0, 4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1,
-        2, 1, 1, 0,
-    );
-    let low_mask = _mm512_set1_epi8(0x0F);
+        // Per-nibble popcount LUT broadcast to all 64 lanes of a __m512i.
+        // _mm512_shuffle_epi8 selects per-byte; we shuffle low nibbles
+        // and shifted-high nibbles separately and add.
+        let lut = _mm512_set_epi8(
+            4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0, 4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2,
+            1, 1, 0, 4, 3, 3, 2, 3, 2, 2, 1, 3, 2, 2, 1, 2, 1, 1, 0, 4, 3, 3, 2, 3, 2, 2, 1, 3, 2,
+            2, 1, 2, 1, 1, 0,
+        );
+        let low_mask = _mm512_set1_epi8(0x0F);
 
-    let mut acc = _mm512_setzero_si512();
-    let n_blocks = len / 64;
-    for i in 0..n_blocks {
-        let vp = _mm512_loadu_si512(p.add(i * 64) as *const __m512i);
-        let vq = _mm512_loadu_si512(q.add(i * 64) as *const __m512i);
-        let vx = _mm512_xor_si512(vp, vq);
-        // Low nibble lookup.
-        let lo = _mm512_and_si512(vx, low_mask);
-        // High nibble = (x >> 4) & 0x0F.
-        let hi = _mm512_and_si512(_mm512_srli_epi16(vx, 4), low_mask);
-        let pl = _mm512_shuffle_epi8(lut, lo);
-        let ph = _mm512_shuffle_epi8(lut, hi);
-        let per_byte = _mm512_add_epi8(pl, ph);
-        // Sum byte lanes into 8× i64 accumulators via VPSADBW
-        // (reduces 8 bytes → one i64 per dqword).
-        let widened = _mm512_sad_epu8(per_byte, _mm512_setzero_si512());
-        acc = _mm512_add_epi64(acc, widened);
+        let mut acc = _mm512_setzero_si512();
+        let n_blocks = len / 64;
+        for i in 0..n_blocks {
+            let vp = _mm512_loadu_si512(p.add(i * 64) as *const __m512i);
+            let vq = _mm512_loadu_si512(q.add(i * 64) as *const __m512i);
+            let vx = _mm512_xor_si512(vp, vq);
+            // Low nibble lookup.
+            let lo = _mm512_and_si512(vx, low_mask);
+            // High nibble = (x >> 4) & 0x0F.
+            let hi = _mm512_and_si512(_mm512_srli_epi16(vx, 4), low_mask);
+            let pl = _mm512_shuffle_epi8(lut, lo);
+            let ph = _mm512_shuffle_epi8(lut, hi);
+            let per_byte = _mm512_add_epi8(pl, ph);
+            // Sum byte lanes into 8× i64 accumulators via VPSADBW
+            // (reduces 8 bytes → one i64 per dqword).
+            let widened = _mm512_sad_epu8(per_byte, _mm512_setzero_si512());
+            acc = _mm512_add_epi64(acc, widened);
+        }
+        let mut total = _mm512_reduce_add_epi64(acc) as u32;
+
+        // Tail (same shape as the vpopcnt path).
+        let mut i = n_blocks * 64;
+        while i + 16 <= len {
+            let lo = (p.add(i) as *const u64).read_unaligned()
+                ^ (q.add(i) as *const u64).read_unaligned();
+            let hi = (p.add(i + 8) as *const u64).read_unaligned()
+                ^ (q.add(i + 8) as *const u64).read_unaligned();
+            total += lo.count_ones() + hi.count_ones();
+            i += 16;
+        }
+        total
     }
-    let mut total = _mm512_reduce_add_epi64(acc) as u32;
-
-    // Tail (same shape as the vpopcnt path).
-    let mut i = n_blocks * 64;
-    while i + 16 <= len {
-        let lo =
-            (p.add(i) as *const u64).read_unaligned() ^ (q.add(i) as *const u64).read_unaligned();
-        let hi = (p.add(i + 8) as *const u64).read_unaligned()
-            ^ (q.add(i + 8) as *const u64).read_unaligned();
-        total += lo.count_ones() + hi.count_ones();
-        i += 16;
-    }
-    total
 }
 
 // ── Deterministic PRNG (shared shape with rabitq_dataset) ─────────────
@@ -854,7 +858,7 @@ impl XorShift64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diskann::model::InmemDataset;
+    use orion_ann_diskann::model::InmemDataset;
 
     #[test]
     fn stride_matches_paper_examples() {
@@ -865,7 +869,7 @@ mod tests {
         // BITS=100: ceil(100/8)=13 bytes → padded to 16.
         assert_eq!(jl_sparse_stride_disk(100), 16);
         assert_eq!(
-            jl_sparse_stride(100) % <vector::JLHammingDistance as vector::DistanceFn>::CHUNK_BYTES,
+            jl_sparse_stride(100) % <orion_ann_vector::JLHammingDistance as orion_ann_vector::DistanceKernelBackend>::CHUNK_BYTES,
             0
         );
     }

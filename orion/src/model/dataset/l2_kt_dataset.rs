@@ -7,9 +7,9 @@
 //! squared L2 norm, designed to let `sdot` carry the per-hop distance
 //! compute while staying L2-rank-exact.
 //!
-//! ## Why a separate sidecar from [`L2U8`]
+//! ## Why a separate sidecar from `L2U8`
 //!
-//! The default L2-Q kernel ([`vector::L2U8Distance`]) computes
+//! The default L2-Q kernel ([`orion_ann_vector::L2U8Distance`]) computes
 //! `Σ(a-b)²` directly with `vabdq_u8 → vmull_u8 → vpadalq_u16`
 //! — about **14 SIMD ops per 32-byte chunk** (2 abd + 4 widening mul
 //! + 4 pairwise-add + 2 loads × 2 sides). Apple Silicon's `sdot`
@@ -35,7 +35,7 @@
 //!
 //! ## Quantization
 //!
-//! Same affine slope as [`L2U8`]'s [`QuantParamsL2::from_range`]
+//! Same affine slope as `L2U8`'s [`QuantParamsL2::from_range`]
 //! (maps f32 input range → 256 levels), but the output is shifted to
 //! the **signed-i8 range** `[-128, 127]` so `sdot` can consume it
 //! directly. L2 distance is invariant under uniform translation, so
@@ -63,13 +63,13 @@
 //! ```
 
 use super::rows::F32Rows;
-use diskann::common::AlignedBoxWithSlice;
+use orion_ann_diskann::common::AlignedBoxWithSlice;
 use rayon::prelude::*;
 use std::io::{Read, Write};
 use std::path::Path;
 
 use super::quantized_dataset::QuantParamsL2;
-use diskann::common::ANNResult;
+use orion_ann_diskann::common::ANNResult;
 
 /// Disk-format magic for the L2-kernel-trick sidecar (`.qdsl2kt`).
 pub const L2_KT_MAGIC: u32 = 0x5144_4B54; // "QDKT"
@@ -80,7 +80,8 @@ pub const L2_KT_MAGIC: u32 = 0x5144_4B54; // "QDKT"
 #[inline]
 pub const fn l2_kt_stride(n: usize) -> usize {
     let bytes = l2_kt_stride_disk(n);
-    let block = <vector::IpI8Distance as vector::DistanceFn>::CHUNK_BYTES;
+    let block =
+        <orion_ann_vector::IpI8Distance as orion_ann_vector::DistanceKernelBackend>::CHUNK_BYTES;
     bytes.div_ceil(block) * block
 }
 
@@ -113,13 +114,13 @@ impl L2KTDataset {
 
     /// Build the sidecar from an f32 base. Quantization params are
     /// derived from the f32 base's `(min, max)` range — same shape as
-    /// [`L2U8::build_params`]. Per-vertex `‖x_i8‖²` is computed in the
+    /// `L2U8::build_params`. Per-vertex `‖x_i8‖²` is computed in the
     /// same parallel pass, no second sweep.
     pub fn build_from(dataset: &impl F32Rows) -> Self {
         let dim = dataset.dimension();
         assert!(
             dim > 0
-                && dim <= <vector::IpI8Distance as vector::DistanceFn>::MAX_COORDINATES
+                && dim <= <orion_ann_vector::IpI8Distance as orion_ann_vector::DistanceKernelBackend>::MAX_COORDINATES
                 && dim <= i32::MAX as usize / (128 * 128)
         );
         assert!(!dataset.is_empty());
@@ -283,7 +284,8 @@ impl L2KTDataset {
             .into());
         }
         if dim == 0
-            || dim > <vector::IpI8Distance as vector::DistanceFn>::MAX_COORDINATES
+            || dim
+                > <orion_ann_vector::IpI8Distance as orion_ann_vector::DistanceKernelBackend>::MAX_COORDINATES
             || dim > i32::MAX as usize / (128 * 128)
         {
             return Err(std::io::Error::new(
@@ -323,7 +325,7 @@ impl L2KTDataset {
     }
 }
 
-/// f32 → i8 via the same affine map as [`L2U8`], shifted by -128 so
+/// f32 → i8 via the same affine map as `L2U8`, shifted by -128 so
 /// the output lives in i8 range. Equivalent to
 /// `L2U8::quantize_scalar(v) - 128` but skips the intermediate u8
 /// clamp by directly clamping to `[-128, 127]`.
@@ -336,7 +338,7 @@ fn quantize_to_i8(p: &QuantParamsL2, v: f32) -> i8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diskann::model::InmemDataset;
+    use orion_ann_diskann::model::InmemDataset;
 
     #[test]
     fn stride_matches_alignment() {

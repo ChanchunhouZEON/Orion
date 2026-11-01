@@ -1,0 +1,207 @@
+/*
+ * Copyright (c) Microsoft Corporation. All rights reserved.
+ * Licensed under the MIT license.
+ *
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
+use orion_ann_logger::LogError;
+use std::alloc::LayoutError;
+use std::array::TryFromSliceError;
+use std::io;
+use std::num::TryFromIntError;
+
+pub type ANNResult<T> = Result<T, ANNError>;
+
+/// DiskANN's internal error type. Construction and conversion are side-effect
+/// free; applications report errors at their outer boundary. Legacy `log_*`
+/// names remain for source compatibility, but no longer invoke the logger.
+#[derive(thiserror::Error, Debug)]
+pub enum ANNError {
+    #[error("IndexError: {err}")]
+    IndexError { err: String },
+
+    #[error("IndexConfigError: parameter={parameter}, err={err}")]
+    IndexConfigError { parameter: String, err: String },
+
+    #[error("TryFromIntError: {err}")]
+    TryFromIntError {
+        #[source]
+        err: TryFromIntError,
+    },
+
+    #[error("IOError: {err}")]
+    IOError {
+        #[source]
+        err: io::Error,
+    },
+
+    #[error("MemoryAllocLayoutError: {err}")]
+    MemoryAllocLayoutError {
+        #[source]
+        err: LayoutError,
+    },
+
+    #[error("LockPoisonError: {err}")]
+    LockPoisonError { err: String },
+
+    #[error("DiskIOAlignmentError: {err}")]
+    DiskIOAlignmentError { err: String },
+
+    #[error("LogError: {err}")]
+    LogError {
+        #[source]
+        err: LogError,
+    },
+
+    #[error("PQError: {err}")]
+    PQError { err: String },
+
+    #[error("Error try creating array from slice: {err}")]
+    TryFromSliceError {
+        #[source]
+        err: TryFromSliceError,
+    },
+
+    #[error("SerializeError: {err}")]
+    SerializeError {
+        #[source]
+        err: bincode::error::EncodeError,
+    },
+
+    #[error("DeserializeError: {err}")]
+    DeserializeError {
+        #[source]
+        err: bincode::error::DecodeError,
+    },
+}
+
+impl From<io::Error> for ANNError {
+    #[inline]
+    fn from(err: io::Error) -> Self {
+        Self::log_io_error(err)
+    }
+}
+
+impl From<TryFromIntError> for ANNError {
+    #[inline]
+    fn from(err: TryFromIntError) -> Self {
+        Self::log_try_from_int_error(err)
+    }
+}
+
+impl From<LayoutError> for ANNError {
+    #[inline]
+    fn from(err: LayoutError) -> Self {
+        Self::log_mem_alloc_layout_error(err)
+    }
+}
+
+impl From<TryFromSliceError> for ANNError {
+    #[inline]
+    fn from(err: TryFromSliceError) -> Self {
+        Self::log_try_from_slice_error(err)
+    }
+}
+
+impl From<bincode::error::EncodeError> for ANNError {
+    #[inline]
+    fn from(err: bincode::error::EncodeError) -> Self {
+        Self::log_serialize_error(err)
+    }
+}
+
+impl From<bincode::error::DecodeError> for ANNError {
+    #[inline]
+    fn from(err: bincode::error::DecodeError) -> Self {
+        Self::log_deserialize_error(err)
+    }
+}
+
+// Retain explicit logger failures without replacing unrelated errors.
+impl From<LogError> for ANNError {
+    #[inline]
+    fn from(err: LogError) -> Self {
+        Self::LogError { err }
+    }
+}
+
+impl ANNError {
+    #[inline]
+    pub fn log_index_error(err: String) -> Self {
+        let ann_err = ANNError::IndexError { err };
+        ann_err
+    }
+
+    #[inline]
+    pub fn log_index_config_error(parameter: String, err: String) -> Self {
+        let ann_err = ANNError::IndexConfigError { parameter, err };
+        ann_err
+    }
+
+    #[inline]
+    pub fn log_try_from_int_error(err: TryFromIntError) -> Self {
+        let ann_err = ANNError::TryFromIntError { err };
+        ann_err
+    }
+
+    #[inline]
+    pub fn log_io_error(err: io::Error) -> Self {
+        let ann_err = ANNError::IOError { err };
+        ann_err
+    }
+
+    #[inline]
+    pub fn log_disk_io_request_alignment_error(err: String) -> Self {
+        let ann_err = ANNError::DiskIOAlignmentError { err };
+        ann_err
+    }
+
+    #[inline]
+    pub fn log_mem_alloc_layout_error(err: LayoutError) -> Self {
+        let ann_err = ANNError::MemoryAllocLayoutError { err };
+        ann_err
+    }
+
+    #[inline]
+    pub fn log_lock_poison_error(err: String) -> Self {
+        let ann_err = ANNError::LockPoisonError { err };
+        ann_err
+    }
+
+    #[inline]
+    pub fn log_pq_error(err: String) -> Self {
+        let ann_err = ANNError::PQError { err };
+        ann_err
+    }
+
+    #[inline]
+    pub fn log_try_from_slice_error(err: TryFromSliceError) -> Self {
+        let ann_err = ANNError::TryFromSliceError { err };
+        ann_err
+    }
+
+    #[inline]
+    pub fn log_serialize_error(err: bincode::error::EncodeError) -> Self {
+        let ann_err = ANNError::SerializeError { err };
+        ann_err
+    }
+
+    #[inline]
+    pub fn log_deserialize_error(err: bincode::error::DecodeError) -> Self {
+        let ann_err = ANNError::DeserializeError { err };
+        ann_err
+    }
+}
+
+#[cfg(test)]
+mod ann_result_test {
+    use super::*;
+
+    #[test]
+    fn ann_err_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<ANNError>();
+    }
+}

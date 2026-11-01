@@ -11,6 +11,7 @@
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
 
+#[cfg(target_arch = "aarch64")]
 use crate::Half;
 
 /// Calculate L2 squared distance between two f16 vectors using NEON.
@@ -27,13 +28,13 @@ pub fn distance_l2_vector_f16<const N: usize>(a: &[Half; N], b: &[Half; N]) -> f
         // Process 4 f16 values at a time by converting to f32 first
         let a_f32: Vec<f32> = (0..N)
             .map(|i| {
-                let half_ptr = a.as_ptr().add(i) as *const Half;
+                let half_ptr = a.as_ptr().add(i);
                 (*half_ptr).to_f32()
             })
             .collect();
         let b_f32: Vec<f32> = (0..N)
             .map(|i| {
-                let half_ptr = b.as_ptr().add(i) as *const Half;
+                let half_ptr = b.as_ptr().add(i);
                 (*half_ptr).to_f32()
             })
             .collect();
@@ -170,7 +171,12 @@ pub fn distance_l2_adsampling_f32<const N: usize>(
 }
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-pub fn distance_l2_adsampling_slice_f32(a: &[f32], b: &[f32], upper_bound: f32, epsilon: f32) -> f32 {
+pub fn distance_l2_adsampling_slice_f32(
+    a: &[f32],
+    b: &[f32],
+    upper_bound: f32,
+    epsilon: f32,
+) -> f32 {
     assert_eq!(a.len(), b.len());
     let n = a.len();
 
@@ -253,8 +259,15 @@ pub fn distance_l2_adsampling_slice_f32(a: &[f32], b: &[f32], upper_bound: f32, 
 
         let total = vaddq_f32(vaddq_f32(sum0, sum1), vaddq_f32(sum2, sum3));
         let mut dist = vaddvq_f32(total);
-        for i in n / 4 * 4..n { let d = a[i] - b[i]; dist += d * d; }
-        if dist >= upper_bound { -1.0 } else { dist }
+        for i in n / 4 * 4..n {
+            let d = a[i] - b[i];
+            dist += d * d;
+        }
+        if dist >= upper_bound {
+            -1.0
+        } else {
+            dist
+        }
     }
 }
 
@@ -341,6 +354,10 @@ pub fn distance_l2_early_abandon_f32<const N: usize>(
 
         let total = vaddq_f32(vaddq_f32(sum0, sum1), vaddq_f32(sum2, sum3));
         let dist = vaddvq_f32(total);
-        if dist >= upper_bound { -1.0 } else { dist }
+        if dist >= upper_bound {
+            -1.0
+        } else {
+            dist
+        }
     }
 }

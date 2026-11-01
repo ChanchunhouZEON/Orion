@@ -5,6 +5,7 @@
 
 //! Cache lookup is independent of the availability of the original graph export.
 use crate::config::{GraphSource, ResolvedRunConfig};
+use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -29,6 +30,8 @@ struct CacheManifest {
     /// Older manifests identify the source through their namespace only.
     #[serde(default)]
     graph_source: Option<GraphSource>,
+    #[serde(default)]
+    builder_recipe: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -40,13 +43,11 @@ struct SourceFileIdentity {
 
 /// Normalize lexically without requiring the export to still exist on disk.
 #[allow(dead_code)]
-fn normalize_absolute_path(path: &Path) -> Result<PathBuf, String> {
+fn normalize_absolute_path(path: &Path) -> Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_owned()
     } else {
-        std::env::current_dir()
-            .map_err(|e| e.to_string())?
-            .join(path)
+        std::env::current_dir().map_err(Error::from)?.join(path)
     };
 
     let mut normalized = PathBuf::new();
@@ -63,10 +64,13 @@ fn normalize_absolute_path(path: &Path) -> Result<PathBuf, String> {
 }
 
 impl SourceFileIdentity {
-    fn read(path: &Path) -> Result<Self, String> {
-        let metadata = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    fn read(path: &Path) -> Result<Self> {
+        let metadata = std::fs::metadata(path).map_err(|e| {
+            let message = format!("{}: {e}", path.display());
+            Error::from(e).with_message(message)
+        })?;
         if !metadata.is_file() {
-            return Err(format!("{} is not a file", path.display()));
+            return Err(Error::from(format!("{} is not a file", path.display())));
         }
         Ok(Self {
             path: normalize_absolute_path(path)?,
@@ -79,7 +83,7 @@ impl SourceFileIdentity {
         })
     }
 
-    fn matches_requested_export(&self, path: &Path) -> Result<bool, String> {
+    fn matches_requested_export(&self, path: &Path) -> Result<bool> {
         if self.path != normalize_absolute_path(path)? {
             return Ok(false);
         }
@@ -87,7 +91,7 @@ impl SourceFileIdentity {
         // Reusing an explicitly named, since-removed export is still a cache hit.
         match std::fs::metadata(path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(e.into()),
             Ok(_) => {
                 let current = Self::read(path)?;
                 Ok(current.size == self.size && current.modified_ns == self.modified_ns)
@@ -100,26 +104,26 @@ fn manifest_path(path: &Path) -> PathBuf {
     path.with_extension("cache.json")
 }
 
-fn validate_headers(path: &Path, num_points: usize, degree: u32) -> Result<(), String> {
+fn validate_headers(path: &Path, num_points: usize, degree: u32) -> Result<()> {
     let mut metadata_bytes = [0; 8];
     std::fs::File::open(path)
         .and_then(|mut f| f.read_exact(&mut metadata_bytes))
-        .map_err(|e| e.to_string())?;
+        .map_err(Error::from)?;
     let version = u32::from_le_bytes(metadata_bytes[..4].try_into().unwrap());
     let entry = u32::from_le_bytes(metadata_bytes[4..].try_into().unwrap()) as usize;
     // V6 adds logical dataset shape after the unchanged eight-byte prefix.
     // The index loader checks that shape before loading the graph payload;
     // this lightweight lookup also validates the existing provenance manifest.
     if !matches!(version, 5 | 6) || entry >= num_points {
-        return Err(format!(
+        return Err(Error::from(format!(
             "invalid cache metadata: version={version}, entry={entry}, N={num_points}"
-        ));
+        )));
     }
 
     let graph = path.with_extension("pgraph");
-    let mut file = std::fs::File::open(&graph).map_err(|e| e.to_string())?;
+    let mut file = std::fs::File::open(&graph).map_err(Error::from)?;
     let mut header = [0; 16];
-    file.read_exact(&mut header).map_err(|e| e.to_string())?;
+    file.read_exact(&mut header).map_err(Error::from)?;
     let word = |i: usize| u32::from_le_bytes(header[i * 4..i * 4 + 4].try_into().unwrap());
     let stored_points = word(0) as usize;
     let stored_degree = word(1);
@@ -134,24 +138,19 @@ fn validate_headers(path: &Path, num_points: usize, degree: u32) -> Result<(), S
     if stored_points != num_points
         || stored_degree != degree
         || stride_words < stored_degree as u64 + 4
-        || file.metadata().map_err(|e| e.to_string())?.len() != expected_bytes
+        || file.metadata().map_err(Error::from)?.len() != expected_bytes
     {
-        return Err(format!(
+        return Err(Error::cache(format!(
             "cache header/size mismatch: N={stored_points}, R={stored_degree}, \
              stride={stride_words}; expected N={num_points}, R={degree}"
-        ));
+        )));
     }
     Ok(())
 }
 
-fn validate_manifest(
-    path: &Path,
-    config: &ResolvedRunConfig,
-    num_points: usize,
-) -> Result<(), String> {
-    let manifest_bytes = std::fs::read(manifest_path(path)).map_err(|e| e.to_string())?;
-    let metadata: CacheManifest =
-        serde_json::from_slice(&manifest_bytes).map_err(|e| e.to_string())?;
+fn validate_manifest(path: &Path, config: &ResolvedRunConfig, num_points: usize) -> Result<()> {
+    let manifest_bytes = std::fs::read(manifest_path(path)).map_err(Error::from)?;
+    let metadata: CacheManifest = serde_json::from_slice(&manifest_bytes).map_err(Error::from)?;
     if metadata.version != 1
         || metadata.namespace != config.cache_namespace
         || metadata.num_points != num_points
@@ -160,9 +159,20 @@ fn validate_manifest(
             .graph_source
             .is_some_and(|source| source != config.graph_source)
     {
-        return Err("cache provenance does not match the current dataset/configuration".into());
+        return Err(Error::cache(
+            "cache provenance does not match the current dataset/configuration",
+        )
+        .at("load_cache")
+        .with_detail("path", path.to_string_lossy().into_owned()));
     }
 
+    if metadata
+        .builder_recipe
+        .as_deref()
+        .is_some_and(|recipe| recipe != super::PARLAY_RECIPE)
+    {
+        return Err(Error::cache("unsupported ParlayANN builder recipe").at("load_cache"));
+    }
     if config.graph_source == GraphSource::Parlayann && config.staged_file_explicit {
         let requested = config
             .staged_file
@@ -199,7 +209,7 @@ fn legacy_cache_path(config: &ResolvedRunConfig, name: &str, num_points: usize) 
 }
 
 impl CachePlan {
-    pub fn resolve(config: &ResolvedRunConfig, num_points: usize) -> Result<Self, String> {
+    pub fn resolve(config: &ResolvedRunConfig, num_points: usize) -> Result<Self> {
         let path = config
             .cache_dir
             .join(format!("{}_n{num_points}.bin", config.cache_namespace));
@@ -208,13 +218,13 @@ impl CachePlan {
 
         // Either file means a cache was started. Reject incomplete pairs instead
         // of treating them as misses and overwriting the remaining file.
-        if path
-            .try_exists()
-            .map_err(|e| format!("{}: {e}", path.display()))?
-            || graph
-                .try_exists()
-                .map_err(|e| format!("{}: {e}", graph.display()))?
-        {
+        if path.try_exists().map_err(|e| {
+            let message = format!("{}: {e}", path.display());
+            Error::from(e).with_message(message)
+        })? || graph.try_exists().map_err(|e| {
+            let message = format!("{}: {e}", graph.display());
+            Error::from(e).with_message(message)
+        })? {
             validate_headers(&path, num_points, config.graph_degree)?;
             validate_manifest(&path, config, num_points)?;
             return Ok(Self {
@@ -226,11 +236,11 @@ impl CachePlan {
 
         if let Some(name) = &config.legacy_dataset {
             let legacy = legacy_cache_path(config, name, num_points);
-            if legacy.try_exists().map_err(|e| e.to_string())?
+            if legacy.try_exists().map_err(Error::from)?
                 || legacy
                     .with_extension("pgraph")
                     .try_exists()
-                    .map_err(|e| e.to_string())?
+                    .map_err(Error::from)?
             {
                 // Old caches carry no export identity. An explicit alternative export must
                 // not be ignored merely because a name-based legacy cache happens to exist.
@@ -266,7 +276,7 @@ impl CachePlan {
 
     /// Locate the default export (including the historical `_pct60` suffix).
     /// Only NotFound means unavailable; unreadable/non-file inputs are errors.
-    pub fn available_staged_export(config: &ResolvedRunConfig) -> Result<Option<PathBuf>, String> {
+    pub fn available_staged_export(config: &ResolvedRunConfig) -> Result<Option<PathBuf>> {
         let Some(path) = &config.staged_file else {
             return Ok(None);
         };
@@ -281,41 +291,57 @@ impl CachePlan {
         for path in candidates {
             match std::fs::metadata(&path) {
                 Ok(meta) if meta.is_file() => return Ok(Some(path)),
-                Ok(_) => return Err(format!("{} is not a staged file", path.display())),
+                Ok(_) => {
+                    return Err(Error::from(format!(
+                        "{} is not a staged file",
+                        path.display()
+                    )));
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(format!("{}: {e}", path.display())),
+                Err(e) => return Err(Error::from(format!("{}: {e}", path.display()))),
             }
         }
         Ok(None)
     }
 
+    /// Resolve import versus in-memory construction before allocating the base.
+    /// Explicit missing exports remain errors, even when the builder is present.
+    pub fn parlay_input(config: &ResolvedRunConfig, num_points: usize) -> Result<Option<PathBuf>> {
+        if config.staged_file_explicit || Self::available_staged_export(config)?.is_some() {
+            return Self::resolve_staged_export(config, num_points).map(Some);
+        }
+        if cfg!(feature = "parlay") {
+            return Ok(None);
+        }
+        Err(Error::unsupported("ParlayANN construction is unavailable; enable the parlay feature or provide a staged export")
+            .at("build_graph").with_detail("backend", "parlayann"))
+    }
+
     /// Resolve and validate the STAG header on a cache miss.
-    /// Cache hits deliberately skip this IO: the original export may have been removed.
-    pub fn resolve_staged_export(
-        config: &ResolvedRunConfig,
-        num_points: usize,
-    ) -> Result<PathBuf, String> {
+    /// Cache hits skip this IO: the original export may have been removed.
+    pub fn resolve_staged_export(config: &ResolvedRunConfig, num_points: usize) -> Result<PathBuf> {
         let path = Self::available_staged_export(config)?
             .or_else(|| config.staged_file.clone())
             .ok_or("ParlayANN cache miss: provide --staged-file or ORION_STAGED_FILE, or set PA_ROOT for the YAML export path. No Rust graph was substituted.")?;
 
         let mut file = std::fs::File::open(&path).map_err(|e| {
-            format!(
-                "ParlayANN cache miss; cannot import {}: {e}. \
-             Set --staged-file/ORION_STAGED_FILE or PA_ROOT (default ../ParlayANN). \
-             No Rust graph was substituted.",
-                path.display()
-            )
+            let message = format!(
+                "ParlayANN cache miss; cannot import {}: {e}. Set --staged-file/ORION_STAGED_FILE or PA_ROOT (default ../ParlayANN). No Rust graph was substituted.", path.display());
+            Error::io("open", &path, e).with_message(message)
         })?;
         let mut header = [0; 24];
-        file.read_exact(&mut header)
-            .map_err(|e| format!("invalid staged header: {e}"))?;
+        file.read_exact(&mut header).map_err(|e| {
+            let message = format!("invalid staged header: {e}");
+            Error::from(e).with_message(message)
+        })?;
 
         // STAG v3 starts with magic, version, and point count. The streaming
         // importer validates capacities and adjacency records when it loads them.
         let word = |i: usize| u32::from_le_bytes(header[i * 4..i * 4 + 4].try_into().unwrap());
         if word(0) != 0x53544147 || word(1) != 3 || word(2) as usize != num_points {
-            return Err(format!("staged header must be STAG v3 with N={num_points}"));
+            return Err(Error::invalid_data(format!(
+                "staged header must be STAG v3 with N={num_points}"
+            )));
         }
         Ok(path)
     }
@@ -327,7 +353,7 @@ impl CachePlan {
         config: &ResolvedRunConfig,
         num_points: usize,
         source: Option<&Path>,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let path = manifest_path(&self.metadata_path);
         if self.is_hit && path.is_file() {
             return Ok(());
@@ -340,13 +366,21 @@ impl CachePlan {
             dimension: config.dimension,
             imported_from: source.map(SourceFileIdentity::read).transpose()?,
             graph_source: Some(config.graph_source),
+            builder_recipe: if !self.is_hit
+                && source.is_none()
+                && config.graph_source == GraphSource::Parlayann
+            {
+                Some(super::PARLAY_RECIPE.into())
+            } else {
+                None
+            },
         };
 
         // Publish with a same-directory rename so readers never see partial JSON.
         let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
-        let bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
-        std::fs::write(&temporary, bytes).map_err(|e| e.to_string())?;
-        std::fs::rename(&temporary, &path).map_err(|e| e.to_string())?;
+        let bytes = serde_json::to_vec_pretty(&manifest).map_err(Error::from)?;
+        std::fs::write(&temporary, bytes).map_err(Error::from)?;
+        std::fs::rename(&temporary, &path).map_err(Error::from)?;
         if self.is_legacy {
             log::warn!(
                 "Legacy headers were validated and current input identity recorded; \

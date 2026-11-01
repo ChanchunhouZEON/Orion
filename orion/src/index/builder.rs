@@ -3,17 +3,17 @@
  * Licensed under the MIT License.
  */
 
-use diskann::index::{ANNInmemIndex, create_inmem_index};
-use diskann::model::configuration::index_write_parameters::IndexWriteParametersBuilder;
-use diskann::model::{FixedChunkPQTable, IndexConfiguration};
+use crate::{Error, Result};
+use orion_ann_diskann::index::{ANNInmemIndex, create_inmem_index};
+use orion_ann_diskann::model::configuration::index_write_parameters::IndexWriteParametersBuilder;
+use orion_ann_diskann::model::{FixedChunkPQTable, IndexConfiguration};
+use orion_ann_vector::Metric;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vector::Metric;
 
-/// Result of building a DiskANN index.
-///
-/// `graph` is the final InMemoryGraph with neighbors distance-sorted in-place.
-/// `candidate_sets` are the per-node candidate sets (key_nbrs ∪ pruned points).
+/// Owned Vamana build outputs. `index` retains the working graph/base; drop it
+/// after extracting the partitions when preparing a separate Orion graph slab.
+/// Optional PQ codes are training output, not a saved runtime snapshot.
 pub struct DiskANNBuildResult {
     /// Per-node (local, remote, extra) partitions from extract.
     /// Empty if `compute_candidate_sets` was false.
@@ -27,15 +27,30 @@ pub struct DiskANNBuildResult {
     pub pq_build_time: Duration,
 }
 
-/// Build a DiskANN Vamana index.
+/// Build a Vamana graph from finite row-major f32 vectors using squared L2.
 ///
-/// When `compute_candidate_sets` is true, neighbors are distance-sorted in-place,
-/// the slab is enriched via single-pass prune, and candidate_sets are extracted.
-/// Build a DiskANN Vamana index.
+/// # Example
+/// ```no_run
+/// use orion_ann::build_diskann_index;
+/// let base: Vec<f32> = (0..128 * 100).map(|i| (i % 251) as f32).collect();
+/// let built = build_diskann_index(&base, 100, 128, 1.2, 16, 64,
+///     false, None, None, true, 16)?;
+/// assert_eq!(built.partitions.len(), 100);
+/// # Ok::<(), orion_ann::Error>(())
+/// ```
 ///
-/// When `compute_candidate_sets` is true, extracts per-node (local, remote, extra)
-/// partitions for PhasedGraph construction. `max_extra` controls how many
-/// candidates from the merged remote+extra set are kept per node.
+/// # Errors
+/// Rejects empty/inconsistent shape, non-finite coordinates, invalid graph bounds
+/// and unsupported PQ parameters before calling the backend. Backend/I/O failures
+/// retain their source chain. PQ uses 8-bit codes; chunks may have unequal widths.
+///
+/// # Ownership and resource use
+/// Borrows input for this call, but the backend owns its copy. Candidate extraction
+/// and optional PQ training need additional memory. Uses the current Rayon pool;
+/// run inside a dedicated pool for a bounded worker count. It writes no graph file.
+/// Allocation failures and internal backend invariant bugs follow the Rust host's
+/// panic policy; this function does not catch panics. Callers needing full cache,
+/// metric and budget validation should use `orion_ann_runtime::Index`.
 #[allow(clippy::too_many_arguments)]
 pub fn build_diskann_index(
     flat_data: &[f32],
@@ -49,7 +64,42 @@ pub fn build_diskann_index(
     _n_bits: Option<u32>,
     compute_candidate_sets: bool,
     max_extra: usize,
-) -> diskann::common::ANNResult<DiskANNBuildResult> {
+) -> Result<DiskANNBuildResult> {
+    let elements = num_points
+        .checked_mul(dimension)
+        .ok_or_else(|| Error::invalid_argument("base shape overflows address space"))?;
+    if num_points == 0
+        || num_points >= u32::MAX as usize
+        || dimension == 0
+        || elements != flat_data.len()
+        || flat_data.iter().any(|x| !x.is_finite())
+    {
+        return Err(Error::invalid_argument(
+            "build requires finite, nonempty row-major vectors matching point count and dimension",
+        )
+        .at("build"));
+    }
+    if graph_degree == 0
+        || graph_degree > u32::MAX - 4
+        || search_list_size < graph_degree
+        || !alpha.is_finite()
+        || alpha < 1.0
+        || max_extra > (u32::MAX - 4 - graph_degree) as usize
+    {
+        return Err(Error::invalid_argument(
+            "invalid Vamana degree, search list, alpha or extra capacity",
+        )
+        .at("build"));
+    }
+    if build_pq
+        && (n_subquantizers.unwrap_or(8) == 0
+            || n_subquantizers.unwrap_or(8) > dimension
+            || _n_bits.is_some_and(|bits| bits != 8))
+    {
+        return Err(
+            Error::unsupported("PQ requires 1..=dimension chunks and 8-bit codes").at("build"),
+        );
+    }
     let num_threads = rayon::current_num_threads() as u32;
     let write_params = IndexWriteParametersBuilder::new(search_list_size, graph_degree)
         .with_alpha(alpha)
@@ -70,8 +120,7 @@ pub fn build_diskann_index(
         write_params,
     );
 
-    let mut index: Box<dyn ANNInmemIndex<f32>> =
-        create_inmem_index::<f32>(config)?;
+    let mut index: Box<dyn ANNInmemIndex<f32>> = create_inmem_index::<f32>(config)?;
 
     let graph_start = Instant::now();
     index.build_from_data(flat_data, num_points)?;

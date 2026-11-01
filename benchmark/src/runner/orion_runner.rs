@@ -6,7 +6,7 @@
 use crate::report::table::BuildTiming;
 use crate::runner::cascade::{AdmissionChoice, PrefilterChoice, RerankChoice};
 use crate::runner::common::{AlgorithmRunner, SearchResult};
-use orion::{
+use orion_ann::{
     build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_784, DIM_960,
 };
 use std::path::PathBuf;
@@ -67,7 +67,7 @@ macro_rules! build_orion {
         );
 
         let t1 = Instant::now();
-        let empty_ds = diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+        let empty_ds = orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
         let mut idx = StaticOrion::<$N>::new(
             empty_ds,
             &$result.partitions,
@@ -81,7 +81,8 @@ macro_rules! build_orion {
         );
         log::info!("Orion overhead: {:.2}s", t1.elapsed().as_secs_f32());
 
-        let mut ds = diskann::model::InmemDataset::<f32, $N>::new($num_points, 1.0).unwrap();
+        let mut ds =
+            orion_ann_diskann::model::InmemDataset::<f32, $N>::new($num_points, 1.0).unwrap();
         ds.data.memcpy(&$data[..$num_points * $N]).unwrap();
         idx.dataset = ds;
 
@@ -98,7 +99,7 @@ macro_rules! build_orion {
             &calib_queries,
             $self.search_list_size,
             $self.window_size,
-            orion::CalibrationConfig {
+            orion_ann::CalibrationConfig {
                 metric: $self.admission.calibration_metric(),
                 ..Default::default()
             },
@@ -226,9 +227,9 @@ impl OrionRunner {
     /// params match and the QPS gap from calibration drift closes.
     pub fn recalibrate(&mut self, queries: &[Vec<f32>], sample: usize, k: usize) {
         let n = sample.min(queries.len());
-        let sls = orion::calibration_search_list_size!(self.search_list_size, k);
+        let sls = orion_ann::calibration_search_list_size!(self.search_list_size, k);
         let ws = self.window_size;
-        let config = orion::CalibrationConfig {
+        let config = orion_ann::CalibrationConfig {
             k,
             metric: self.admission.calibration_metric(),
         };
@@ -320,11 +321,12 @@ impl AlgorithmRunner for OrionRunner {
                 macro_rules! load_cached {
                     ($N:literal, $variant:ident) => {{
                         let empty_ds =
-                            diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                            orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
                         let mut idx = StaticOrion::<$N>::load_from_cache(&cache, empty_ds)
                             .expect("StaticOrion::load_from_cache failed");
                         let mut ds =
-                            diskann::model::InmemDataset::<f32, $N>::new(num_points, 1.0).unwrap();
+                            orion_ann_diskann::model::InmemDataset::<f32, $N>::new(num_points, 1.0)
+                                .unwrap();
                         ds.data.memcpy(&data[..num_points * $N]).unwrap();
                         idx.dataset = ds;
                         self.inner = Some(OrionInner::$variant { idx });

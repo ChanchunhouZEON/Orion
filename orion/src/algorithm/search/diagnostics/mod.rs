@@ -1,10 +1,10 @@
 //! Search diagnostics. Detailed traces are opt-in and are not QPS timings.
 mod legacy;
-mod synergy;
 mod matched_state;
+mod synergy;
+pub use legacy::{SearchProfile, SearchProfileStats};
 pub use matched_state::{Checkpoint, MatchedStateTrace};
 pub use synergy::{PhaseWork, SynergyTrace};
-pub use legacy::{SearchProfile, SearchProfileStats};
 
 use crate::model::Neighbor;
 
@@ -31,16 +31,28 @@ impl NeighborMode {
 /// Hooks receive only visited-set-deduplicated candidates.
 /// A no-op observer is monomorphized away in the normal search path.
 pub trait SearchObserver {
-    fn before_expansion(&mut self, _node: u32, _converged: bool,
+    fn before_expansion(
+        &mut self,
+        _node: u32,
+        _converged: bool,
         _scratch: &crate::model::scratch::InMemSearchScratch,
-        _previous_admits: usize, _hops_since_flush: usize) {}
+        _previous_admits: usize,
+        _hops_since_flush: usize,
+    ) {
+    }
     fn after_flush(&mut self, _beam: &[Neighbor]) {}
     fn entry(&mut self, _id: u32) {}
     fn expansion(&mut self, _converged: bool, _ids: &[u32]) {}
     fn prefilter(&mut self, _threshold_evaluations: usize, _candidate_evaluations: usize) {}
     /// Actual per-expansion filter outcome; absent cutoff means the stage was bypassed.
-    fn prefilter_outcome(&mut self, _cutoff: Option<f32>, _admission_cutoff: Option<f32>,
-        _tested: usize, _rejected: usize) {}
+    fn prefilter_outcome(
+        &mut self,
+        _cutoff: Option<f32>,
+        _admission_cutoff: Option<f32>,
+        _tested: usize,
+        _rejected: usize,
+    ) {
+    }
     fn admission(&mut self, _evaluations: usize, _admitted: &[Neighbor]) {}
     fn rerank(&mut self, _candidates: usize) {}
     fn early_exit(&mut self) {}

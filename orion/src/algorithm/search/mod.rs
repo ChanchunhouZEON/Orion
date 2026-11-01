@@ -7,7 +7,7 @@
 //!
 //! Shared per-thread metric machinery — counter handles like
 //! [`VISIT_COUNT`] / [`NDC_I8`] / [`SETUP_NS`] live here so that every
-//! search variant ([`in_mem_search::search_unified`], the stage trait
+//! search variant ([`crate::CompressedIndex::search_unified_observed`], the stage trait
 //! implementations under [`stage`], the diagnostics in [`diagnostics`]) can
 //! bump the same per-worker u64 slots without coupling.
 //!

@@ -10,14 +10,16 @@
 //! machinery live in the benchmark binaries.
 
 use clap::Parser;
-use orion_runtime::{
-    config::{ResolvedRunConfig, cli::Args, plan::SearchPlan},
+use orion_ann_runtime::{
+    config::{cli::Args, plan::SearchPlan, ResolvedRunConfig},
     data::{
-        LoadedBase, memory as resources,
-        query::{GroundTruthReader, open_queries},
+        memory as resources,
+        query::{open_queries, GroundTruthReader},
+        LoadedBase,
     },
     search::{F32CascadeBackend, NativeU8L2Backend, SearchBackend},
 };
+use orion_ann_runtime::{Error, Result};
 use std::{
     io::{BufReader, BufWriter, Write},
     path::PathBuf,
@@ -42,12 +44,19 @@ struct Command {
     /// Defaults to stdout.
     #[arg(long)]
     output: Option<PathBuf>,
+
+    /// Structured errors on stderr for services; success output is unchanged.
+    #[arg(long, value_enum, default_value = "text")]
+    error_format: ErrorFormat,
 }
 
-fn run<B: SearchBackend>(
-    config: &ResolvedRunConfig,
-    output: Option<&PathBuf>,
-) -> Result<(), String> {
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ErrorFormat {
+    Text,
+    Json,
+}
+
+fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -> Result<()> {
     // Open lightweight query/evaluation inputs before allocating the potentially
     // much larger base dataset and index structures.
     let gt_file = if config.prepare_only {
@@ -79,7 +88,7 @@ fn run<B: SearchBackend>(
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(config.sweep.threads)
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(Error::from)?;
 
     let index = pool.install(|| B::load_index(config, &mut data))?;
 
@@ -127,19 +136,19 @@ fn run<B: SearchBackend>(
                 &decoded,
                 config.sweep.calibration_l,
                 config.window_size,
-                orion::CalibrationConfig {
+                orion_ann::CalibrationConfig {
                     k: config.sweep.k,
                     metric: config.metric.calibration_metric(),
                 },
             )
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(Error::from)?;
 
     // Apply implementation-specific pinning only after calibration so the
     // measured search phase reflects the final runtime configuration.
     B::pin_search_storage(&index, config);
 
-    use orion::algorithm::search::{NDC_F32, NDC_I8, VISIT_COUNT};
+    use orion_ann::algorithm::search::{NDC_F32, NDC_I8, VISIT_COUNT};
 
     // Reset global search counters immediately before the measured search phase.
     NDC_F32.reset();
@@ -170,7 +179,7 @@ fn run<B: SearchBackend>(
                     calibration,
                 )
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(Error::from)?;
 
         search_seconds += started.elapsed().as_secs_f64();
 
@@ -194,16 +203,16 @@ fn run<B: SearchBackend>(
                     "ids": ids,
                 }),
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(Error::from)?;
 
-            writer.write_all(b"\n").map_err(|e| e.to_string())?;
+            writer.write_all(b"\n").map_err(Error::from)?;
 
             count += 1;
         }
 
         // Flush once per batch so streamed output remains externally observable
         // without paying the cost of flushing once per query.
-        writer.flush().map_err(|e| e.to_string())?;
+        writer.flush().map_err(Error::from)?;
 
         // Refill the reusable decode buffer. A zero-length batch marks EOF.
         if query_source.read_batch(&mut decoded, config.query_batch_size)? == 0 {
@@ -246,7 +255,7 @@ fn run<B: SearchBackend>(
     Ok(())
 }
 
-fn execute(mut command: Command) -> Result<(), String> {
+fn execute(mut command: Command) -> Result<()> {
     // `--search-l` is the single-run shorthand for supplying exactly one search
     // list size through the shared sweep configuration.
     if let Some(search_l) = command.search_l {
@@ -257,14 +266,15 @@ fn execute(mut command: Command) -> Result<(), String> {
 
     // The search implementation uses a statically bounded worker structure,
     // therefore reject unsupported thread counts before allocating resources.
-    if config.sweep.threads > orion::algorithm::search::MAX_WORKERS {
+    if config.sweep.threads > orion_ann::algorithm::search::MAX_WORKERS {
         return Err(format!(
             "--threads exceeds MAX_WORKERS={}",
-            orion::algorithm::search::MAX_WORKERS,
-        ));
+            orion_ann::algorithm::search::MAX_WORKERS,
+        )
+        .into());
     }
 
-    let resolved = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    let resolved = serde_json::to_string_pretty(&config).map_err(Error::from)?;
 
     if command.run.print_config {
         println!("{resolved}");
@@ -293,8 +303,17 @@ fn execute(mut command: Command) -> Result<(), String> {
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    if let Err(error) = execute(Command::parse()) {
-        log::error!("{error}");
+    let command = Command::parse();
+    let format = command.error_format;
+    if let Err(error) = execute(command) {
+        match format {
+            ErrorFormat::Text => log::error!("{error}"),
+            ErrorFormat::Json => eprintln!(
+                "{}",
+                serde_json::to_string(&error.report())
+                    .expect("error report contains only JSON values")
+            ),
+        }
         std::process::exit(2);
     }
 }

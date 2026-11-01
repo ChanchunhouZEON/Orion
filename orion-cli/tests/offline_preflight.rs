@@ -155,7 +155,7 @@ fn ordinary_execution_still_requires_files() {
 #[test]
 fn custom_declarations_and_existing_graph_query_headers_are_checked() {
     let fixture = Fixture::new();
-    let yaml = include_str!("../../benchmark/configs/sweep.yaml")
+    let yaml = orion_ann_runtime::config::presets::DEFAULT_CONFIG
         .replace("num_points: 1000000000", "num_points: 100")
         .replace("num_queries: 10000", "num_queries: 2");
     std::fs::write(fixture.0.join("small.yaml"), yaml).unwrap();
@@ -197,7 +197,7 @@ fn table_and_json_formats_report_the_same_budget_result() {
         "--preflight-format",
         "table",
         "--memory-budget-gib",
-        "650",
+        "900",
     ]);
     assert!(table.status.success());
     let text = String::from_utf8(table.stdout).unwrap();
@@ -224,7 +224,7 @@ fn table_and_json_formats_report_the_same_budget_result() {
         "--preflight-format",
         "json",
         "--memory-budget-gib",
-        "650",
+        "900",
     ]);
     assert_eq!(json["budget_exceeded"], false);
     let exceeded = fixture.run(&[

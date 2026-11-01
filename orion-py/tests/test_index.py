@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 import numpy as np
-from orion_py import Index, GraphConfig, CascadeConfig, OrionError
+from orion_ann import Index, GraphConfig, CascadeConfig, OrionError
 
 
 def write_vectors(path, values):
@@ -155,8 +155,8 @@ class IndexTests(unittest.TestCase):
     def test_bad_inputs_are_errors(self):
         base, queries = self.arrays()
         for invalid in [base.astype(np.float64), base.reshape(-1), [[1, 2]], base.astype(">f4")]:
-            with self.assertRaises(TypeError): self.make(invalid)
-        with self.assertRaises(ValueError): self.make(base[:, ::-1])
+            with self.assertRaises(OrionError): self.make(invalid)
+        with self.assertRaises(OrionError): self.make(base[:, ::-1])
         with self.assertRaises(OrionError): self.make(base[:, :0].copy())
         with self.assertRaises(OrionError): self.make(base[:0])
         broken = base.copy(); broken[0, 0] = np.nan
@@ -168,8 +168,8 @@ class IndexTests(unittest.TestCase):
         index = self.make(base)
         for k, beam in [(0, 32), (65, 65), (10, 9)]:
             with self.assertRaises(OrionError): index.search(queries, k=k, search_list_size=beam, adaptive=False)
-        with self.assertRaises(ValueError): index.search(queries[:, :31], adaptive=False)
-        with self.assertRaises(TypeError): index.search(queries.astype(np.float64), adaptive=False)
+        with self.assertRaises(OrionError): index.search(queries[:, :31], adaptive=False)
+        with self.assertRaises(OrionError): index.search(queries.astype(np.float64), adaptive=False)
         with self.assertRaises(OrionError): index.calibrate(queries[:0])
         result = index.search(queries[:0], k=3, adaptive=False)
         self.assertEqual(result.ids.shape, (0, 3))
@@ -189,12 +189,12 @@ class IndexTests(unittest.TestCase):
         base, queries = self.arrays(np.uint8, 128)
         with self.assertRaises(OrionError):
             Index.from_array(base, graph=GraphConfig(source="rust"), cache_dir=self.root / "bad")
-        with self.assertRaises(OrionError):
-            Index.from_array(base, graph=GraphConfig(), cache_dir=self.root / "no-export")
+        built = Index.from_array(base, graph=GraphConfig(), cache_dir=self.root / "no-export")
+        self.assertEqual(built.info["graph_source"], "parlayann")
         index = self.make(base)
         exact = index.search(base, k=1, search_list_size=64, adaptive=False)
         np.testing.assert_array_equal(exact.ids[:, 0], np.arange(64))
-        with self.assertRaises(TypeError): index.search(queries.astype(np.float32), adaptive=False)
+        with self.assertRaises(OrionError): index.search(queries.astype(np.float32), adaptive=False)
         with self.assertRaises(OrionError):
             self.make(base, cascade=CascadeConfig(rerank="f32"))
         index.calibrate(queries, k=10)
@@ -220,16 +220,37 @@ class IndexTests(unittest.TestCase):
         with self.assertRaisesRegex(OrionError, "identity"): Index.open(saved2, base=path)
         with self.assertRaisesRegex(OrionError, "changed"): index.save(self.root / "stale-save")
 
-    def test_auto_rust_build_and_reuse(self):
+    def test_auto_parlay_build_and_reuse(self):
         base, queries = self.arrays()
         index = Index.from_array(base, graph=GraphConfig(degree=8, build_l=32, max_extra=4), cache_dir=self.root / "rust-cache", threads=2)
-        self.assertEqual(index.info["graph_source"], "rust")
+        self.assertEqual(index.info["graph_source"], "parlayann")
         index.calibrate(queries, k=3)
         expected = index.search(queries, k=3, search_list_size=24)
         reused = Index.from_array(base, graph=GraphConfig(degree=8, build_l=32, max_extra=4), cache_dir=self.root / "rust-cache", threads=2)
         reused.calibrate(queries, k=3)
         self.assert_results(expected, reused.search(queries, k=3, search_list_size=24))
         self.assertIn("cache available", reused.info["graph_selection_reason"])
+
+    def test_native_u8_memory_build_and_ffi_errors(self):
+        base, queries = self.arrays()
+        base = np.ascontiguousarray(np.clip(base * 10 + 128, 0, 255), dtype=np.uint8)
+        queries = base[:8].copy()
+        index = Index.from_array(base, graph=GraphConfig(degree=8, build_l=32, max_extra=4),
+                                 cache_dir=self.root / "native-memory", threads=2)
+        self.assertEqual(index.info["graph_source"], "parlayann")
+        with self.assertRaises(OrionError) as missing:
+            index.search(queries, k=3)
+        self.assertEqual(missing.exception.code, "ORION_INVALID_STATE")
+        index.calibrate(queries, k=3)
+        self.assertEqual(index.search(queries, k=3).ids.shape, (8, 3))
+        # This passes input validation but exceeds the C++ byte accumulator bound.
+        with self.assertRaises(OrionError) as raised:
+            Index.from_array(np.zeros((2, 33026), dtype=np.uint8),
+                             graph=GraphConfig(degree=1, build_l=2, max_extra=0),
+                             cache_dir=self.root / "bad-cpp", threads=1)
+        self.assertEqual(raised.exception.code, "ORION_INVALID_ARGUMENT")
+        self.assertEqual(raised.exception.operation, "build_graph")
+        self.assertEqual(raised.exception.details["backend"], "parlayann")
 
     def test_high_dimension_and_top100(self):
         # Exercise another compiled specialization and the high-dimensional

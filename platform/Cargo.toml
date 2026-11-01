@@ -1,6 +1,14 @@
 [package]
-name = "platform"
+name = "orion-ann-platform"
 version = "0.1.0"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Aligned I/O, block writes and memory support for Orion ANN"
+readme = "README.md"
+keywords = ["ann", "vector-search", "similarity"]
+categories = ["algorithms"]
+include = ["src/**", "tests/**", "configs/**", "Cargo.toml", "README.md", "LICENSE"]
 edition = "2021"
 
 [dependencies]
@@ -10,7 +18,7 @@ crossbeam = { workspace = true }
 hashbrown = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
-vector = { path = "../vector" }
+orion-ann-vector = { version = "0.1.0", path = "../vector" }
 once_cell = { workspace = true }
 
 

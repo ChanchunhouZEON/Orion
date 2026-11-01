@@ -5,8 +5,8 @@
 
 use super::{AdmissionSession, AdmissionStage};
 use crate::model::Neighbor;
-use diskann::model::InmemDataset;
-use vector::FullPrecisionDistance;
+use orion_ann_diskann::model::InmemDataset;
+use orion_ann_vector::FullPrecisionDistance;
 
 pub struct NativeU8Admission<'a, const N: usize> {
     dataset: &'a InmemDataset<u8, N>,
@@ -51,7 +51,7 @@ impl<const N: usize> AdmissionSession for NativeU8Session<'_, N> {
     fn entry_distance(&self, id: u32) -> f32 {
         let start = id as usize * N;
         let vertex: &[u8; N] = self.dataset.data[start..start + N].try_into().unwrap();
-        <[u8; N]>::distance_compare(&self.query, vertex, vector::Metric::L2)
+        <[u8; N]>::distance_compare(&self.query, vertex, orion_ann_vector::Metric::L2)
     }
 
     unsafe fn admit_stream(
@@ -63,7 +63,7 @@ impl<const N: usize> AdmissionSession for NativeU8Session<'_, N> {
     ) -> usize {
         let mut w = 0;
         unsafe {
-            vector::DistanceStream::<vector::L2U8Distance>::new(
+            orion_ann_vector::DistanceStream::<orion_ann_vector::L2U8Distance>::new(
                 self.dataset.data.as_ptr(),
                 N,
                 N,

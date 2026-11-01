@@ -1,5 +1,5 @@
 # CI / SIFT smoke-test image for x86_64 Linux. Built on top of the
-# pinned Rust 1.86.0 toolchain (matches `rust-toolchain.toml`).
+# pinned Rust 1.92.0 toolchain (matches `rust-toolchain.toml`).
 #
 # Designed for use under Colima on Apple Silicon (`colima start
 # --arch x86_64`), where the container runs under QEMU TCG
@@ -30,7 +30,7 @@
 #     a SIGILL on the rustc-emitted AVX prelude. Belt-and-suspenders:
 #     `core` and `**/core` are also gitignored at the repo root.
 
-FROM rust:1.86-slim-bookworm
+FROM rust:1.92-slim-bookworm
 
 # System deps for cargo build + benchmark runtime. `cmake` is for
 # any C/C++ build.rs (e.g. simsimd, faiss). `python3` is for the
@@ -49,7 +49,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN rustup component add rust-src
 
 # Speed-up: cargo with sparse registry index.
-# `RUSTUP_TOOLCHAIN` pins to the image's pre-installed 1.86.0 so
+# `RUSTUP_TOOLCHAIN` pins to the image's pre-installed 1.92.0 so
 # rustup skips the channel re-sync triggered by the workspace's
 # `rust-toolchain.toml` — that sync hits static.rust-lang.org
 # every cargo invocation and times out under QEMU.
@@ -57,11 +57,11 @@ RUN rustup component add rust-src
 # so the compiled binaries run under QEMU TCG, which models a
 # `qemu64` CPU that lacks AVX / AVX2 / FMA. Without this, rustc /
 # many deps emit AVX-class ops and the test binaries SIGILL on
-# first execution under emulation. On real x86_64 hardware this
-# flag would be wasteful — but this image is QEMU-targeted.
+# first execution under emulation. The L2 entry points still detect AVX2/FMA at runtime on capable
+# machines; stream accumulator specialization remains compile-time.
 ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
     CARGO_INCREMENTAL=0 \
     RUSTFLAGS="-C target-cpu=x86-64" \
-    RUSTUP_TOOLCHAIN=1.86.0
+    RUSTUP_TOOLCHAIN=1.92.0
 
 WORKDIR /work

@@ -97,11 +97,11 @@ pub struct CalibrationSettings {
 
 impl CalibrationSettings {
     pub fn search_list_size(&self, k: usize) -> usize {
-        orion::calibration_search_list_size!(self.base_l, k)
+        orion_ann::calibration_search_list_size!(self.base_l, k)
     }
 
     pub fn diagnostic_search_list_size(&self, k: usize) -> usize {
-        orion::calibration_search_list_size!(self.diagnostic_l, k)
+        orion_ann::calibration_search_list_size!(self.diagnostic_l, k)
     }
 }
 
@@ -129,7 +129,7 @@ impl SweepConfig {
         profile: &str,
         k: usize,
         overrides: &SweepOverrides,
-    ) -> Result<ResolvedSweep, String> {
+    ) -> crate::Result<ResolvedSweep> {
         let search_list_sizes = overrides.search_list_sizes.clone().or_else(|| {
             self.schedules_by_k.get(&k).and_then(|row| row.get(profile)).cloned()
         }).ok_or_else(|| format!("no sweep.schedules_by_k entry for k={k}, profile={profile}; add one or pass --search-list-sizes"))?;
@@ -259,19 +259,38 @@ pub struct RawOrionOverride {
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-pub const DEFAULT_CONFIG: &str = include_str!("../../../benchmark/configs/sweep.yaml");
+pub const DEFAULT_CONFIG: &str = include_str!("../../configs/sweep.yaml");
 
-pub fn load_root() -> &'static RawRoot {
+/// Read presets without panicking on user-supplied files. Failed reads are not
+/// cached, so callers can correct configuration and retry in the same process.
+pub fn try_load_root() -> crate::Result<&'static RawRoot> {
     static ROOT: std::sync::OnceLock<RawRoot> = std::sync::OnceLock::new();
-    ROOT.get_or_init(|| {
-        let text = match std::env::var("ORION_SWEEP_CONFIG") {
-            Ok(path) => {
-                std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("Cannot read {path}: {e}"))
-            }
-            Err(_) => DEFAULT_CONFIG.to_owned(),
-        };
-        serde_yaml::from_str(&text).expect("invalid Orion preset configuration")
-    })
+    if let Some(root) = ROOT.get() {
+        return Ok(root);
+    }
+    let (text, path) = match std::env::var("ORION_SWEEP_CONFIG") {
+        Ok(path) => {
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| crate::Error::io("read_config", std::path::Path::new(&path), e))?;
+            (text, path)
+        }
+        Err(_) => (DEFAULT_CONFIG.to_owned(), "<bundled presets>".into()),
+    };
+    let root = serde_yaml::from_str(&text).map_err(|e| {
+        crate::Error::invalid_data(format!("invalid YAML: {e}"))
+            .at("read_config")
+            .with_detail("path", path)
+            .with_source(e)
+    })?;
+    let _ = ROOT.set(root);
+    Ok(ROOT
+        .get()
+        .expect("a successful OnceLock set or racing initializer published the root"))
+}
+
+/// Legacy benchmark helper. Service callers should use `try_load_root`.
+pub fn load_root() -> &'static RawRoot {
+    try_load_root().expect("invalid Orion preset configuration")
 }
 
 pub fn load_sweep_config() -> &'static SweepConfig {
@@ -414,18 +433,14 @@ fn resolve_dataset(root: &RawRoot, name: &str) -> DatasetConfig {
 /// Replace `${VAR}` occurrences with the corresponding env var, returning
 /// `None` if a variable has neither an environment value nor a portable default.
 /// This helper only expands paths; graph fallback is decided by the CLI policy.
-/// Unterminated `${...}` is still a malformed-config panic.
+/// Malformed or unavailable substitutions return `None`.
 pub fn try_resolve_placeholders(s: &str) -> Option<String> {
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if i + 1 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'{' {
-            let close = s[i + 2..]
-                .find('}')
-                .unwrap_or_else(|| panic!("unterminated ${{...}} in {s:?}"))
-                + i
-                + 2;
+            let close = s[i + 2..].find('}')? + i + 2;
             let var = &s[i + 2..close];
             let val = match std::env::var(var) {
                 Ok(v) => v,
@@ -452,7 +467,7 @@ fn default_for(_var: &str) -> Option<String> {
 /// helpful error message keyed on which axis we're reading. Wraps the
 /// per-enum `FromStr` impls so the YAML loader can fail fast with a
 /// pointed message on a typo.
-fn parse_cascade_str<T: std::str::FromStr<Err = String>>(s: &str, axis: &str) -> T {
+fn parse_cascade_str<T: std::str::FromStr<Err = crate::Error>>(s: &str, axis: &str) -> T {
     T::from_str(s).unwrap_or_else(|e| panic!("sweep.yaml orion.{axis} = {s:?} — {e}"))
 }
 

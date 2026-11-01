@@ -3,8 +3,9 @@
  * Licensed under the MIT License.
  */
 use crate::StaticOrion;
-use diskann::common::ANNResult;
-use vector::FullPrecisionDistance;
+use crate::{Error, Result};
+
+use orion_ann_vector::FullPrecisionDistance;
 
 // Retain existing type paths for downstream callers.
 pub use super::diagnostics::{SearchProfile, SearchProfileStats};
@@ -110,8 +111,8 @@ pub(super) const fn linear_merge_mul(k: usize) -> usize {
 pub struct AlignedQuery<const N: usize>(pub [f32; N]);
 
 // ── PQ helpers (formerly in utils.rs) ──────────────────────
-use diskann::common::ANNError;
-use diskann::model::FixedChunkPQTable;
+
+use orion_ann_diskann::model::FixedChunkPQTable;
 use std::sync::Arc;
 
 impl<const N: usize> StaticOrion<N>
@@ -122,7 +123,7 @@ where
     /// SAFETY: Should be invoked only when pq is activated.
     #[inline]
     #[allow(dead_code)]
-    pub(super) fn pq_distance(&self, point_id: u32, pq_dists: &[f32]) -> ANNResult<f32> {
+    pub(super) fn pq_distance(&self, point_id: u32, pq_dists: &[f32]) -> Result<f32> {
         let (pq, pq_codes, num_pq_chunks) = self.get_unwrapped_pq_component()?;
 
         let idx = point_id as usize;
@@ -133,16 +134,16 @@ where
 
     pub(super) fn get_unwrapped_pq_component(
         &self,
-    ) -> ANNResult<(&Arc<FixedChunkPQTable>, &Vec<u8>, usize)> {
+    ) -> Result<(&Arc<FixedChunkPQTable>, &Vec<u8>, usize)> {
         let pq = self.pq.as_ref().ok_or_else(|| {
-            ANNError::log_pq_error("Fixed Chunk PQ Table is None for now".to_string())
+            Error::invalid_state("Fixed Chunk PQ Table is None for now".to_string())
         })?;
         let pq_codes = self
             .pq_codes
             .as_ref()
-            .ok_or_else(|| ANNError::log_pq_error("PQ codes is None for now".to_string()))?;
+            .ok_or_else(|| Error::invalid_state("PQ codes is None for now".to_string()))?;
         let num_pq_chunks = self.num_pq_chunks.ok_or_else(|| {
-            ANNError::log_pq_error("Number of pq chunks is None for now".to_string())
+            Error::invalid_state("Number of pq chunks is None for now".to_string())
         })?;
 
         Ok((pq, pq_codes, num_pq_chunks))

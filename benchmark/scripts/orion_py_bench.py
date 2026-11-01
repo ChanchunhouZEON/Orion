@@ -12,7 +12,7 @@ import statistics
 import time
 
 from benchmark_support import read_fvecs, read_ivecs, recall_at_k
-from orion_py import Index
+from orion_ann import Index
 
 
 def main():

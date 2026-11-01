@@ -1,15 +1,16 @@
 [package]
+publish = false
 name = "benchmark"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-orion-runtime = { path = "../orion-runtime", features = ["cli"] }
+orion-ann-runtime = { version = "0.1.0", path = "../orion-runtime", features = ["cli"] }
 adsampling = { path = "../adsampling" }
-diskann = { path = "../diskann" }
-platform = { path = "../platform" }
-orion = { path = "../orion" }
-vector = { path = "../vector" }
+orion-ann-diskann = { version = "0.1.0", path = "../orion-diskann" }
+orion-ann-platform = { version = "0.1.0", path = "../platform" }
+orion-ann = { version = "0.1.0", path = "../orion" }
+orion-ann-vector = { version = "0.1.0", path = "../vector" }
 anyhow = "1"
 rayon = { workspace = true }
 ndarray = { workspace = true }

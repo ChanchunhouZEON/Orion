@@ -1,4 +1,4 @@
-use vector::{FullPrecisionDistance, distance_l2_adsampling_slice_f32};
+use orion_ann_vector::{distance_l2_adsampling_slice_f32, FullPrecisionDistance};
 
 fn compare<const N: usize>() {
     let a = std::array::from_fn::<_, N, _>(|i| (i % 19) as f32 * 0.5);

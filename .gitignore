@@ -54,4 +54,15 @@ core.*
 
 # Local Python extension/package tests (never dataset or experiment outputs).
 /orion-py/**/__pycache__/
-/orion-py/python/orion_py/*.so
+/orion-py/python/orion_ann/*.so
+
+# Local release artifacts, never published as source.
+/dist/
+
+# Local release evidence and preparation utilities.
+/docs/release/
+/scripts/
+
+# Generated Python bytecode from local tools and CI checks.
+**/__pycache__/
+*.py[cod]

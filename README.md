@@ -1,22 +1,27 @@
 # Orion: Admission-Aware Graph Search
 
 [![Cross-platform smoke test](https://img.shields.io/badge/Colima%20x86__64-compile--verified-success?logo=docker&logoColor=white)](benchmark/scripts/ci_smoke_sift.sh)
-[![Tests](https://img.shields.io/badge/tests-268%20passing-success?logo=rust&logoColor=white)](docs/testing.md)
+[![Tests](https://img.shields.io/badge/tests-415%20passing-success?logo=rust&logoColor=white)](docs/testing.md)
 [![Coverage](https://img.shields.io/badge/line%20coverage-85%25%20(ours)-success?logo=codecov&logoColor=white)](docs/testing.md)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
-[![Rust](https://img.shields.io/badge/rust-1.86.0-orange?logo=rust&logoColor=white)](rust-toolchain.toml)
+[![Rust](https://img.shields.io/badge/rust-1.92-orange?logo=rust&logoColor=white)](rust-toolchain.toml)
 
 [![Apple Silicon NEON](https://img.shields.io/badge/Apple%20Silicon-NEON-success?logo=apple&logoColor=white)](docs/platforms.md)
 [![x86_64 AVX--512](https://img.shields.io/badge/x86__64-AVX--512-success?logo=intel&logoColor=white)](docs/platforms.md)
 [![PyO3 binding](https://img.shields.io/badge/PyO3-Py%203.9%2B-blue?logo=python&logoColor=white)](orion-py/)
 [![Rust LOC](https://img.shields.io/badge/Rust-40k%20LOC-orange?logo=rust&logoColor=white)](#)
 
+[![Runtime SIMD](https://img.shields.io/badge/SIMD-runtime%20dispatch-blue)](docs/platforms.md)
+[![Native uint8](https://img.shields.io/badge/vectors-native%20uint8%20L2-teal)](docs/large-datasets.md)
+[![ParlayANN builder](https://img.shields.io/badge/graph%20builder-ParlayANN%20included-forestgreen)](docs/graph-sources.md)
+[![Rust and Python](https://img.shields.io/badge/API-Rust%20%2B%20Python-blueviolet)](#rust-interface)
+
 Orion is an in-memory approximate nearest neighbor engine in Rust. It combines
 an admission-aware search loop, a phased graph layout, and selectable distance
 precision to reduce search work. Graphs can be imported from ParlayANN or built
-in-process with the Rust DiskANN builder.
+in-process with the bundled ParlayANN builder or the Rust DiskANN builder.
 
-The current implementation supports f32 cascades, native-u8 SIFT search,
+The current implementation supports f32 cascades, native-u8 L2 search,
 AArch64 NEON and x86 SIMD kernels, and billion-vector in-memory runs. Linux
 large allocations receive best-effort transparent huge-page advice. The
 standalone CLI is separate from the benchmark harness.
@@ -24,6 +29,7 @@ standalone CLI is separate from the benchmark harness.
 ## Contents
 
 - [Quick start](#quick-start)
+- [Rust interface](#rust-interface)
 - [Python interface](#python-interface)
 - [How search works](#how-search-works)
 - [Graph selection and caches](#graph-selection-and-caches)
@@ -41,7 +47,7 @@ portable x86 build flags are in [Platforms](docs/platforms.md).
 
 ```bash
 rustup toolchain install 1.92
-cargo build --locked --release -p orion-cli --bin orion
+cargo build --locked --release -p orion-ann-cli --bin orion
 cargo build --locked --release -p benchmark --bin orion-sweep
 ```
 
@@ -55,8 +61,8 @@ are `fvecs`, `bvecs`, `fbin`, and `u8bin`.
   --k 10 --search-l 100 --output results.jsonl
 ```
 
-This is an `anonymous` dataset. With no PA graph available, the default f32 path
-builds a Rust graph and caches it. Add `--groundtruth /data/gt.ivecs` to measure
+This is an `anonymous` dataset. With no cached graph or STAG export available,
+the default path builds a ParlayANN graph in memory and caches it. Add `--groundtruth /data/gt.ivecs` to measure
 ID recall; otherwise recall is absent. `--query - --query-format bvecs` accepts
 a query stream on stdin. See [CLI and inputs](docs/cli.md).
 
@@ -77,6 +83,24 @@ metric, dimension, construction settings, and cascade overrides:
 embedded at compile time. Ordinary `orion` consumes queries once; `orion-sweep`
 loads replayable queries and runs all requested L values/trials in one process.
 
+## Rust interface
+
+Use `orion_ann_runtime::Index` for owned file/array input, calibration, batch search
+and cache snapshots, or `orion_ann::Orion` for direct graph/storage integration.
+Both return the shared `orion_ann::Result<T>` with structured `Error` values. Errors
+provide a stable code, operation, details and original source chain; creating an
+error does not log it. `Error::report()` supplies the same payload exposed by
+Python and the CLI's `--error-format json` option.
+
+The prepared Cargo package names are `orion-ann` and `orion-ann-runtime`;
+Python uses distribution `orion-ann` and import `orion_ann`. Publication is deferred until the peer-review process is complete.
+
+Generate the public API reference and Rust examples with:
+
+```bash
+cargo doc --locked -p orion-ann -p orion-ann-runtime --no-deps --open
+```
+
 ## Python interface
 
 [`orion-py`](orion-py/README.md) exposes the same graph preparation,
@@ -89,7 +113,7 @@ maturin develop --manifest-path orion-py/Cargo.toml --profile python
 
 ```python
 import numpy as np
-from orion_py import Index
+from orion_ann import Index
 
 index = Index.from_file("/data/base.fbin", metric="l2", threads=8)
 queries = np.load("/data/queries.npy")  # C-contiguous float32, shape (nq, dim)
@@ -104,14 +128,15 @@ reopened = Index.open("/data/orion-snapshot", base="/data/base.fbin", threads=8)
 Use `Index.from_array(base, metric="l2", threads=8)` for a NumPy base, or pass a
 vector-file path directly to `calibrate` and `search`. `GraphConfig` and
 `CascadeConfig` select graph construction and search stages. Float32 and native
-uint8 arrays are supported; native-u8 search requires a PA graph cache/export.
+uint8 arrays are supported. The default ParlayANN backend builds directly from
+native uint8 L2 data; existing graph caches and STAG exports can also be reused.
 Python options use dimension/metric defaults without reading CLI presets or
 legacy environment variables. See the [Python guide](orion-py/README.md) for
-supported formats, cache reuse and CLI consistency tests. Wheels are not yet published.
+supported formats, cache reuse and CLI consistency tests. Wheels remain unpublished while peer review is in progress.
 
 ## How search works
 
-1. **Graph preparation:** import a STAG v3 graph or build a Rust graph, then
+1. **Graph preparation:** load/import a graph or build one in memory, then
    store local, remote, and extra candidate regions in a `PhasedGraph` slab.
 2. **Calibration:** sample queries to set convergence and early-exit parameters.
 3. **Search:** track admissions into the candidate queue, switch traversal
@@ -135,14 +160,16 @@ The default policy is **auto**:
 
 | Policy | Behavior on startup |
 |---|---|
-| `auto` | Valid PA cache → available PA staged export → Rust cache/build for f32 |
-| `parlayann` | PA cache or staged export required; never substitutes Rust |
+| `auto` | Valid PA cache → available PA staged export → in-memory PA build |
+| `parlayann` | PA cache/import/build; never substitutes Rust |
 | `rust` | Rust cache/build only; never imports PA |
 
 An explicit `--staged-file` also selects PA strictly. CLI and legacy environment
 settings override YAML; bundled presets use `source: auto`. **Native u8 never
-falls back to Rust.** Offline preflight can estimate its memory without PA
-inputs, but execution requires a compatible cache/export.
+falls back to Rust.** Both f32 and u8 can build directly from input rows.
+The default runtime `parlay` feature bundles the builder and requires a C++17
+compiler when building from source. Disabling it preserves cache/STAG loading
+and the f32 Rust fallback. Explicit missing staged files remain errors.
 
 ```bash
 # Pin a source for reproducible comparisons.
@@ -245,28 +272,28 @@ causal speedup.
 ## Development and documentation
 
 ```bash
-cargo test --locked -p orion-runtime -p orion-cli
+cargo test --locked -p orion-ann-runtime -p orion-ann-cli
 cargo check --locked -p benchmark --bins
-cargo test --locked -p vector --release
+cargo test --locked -p orion-ann-vector --release
 ```
 
 [Test coverage and CI](docs/testing.md) describes regression checks, coverage
 measurement, and hardware execution in CI.
 
-| Guide | Contents |
-|---|---|
-| [CLI and inputs](docs/cli.md) | Anonymous data, streams, optional GT, preflight |
-| [Configuration](docs/configuration.md) | Presets, precedence, cascade, tuning units |
-| [Graph sources](docs/graph-sources.md) | Auto selection, strict modes, cache provenance |
-| [Large datasets](docs/large-datasets.md) | Native u8, block I/O, SIFT1B memory/storage |
-| [Benchmarks](docs/benchmarks.md) | Dated results and comparison methods |
-| [Historical figures](docs/historical-benchmarks.md) | Existing figures and data, unchanged |
-| [Architecture](docs/architecture.md) | Graph layout and admission-aware search |
-| [Optimizations](docs/optimizations.md) | Kernel/search implementation notes |
-| [Ablation study](docs/ablation-study.md) | Cascade and adaptive-search diagnostics |
-| [Platforms](docs/platforms.md) | SIMD builds, Linux THP, portability |
-| [Testing](docs/testing.md) | Regression checks and CI scope |
-| [Code structure](docs/code-structure.md) | Workspace crate responsibilities |
+| Guide                                               | Contents                                        |
+| --------------------------------------------------- | ----------------------------------------------- |
+| [CLI and inputs](docs/cli.md)                       | Anonymous data, streams, optional GT, preflight |
+| [Configuration](docs/configuration.md)              | Presets, precedence, cascade, tuning units      |
+| [Graph sources](docs/graph-sources.md)              | Auto selection, strict modes, cache provenance  |
+| [Large datasets](docs/large-datasets.md)            | Native u8, block I/O, SIFT1B memory/storage     |
+| [Benchmarks](docs/benchmarks.md)                    | Dated results and comparison methods            |
+| [Historical figures](docs/historical-benchmarks.md) | Existing figures and data, unchanged            |
+| [Architecture](docs/architecture.md)                | Graph layout and admission-aware search         |
+| [Optimizations](docs/optimizations.md)              | Kernel/search implementation notes              |
+| [Ablation study](docs/ablation-study.md)            | Cascade and adaptive-search diagnostics         |
+| [Platforms](docs/platforms.md)                      | SIMD builds, Linux THP, portability             |
+| [Testing](docs/testing.md)                          | Regression checks and CI scope                  |
+| [Code structure](docs/code-structure.md)            | Workspace crate responsibilities                |
 
 ## License
 

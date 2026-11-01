@@ -35,8 +35,8 @@
 //! `ensure_quantized_dataset_rabitq()` land in a follow-up pass.
 
 use super::rows::F32Rows;
-use diskann::common::ANNResult;
-use diskann::common::AlignedBoxWithSlice;
+use orion_ann_diskann::common::ANNResult;
+use orion_ann_diskann::common::AlignedBoxWithSlice;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -52,7 +52,7 @@ pub const RABITQ_MAGIC: u32 = 0x5152_4251; // "QRBQ" little-endian-printable
 /// separate `Vec<f32>` so the bit-dot kernel only loads code bytes.
 pub const fn rabitq_code_stride(dim: usize) -> usize {
     let bytes = rabitq_code_stride_disk(dim);
-    let block = <vector::JLHammingDistance as vector::DistanceFn>::CHUNK_BYTES;
+    let block = <orion_ann_vector::JLHammingDistance as orion_ann_vector::DistanceKernelBackend>::CHUNK_BYTES;
     bytes.div_ceil(block) * block
 }
 
@@ -567,48 +567,50 @@ unsafe fn signed_sum_neon(code: *const u8, rotated_q: *const f32, bytes: usize) 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[inline]
 unsafe fn signed_sum_avx512(code: *const u8, rotated_q: *const f32, pairs: usize) -> f32 {
-    use std::arch::x86_64::*;
+    unsafe {
+        use std::arch::x86_64::*;
 
-    // Two accumulators break the loop-carried dep — mirrors NEON
-    // `acc_lo` / `acc_hi`. With 16-wide we no longer split on
-    // nibble; we split on consecutive byte-pairs (= 32 dims per
-    // outer iter when both lanes contribute).
-    let mut acc0 = _mm512_setzero_ps();
-    let mut acc1 = _mm512_setzero_ps();
+        // Two accumulators break the loop-carried dep — mirrors NEON
+        // `acc_lo` / `acc_hi`. With 16-wide we no longer split on
+        // nibble; we split on consecutive byte-pairs (= 32 dims per
+        // outer iter when both lanes contribute).
+        let mut acc0 = _mm512_setzero_ps();
+        let mut acc1 = _mm512_setzero_ps();
 
-    // p counts 16-dimensional pairs, not two-pair iterations.
-    let mut p = 0usize;
-    while p + 1 < pairs {
-        // Pair 0: bytes [2p..2p+2], dims [16p..16p+16].
-        let b0 = (*code.add(2 * p) as u16) | ((*code.add(2 * p + 1) as u16) << 8);
-        let q0 = _mm512_loadu_ps(rotated_q.add(16 * p));
-        // `_mm512_xor_ps` with sign-bit mask flips floats in-place
-        // (cheaper than `_mm512_sub_ps(zero, q)`).
-        let neg0 = _mm512_xor_ps(q0, _mm512_set1_ps(-0.0_f32));
-        let signed0 = _mm512_mask_blend_ps(b0 as __mmask16, neg0, q0);
-        acc0 = _mm512_add_ps(acc0, signed0);
+        // p counts 16-dimensional pairs, not two-pair iterations.
+        let mut p = 0usize;
+        while p + 1 < pairs {
+            // Pair 0: bytes [2p..2p+2], dims [16p..16p+16].
+            let b0 = (*code.add(2 * p) as u16) | ((*code.add(2 * p + 1) as u16) << 8);
+            let q0 = _mm512_loadu_ps(rotated_q.add(16 * p));
+            // `_mm512_xor_ps` with sign-bit mask flips floats in-place
+            // (cheaper than `_mm512_sub_ps(zero, q)`).
+            let neg0 = _mm512_xor_ps(q0, _mm512_set1_ps(-0.0_f32));
+            let signed0 = _mm512_mask_blend_ps(b0 as __mmask16, neg0, q0);
+            acc0 = _mm512_add_ps(acc0, signed0);
 
-        // Pair 1: bytes [2p+2..2p+4], dims [16p+16..16p+32].
-        let b1 = (*code.add(2 * p + 2) as u16) | ((*code.add(2 * p + 3) as u16) << 8);
-        let q1 = _mm512_loadu_ps(rotated_q.add(16 * p + 16));
-        let neg1 = _mm512_xor_ps(q1, _mm512_set1_ps(-0.0_f32));
-        let signed1 = _mm512_mask_blend_ps(b1 as __mmask16, neg1, q1);
-        acc1 = _mm512_add_ps(acc1, signed1);
+            // Pair 1: bytes [2p+2..2p+4], dims [16p+16..16p+32].
+            let b1 = (*code.add(2 * p + 2) as u16) | ((*code.add(2 * p + 3) as u16) << 8);
+            let q1 = _mm512_loadu_ps(rotated_q.add(16 * p + 16));
+            let neg1 = _mm512_xor_ps(q1, _mm512_set1_ps(-0.0_f32));
+            let signed1 = _mm512_mask_blend_ps(b1 as __mmask16, neg1, q1);
+            acc1 = _mm512_add_ps(acc1, signed1);
 
-        p += 2;
+            p += 2;
+        }
+        // Odd-pair tail.
+        let mut t = p;
+        while t < pairs {
+            let b = (*code.add(2 * t) as u16) | ((*code.add(2 * t + 1) as u16) << 8);
+            let q = _mm512_loadu_ps(rotated_q.add(16 * t));
+            let neg = _mm512_xor_ps(q, _mm512_set1_ps(-0.0_f32));
+            let signed = _mm512_mask_blend_ps(b as __mmask16, neg, q);
+            acc0 = _mm512_add_ps(acc0, signed);
+            t += 1;
+        }
+
+        _mm512_reduce_add_ps(_mm512_add_ps(acc0, acc1))
     }
-    // Odd-pair tail.
-    let mut t = p;
-    while t < pairs {
-        let b = (*code.add(2 * t) as u16) | ((*code.add(2 * t + 1) as u16) << 8);
-        let q = _mm512_loadu_ps(rotated_q.add(16 * t));
-        let neg = _mm512_xor_ps(q, _mm512_set1_ps(-0.0_f32));
-        let signed = _mm512_mask_blend_ps(b as __mmask16, neg, q);
-        acc0 = _mm512_add_ps(acc0, signed);
-        t += 1;
-    }
-
-    _mm512_reduce_add_ps(_mm512_add_ps(acc0, acc1))
 }
 
 // ── Public re-exports for sibling codecs (rabitq_b4_dataset) ──────────
@@ -618,13 +620,13 @@ unsafe fn signed_sum_avx512(code: *const u8, rotated_q: *const f32, pairs: usize
 // thin pub wrappers here so the B=4 file doesn't need access to
 // crate-private helpers.
 
-/// Public wrapper for [`build_orthogonal_rotation`] used by sibling
+/// Public wrapper for `build_orthogonal_rotation` used by sibling
 /// codecs (B=4 dataset).
 pub fn build_orthogonal_rotation_pub(seed: u64, dim: usize) -> AlignedBoxWithSlice<f32> {
     build_orthogonal_rotation(seed, dim)
 }
 
-/// Public wrapper for [`apply_rotation`].
+/// Public wrapper for `apply_rotation`.
 #[inline]
 pub fn apply_rotation_pub(m: &[f32], x: &[f32], y: &mut [f32]) {
     apply_rotation(m, x, y);
@@ -648,7 +650,7 @@ impl XorShiftPub {
     }
 }
 
-/// Public wrapper for [`gaussian`].
+/// Public wrapper for `gaussian`.
 pub fn gaussian_pub(rng: &mut XorShiftPub) -> f32 {
     gaussian(&mut rng.inner)
 }
@@ -789,33 +791,35 @@ unsafe fn apply_rotation_neon(m: &[f32], x: &[f32], y: &mut [f32], n: usize) {
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[inline]
 unsafe fn apply_rotation_avx512(m: &[f32], x: &[f32], y: &mut [f32], n: usize) {
-    use std::arch::x86_64::*;
-    let chunks = n / 64;
-    let x_ptr = x.as_ptr();
-    for r in 0..n {
-        let row_ptr = m.as_ptr().add(r * n);
-        let mut a0 = _mm512_setzero_ps();
-        let mut a1 = _mm512_setzero_ps();
-        let mut a2 = _mm512_setzero_ps();
-        let mut a3 = _mm512_setzero_ps();
-        for c in 0..chunks {
-            let off = c * 64;
-            let r0 = _mm512_loadu_ps(row_ptr.add(off));
-            let r1 = _mm512_loadu_ps(row_ptr.add(off + 16));
-            let r2 = _mm512_loadu_ps(row_ptr.add(off + 32));
-            let r3 = _mm512_loadu_ps(row_ptr.add(off + 48));
-            let x0 = _mm512_loadu_ps(x_ptr.add(off));
-            let x1 = _mm512_loadu_ps(x_ptr.add(off + 16));
-            let x2 = _mm512_loadu_ps(x_ptr.add(off + 32));
-            let x3 = _mm512_loadu_ps(x_ptr.add(off + 48));
-            a0 = _mm512_fmadd_ps(r0, x0, a0);
-            a1 = _mm512_fmadd_ps(r1, x1, a1);
-            a2 = _mm512_fmadd_ps(r2, x2, a2);
-            a3 = _mm512_fmadd_ps(r3, x3, a3);
+    unsafe {
+        use std::arch::x86_64::*;
+        let chunks = n / 64;
+        let x_ptr = x.as_ptr();
+        for r in 0..n {
+            let row_ptr = m.as_ptr().add(r * n);
+            let mut a0 = _mm512_setzero_ps();
+            let mut a1 = _mm512_setzero_ps();
+            let mut a2 = _mm512_setzero_ps();
+            let mut a3 = _mm512_setzero_ps();
+            for c in 0..chunks {
+                let off = c * 64;
+                let r0 = _mm512_loadu_ps(row_ptr.add(off));
+                let r1 = _mm512_loadu_ps(row_ptr.add(off + 16));
+                let r2 = _mm512_loadu_ps(row_ptr.add(off + 32));
+                let r3 = _mm512_loadu_ps(row_ptr.add(off + 48));
+                let x0 = _mm512_loadu_ps(x_ptr.add(off));
+                let x1 = _mm512_loadu_ps(x_ptr.add(off + 16));
+                let x2 = _mm512_loadu_ps(x_ptr.add(off + 32));
+                let x3 = _mm512_loadu_ps(x_ptr.add(off + 48));
+                a0 = _mm512_fmadd_ps(r0, x0, a0);
+                a1 = _mm512_fmadd_ps(r1, x1, a1);
+                a2 = _mm512_fmadd_ps(r2, x2, a2);
+                a3 = _mm512_fmadd_ps(r3, x3, a3);
+            }
+            let s01 = _mm512_add_ps(a0, a1);
+            let s23 = _mm512_add_ps(a2, a3);
+            *y.get_unchecked_mut(r) = _mm512_reduce_add_ps(_mm512_add_ps(s01, s23));
         }
-        let s01 = _mm512_add_ps(a0, a1);
-        let s23 = _mm512_add_ps(a2, a3);
-        *y.get_unchecked_mut(r) = _mm512_reduce_add_ps(_mm512_add_ps(s01, s23));
     }
 }
 
@@ -824,19 +828,21 @@ unsafe fn apply_rotation_avx512(m: &[f32], x: &[f32], y: &mut [f32], n: usize) {
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[inline]
 unsafe fn apply_rotation_avx512_16(m: &[f32], x: &[f32], y: &mut [f32], n: usize) {
-    use std::arch::x86_64::*;
-    let chunks = n / 16;
-    let x_ptr = x.as_ptr();
-    for r in 0..n {
-        let row_ptr = m.as_ptr().add(r * n);
-        let mut acc = _mm512_setzero_ps();
-        for c in 0..chunks {
-            let off = c * 16;
-            let rv = _mm512_loadu_ps(row_ptr.add(off));
-            let xv = _mm512_loadu_ps(x_ptr.add(off));
-            acc = _mm512_fmadd_ps(rv, xv, acc);
+    unsafe {
+        use std::arch::x86_64::*;
+        let chunks = n / 16;
+        let x_ptr = x.as_ptr();
+        for r in 0..n {
+            let row_ptr = m.as_ptr().add(r * n);
+            let mut acc = _mm512_setzero_ps();
+            for c in 0..chunks {
+                let off = c * 16;
+                let rv = _mm512_loadu_ps(row_ptr.add(off));
+                let xv = _mm512_loadu_ps(x_ptr.add(off));
+                acc = _mm512_fmadd_ps(rv, xv, acc);
+            }
+            *y.get_unchecked_mut(r) = _mm512_reduce_add_ps(acc);
         }
-        *y.get_unchecked_mut(r) = _mm512_reduce_add_ps(acc);
     }
 }
 
@@ -880,7 +886,7 @@ fn gaussian(rng: &mut XorShift64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diskann::model::InmemDataset;
+    use orion_ann_diskann::model::InmemDataset;
 
     #[test]
     fn stride_matches_paper_examples() {
@@ -888,7 +894,7 @@ mod tests {
         assert_eq!(rabitq_code_stride_disk(128), 16);
         assert_eq!(
             rabitq_code_stride(128)
-                % <vector::JLHammingDistance as vector::DistanceFn>::CHUNK_BYTES,
+                % <orion_ann_vector::JLHammingDistance as orion_ann_vector::DistanceKernelBackend>::CHUNK_BYTES,
             0
         );
         // GIST D=960 → ceil(960/8)=120 B → padded 128

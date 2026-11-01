@@ -1,8 +1,7 @@
 //! Compare runtime-dimensional recipes with the compatibility facade, including
 //! traversal work rather than only top-k IDs. Positive-only rows verify that
 //! zero padding does not leak into statistical fitting.
-use diskann::model::{InmemDataset, PaddedDataset};
-use orion::algorithm::search::{
+use orion_ann::algorithm::search::{
     calibrate::{CalibrationDiagnostics, CalibrationMetric},
     diagnostics::{NeighborMode, SearchTrace},
     stage::{
@@ -16,11 +15,12 @@ use orion::algorithm::search::{
         rerank::{DynamicF32Rerank, F32Rerank, IpF32Rerank, NoRerank, U16Rerank},
     },
 };
-use orion::model::dataset::*;
-use orion::{
-    CalibrationConfig, DynamicCascade, Orion, DynamicSearchConfig, StaticOrion, PhasedGraph,
+use orion_ann::model::dataset::*;
+use orion_ann::{
+    CalibrationConfig, DynamicCascade, DynamicSearchConfig, Orion, PhasedGraph, StaticOrion,
 };
-use vector::{IpF32Distance, L2F32Distance, L2U8Distance, PaddedLayout};
+use orion_ann_diskann::model::{InmemDataset, PaddedDataset};
+use orion_ann_vector::{IpF32Distance, L2F32Distance, L2U8Distance, PaddedLayout};
 const ROWS: usize = 48;
 fn values(dim: usize) -> Vec<f32> {
     (0..ROWS * dim)
@@ -432,7 +432,7 @@ fn padding_does_not_affect_quantization_or_projection_width() {
 
 #[test]
 fn odd_quantized_entry_and_stream_distances_match_scalar() {
-    use orion::model::Neighbor;
+    use orion_ann::model::Neighbor;
     for dim in [1, 3, 31, 33, 65, 129] {
         let index = dynamic(dim);
         let q = &values(dim)[dim..2 * dim];

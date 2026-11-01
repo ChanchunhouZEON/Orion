@@ -86,7 +86,7 @@ Run from the repository root. Build on the target machine with its supported
 instruction set; do not copy a native binary between incompatible CPUs.
 
 ```bash
-cargo build --release -p orion-cli --bin orion
+cargo build --release -p orion-ann-cli --bin orion
 cargo build --release -p benchmark --bin orion-sweep
 
 # The preset points to data/sift1b/{bigann_base.bvecs,bigann_query.bvecs,idx_1000M.ivecs}.
@@ -175,9 +175,9 @@ executable smoke tests verify preparation, cache reload without the STAG source,
 search recall, zero f32 search comparisons, and absence of admission sidecars:
 
 ```bash
-cargo test -p vector --offline
-cargo test -p orion --offline
-cargo test -p orion-cli --offline
+cargo test -p orion-ann-vector --offline
+cargo test -p orion-ann --offline
+cargo test -p orion-ann-cli --offline
 cargo build -p benchmark --bin orion-sweep --offline
 ORION_BINARY="$PWD/target/debug/orion-sweep" python3 -m unittest discover \
   -s benchmark/scripts/tests -v

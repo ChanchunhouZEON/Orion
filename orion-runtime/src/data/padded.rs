@@ -3,12 +3,13 @@
 //! File and NumPy inputs share the same layout. File formats stay packed;
 //! only the final resident allocation has row padding.
 
+use crate::{Error, Result};
 use std::io::{BufReader, Seek, SeekFrom};
 use std::path::Path;
 
 use bytemuck::Pod;
-use diskann::model::PaddedDataset;
-use vector::PaddedLayout;
+use orion_ann_diskann::model::PaddedDataset;
+use orion_ann_vector::PaddedLayout;
 
 use super::{
     inspect_vector_file, read_native_bytes, read_vector_row, BaseElement, VectorFormat,
@@ -22,7 +23,7 @@ pub fn from_packed<T: BaseElement + Pod>(
     values: &[T],
     layout: PaddedLayout,
     metric: SearchMetric,
-) -> Result<PaddedDataset<T>, String> {
+) -> Result<PaddedDataset<T>> {
     let mut data = PaddedDataset::from_packed(values, layout)?;
     normalize(&mut data, metric)?;
     Ok(data)
@@ -38,14 +39,14 @@ pub fn load<T: BaseElement + Pod>(
     max_points: usize,
     metric: SearchMetric,
     memory_budget_bytes: Option<usize>,
-) -> Result<PaddedDataset<T>, String> {
+) -> Result<PaddedDataset<T>> {
     let header = inspect_vector_file(path, format)?;
     if header.dimension != layout.logical_dim() {
-        return Err(format!(
+        return Err(Error::from(format!(
             "file dimension {} != logical dimension {}",
             header.dimension,
             layout.logical_dim()
-        ));
+        )));
     }
     let rows = header.count.min(max_points);
     let resident = layout.allocation_bytes(rows)?;
@@ -58,23 +59,23 @@ pub fn load<T: BaseElement + Pod>(
         .and_then(|n| n.checked_add(row_bytes))
         .ok_or("load size overflow")?;
     if memory_budget_bytes.is_some_and(|budget| peak > budget) {
-        return Err(format!(
+        return Err(Error::from(format!(
             "padded load needs {resident} resident bytes ({} padding bytes), \
             {} I/O buffer bytes and {row_bytes} row scratch bytes; exceeds budget {}",
             layout.padding_bytes(rows)?,
             VECTOR_READ_BUFFER_BYTES,
             memory_budget_bytes.unwrap()
-        ));
+        )));
     }
     let mut data = PaddedDataset::new(rows, layout)?;
-    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut file = std::fs::File::open(path).map_err(Error::from)?;
     if format.has_file_header() {
-        file.seek(SeekFrom::Start(8)).map_err(|e| e.to_string())?;
+        file.seek(SeekFrom::Start(8)).map_err(Error::from)?;
     }
     // Preserve the direct large-read path for already aligned native u8.
     if format == VectorFormat::U8bin {
         if let Some(bytes) = data.packed_mut().and_then(T::native_bytes_mut) {
-            read_native_bytes(&mut file, bytes).map_err(|e| e.to_string())?;
+            read_native_bytes(&mut file, bytes).map_err(Error::from)?;
             normalize(&mut data, metric)?;
             return Ok(data);
         }
@@ -92,7 +93,7 @@ pub fn load<T: BaseElement + Pod>(
 fn normalize<T: BaseElement + Pod>(
     data: &mut PaddedDataset<T>,
     metric: SearchMetric,
-) -> Result<(), String> {
+) -> Result<()> {
     let dim = data.layout().logical_dim();
     for id in 0..data.len() {
         T::normalize(data.row_mut(id).ok_or("missing row")?, dim, metric)?;

@@ -15,7 +15,7 @@ An explicit `anonymous` name has the same meaning. An unknown named preset is
 an error, so misspellings do not silently change the experimental configuration.
 
 ```bash
-cargo build --release -p orion-cli --bin orion
+cargo build --release -p orion-ann-cli --bin orion
 ./target/release/orion --base /data/base.fbin --query /data/queries.fbin \
   --metric l2 --k 10 --search-l 100 --output results.jsonl
 ```
@@ -35,7 +35,8 @@ at compile time. `--config` selects a custom YAML file. Rebuild after changing
 bundled defaults, or pass the edited file with `--config`.
 
 The default graph policy is `auto`: a compatible PA cache, then a PA STAG v3
-export, then a Rust cache/build for f32 storage. Explicit `--graph-source
+export, then an in-memory ParlayANN build. Disabling the default `parlay` feature
+retains the f32 Rust fallback. Explicit `--graph-source
 parlayann` and explicit staged paths are strict; native u8 never falls back to
 Rust. Existing invalid files and permission errors fail instead of changing the
 source. See [Graph sources](graph-sources.md) for precedence and provenance.

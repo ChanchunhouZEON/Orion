@@ -17,10 +17,10 @@
 //! `search_l2_u8_q` (mean over the PQ's per-entry low-precision
 //! distances × slack). The stage exposes:
 //!
-//! * [`PrefilterStage::distance`] for the threshold-mean recompute
+//! * [`PrefilterSession::distance`] for the threshold-mean recompute
 //!   loop (scalar, called O(L) times when `pq_back_id` changes).
-//! * [`PrefilterStage::filter_compact`] for the per-hop streaming
-//!   compaction (drives `DistanceStream<DistanceFn>` with the
+//! * [`PrefilterSession::filter_compact`] for the per-hop streaming
+//!   compaction (drives `DistanceStream<DistanceKernelBackend>` with the
 //!   prefetch + 4-way ILP shape we tuned earlier).
 //!
 //! ## Implementations
@@ -75,7 +75,7 @@ pub trait PrefilterSession: Send + Sync {
     /// strictly less than `threshold`.
     ///
     /// Implementations typically drive
-    /// `vector::DistanceStream<DistanceFn>` with the lookahead-
+    /// `orion_ann_vector::DistanceStream<DistanceKernelBackend>` with the lookahead-
     /// prefetch shape. The closure pattern is:
     ///
     /// ```ignore

@@ -13,9 +13,9 @@
 //!
 //! Run with: `cargo run --release --bin pq_merge_bench`
 
+use orion_ann::model::{Neighbor, NeighborPriorityQueue};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
-use orion::model::{Neighbor, NeighborPriorityQueue};
 use std::time::Instant;
 
 const SEED: u64 = 0xC0FFEE;

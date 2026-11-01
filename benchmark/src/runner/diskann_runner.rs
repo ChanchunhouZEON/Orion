@@ -5,12 +5,12 @@
 
 use crate::report::table::BuildTiming;
 use crate::runner::common::{AlgorithmRunner, SearchResult};
-use diskann::index::{create_inmem_index, ANNInmemIndex};
-use diskann::model::{IndexConfiguration, IndexWriteParametersBuilder};
+use orion_ann_diskann::index::{create_inmem_index, ANNInmemIndex};
+use orion_ann_diskann::model::{IndexConfiguration, IndexWriteParametersBuilder};
+use orion_ann_vector::Metric;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use vector::Metric;
 
 pub struct DiskANNRunner {
     index: Option<Box<dyn ANNInmemIndex<f32>>>,
@@ -20,7 +20,7 @@ pub struct DiskANNRunner {
     alpha: f32,
     /// Build-side distance metric. Defaults to `Metric::L2` for
     /// backward compatibility with the original constructor; set via
-    /// [`Self::new_with_metric`] (or [`Self::set_metric`]) for
+    /// [`Self::new_with_metric`] (or `SearchRunner::set_metric`) for
     /// Cosine builds on raw embeddings whose intrinsic metric is
     /// MIPS / cosine (msmarco_bert_1M, wiki_ada_1M, glove). The
     /// `diskann` core crate only ships L2 + Cosine, so MIPS workloads

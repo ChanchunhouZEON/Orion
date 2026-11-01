@@ -1,6 +1,6 @@
-use orion_runtime::data::{padded, VectorFormat};
-use orion_runtime::search::cascade::SearchMetric;
-use vector::{L2F32Distance, L2U8Distance, PaddedLayout};
+use orion_ann_runtime::data::{padded, VectorFormat};
+use orion_ann_runtime::search::cascade::SearchMetric;
+use orion_ann_vector::{L2F32Distance, L2U8Distance, PaddedLayout};
 
 struct Temp(std::path::PathBuf);
 impl Drop for Temp {
@@ -66,6 +66,7 @@ fn formats_and_arrays_share_padded_layout() {
                 padded::load::<f32>(&f.0, format, layout, rows, SearchMetric::L2, Some(1))
                     .err()
                     .unwrap()
+                    .to_string()
                     .contains("padding")
             );
             if !float {
