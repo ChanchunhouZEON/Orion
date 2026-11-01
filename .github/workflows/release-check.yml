@@ -20,7 +20,7 @@ env:
 
 jobs:
   rust-packages:
-    name: Eight crates / external consumer
+    name: Public crates / external consumer
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:

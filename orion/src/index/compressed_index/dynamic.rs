@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use super::{CompressedIndex, IndexData};
 use crate::algorithm::search::calibrate::CalibrationMetric;
 use crate::algorithm::search::{
-    diagnostics::{NeighborMode, NoopObserver},
+    diagnostics::{NeighborMode, NoopObserver, SearchObserver},
     stage::AdmissionSession,
 };
 use crate::model::Neighbor;
@@ -194,6 +194,16 @@ impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
     /// Search a logical, unpadded query. Padding is prepared once before the
     /// existing graph loop. u8 callers keep native bytes throughout.
     pub fn search_l2(&self, query: &[T], config: DynamicSearchConfig) -> Result<Vec<u32>> {
+        self.search_l2_observed(query, config, &mut NoopObserver)
+    }
+
+    /// The same native L2 path with query-local diagnostics; no distance is recomputed.
+    pub fn search_l2_observed<O: SearchObserver>(
+        &self,
+        query: &[T],
+        config: DynamicSearchConfig,
+        observer: &mut O,
+    ) -> Result<Vec<u32>> {
         self.validate_search(config)?;
         if query.len() != self.dataset.dimension() {
             return Err(Error::dimension(
@@ -208,7 +218,7 @@ impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
         }
         let t_setup = std::time::Instant::now();
         let queries = PaddedDataset::from_packed(query, self.dataset.layout()).map_err(error)?;
-        self.search_prepared(&queries, 0, config, t_setup)
+        self.search_prepared_observed(&queries, 0, config, t_setup, observer)
     }
 
     /// Batch input is packed row-major. One preparation pass pads all queries;
@@ -240,6 +250,17 @@ impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
         config: DynamicSearchConfig,
         started: std::time::Instant,
     ) -> Result<Vec<u32>> {
+        self.search_prepared_observed(queries, query_id, config, started, &mut NoopObserver)
+    }
+
+    fn search_prepared_observed<O: SearchObserver>(
+        &self,
+        queries: &PaddedDataset<T>,
+        query_id: usize,
+        config: DynamicSearchConfig,
+        started: std::time::Instant,
+        observer: &mut O,
+    ) -> Result<Vec<u32>> {
         let session = ExactSession {
             base: &self.dataset,
             queries,
@@ -259,7 +280,7 @@ impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
             None,
             &session,
             mode,
-            &mut NoopObserver,
+            observer,
             started,
             |scratch, _| {
                 scratch

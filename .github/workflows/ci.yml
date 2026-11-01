@@ -14,6 +14,9 @@ on:
       - 'orion/**'
       - 'orion-cli/**'
       - 'orion-runtime/**'
+      - 'orion-diagnostics/**'
+      - 'orion-error/**'
+      - 'orion-wasm/**'
       - 'orion-parlay/**'
       - 'orion-py/**'
       - 'platform/**'
@@ -32,6 +35,9 @@ on:
       - 'orion/**'
       - 'orion-cli/**'
       - 'orion-runtime/**'
+      - 'orion-diagnostics/**'
+      - 'orion-error/**'
+      - 'orion-wasm/**'
       - 'orion-parlay/**'
       - 'orion-py/**'
       - 'platform/**'
@@ -239,9 +245,43 @@ jobs:
           ORION_TEST_REQUIRED_BACKENDS: 'scalar,avx2'
         run: |
           cargo test --locked -p orion-ann-vector --release
-          cargo test --locked -p orion-ann -p orion-ann-parlay -p orion-ann-runtime -p orion-ann-cli
+          cargo test --locked -p orion-ann -p orion-ann-diagnostics -p orion-ann-parlay -p orion-ann-runtime -p orion-ann-cli
           cargo test --locked -p orion-ann-diskann --lib
       - name: Public API examples and warning-free docs
         run: |
           cargo test --locked --doc -p orion-ann -p orion-ann-runtime
           cargo doc --locked --workspace --no-deps
+
+  wasm-replay:
+    name: WASM trace replay / native parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: ''
+      CARGO_ENCODED_RUSTFLAGS: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm-replay
+      - name: Install WASM target and matching binding generator
+        run: |
+          rustup target add wasm32-unknown-unknown
+          VERSION=$(python3 -c 'import tomllib; print(next(p["version"] for p in tomllib.load(open("Cargo.lock", "rb"))["package"] if p["name"] == "wasm-bindgen"))')
+          cargo install wasm-bindgen-cli --version "$VERSION" --locked
+      - name: Validate schema and production observer
+        run: |
+          cargo check --locked -p orion-ann-wasm
+          cargo test --locked -p orion-ann-diagnostics --no-default-features
+          cargo test --locked -p orion-ann-runtime --test trace_search
+          cargo run --locked -p orion-ann-runtime --example export_trace -- target/native-trace.json
+      - name: Build browser module and run actual WASM
+        run: |
+          cargo build --locked -p orion-ann-wasm --target wasm32-unknown-unknown
+          wasm-bindgen --target web --out-dir target/wasm-replay target/wasm32-unknown-unknown/debug/orion_ann_wasm.wasm
+          printf '{"type":"module"}\n' > target/wasm-replay/package.json
+          node orion-wasm/tests/replay.mjs target/wasm-replay target/native-trace.json

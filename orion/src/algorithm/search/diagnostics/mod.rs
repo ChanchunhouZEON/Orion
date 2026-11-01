@@ -31,6 +31,12 @@ impl NeighborMode {
 /// Hooks receive only visited-set-deduplicated candidates.
 /// A no-op observer is monomorphized away in the normal search path.
 pub trait SearchObserver {
+    /// Hooks dedicated to portable traces, including the normally unobserved peel.
+    /// Empty defaults preserve existing research observers and compile away.
+    fn scored_entry(&mut self, _id: u32, _distance: f32) {}
+    fn expansion_started(&mut self, _node: u32, _converged: bool, _peel: bool) {}
+    fn beam_updated(&mut self, _beam: &[Neighbor]) {}
+
     fn before_expansion(
         &mut self,
         _node: u32,

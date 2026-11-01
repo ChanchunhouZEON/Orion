@@ -8,7 +8,7 @@ description = "Owned build, calibration, search and cache API for Orion ANN"
 readme = "README.md"
 keywords = ["ann", "vector-search", "similarity"]
 categories = ["algorithms"]
-include = ["src/**", "tests/**", "configs/**", "Cargo.toml", "README.md", "LICENSE"]
+include = ["src/**", "tests/**", "examples/**", "configs/**", "Cargo.toml", "README.md", "LICENSE"]
 edition = "2021"
 
 [features]
@@ -17,6 +17,7 @@ parlay = ["dep:orion-ann-parlay"]
 cli = ["dep:clap", "dep:serde_yaml"]
 
 [dependencies]
+orion-ann-diagnostics = { version = "0.1.0", path = "../orion-diagnostics" }
 orion-ann-parlay = { version = "0.1.0", path = "../orion-parlay", optional = true }
 orion-ann = { version = "0.1.0", path = "../orion" }
 orion-ann-diskann = { version = "0.1.0", path = "../orion-diskann" }

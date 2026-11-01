@@ -88,7 +88,7 @@ where
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(settings.threads)
         .build()
-        .map_err(Error::from)?;
+        .map_err(Error::thread_pool)?;
 
     let calib = pool
         .install(|| {

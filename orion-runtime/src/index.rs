@@ -10,6 +10,8 @@ use crate::{
     IndexOptions,
 };
 use crate::{Error, Result};
+use orion_ann_diagnostics::RecordingObserver;
+use orion_ann_diagnostics::{SearchTrace, TraceLimits, TraceMetadata};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -281,6 +283,14 @@ trait Engine: Send + Sync {
         beam: usize,
         params: orion_ann::CalibratedParams,
     ) -> Result<Vec<Vec<u32>>>;
+    fn search_observed(
+        &self,
+        query: &[f32],
+        config: &ResolvedRunConfig,
+        beam: usize,
+        params: orion_ann::CalibratedParams,
+        observer: &mut RecordingObserver,
+    ) -> Result<Vec<u32>>;
     fn save(&self, path: &Path) -> Result<()>;
 }
 
@@ -294,17 +304,15 @@ impl<B: SearchBackend> Engine for DynamicEngine<B> {
         c: &ResolvedRunConfig,
         beam: usize,
     ) -> Result<orion_ann::CalibratedParams> {
-        self.index
-            .calibrate(
-                q,
-                beam,
-                c.window_size,
-                orion_ann::CalibrationConfig {
-                    k: c.sweep.k,
-                    metric: c.metric.calibration_metric(),
-                },
-            )
-            .map_err(Error::from)
+        self.index.calibrate(
+            q,
+            beam,
+            c.window_size,
+            orion_ann::CalibrationConfig {
+                k: c.sweep.k,
+                metric: c.metric.calibration_metric(),
+            },
+        )
     }
     fn search(
         &self,
@@ -313,10 +321,20 @@ impl<B: SearchBackend> Engine for DynamicEngine<B> {
         beam: usize,
         params: orion_ann::CalibratedParams,
     ) -> Result<Vec<Vec<u32>>> {
-        B::search_batch(&self.index, q, c, beam, params).map_err(Error::from)
+        B::search_batch(&self.index, q, c, beam, params)
+    }
+    fn search_observed(
+        &self,
+        query: &[f32],
+        config: &ResolvedRunConfig,
+        beam: usize,
+        params: orion_ann::CalibratedParams,
+        observer: &mut RecordingObserver,
+    ) -> Result<Vec<u32>> {
+        B::search_observed(&self.index, query, config, beam, params, observer)
     }
     fn save(&self, path: &Path) -> Result<()> {
-        self.index.save(path).map_err(Error::from)
+        self.index.save(path)
     }
 }
 
@@ -447,7 +465,7 @@ impl Index {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(options.threads)
             .build()
-            .map_err(Error::from)?;
+            .map_err(Error::thread_pool)?;
         let engine = match input {
             BaseInput::File(_) if config.search_plan().storage().kind == VectorStorageKind::F32 => {
                 let data = LoadedBase::<f32>::load(&config)?;
@@ -571,7 +589,26 @@ impl Index {
     ) -> Result<SearchResult> {
         validate_search(self.len(), k, beam)?;
         self.queries(&mut queries)?;
-        let params = if adaptive {
+        let params = self.search_params(k, adaptive)?;
+        self.config.sweep.k = k;
+        let rows = self
+            .pool
+            .install(|| self.engine.search(&queries, &self.config, beam, params))?;
+        let capacity = rows.len().checked_mul(k).ok_or("result size overflow")?;
+        let mut ids = vec![u32::MAX; capacity];
+        let mut counts = Vec::with_capacity(rows.len());
+        for (out, row) in ids.chunks_exact_mut(k).zip(rows) {
+            if row.len() > k || row.iter().any(|&id| id as usize >= self.len()) {
+                return Err(Error::internal("engine returned invalid result IDs").at("search"));
+            }
+            out[..row.len()].copy_from_slice(&row);
+            counts.push(row.len() as u32);
+        }
+        Ok(SearchResult { ids, counts, k })
+    }
+
+    fn search_params(&self, k: usize, adaptive: bool) -> Result<orion_ann::CalibratedParams> {
+        Ok(if adaptive {
             self.calibrations
                 .get(&k)
                 .ok_or_else(|| {
@@ -589,22 +626,57 @@ impl Index {
                 threshold: 0.0,
                 early_exit_limit: usize::MAX,
             }
-        };
-        self.config.sweep.k = k;
-        let rows = self
-            .pool
-            .install(|| self.engine.search(&queries, &self.config, beam, params))?;
-        let capacity = rows.len().checked_mul(k).ok_or("result size overflow")?;
-        let mut ids = vec![u32::MAX; capacity];
-        let mut counts = Vec::with_capacity(rows.len());
-        for (out, row) in ids.chunks_exact_mut(k).zip(rows) {
-            if row.len() > k || row.iter().any(|&id| id as usize >= self.len()) {
-                return Err(Error::internal("engine returned invalid result IDs").at("search"));
-            }
-            out[..row.len()].copy_from_slice(&row);
-            counts.push(row.len() as u32);
+        })
+    }
+
+    /// Trace one logical query using the same normalization, calibration and graph
+    /// loop as `search`. Recording truncation never stops the underlying search.
+    /// This opt-in path allocates diagnostic payloads and must not be timed as QPS.
+    ///
+    /// # Errors
+    /// Returns the ordinary search validation/calibration errors, or a trace-limit
+    /// error before search if the recording budget cannot hold k result IDs.
+    pub fn trace_search(
+        &mut self,
+        mut query: Vec<f32>,
+        k: usize,
+        beam: usize,
+        adaptive: bool,
+        limits: TraceLimits,
+    ) -> Result<SearchTrace> {
+        validate_search(self.len(), k, beam)?;
+        if query.len() != self.dimension() {
+            return Err(Error::dimension("query", self.dimension(), query.len()).at("trace"));
         }
-        Ok(SearchResult { ids, counts, k })
+        self.queries(&mut query)?;
+        let params = self.search_params(k, adaptive)?;
+        let stages = self.config.search_plan().cascade();
+        let mut observer = RecordingObserver::new(
+            TraceMetadata {
+                dimension: self
+                    .dimension()
+                    .try_into()
+                    .map_err(|_| Error::invalid_argument("dimension exceeds trace schema"))?,
+                points: self.len() as u32,
+                k: k as u32,
+                beam: beam
+                    .try_into()
+                    .map_err(|_| Error::invalid_argument("beam exceeds trace schema"))?,
+                adaptive,
+                metric: format!("{:?}", self.config.metric),
+                storage: format!("{:?}", self.storage()),
+                prefilter: format!("{:?}", stages.prefilter),
+                admission: format!("{:?}", stages.admission),
+                rerank: format!("{:?}", stages.rerank),
+            },
+            limits,
+        )?;
+        self.config.sweep.k = k;
+        let ids = self.pool.install(|| {
+            self.engine
+                .search_observed(&query, &self.config, beam, params, &mut observer)
+        })?;
+        observer.finish(ids)
     }
 
     /// See the [complete example and contract](crate::guide::cache).

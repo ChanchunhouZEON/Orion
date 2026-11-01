@@ -156,3 +156,21 @@ benchmark/
                                               #   `--algorithms ablation` (origin/full/no-EE/no-extra → plot_ablation.py)
                                               #   `--algorithms cascade-ablation` (4-tier → plot_cascade_ablation.py)
 ```
+
+## Diagnostics and browser replay
+
+- `orion-error/`: the single public `Error`, `ErrorCode`, `ErrorReport` and `Result`
+  implementation. Native and WASM frontends use the same wire report.
+- `orion/`: search and lightweight `SearchObserver` hooks. It re-exports shared
+  errors and has no dependency on the new diagnostics crate.
+- `orion-diagnostics/`: schema, validation and replay. Its default `native`
+  feature depends on Orion and supplies the production observer adapter.
+- `orion-runtime/`: `Index::trace_search` shares normalization, calibration and
+  backend selection with ordinary search.
+- `orion-wasm/`: browser-facing replay, using diagnostics with default features
+  disabled. It does not yet execute graph search. Windows adaptation follows
+  the initial WASM functionality.
+
+DiskANN owns its optional conversion to the shared error; the error crate never
+imports DiskANN. Existing `orion_ann::Error` and `orion_ann::error` imports remain
+valid re-exports. No duplicate native error wrapper is introduced.

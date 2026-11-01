@@ -336,6 +336,7 @@ impl<D, S> CompressedIndex<D, S> {
             }
         }
         let n = scratch.id_scratch.len();
+        observer.expansion_started(id as u32, false, true);
         observer.expansion(false, &scratch.id_scratch);
         observer.prefilter_outcome(
             None,
@@ -380,6 +381,7 @@ impl<D, S> CompressedIndex<D, S> {
                 .batch_merge(&scratch.dist_buffer, &mut scratch.merge_scratch);
             scratch.dist_buffer.clear();
         }
+        observer.beam_updated(scratch.pq.neighbors());
         Some((admitted, n))
     }
 
@@ -415,6 +417,7 @@ impl<D, S> CompressedIndex<D, S> {
         let entry_dist = a_session.entry_distance(entry);
         scratch.pq.insert(DNeighbor::new(entry, entry_dist));
         observer.entry(entry);
+        observer.scored_entry(entry, entry_dist);
         SETUP_NS.add(t_setup.elapsed().as_nanos() as u64);
 
         // ── Stack-local counter accumulators ──────────────────────
@@ -478,6 +481,7 @@ impl<D, S> CompressedIndex<D, S> {
             }
 
             let converged = scratch.scc.update(prev_admitted);
+            observer.expansion_started(id as u32, converged, false);
             observer.before_expansion(
                 id as u32,
                 converged,
@@ -629,6 +633,7 @@ impl<D, S> CompressedIndex<D, S> {
                 }
                 hops_since_flush = 0;
                 observer.after_flush(scratch.pq.neighbors());
+                observer.beam_updated(scratch.pq.neighbors());
             }
 
             if should_exit {

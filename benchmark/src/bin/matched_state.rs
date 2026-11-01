@@ -568,7 +568,7 @@ fn execute(args: Args) -> Result<()> {
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(1)
         .build()
-        .map_err(Error::from)?;
+        .map_err(Error::thread_pool)?;
     pool.install(|| with_supported_dimension!(config.dimension, |D| run::<D>(&args, &config, data)))
 }
 

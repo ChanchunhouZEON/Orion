@@ -1,4 +1,4 @@
-"""Verify all eight packaged crates and an external consumer. Never uploads."""
+"""Verify all public packaged crates and an external consumer. Never uploads."""
 import argparse
 import json
 from pathlib import Path
@@ -24,13 +24,14 @@ with tempfile.TemporaryDirectory(prefix='orion-crate-validation-') as temporary:
     else:
         target = scratch / 'package-target'
         command = ['cargo', 'package', '--locked', '--workspace', '--exclude', 'benchmark',
-                   '--exclude', 'adsampling', '--exclude', 'orion-ann-python', '--target-dir', target]
+                   '--exclude', 'adsampling', '--exclude', 'orion-ann-python',
+                   '--exclude', 'orion-ann-wasm', '--target-dir', target]
         if args.allow_dirty:
             command.append('--allow-dirty')
         run(command, repo, env)
         package_dir = target / 'package'
     archives = sorted(package_dir.glob('*.crate'))
-    assert len(archives) == 8, [p.name for p in archives]
+    assert len(archives) == len(PACKAGES), [p.name for p in archives]
     extracted = scratch / 'extracted'
     extracted.mkdir()
     packages = {}

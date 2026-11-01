@@ -8,7 +8,7 @@ import tarfile
 import tempfile
 
 PACKAGES = {
-    'orion-ann', 'orion-ann-runtime', 'orion-ann-cli', 'orion-ann-parlay',
+    'orion-ann-error', 'orion-ann-diagnostics', 'orion-ann', 'orion-ann-runtime', 'orion-ann-cli', 'orion-ann-parlay',
     'orion-ann-vector', 'orion-ann-platform', 'orion-ann-diskann', 'orion-ann-logger',
 }
 

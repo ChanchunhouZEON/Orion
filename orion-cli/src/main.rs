@@ -88,7 +88,7 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(config.sweep.threads)
         .build()
-        .map_err(Error::from)?;
+        .map_err(Error::thread_pool)?;
 
     let index = pool.install(|| B::load_index(config, &mut data))?;
 

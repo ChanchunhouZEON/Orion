@@ -5,8 +5,9 @@
 
 #![doc = include_str!("../README.md")]
 
-pub mod error;
-pub use error::{Error, ErrorCode, ErrorReport, Result};
+// Retain both public import paths while the implementation has a single owner.
+pub use orion_ann_error as error;
+pub use orion_ann_error::{Error, ErrorCode, ErrorReport, Result};
 
 pub mod algorithm;
 pub mod index;

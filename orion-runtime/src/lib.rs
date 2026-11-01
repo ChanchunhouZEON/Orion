@@ -50,3 +50,6 @@ pub use config::options::{CascadeConfig, GraphConfig, IndexOptions};
 pub use index::{BaseInput, Calibration, Index, SearchResult};
 
 pub use orion_ann::{Error, ErrorCode, ErrorReport, Result};
+
+/// Portable diagnostics, also used by the WebAssembly replay interface.
+pub use orion_ann_diagnostics as diagnostics;

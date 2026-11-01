@@ -16,6 +16,7 @@ default = []
 indicatif = ["dep:indicatif"]
 
 [dependencies]
+orion-ann-error = { version = "0.1.0", path = "../orion-error" }
 bytemuck = { workspace = true }
 orion-ann-platform = { version = "0.1.0", path = "../platform" }
 orion-ann-vector = { version = "0.1.0", path = "../vector" }

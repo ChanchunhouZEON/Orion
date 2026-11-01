@@ -2,61 +2,11 @@
 //!
 //! Constructing or converting an error never logs. Applications decide where
 //! to report failures; the original source remains available for diagnostics.
-use serde::Serialize;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fmt, path::Path};
 
-/// Stable machine-readable categories. Match codes, not human-readable text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ErrorCode {
-    InvalidArgument,
-    DimensionMismatch,
-    UnsupportedConfiguration,
-    InvalidData,
-    CacheIncompatible,
-    ResourceExhausted,
-    Io,
-    InvalidState,
-    Backend,
-    Internal,
-}
-impl ErrorCode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::InvalidArgument => "ORION_INVALID_ARGUMENT",
-            Self::DimensionMismatch => "ORION_DIMENSION_MISMATCH",
-            Self::UnsupportedConfiguration => "ORION_UNSUPPORTED_CONFIGURATION",
-            Self::InvalidData => "ORION_INVALID_DATA",
-            Self::CacheIncompatible => "ORION_CACHE_INCOMPATIBLE",
-            Self::ResourceExhausted => "ORION_RESOURCE_EXHAUSTED",
-            Self::Io => "ORION_IO",
-            Self::InvalidState => "ORION_INVALID_STATE",
-            Self::Backend => "ORION_BACKEND",
-            Self::Internal => "ORION_INTERNAL",
-        }
-    }
-}
-
-impl Serialize for ErrorCode {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-/// A language-neutral report. FFI adapters transport this instead of inventing
-/// their own messages. OS-specific causes are retained separately in `causes`.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct ErrorReport {
-    pub code: &'static str,
-    pub operation: Option<String>,
-    pub message: String,
-    pub details: BTreeMap<String, Value>,
-    pub causes: Vec<String>,
-}
+mod report;
+pub use report::{ErrorCode, ErrorReport};
 
 /// Public error with structured context and a preserved source chain.
 ///
@@ -80,6 +30,13 @@ struct ErrorInner {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 impl Error {
+    /// Classify a worker-pool construction failure without coupling this crate to Rayon.
+    pub fn thread_pool(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::new(ErrorCode::ResourceExhausted, source.to_string())
+            .at("create_thread_pool")
+            .with_source(source)
+    }
+
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             inner: Box::new(ErrorInner {
@@ -249,57 +206,7 @@ impl From<serde_json::Error> for Error {
             .with_source(source)
     }
 }
-impl From<orion_ann_diskann::common::ANNError> for Error {
-    fn from(source: orion_ann_diskann::common::ANNError) -> Self {
-        use orion_ann_diskann::common::ANNError as A;
-        let code = match &source {
-            A::IndexConfigError { .. } => ErrorCode::InvalidArgument,
-            A::IOError { err }
-                if matches!(
-                    err.kind(),
-                    std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
-                ) =>
-            {
-                ErrorCode::InvalidData
-            }
-            A::IOError { .. } => ErrorCode::Io,
-            A::LockPoisonError { .. } => ErrorCode::InvalidState,
-            A::MemoryAllocLayoutError { .. } => ErrorCode::ResourceExhausted,
-            A::DeserializeError { .. } | A::TryFromSliceError { .. } => ErrorCode::InvalidData,
-            _ => ErrorCode::Backend,
-        };
-        let message = match &source {
-            A::IndexError { err }
-            | A::IndexConfigError { err, .. }
-            | A::LockPoisonError { err }
-            | A::DiskIOAlignmentError { err }
-            | A::PQError { err } => err.clone(),
-            _ => std::error::Error::source(&source)
-                .map(ToString::to_string)
-                .unwrap_or_else(|| source.to_string()),
-        };
-        let mut error = Self::new(code, message);
-        match &source {
-            A::IndexConfigError { parameter, .. } => {
-                error = error.with_detail("field", parameter.clone());
-            }
-            A::IOError { err } => {
-                error = error
-                    .with_detail("kind", format!("{:?}", err.kind()))
-                    .with_detail("os_error", json!(err.raw_os_error()));
-            }
-            _ => {}
-        }
-        error.with_source(source)
-    }
-}
-impl From<rayon::ThreadPoolBuildError> for Error {
-    fn from(source: rayon::ThreadPoolBuildError) -> Self {
-        Self::new(ErrorCode::ResourceExhausted, source.to_string())
-            .at("create_thread_pool")
-            .with_source(source)
-    }
-}
+
 impl From<std::time::SystemTimeError> for Error {
     fn from(source: std::time::SystemTimeError) -> Self {
         Self::invalid_data(source.to_string()).with_source(source)

@@ -205,3 +205,55 @@ mod ann_result_test {
         assert_send::<ANNError>();
     }
 }
+
+// The source backend owns this optional conversion; the public error crate
+// remains independent of DiskANN and its platform dependencies.
+#[cfg(feature = "orion")]
+mod public_error {
+    use orion_ann_error::{Error, ErrorCode};
+    use serde_json::json;
+    impl From<super::ANNError> for Error {
+        fn from(source: super::ANNError) -> Self {
+            use super::ANNError as A;
+            let code = match &source {
+                A::IndexConfigError { .. } => ErrorCode::InvalidArgument,
+                A::IOError { err }
+                    if matches!(
+                        err.kind(),
+                        std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+                    ) =>
+                {
+                    ErrorCode::InvalidData
+                }
+                A::IOError { .. } => ErrorCode::Io,
+                A::LockPoisonError { .. } => ErrorCode::InvalidState,
+                A::MemoryAllocLayoutError { .. } => ErrorCode::ResourceExhausted,
+                A::DeserializeError { .. } | A::TryFromSliceError { .. } => ErrorCode::InvalidData,
+                _ => ErrorCode::Backend,
+            };
+            let message = match &source {
+                A::IndexError { err }
+                | A::IndexConfigError { err, .. }
+                | A::LockPoisonError { err }
+                | A::DiskIOAlignmentError { err }
+                | A::PQError { err } => err.clone(),
+                _ => std::error::Error::source(&source)
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| source.to_string()),
+            };
+            let mut error = Self::new(code, message);
+            match &source {
+                A::IndexConfigError { parameter, .. } => {
+                    error = error.with_detail("field", parameter.clone());
+                }
+                A::IOError { err } => {
+                    error = error
+                        .with_detail("kind", format!("{:?}", err.kind()))
+                        .with_detail("os_error", json!(err.raw_os_error()));
+                }
+                _ => {}
+            }
+            error.with_source(source)
+        }
+    }
+}

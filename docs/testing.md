@@ -53,8 +53,8 @@ calls. The runner builds a local extension and CLI; no wheel is published.
 Release preparation additionally checks executable Rust configuration/build/cache/
 search examples, CLI/Python error-report consistency and panic-boundary recovery.
 The `portable-api` CI job compiles without global AVX flags and exercises automatic
-L2 dispatch. [Release validation](../.github/workflows/release-check.yml) verifies all eight
-Cargo packages, builds an external Rust consumer from the extracted packages,
+L2 dispatch. [Release validation](../.github/workflows/release-check.yml) verifies all ten
+Cargo packages (including shared errors and diagnostics), builds an external Rust consumer from the extracted packages,
 and installs the CLI. It also checks default ParlayANN construction with f32/u8
 in installed wheels and independently rebuilds and installs the sdist. These
 checks run on every push and pull request and never publish artifacts.
@@ -63,3 +63,13 @@ On 2026-11-01, the macOS ARM64 Rust 1.92 run across all eight public crates
 completed with **415 passed and 2 ignored** tests, including doctests. This is
 the scope of the README test-count badge, not a claim of Windows/WASM coverage.
 DiskANN CSR stride/capacity boundary regressions are included in `portable-api`.
+
+## Diagnostics and WASM
+
+`trace_search` regression tests compare f32/u8 regular and observed search across
+beam widths, with and without adaptive search. They check real admission scores,
+peel/beam events, budget truncation and error contracts. The pure diagnostics
+configuration (`--no-default-features`) tests schema validation and replay limits.
+The `wasm-replay` CI job builds the browser module and executes it in Node's real
+WebAssembly VM against a freshly generated native trace. Windows and browser-side
+graph search are not covered by that job.
