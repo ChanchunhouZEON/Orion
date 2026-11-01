@@ -72,12 +72,15 @@ with tempfile.TemporaryDirectory(prefix='orion-python-validation-') as temporary
         # A fresh build target and pip's isolated PEP 517 environment ensure the
         # source archive can compile without the checkout or an existing binary.
         source = source_root / names[0].split('/')[0]
+        run(['cargo', 'metadata', '--locked', '--format-version', '1',
+             '--manifest-path', source / 'orion-py/Cargo.toml'], scratch, env, capture=True)
         builder = scratch / 'builder'
         run([interpreter, '-m', 'venv', builder], scratch, env)
         env['CARGO_TARGET_DIR'] = str(scratch / 'sdist-target')
         rebuilt = output / 'from-sdist'
         rebuilt.mkdir(exist_ok=True)
-        run([builder / 'bin/python', '-m', 'pip', 'wheel', '--no-deps', '--wheel-dir', rebuilt, source], scratch, env)
+        run([builder / 'bin/python', '-m', 'pip', 'wheel', '--no-deps',
+             '--config-settings=build-args=--locked', '--wheel-dir', rebuilt, source], scratch, env)
         rebuilt_wheels = list(rebuilt.glob('*.whl'))
         assert len(rebuilt_wheels) == 1
         report['sdist'] = install_and_test(rebuilt_wheels[0], 'sdist-venv')
