@@ -90,3 +90,22 @@ impl<'a> PrefilterSession for JlHadamardSession<'a> {
         self.dataset.hamming(&self.query, vid) as f32
     }
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for JlHadamardPrefilter<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JlHadamardPrefilter")
+            .field("dimension", &self.dataset.dimension)
+            .field("points", &self.dataset.num_vertices)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for JlHadamardSession<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JlHadamardSession")
+            .field("dimension", &self.dataset.dimension)
+            .field("points", &self.dataset.num_vertices)
+            .finish_non_exhaustive()
+    }
+}

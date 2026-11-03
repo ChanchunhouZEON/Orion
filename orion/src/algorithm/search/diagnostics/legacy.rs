@@ -8,7 +8,7 @@ use orion_ann_diskann::model::Vertex;
 use orion_ann_vector::{FullPrecisionDistance, Metric};
 
 /// Per-operation timing breakdown accumulated across queries.
-#[derive(Default)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SearchProfileStats {
     pub queries: u64,
     pub iterations: u64,

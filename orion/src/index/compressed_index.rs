@@ -170,3 +170,21 @@ impl<D, S: Default> CompressedIndex<D, S> {
         }
     }
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl<D, S> std::fmt::Debug for CompressedIndex<D, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompressedIndex")
+            .field("storage_type", &(std::any::type_name::<D>()))
+            .field("num_nodes", &self.num_nodes)
+            .field("entry", &self.entry)
+            .field("graph", &self.graph)
+            .field("cache_base_path", &self.cache_base_path)
+            .field("is_save", &self.is_save)
+            .field(
+                "scratch_initialized",
+                &self.inmem_scratch_pool.get().is_some(),
+            )
+            .finish_non_exhaustive()
+    }
+}

@@ -15,6 +15,6 @@ native = ["dep:orion-ann"]
 
 [dependencies]
 orion-ann-error = { version = "0.1.0", path = "../orion-error" }
-orion-ann = { version = "0.1.0", path = "../orion", optional = true }
+orion-ann = { version = "0.1.0", path = "../orion", default-features = false, optional = true }
 serde.workspace = true
 serde_json.workspace = true

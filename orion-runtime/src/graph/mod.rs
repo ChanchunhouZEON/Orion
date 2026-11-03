@@ -5,13 +5,11 @@
 
 //! Resolve graph provenance, transfer the base allocation, then load/build/import.
 use crate::{Error, Result};
-#[cfg(feature = "parlay")]
-pub mod build_parlay;
 pub mod cache;
 pub mod parlayann;
 
 /// Fingerprint of the vendored builder and its fixed construction recipe.
-pub const PARLAY_RECIPE: &str = "parlay-memory-v1-unquantized-two-pass";
+pub use orion_ann::build::PARLAY_RECIPE;
 
 use crate::graph::parlayann as parlayann_bridge;
 use crate::{
@@ -19,7 +17,7 @@ use crate::{
     data::{BaseElement, LoadedBase},
     graph::cache::CachePlan,
 };
-use orion_ann::{build_diskann_index, Orion};
+use orion_ann::Orion;
 use orion_ann_diskann::model::PaddedDataset;
 use std::{path::Path, time::Instant};
 
@@ -27,47 +25,21 @@ use std::{path::Path, time::Instant};
 /// Check the export path/header before transferring ownership of the allocation.
 /// The graph payload itself is validated later, during streaming import.
 pub fn load_index(config: &ResolvedRunConfig, data: &mut LoadedBase) -> Result<Orion> {
-    load_index_impl(config, data, build_in_process, |config, dataset| {
-        #[cfg(feature = "parlay")]
-        {
-            build_parlay::build_f32(config, dataset)
-        }
-        #[cfg(not(feature = "parlay"))]
-        {
-            let _ = (config, dataset);
-            Err(Error::unsupported("ParlayANN builder is not enabled"))
-        }
+    load_index_impl(config, data, |config, dataset| {
+        Orion::<f32>::build(dataset, config.build_config())
     })
 }
 
 pub fn load_u8_index(config: &ResolvedRunConfig, data: &mut LoadedBase<u8>) -> Result<Orion<u8>> {
-    load_index_impl(
-        config,
-        data,
-        |_, _| {
-            Err(Error::unsupported(
-                "native u8 construction requires ParlayANN",
-            ))
-        },
-        |config, dataset| {
-            #[cfg(feature = "parlay")]
-            {
-                build_parlay::build_u8(config, dataset)
-            }
-            #[cfg(not(feature = "parlay"))]
-            {
-                let _ = (config, dataset);
-                Err(Error::unsupported("ParlayANN builder is not enabled"))
-            }
-        },
-    )
+    load_index_impl(config, data, |config, dataset| {
+        Orion::<u8>::build(dataset, config.build_config())
+    })
 }
 
 fn load_index_impl<T: BaseElement>(
     config: &ResolvedRunConfig,
     data: &mut LoadedBase<T>,
     build: impl FnOnce(&ResolvedRunConfig, PaddedDataset<T>) -> Result<Orion<T>>,
-    build_pa: impl FnOnce(&ResolvedRunConfig, PaddedDataset<T>) -> Result<Orion<T>>,
 ) -> Result<Orion<T>> {
     if config.dimension != data.layout.logical_dim() {
         return Err("index dimension does not match input".into());
@@ -97,7 +69,7 @@ fn load_index_impl<T: BaseElement>(
                 if let Some(staged_path) = import_source.as_deref() {
                     import_staged_graph(config, dataset, staged_path)?
                 } else {
-                    build_pa(config, dataset)?
+                    build(config, dataset)?
                 }
             }
         };
@@ -116,66 +88,6 @@ fn load_index_impl<T: BaseElement>(
 
     cache.write_manifest(config, num_points, import_source.as_deref())?;
     Ok(index)
-}
-
-fn build_in_process(config: &ResolvedRunConfig, dataset: PaddedDataset<f32>) -> Result<Orion> {
-    log::info!(
-        "Building Orion ({}-dim, R={}, L={}, α={}, ex={})",
-        config.dimension,
-        config.graph_degree,
-        config.build_l,
-        config.alpha,
-        config.max_extra
-    );
-    let num_points = dataset.len();
-    // DiskANN's builder still owns typed storage. Pack only when SIMD row
-    // padding differs from its input; cached/STAG paths never make this copy.
-    let dimension = config.dimension;
-    let build_dimension = [32, 100, 104, 128, 256, 768, 784, 960, 1536].into_iter()
-        .find(|&d| d >= dimension)
-        .ok_or("Rust/DiskANN builder supports at most 1536 dimensions; import a ParlayANN STAG graph for larger inputs")?;
-    let packed;
-    let input = if dataset.layout().stride_elements() == build_dimension {
-        dataset.as_slice()
-    } else {
-        let count = num_points
-            .checked_mul(build_dimension)
-            .ok_or("builder input size overflow")?;
-        packed = {
-            let mut values = vec![0.; count];
-            for (id, row) in values.chunks_exact_mut(build_dimension).enumerate() {
-                row[..dimension].copy_from_slice(dataset.row(id).unwrap());
-            }
-            values
-        };
-        &packed
-    };
-    let build = build_diskann_index(
-        input,
-        num_points,
-        build_dimension,
-        config.alpha,
-        config.graph_degree,
-        config.build_l as u32,
-        false,
-        None,
-        None,
-        true,
-        config.max_extra,
-    )
-    .map_err(Error::from)?;
-
-    // Release the builder's working index before allocating the final graph slab.
-    let entry = build.entry_point;
-    drop(build.index);
-
-    // PQ sidecars are not supplied here; load_index saves the completed graph.
-    let graph = orion_ann::PhasedGraph::build_from_partitions(
-        &build.partitions,
-        config.graph_degree,
-        config.max_extra,
-    );
-    Ok(Orion::from_phased_graph(dataset, graph, entry, None, None))
 }
 
 fn import_staged_graph<T: BaseElement>(

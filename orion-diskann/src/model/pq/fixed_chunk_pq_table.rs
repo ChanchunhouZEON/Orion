@@ -26,7 +26,7 @@ const NUM_PQ_CENTROIDS: usize = 256;
 ///   dimension of each chunk.
 /// - `centroids`: per-dimension mean (length `dim`), subtracted during
 ///   preprocessing.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct FixedChunkPQTable {
     /// Flat centroid table of size `[NUM_PQ_CENTROIDS * dim]`.
     pub pq_table: Vec<f32>,
@@ -526,5 +526,15 @@ mod tests {
         assert_eq!(pq.get_num_chunks(), loaded.get_num_chunks());
         assert_eq!(pq.pq_table.len(), loaded.pq_table.len());
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+impl std::fmt::Debug for FixedChunkPQTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FixedChunkPQTable")
+            .field("dimension", &self.dim)
+            .field("num_pq_chunks", &self.num_pq_chunks)
+            .field("table_elements", &self.pq_table.len())
+            .finish_non_exhaustive()
     }
 }

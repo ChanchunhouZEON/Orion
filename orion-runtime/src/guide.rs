@@ -8,3 +8,7 @@ pub mod build {}
 pub mod cache {}
 #[doc = include_str!("guide/search.md")]
 pub mod search {}
+
+/// End-to-end service usage from the package README.
+#[doc = include_str!("../README.md")]
+pub mod quick_start {}

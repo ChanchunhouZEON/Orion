@@ -58,15 +58,6 @@ fn read_u32_vec_at(buf: &[u8], off: usize, n: usize) -> Vec<u32> {
     v
 }
 
-fn dist_l2<T: Copy + Into<f32>>(a: &[T], b: &[T]) -> f32 {
-    let mut s = 0.0f32;
-    for (x, y) in a.iter().zip(b.iter()) {
-        let d = (*x).into() - (*y).into();
-        s += d * d;
-    }
-    s
-}
-
 pub fn load_from_staged_file<P: AsRef<Path>>(
     path: P,
     base_flat: &[f32],
@@ -165,31 +156,17 @@ pub fn load_from_staged_file<P: AsRef<Path>>(
     })
 }
 
-/// Preserve the historical PA importer entry selection without owning partitions.
-pub fn sampled_medoid<T: Copy + Sync + Into<f32>>(base_flat: &[T], dim: usize) -> u32 {
-    sampled_medoid_rows(base_flat.len() / dim, |id| {
-        &base_flat[id * dim..(id + 1) * dim]
-    })
-}
+// Kept at this path for existing STAG import callers.
+pub use orion_ann::build::{sampled_medoid, sampled_medoid_rows};
 
-pub fn sampled_medoid_rows<'a, T: Copy + Sync + Into<f32> + 'a>(
-    n: usize,
-    row: impl Fn(usize) -> &'a [T] + Sync,
-) -> u32 {
-    // Recompute medoid: smallest sum-of-distances to a stride sample.
-    let sample_size = 1024.min(n);
-    let step = (n / sample_size).max(1);
-    let sample: Vec<usize> = (0..sample_size).map(|k| k * step).collect();
-    let candidate_stride = (n / 10_000).max(1);
-    (0..n)
-        .into_par_iter()
-        .step_by(candidate_stride)
-        .map(|i| {
-            let i_vec = row(i);
-            let sum: f32 = sample.iter().map(|&s| dist_l2(i_vec, row(s))).sum();
-            (sum, i as u32)
-        })
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, i)| i)
-        .unwrap_or(0)
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for StagedInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StagedInput")
+            .field("entry_point", &self.entry_point)
+            .field("num_nodes", &self.num_nodes)
+            .field("max_deg", &self.max_deg)
+            .field("max_extra", &self.max_extra)
+            .finish_non_exhaustive()
+    }
 }

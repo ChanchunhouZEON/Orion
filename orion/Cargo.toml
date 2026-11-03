@@ -12,10 +12,12 @@ include = ["assets/**", "src/**", "tests/**", "configs/**", "Cargo.toml", "READM
 edition = "2024"
 
 [features]
-default = []
+default = ["parlay"]
+parlay = ["dep:orion-ann-parlay"]
 indicatif = ["dep:indicatif"]
 
 [dependencies]
+orion-ann-parlay = { version = "0.1.0", path = "../orion-parlay", optional = true }
 orion-ann-error = { version = "0.1.0", path = "../orion-error" }
 bytemuck = { workspace = true }
 orion-ann-platform = { version = "0.1.0", path = "../platform" }

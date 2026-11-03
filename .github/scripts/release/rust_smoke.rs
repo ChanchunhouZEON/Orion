@@ -5,6 +5,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|i| ((i * 73 + i / 13 * 11) % 251) as u8)
         .collect();
     let floats: Vec<f32> = bytes.iter().map(|&x| x as f32).collect();
+    let build = orion_ann::BuildConfig { degree: 8, build_l: 24, max_extra: 4,
+        threads: 2, ..Default::default() };
+    let core_f32 = orion_ann::Orion::<f32>::build_from_slice(&floats, 13, build.clone())?;
+    let core_u8 = orion_ann::Orion::<u8>::build_from_slice(&bytes, 13, build)?;
+    assert_eq!(core_f32.num_nodes, 96);
+    assert_eq!(core_u8.num_nodes, 96);
+    assert!(!core_f32.is_save && !core_u8.is_save);
+
     for native in [false, true] {
         let dir = root.join(if native { "u8" } else { "f32" });
         let input = || {

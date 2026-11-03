@@ -883,6 +883,23 @@ fn gaussian(rng: &mut XorShift64) -> f32 {
     (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
 }
 
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for RabitQDataset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RabitQDataset")
+            .field("dimension", &self.dimension)
+            .field("num_vertices", &self.num_vertices)
+            .field("stride", &self.stride)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for XorShiftPub {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("XorShiftPub").finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

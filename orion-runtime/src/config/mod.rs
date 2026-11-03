@@ -127,6 +127,36 @@ pub struct ResolvedRunConfig {
 }
 
 impl ResolvedRunConfig {
+    /// Translate service policy into the independent core construction recipe.
+    /// File/cache selection stays here; the core builder has no sweep dependency.
+    pub fn build_config(&self) -> orion_ann::BuildConfig {
+        orion_ann::BuildConfig {
+            backend: match self.graph_source {
+                GraphSource::Rust => orion_ann::BuildBackend::DiskAnn,
+                GraphSource::Parlayann => orion_ann::BuildBackend::ParlayAnn,
+            },
+            // Preserve existing cache/graph semantics: Rust builds L2, and
+            // cosine rows have already been normalized by the input layer.
+            metric: if self.graph_source == GraphSource::Parlayann
+                && self.metric == SearchMetric::InnerProduct
+            {
+                orion_ann::BuildMetric::InnerProduct
+            } else {
+                orion_ann::BuildMetric::L2
+            },
+            degree: self.graph_degree,
+            build_l: self.build_l,
+            alpha: self.alpha,
+            max_extra: self.max_extra,
+            threads: self.sweep.threads,
+            local_pct: if self.graph_source == GraphSource::Parlayann {
+                self.legacy_local_pct
+            } else {
+                orion_ann::BuildConfig::default().local_pct
+            },
+        }
+    }
+
     /// Only absence allows fallback. Invalid PA caches/exports and permission
     /// errors are surfaced instead of quietly changing the experiment's graph.
     pub fn select_automatic_graph(&mut self, custom_cache_dir: bool) -> Result<()> {

@@ -63,6 +63,7 @@ version = "0.0.0"
 edition = "2021"
 [dependencies]
 orion-ann-runtime = "=0.1.0"
+orion-ann = "=0.1.0"
 ''' + patches)
     shutil.copy2(Path(__file__).with_name('rust_smoke.rs'), consumer / 'src/main.rs')
     env['CARGO_TARGET_DIR'] = str(scratch / 'consumer-target')

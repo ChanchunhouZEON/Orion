@@ -196,3 +196,40 @@ impl<'a, const NZ: usize> PrefilterSession for JlMipsSession<'a, NZ> {
         self.dataset.mips_distance(&self.query, vid)
     }
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl<'a, const NZ: usize> std::fmt::Debug for JlPrefilter<'a, NZ> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JlPrefilter")
+            .field("dimension", &self.dataset.dimension)
+            .field("points", &self.dataset.num_vertices)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a, const NZ: usize> std::fmt::Debug for JlSession<'a, NZ> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JlSession")
+            .field("dimension", &self.dataset.dimension)
+            .field("points", &self.dataset.num_vertices)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a, const NZ: usize> std::fmt::Debug for JlMipsPrefilter<'a, NZ> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JlMipsPrefilter")
+            .field("dimension", &self.dataset.dimension)
+            .field("points", &self.dataset.num_vertices)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a, const NZ: usize> std::fmt::Debug for JlMipsSession<'a, NZ> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JlMipsSession")
+            .field("dimension", &self.dataset.dimension)
+            .field("points", &self.dataset.num_vertices)
+            .finish_non_exhaustive()
+    }
+}

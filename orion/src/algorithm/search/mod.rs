@@ -119,6 +119,7 @@ pub static METRICS: MetricsTable = MetricsTable::new();
 /// (`.add`/`.sum`/`.drain`/`.reset`) so call sites are unchanged.
 macro_rules! define_metric {
     ($static_name:ident, $type_name:ident, $field:ident) => {
+        #[derive(Debug)]
         pub struct $type_name;
 
         impl $type_name {
@@ -235,3 +236,18 @@ pub mod stage;
 
 pub mod diagnostics;
 pub use diagnostics::SearchProfile;
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for PerThreadMetrics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PerThreadMetrics").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for MetricsTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MetricsTable")
+            .field("slots", &self.slots.len())
+            .finish_non_exhaustive()
+    }
+}

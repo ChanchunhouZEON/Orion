@@ -21,7 +21,7 @@ parlay = ["orion-ann-runtime/parlay"]
 
 [dependencies]
 orion-ann-runtime = { version = "0.1.0", path = "../orion-runtime", default-features = false, features = ["cli"] }
-orion-ann = { version = "0.1.0", path = "../orion" }
+orion-ann = { version = "0.1.0", path = "../orion", default-features = false }
 orion-ann-vector = { version = "0.1.0", path = "../vector" }
 rayon = { workspace = true }
 clap = { workspace = true }

@@ -136,6 +136,25 @@ impl<'a> PrefilterSession for RabitqSession<'a> {
     }
 }
 
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for RabitqPrefilter<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RabitqPrefilter")
+            .field("dimension", &self.dataset.dimension)
+            .field("points", &self.dataset.num_vertices)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for RabitqSession<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RabitqSession")
+            .field("dimension", &self.dataset.dimension)
+            .field("points", &self.dataset.num_vertices)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::PrefilterStage;

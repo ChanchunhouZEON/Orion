@@ -475,6 +475,33 @@ impl HashsetSeen {
     }
 }
 
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for LinearProbeSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LinearProbeSet")
+            .field("len", &self.num_entries)
+            .field("capacity", &self.entries.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for BucketedSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BucketedSet")
+            .field("len", &self.num_entries)
+            .field("capacity", &self.entries.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for HashsetSeen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HashsetSeen")
+            .field("len", &self.len())
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

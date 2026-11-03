@@ -115,3 +115,13 @@ impl<'a> RerankStage for U16Rerank<'a> {
         out
     }
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for U16Rerank<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("U16Rerank")
+            .field("dimension", &self.dataset.dimension)
+            .field("points", &self.dataset.n)
+            .finish_non_exhaustive()
+    }
+}

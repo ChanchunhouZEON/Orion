@@ -13,13 +13,12 @@ edition = "2021"
 
 [features]
 default = ["parlay"]
-parlay = ["dep:orion-ann-parlay"]
+parlay = ["orion-ann/parlay"]
 cli = ["dep:clap", "dep:serde_yaml"]
 
 [dependencies]
 orion-ann-diagnostics = { version = "0.1.0", path = "../orion-diagnostics" }
-orion-ann-parlay = { version = "0.1.0", path = "../orion-parlay", optional = true }
-orion-ann = { version = "0.1.0", path = "../orion" }
+orion-ann = { version = "0.1.0", path = "../orion", default-features = false }
 orion-ann-diskann = { version = "0.1.0", path = "../orion-diskann" }
 orion-ann-vector = { version = "0.1.0", path = "../vector" }
 rayon.workspace = true

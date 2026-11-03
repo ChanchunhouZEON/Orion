@@ -86,7 +86,10 @@ loads replayable queries and runs all requested L values/trials in one process.
 ## Rust interface
 
 Use `orion_ann_runtime::Index` for owned file/array input, calibration, batch search
-and cache snapshots, or `orion_ann::Orion` for direct graph/storage integration.
+and cache snapshots, or `orion_ann::Orion::build_from_slice` for standalone
+in-memory construction from f32/u8 vectors. `BuildConfig` controls the backend,
+degree, construction width, extras and threads; `Orion::build` accepts an owned
+padded dataset without another base copy. Saving remains explicit.
 Both return the shared `orion_ann::Result<T>` with structured `Error` values. Errors
 provide a stable code, operation, details and original source chain; creating an
 error does not log it. `Error::report()` supplies the same payload exposed by
@@ -94,6 +97,49 @@ Python and the CLI's `--error-format json` option.
 
 The prepared Cargo package names are `orion-ann` and `orion-ann-runtime`;
 Python uses distribution `orion-ann` and import `orion_ann`. Publication is deferred until the peer-review process is complete.
+
+A standalone native-u8 index needs only the core crate:
+
+```rust
+use orion_ann::{BuildConfig, DynamicSearchConfig, Orion};
+
+let base: Vec<u8> = (0..64 * 13).map(|i| (i % 251) as u8).collect();
+let index = Orion::<u8>::build_from_slice(&base, 13, BuildConfig {
+    degree: 8, build_l: 24, max_extra: 4, threads: 2,
+    ..Default::default()
+})?;
+let neighbors = index.search_batch_l2(&base[..3 * 13], DynamicSearchConfig {
+    k: 3, search_list_size: 32, ..Default::default()
+})?;
+println!("{index:?}"); // Summary; does not print the vectors or graph edges.
+```
+
+For an embedded service that owns input decoding, calibration and search workers:
+
+```rust
+use orion_ann_runtime::{BaseInput, GraphConfig, Index, IndexOptions};
+
+let base: Vec<f32> = (0..256 * 128).map(|i| (i % 251) as f32).collect();
+let mut index = Index::new(BaseInput::from_f32(&base, 128)?, IndexOptions {
+    threads: 8,
+    graph: GraphConfig { degree: 64, build_l: 128, ..Default::default() },
+    cache_dir: "cache/build".into(),
+    ..Default::default()
+})?;
+let queries = base[..32 * 128].to_vec(); // Replace with representative queries.
+index.calibrate(queries.clone(), 10, Some(64))?;
+let results = index.search(queries, 10, 100, true)?;
+index.save(std::path::Path::new("cache/snapshot"))?; // New directory.
+let reopened = Index::open(std::path::Path::new("cache/snapshot"),
+    BaseInput::from_f32(&base, 128)?, Some(8), None)?;
+```
+
+Use representative queries for calibration. Core L2 methods use full-precision
+distances along an approximate graph; runtime adaptive search requires prior
+calibration. Snapshots preserve calibration but **do not embed the base vectors**.
+See the [core examples](orion/README.md) for backend selection, owned padded
+storage and structured errors, and the [service example](orion-runtime/README.md)
+for complete array construction, result handling and snapshot validation.
 
 Generate the public API reference and Rust examples with:
 

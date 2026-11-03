@@ -364,3 +364,26 @@ pub fn open_queries(config: &crate::config::ResolvedRunConfig) -> Result<Box<dyn
 
     Ok(Box::new(reader))
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl<R> std::fmt::Debug for VectorReader<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VectorReader")
+            .field("format", &self.format)
+            .field("metric", &self.metric)
+            .field("dimension", &self.dimension)
+            .field("declared_count", &self.declared_count)
+            .field("rows_read", &self.rows_read)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<R> std::fmt::Debug for GroundTruthReader<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GroundTruthReader")
+            .field("k", &self.k)
+            .field("rows_read", &self.rows_read)
+            .field("base_count", &self.base_count)
+            .finish_non_exhaustive()
+    }
+}

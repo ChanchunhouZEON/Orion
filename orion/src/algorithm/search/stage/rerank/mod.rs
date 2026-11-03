@@ -75,6 +75,7 @@ pub trait RerankStage: Send + Sync {
 /// the unified beam loop populated. The `pq_entries` slice is a
 /// historical artefact of the trait signature; the unified caller
 /// always passes `&[]`.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct NoRerank;
 
 impl RerankStage for NoRerank {

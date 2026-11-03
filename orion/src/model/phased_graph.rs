@@ -740,6 +740,15 @@ impl<'a> Drop for PhasedSlotGuard<'a> {
     }
 }
 
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for PhasedSlotGuard<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PhasedSlotGuard")
+            .field("node", &self.node)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

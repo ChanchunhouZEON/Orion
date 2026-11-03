@@ -71,7 +71,7 @@ impl DynamicElement for u8 {
 
 /// Explicit controls for the dynamic exact-L2 path. Defaults disable
 /// convergence switching/early exit; they are not calibrated parameters.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DynamicSearchConfig {
     pub k: usize,
     pub search_list_size: usize,

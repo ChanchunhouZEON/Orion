@@ -335,6 +335,17 @@ fn quantize_to_i8(p: &QuantParamsL2, v: f32) -> i8 {
     x.clamp(-128, 127) as i8
 }
 
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for L2KTDataset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("L2KTDataset")
+            .field("dimension", &self.dimension)
+            .field("num_vertices", &self.num_vertices)
+            .field("stride", &self.stride)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -24,6 +24,7 @@ use std::{
 
 /// Array data is copied directly into the final aligned base allocation. Python
 /// callers create this while holding the GIL, then release it for graph work.
+#[derive(Debug)]
 pub enum BaseInput {
     File(PathBuf),
     F32 {
@@ -243,7 +244,7 @@ enum BaseIdentity {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Calibration for a specific index, cascade and top-k; included in snapshots.
 pub struct Calibration {
     pub k: usize,
@@ -263,6 +264,7 @@ impl Calibration {
 
 /// IDs preserve query order. Missing neighbors are padded with u32::MAX;
 /// counts distinguishes padding from valid IDs without inventing distances.
+#[derive(Clone, PartialEq, Eq)]
 pub struct SearchResult {
     pub ids: Vec<u32>,
     pub counts: Vec<u32>,
@@ -783,4 +785,27 @@ fn execution_signature(config: &ResolvedRunConfig) -> Result<String> {
     ))
     .map_err(Error::from)?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for SearchResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SearchResult")
+            .field("query_count", &self.counts.len())
+            .field("id_count", &self.ids.len())
+            .field("k", &self.k)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for Index {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Index")
+            .field("points", &self.len())
+            .field("dimension", &self.dimension())
+            .field("threads", &self.pool.current_num_threads())
+            .field("graph_source", &self.config.graph_source)
+            .field("calibration_count", &self.calibrations.len())
+            .finish_non_exhaustive()
+    }
 }

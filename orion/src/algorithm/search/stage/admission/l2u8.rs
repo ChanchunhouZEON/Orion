@@ -80,6 +80,25 @@ impl<'a> AdmissionSession for L2U8Session<'a> {
     }
 }
 
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for L2U8Admission<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("L2U8Admission")
+            .field("dimension", &self.dataset.dimension)
+            .field("points", &self.dataset.n)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for L2U8Session<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("L2U8Session")
+            .field("dimension", &self.dataset.dimension)
+            .field("points", &self.dataset.n)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -158,3 +158,17 @@ pub fn build_diskann_index(
         pq_build_time,
     })
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for DiskANNBuildResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiskANNBuildResult")
+            .field("partition_count", &self.partitions.len())
+            .field("entry_point", &self.entry_point)
+            .field("has_pq", &self.pq.is_some())
+            .field("pq_code_bytes", &self.pq_codes.as_ref().map(Vec::len))
+            .field("graph_build_time", &self.graph_build_time)
+            .field("pq_build_time", &self.pq_build_time)
+            .finish_non_exhaustive()
+    }
+}

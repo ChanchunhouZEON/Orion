@@ -200,6 +200,36 @@ impl Drop for InMemScratchGuard {
     }
 }
 
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for InMemSearchScratch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InMemSearchScratch")
+            .field("candidate_count", &self.pq.neighbors().len())
+            .field("seen", &self.seen)
+            .field("id_scratch_len", &self.id_scratch.len())
+            .field("distance_buffer_len", &self.dist_buffer.len())
+            .field("query_buffer_len", &self.q_query_f32_padded.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for InMemScratchPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InMemScratchPool")
+            .field("available", &self.pool.len())
+            .field("capacity", &self.pool.capacity())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for InMemScratchGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InMemScratchGuard")
+            .field("borrowed", &self.scratch.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

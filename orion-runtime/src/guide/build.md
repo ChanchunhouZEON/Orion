@@ -58,3 +58,11 @@ panic-free. Low-level invariant failures and allocator/process failures follow
 the host's panic/allocation policy. Python translates unwinding Rust panics and
 rejects subsequently poisoned handles. No Rust panic recovery is installed by
 the core library.
+
+## Core construction without the service layer
+
+`orion_ann::Orion::build` and `build_from_slice` accept `orion_ann::BuildConfig`
+and return an in-memory index without cache I/O. `Index::new` delegates to the
+same builder after resolving files and cache policy. Programmatic graph defaults
+come from `BuildConfig`; historical YAML presets and cache identities stay intact.
+The runtime normalizes cosine input before passing it to the core L2 builder.

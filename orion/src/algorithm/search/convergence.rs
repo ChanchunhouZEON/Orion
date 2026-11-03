@@ -14,6 +14,7 @@ const MAX_WINDOW_SIZE: usize = 64;
 ///
 /// Convergence is **reversible**: a burst of admissions pushes the rate
 /// back up and exits convergence.
+#[derive(Debug, Clone)]
 pub struct SearchConvergenceChecker {
     window_size: usize,
     /// Converge when admission fraction < threshold (e.g., 0.2 = 20%).

@@ -1,7 +1,46 @@
 #![cfg(feature = "parlay")]
 use orion_ann::PhasedGraph;
+use orion_ann::{Error, ErrorCode, Result};
 use orion_ann_parlay::{BuildOptions, Builder, Metric};
-use orion_ann_runtime::graph::build_parlay::collect_graph;
+pub fn convert_error(error: orion_ann_parlay::Error) -> Error {
+    let code = match error.code {
+        1 => ErrorCode::InvalidArgument,
+        2 => ErrorCode::ResourceExhausted,
+        _ => ErrorCode::Backend,
+    };
+    Error::new(code, error.message.clone())
+        .at("build_graph")
+        .with_detail("backend", "parlayann")
+        .with_source(error)
+}
+
+pub fn collect_graph(
+    builder: &mut Builder<'_>,
+    n: usize,
+    degree: u32,
+    extra: usize,
+) -> Result<PhasedGraph> {
+    let mut graph = PhasedGraph::try_empty(n, degree, extra)?;
+    for node in 0..n {
+        let part = builder
+            .next_partition()
+            .map_err(convert_error)?
+            .ok_or_else(|| Error::invalid_data("ParlayANN returned too few partitions"))?;
+        if part.extra.len() > extra {
+            return Err(Error::invalid_data(
+                "ParlayANN extras exceed configured capacity",
+            ));
+        }
+        graph.set_partition(node, part.local, part.remote, part.extra)?;
+    }
+    if builder.next_partition().map_err(convert_error)?.is_some() {
+        return Err(Error::invalid_data(
+            "ParlayANN returned too many partitions",
+        ));
+    }
+    Ok(graph)
+}
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -76,11 +115,33 @@ fn f32_u8_padded_rows_match_original_staged_and_thread_counts() {
                 options.max_extra as usize,
                 |slab, ss| {
                     Builder::f32_into(&floats, n, dim, stride, options, slab, ss)
-                        .map_err(orion_ann_runtime::graph::build_parlay::convert_error)
+                        .map_err(convert_error)
                 },
             )
             .unwrap();
             assert_eq!(direct.buffer_bytes(), result);
+            let packed: Vec<f32> = floats
+                .chunks_exact(stride)
+                .flat_map(|row| row[..dim].iter().copied())
+                .collect();
+            let core = orion_ann::Orion::<f32>::build_from_slice(
+                &packed,
+                dim,
+                orion_ann::BuildConfig {
+                    degree: options.degree,
+                    build_l: options.build_l as usize,
+                    max_extra: options.max_extra as usize,
+                    threads: threads as usize,
+                    metric: match metric {
+                        Metric::L2 => orion_ann::BuildMetric::L2,
+                        Metric::InnerProduct => orion_ann::BuildMetric::InnerProduct,
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(core.graph.buffer_bytes(), result);
+
             if let Some(expected) = &expected {
                 assert_eq!(&result, expected);
             } else {
@@ -107,8 +168,7 @@ fn f32_u8_padded_rows_match_original_staged_and_thread_counts() {
             options.degree,
             options.max_extra as usize,
             |slab, ss| {
-                Builder::u8_into(&bytes, n, dim, stride, options, slab, ss)
-                    .map_err(orion_ann_runtime::graph::build_parlay::convert_error)
+                Builder::u8_into(&bytes, n, dim, stride, options, slab, ss).map_err(convert_error)
             },
         )
         .unwrap();
@@ -183,7 +243,46 @@ fn default_runtime_build_calibration_cache_and_import_are_equivalent() {
             },
             ..IndexOptions::default()
         };
+        // Standalone core and service callers must produce the same slab as the
+        // reference STAG route, with exactly the same partition/extras recipe.
+        let core_config = orion_ann::BuildConfig {
+            degree: recipe.degree,
+            build_l: recipe.build_l as usize,
+            max_extra: recipe.max_extra as usize,
+            threads: recipe.threads as usize,
+            alpha: recipe.alpha as f32,
+            ..Default::default()
+        };
+        let core_bytes = if native {
+            orion_ann::Orion::<u8>::build_from_slice(&bytes, dim, core_config)
+                .unwrap()
+                .graph
+                .buffer_bytes()
+                .to_vec()
+        } else {
+            orion_ann::Orion::<f32>::build_from_slice(&floats, dim, core_config)
+                .unwrap()
+                .graph
+                .buffer_bytes()
+                .to_vec()
+        };
+        assert_eq!(
+            core_bytes,
+            PhasedGraph::load_staged(&staged, n, recipe.degree)
+                .unwrap()
+                .buffer_bytes()
+        );
         let mut memory = Index::new(input(), options.clone()).unwrap();
+        let graph_path = std::fs::read_dir(dir.join("memory"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "pgraph"))
+            .unwrap();
+        assert_eq!(
+            core_bytes,
+            PhasedGraph::load(graph_path).unwrap().buffer_bytes()
+        );
+
         let mut import_options = options.clone();
         import_options.cache_dir = dir.join("import");
         import_options.graph.source = GraphSourcePolicy::Parlayann;
@@ -237,7 +336,6 @@ fn default_runtime_build_calibration_cache_and_import_are_equivalent() {
 
 #[test]
 fn slab_boundary_shapes_ties_and_repeated_builds() {
-    use orion_ann_runtime::graph::build_parlay::convert_error;
     for (n, degree, extras) in [(1, 1, 0), (17, 16, 8), (37, 16, 0), (37, 3, 17)] {
         // Deliberate equal distances exercise the unchanged distance-only sort.
         let data: Vec<u8> = (0..n * 7).map(|i| (i % 3) as u8).collect();
@@ -294,7 +392,6 @@ fn unpublished_slab_rejects_backend_errors_and_invalid_rows() {
 #[test]
 #[ignore]
 fn slab_memory_probe() {
-    use orion_ann_runtime::graph::build_parlay::convert_error;
     let n: usize = std::env::var("ORION_PROBE_N")
         .unwrap_or("100000".into())
         .parse()

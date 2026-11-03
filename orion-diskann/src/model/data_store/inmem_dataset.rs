@@ -36,7 +36,6 @@ fn checked_capacity(
     Ok((grown as usize).max(minimum))
 }
 
-#[derive(Debug)]
 pub struct InmemDataset<T, const N: usize>
 where
     [T; N]: FullPrecisionDistance<T, N>,
@@ -240,5 +239,19 @@ mod large_capacity_tests {
         assert!(checked_capacity(usize::MAX, 128, 1.).is_err());
         assert!(checked_capacity(1, 128, f32::NAN).is_err());
         assert!(checked_capacity(1, 128, 0.5).is_err());
+    }
+}
+
+impl<T, const N: usize> std::fmt::Debug for InmemDataset<T, N>
+where
+    [T; N]: FullPrecisionDistance<T, N>,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InmemDataset")
+            .field("dimension", &N)
+            .field("num_points", &self.num_points)
+            .field("num_active_pts", &self.num_active_pts)
+            .field("capacity", &self.capacity)
+            .finish_non_exhaustive()
     }
 }

@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// Stable machine-readable categories. Match codes, not human-readable text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorCode {
     InvalidArgument,
@@ -32,6 +32,13 @@ impl ErrorCode {
             Self::Backend => "ORION_BACKEND",
             Self::Internal => "ORION_INTERNAL",
         }
+    }
+}
+
+/// Display uses the same stable code as JSON/FFI reports.
+impl std::fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

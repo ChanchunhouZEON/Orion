@@ -68,3 +68,13 @@ impl<K: DistanceKernelBackend<Storage = f32> + Send + Sync> RerankStage
         scored.into_iter().take(k).map(|(id, _)| id).collect()
     }
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl<'a, K: DistanceKernelBackend<Storage = f32>> std::fmt::Debug for DynamicF32Rerank<'a, K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DynamicF32Rerank")
+            .field("dimension", &self.dataset.layout().logical_dim())
+            .field("points", &self.dataset.len())
+            .finish_non_exhaustive()
+    }
+}

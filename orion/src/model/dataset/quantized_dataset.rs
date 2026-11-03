@@ -503,7 +503,6 @@ impl QuantSpec for MipsI16 {
 
 /// Quantized base store. `Q` selects the storage + metric (one of
 /// [`L2U8`], [`MipsI8`], [`MipsI16`]); `N` is the vector dimension.
-#[derive(Debug)]
 pub struct QuantizedDataset<Q: QuantSpec> {
     pub data: AlignedBoxWithSlice<Q::Storage>,
     pub params: Q::Params,
@@ -874,5 +873,16 @@ mod tests {
         let ds = make_ds::<8>(8);
         let qds = QuantizedDataset::<L2U16>::from_f32_dataset(&ds);
         assert_eq!(qds.n, 8);
+    }
+}
+
+impl<Q: QuantSpec> std::fmt::Debug for QuantizedDataset<Q> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuantizedDataset")
+            .field("quantizer", &std::any::type_name::<Q>())
+            .field("points", &self.n)
+            .field("dimension", &self.dimension)
+            .field("stride", &self.stride)
+            .finish_non_exhaustive()
     }
 }

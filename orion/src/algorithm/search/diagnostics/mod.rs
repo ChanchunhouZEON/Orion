@@ -64,6 +64,7 @@ pub trait SearchObserver {
     fn early_exit(&mut self) {}
 }
 
+#[derive(Debug, Clone, Copy, Default)]
 pub struct NoopObserver;
 impl SearchObserver for NoopObserver {}
 

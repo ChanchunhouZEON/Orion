@@ -109,9 +109,11 @@ pub trait PrefilterSession: Send + Sync {
 /// `Option::<&dyn PrefilterStage>::None` would also work, but
 /// explicit `NoPrefilter` lets the dispatcher always have a stage
 /// object to call `open()` on without a leading branch.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct NoPrefilter;
 
 /// Session for [`NoPrefilter`] — all methods are no-ops.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct NoPrefilterSession;
 
 impl PrefilterStage for NoPrefilter {

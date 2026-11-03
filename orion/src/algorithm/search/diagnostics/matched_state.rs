@@ -139,3 +139,15 @@ impl SearchObserver for MatchedStateTrace {
         self.work.early_exit();
     }
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for MatchedStateTrace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MatchedStateTrace")
+            .field("has_checkpoint", &self.checkpoint.is_some())
+            .field("tail_nodes", &self.tail_nodes.len())
+            .field("retained_after_switch", &self.retained_after_switch.len())
+            .field("admitted_after_switch", &self.admitted_after_switch.len())
+            .finish_non_exhaustive()
+    }
+}

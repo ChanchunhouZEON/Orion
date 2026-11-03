@@ -9,6 +9,7 @@
 /// consecutive expansion steps with zero PQ admissions. When this
 /// count exceeds `limit`, the search should terminate — remaining
 /// unvisited PQ candidates are unlikely to improve results.
+#[derive(Debug, Clone)]
 pub struct EarlyExitChecker {
     limit: usize,
     consecutive_no_admit: usize,

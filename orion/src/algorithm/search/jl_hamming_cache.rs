@@ -158,6 +158,16 @@ impl Default for JLHammingCache {
     }
 }
 
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for JLHammingCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JLHammingCache")
+            .field("capacity", &(CAPACITY))
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

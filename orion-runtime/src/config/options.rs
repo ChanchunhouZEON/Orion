@@ -10,7 +10,7 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 /// Graph source and construction controls. See [configuration](crate::guide::configuration).
 pub struct GraphConfig {
@@ -30,19 +30,20 @@ pub struct GraphConfig {
 
 impl Default for GraphConfig {
     fn default() -> Self {
+        let build = orion_ann::BuildConfig::default();
         Self {
             source: GraphSourcePolicy::Auto,
             staged_file: None,
-            degree: 64,
-            build_l: 100,
-            alpha: 1.2,
-            max_extra: 16,
+            degree: build.degree,
+            build_l: build.build_l,
+            alpha: build.alpha,
+            max_extra: build.max_extra,
         }
     }
 }
 
 /// Overrides use the same vocabulary and validation as the CLI cascade.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CascadeConfig {
     /// Prefilter identifier in the shared CLI vocabulary.
@@ -53,7 +54,7 @@ pub struct CascadeConfig {
     pub rerank: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 /// Owned service configuration, validated by `Index::new/open`.
 /// See [configuration examples and error bounds](crate::guide::configuration).
@@ -89,7 +90,7 @@ impl Default for IndexOptions {
             graph: GraphConfig::default(),
             cascade: CascadeConfig::default(),
             cache_dir: "cache/orion-ann".into(),
-            threads: 8,
+            threads: orion_ann::BuildConfig::default().threads,
             window_size: 5,
             memory_budget_gib: None,
             max_points: None,
@@ -127,16 +128,6 @@ impl IndexOptions {
             return Err("memory_budget_gib must be finite and positive".into());
         }
         let graph = &self.graph;
-        if graph.degree == 0
-            || graph.degree > u32::MAX - 4
-            || graph.build_l < graph.degree as usize
-            || graph.build_l > u32::MAX as usize
-            || !graph.alpha.is_finite()
-            || graph.alpha < 1.0
-            || graph.max_extra > u32::MAX as usize - graph.degree as usize - 4
-        {
-            return Err("invalid graph parameters: require degree > 0, build_l >= degree, finite alpha >= 1, and u32-sized graph fields".into());
-        }
         let storage = self.storage.unwrap_or(
             if matches!(format, VectorFormat::Bvecs | VectorFormat::U8bin) {
                 VectorStorageKind::U8
@@ -226,6 +217,7 @@ impl IndexOptions {
             legacy_dataset: None,
             legacy_local_pct: 60,
         };
+        config.build_config().validate()?;
         config.cache_namespace = config.compute_cache_namespace();
         if policy == GraphSourcePolicy::Auto {
             config.select_automatic_graph(true)?;

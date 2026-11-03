@@ -568,6 +568,17 @@ unsafe fn signed_dot_avx512(code: *const u8, rotated_q: *const f32, bytes: usize
     }
 }
 
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for RabitQ4Dataset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RabitQ4Dataset")
+            .field("dimension", &self.dimension)
+            .field("num_vertices", &self.num_vertices)
+            .field("stride", &self.stride)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

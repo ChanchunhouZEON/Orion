@@ -149,3 +149,12 @@ where
         Ok((pq, pq_codes, num_pq_chunks))
     }
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl<const N: usize> std::fmt::Debug for AlignedQuery<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AlignedQuery")
+            .field("dimension", &(N))
+            .finish_non_exhaustive()
+    }
+}

@@ -109,7 +109,7 @@ jobs:
         run: |
           cargo test --locked -p orion-ann-vector --release --no-run --target x86_64-unknown-linux-gnu
           cargo test --locked -p orion-ann-diskann --test padded_dataset --release --no-run --target x86_64-unknown-linux-gnu
-          cargo test --locked -p orion-ann --release --lib --test dynamic_index --test dynamic_cascade --test sidecar_migration --test native_u8_search --no-run --target x86_64-unknown-linux-gnu
+          cargo test --locked -p orion-ann --release --lib --test build --test dynamic_index --test dynamic_cascade --test sidecar_migration --test native_u8_search --no-run --target x86_64-unknown-linux-gnu
           cargo build --locked -p benchmark --release --bin orion-sweep --bin diskann_sweep --bin prefilter_progress --target x86_64-unknown-linux-gnu
       - name: Execute SIMD regression tests
         if: steps.cpu.outputs.supported == 'true'
@@ -118,7 +118,7 @@ jobs:
         run: |
           cargo test --locked -p orion-ann-vector --release --target x86_64-unknown-linux-gnu -- --nocapture
           cargo test --locked -p orion-ann-diskann --test padded_dataset --release --target x86_64-unknown-linux-gnu
-          cargo test --locked -p orion-ann --release --test dynamic_index --test dynamic_cascade --test sidecar_migration --test native_u8_search --target x86_64-unknown-linux-gnu
+          cargo test --locked -p orion-ann --release --test build --test dynamic_index --test dynamic_cascade --test sidecar_migration --test native_u8_search --target x86_64-unknown-linux-gnu
           cargo test --locked -p orion-ann --release --lib model::dataset --target x86_64-unknown-linux-gnu -- --nocapture
           cargo test --locked -p benchmark --release --bin diskann_sweep --bin prefilter_progress --target x86_64-unknown-linux-gnu
           DISKANN_BINARY=target/x86_64-unknown-linux-gnu/release/diskann_sweep python3 benchmark/scripts/tests/check_diskann_streaming.py
@@ -165,9 +165,11 @@ jobs:
           cargo test --locked -p orion-ann-vector --release
           cargo test --locked -p orion-ann-diskann --test padded_dataset --release
           cargo test --locked -p orion-ann --release --lib model::dataset
-          cargo test --locked -p orion-ann --release --test dynamic_index --test dynamic_cascade --test sidecar_migration --test native_u8_search
+          cargo test --locked -p orion-ann --release --test build --test dynamic_index --test dynamic_cascade --test sidecar_migration --test native_u8_search
       - name: Native ParlayANN FFI and service regressions
         run: cargo test --locked -p orion-ann-parlay -p orion-ann-runtime -p orion-ann-cli
+      - name: Standalone Rust construction without ParlayANN
+        run: cargo test --locked -p orion-ann --no-default-features --test build
       # Native Linux jobs validate the C++ backend; cross-check Rust without a Linux C++ sysroot.
       - name: Cross-check AVX2 fallback
         env:

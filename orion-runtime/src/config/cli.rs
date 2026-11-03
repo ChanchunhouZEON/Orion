@@ -368,6 +368,8 @@ impl Args {
             .or_else(|| preset.and_then(|p| p.max_points))
             .unwrap_or(usize::MAX);
 
+        // Historical imported/cache recipes may use alpha < 1. Validate the
+        // actual builder recipe only on a cache miss that requires construction.
         if !alpha.is_finite()
             || alpha <= 0.0
             || graph_degree == 0

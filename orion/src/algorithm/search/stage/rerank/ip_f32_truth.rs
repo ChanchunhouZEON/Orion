@@ -123,3 +123,13 @@ impl<'a, const N: usize> RerankStage for IpF32Rerank<'a, N> {
         out
     }
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl<'a, const N: usize> std::fmt::Debug for IpF32Rerank<'a, N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IpF32Rerank")
+            .field("dimension", &(N))
+            .field("points", &self.dataset.num_active_pts)
+            .finish_non_exhaustive()
+    }
+}

@@ -122,3 +122,13 @@ impl<'a, const N: usize> RerankStage for F32Rerank<'a, N> {
         out
     }
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl<'a, const N: usize> std::fmt::Debug for F32Rerank<'a, N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("F32Rerank")
+            .field("dimension", &(N))
+            .field("points", &self.dataset.num_active_pts)
+            .finish_non_exhaustive()
+    }
+}

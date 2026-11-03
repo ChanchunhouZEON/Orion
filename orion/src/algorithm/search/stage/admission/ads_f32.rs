@@ -194,3 +194,31 @@ impl AdmissionSession for DynamicAdsSession<'_> {
         count
     }
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl<'a, const N: usize> std::fmt::Debug for AdsF32Admission<'a, N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdsF32Admission")
+            .field("dimension", &(N))
+            .field("points", &self.dataset.num_active_pts)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a, const N: usize> std::fmt::Debug for AdsF32Session<'a, N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdsF32Session")
+            .field("dimension", &(N))
+            .field("points", &self.dataset.num_active_pts)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for DynamicAdsF32Admission<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DynamicAdsF32Admission")
+            .field("dimension", &self.dataset.layout().logical_dim())
+            .field("points", &self.dataset.len())
+            .finish_non_exhaustive()
+    }
+}

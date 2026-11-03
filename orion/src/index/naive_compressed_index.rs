@@ -194,3 +194,18 @@ where
         Ok(results)
     }
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl<const N: usize> std::fmt::Debug for NaiveOrion<N>
+where
+    [f32; N]: FullPrecisionDistance<f32, N>,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NaiveOrion")
+            .field("dimension", &(N))
+            .field("num_nodes", &self.num_nodes)
+            .field("entry", &self.entry)
+            .field("max_pruned_degree", &self.max_pruned_degree)
+            .finish_non_exhaustive()
+    }
+}

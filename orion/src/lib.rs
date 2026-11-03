@@ -4,12 +4,17 @@
  */
 
 #![doc = include_str!("../README.md")]
+#![warn(missing_debug_implementations)]
 
 // Retain both public import paths while the implementation has a single owner.
 pub use orion_ann_error as error;
 pub use orion_ann_error::{Error, ErrorCode, ErrorReport, Result};
 
 pub mod algorithm;
+pub mod build;
+pub use build::{BuildBackend, BuildConfig, BuildMetric};
+pub use orion_ann_diskann::model::PaddedDataset;
+pub use orion_ann_vector::PaddedLayout;
 pub mod index;
 pub mod model;
 mod pq;

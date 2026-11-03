@@ -12,7 +12,6 @@ use std::ptr::copy_nonoverlapping;
 
 use super::{ANNError, ANNResult};
 
-#[derive(Debug)]
 pub struct AlignedBoxWithSlice<T> {
     layout: Layout,
     val: Box<[T]>,
@@ -210,5 +209,16 @@ mod tests {
         }
         let expected_arr = [0.0f32, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 0.0, 0.0];
         assert_eq!(data.as_ref(), &expected_arr);
+    }
+}
+
+// Log allocation metadata, never the potentially multi-terabyte payload.
+impl<T> std::fmt::Debug for AlignedBoxWithSlice<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AlignedBoxWithSlice")
+            .field("element_type", &std::any::type_name::<T>())
+            .field("len", &self.val.len())
+            .field("layout", &self.layout)
+            .finish_non_exhaustive()
     }
 }

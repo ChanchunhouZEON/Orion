@@ -909,6 +909,7 @@ dependencies = [
  "ndarray",
  "orion-ann-diskann",
  "orion-ann-error",
+ "orion-ann-parlay",
  "orion-ann-platform",
  "orion-ann-vector",
  "rand",

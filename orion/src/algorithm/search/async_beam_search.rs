@@ -30,6 +30,8 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 /// Global IO limiter that bounds total concurrent disk reads across all queries.
+/// Cloning shares the same semaphore and limit; it does not create another budget.
+#[derive(Debug, Clone)]
 pub struct IoLimiter {
     semaphore: Arc<Semaphore>,
 }
@@ -47,6 +49,7 @@ impl IoLimiter {
 }
 
 /// Configuration for async beam search.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BeamSearchConfig {
     pub search_list_size: usize,
     pub k: usize,
@@ -56,6 +59,7 @@ pub struct BeamSearchConfig {
 }
 
 /// Async beam search result.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BeamSearchResult {
     pub neighbors: Vec<u32>,
     pub cache_hits: u32,

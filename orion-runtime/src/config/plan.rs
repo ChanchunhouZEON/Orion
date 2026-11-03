@@ -44,6 +44,7 @@ pub enum SearchPlan {
 /// This is the shared source of truth for loaders, preflight checks, and
 /// resident-memory accounting, avoiding independent interpretations of the
 /// user-facing configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StorageLayout {
     /// Resident base-vector representation.
     pub kind: VectorStorageKind,

@@ -613,6 +613,31 @@ pub(crate) fn validate_and_normalize_vectors(
     }
     Ok(())
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl<T> std::fmt::Debug for LoadedBase<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadedBase")
+            .field("num_points", &self.num_points)
+            .field("layout", &self.layout)
+            .field("owns_allocation", &self.base.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T> std::fmt::Debug for LoadedDataset<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadedDataset")
+            .field("base", &self.base_data)
+            .field("query_count", &self.queries.len())
+            .field(
+                "ground_truth_rows",
+                &self.ground_truth.as_ref().map(Vec::len),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

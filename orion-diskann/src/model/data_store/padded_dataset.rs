@@ -191,3 +191,14 @@ impl<T: Pod> PaddedDataset<T> {
         Ok(result)
     }
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl<T: Pod> std::fmt::Debug for PaddedDataset<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaddedDataset")
+            .field("rows", &self.rows)
+            .field("layout", &self.layout)
+            .field("allocated_elements", &self.data.len())
+            .finish_non_exhaustive()
+    }
+}

@@ -9,7 +9,7 @@ orion-ann-runtime = { version = "0.1.0", path = "../orion-runtime", features = [
 adsampling = { path = "../adsampling" }
 orion-ann-diskann = { version = "0.1.0", path = "../orion-diskann" }
 orion-ann-platform = { version = "0.1.0", path = "../platform" }
-orion-ann = { version = "0.1.0", path = "../orion" }
+orion-ann = { version = "0.1.0", path = "../orion", default-features = false }
 orion-ann-vector = { version = "0.1.0", path = "../vector" }
 anyhow = "1"
 rayon = { workspace = true }

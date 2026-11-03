@@ -71,6 +71,7 @@ pub trait SearchBackend {
 
 /// Backend using the conventional `f32` resident representation together with
 /// the configured cascade pipeline.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct F32CascadeBackend;
 
 impl SearchBackend for F32CascadeBackend {
@@ -146,6 +147,7 @@ impl SearchBackend for F32CascadeBackend {
 /// Exact L2 admission operates directly on the resident byte vectors, so this
 /// backend requires neither a quantized admission sidecar nor an `f32` rerank
 /// stage.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct NativeU8L2Backend;
 
 impl SearchBackend for NativeU8L2Backend {

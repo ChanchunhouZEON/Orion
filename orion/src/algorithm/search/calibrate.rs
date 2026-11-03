@@ -161,7 +161,7 @@ fn calibration_error(parameter: &str, err: &str) -> Error {
 }
 
 /// Calibrated search parameters.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CalibratedParams {
     pub threshold: f32,
     pub early_exit_limit: usize,

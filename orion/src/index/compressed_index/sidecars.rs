@@ -441,3 +441,30 @@ fn build_l2_kt(dataset: &impl F32Rows, cache_base: &Path) -> L2KTDataset {
     }
     q
 }
+
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for DynamicSidecars {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DynamicSidecars")
+            .field("q_dataset", &self.q_dataset.get().is_some())
+            .field("q_dataset_l2_u16", &self.q_dataset_l2_u16.get().is_some())
+            .field("q_dataset_mips", &self.q_dataset_mips.get().is_some())
+            .field(
+                "q_dataset_mips_i16",
+                &self.q_dataset_mips_i16.get().is_some(),
+            )
+            .field("q_dataset_rabitq", &self.q_dataset_rabitq.get().is_some())
+            .field(
+                "q_dataset_rabitq_b4",
+                &self.q_dataset_rabitq_b4.get().is_some(),
+            )
+            .field("q_dataset_jl", &self.q_dataset_jl.get().is_some())
+            .field("q_dataset_jl_mips", &self.q_dataset_jl_mips.get().is_some())
+            .field(
+                "q_dataset_jl_hadamard",
+                &self.q_dataset_jl_hadamard.get().is_some(),
+            )
+            .field("q_dataset_l2_kt", &self.q_dataset_l2_kt.get().is_some())
+            .finish_non_exhaustive()
+    }
+}

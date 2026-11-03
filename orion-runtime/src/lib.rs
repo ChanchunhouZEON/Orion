@@ -39,6 +39,8 @@
 //! still programming bugs: Rust hosts choose their own panic policy. Python's
 //! boundary catches unwinding panics, invalidates poisoned handles, and never
 //! promises recovery from aborts or process-level allocation failures.
+#![warn(missing_debug_implementations)]
+
 pub mod config;
 pub mod data;
 pub mod graph;

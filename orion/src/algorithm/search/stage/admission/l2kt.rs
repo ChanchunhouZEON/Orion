@@ -122,6 +122,25 @@ impl<'a> AdmissionSession for L2KTSession<'a> {
     }
 }
 
+// Keep diagnostics bounded: do not format vector payloads or working buffers.
+impl std::fmt::Debug for L2KTAdmission<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("L2KTAdmission")
+            .field("dimension", &self.dataset.dimension)
+            .field("points", &self.dataset.num_vertices)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for L2KTSession<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("L2KTSession")
+            .field("dimension", &self.dataset.dimension)
+            .field("points", &self.dataset.num_vertices)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
