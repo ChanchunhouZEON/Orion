@@ -8,7 +8,7 @@ description = "Adaptive graph search for approximate nearest neighbors"
 readme = "README.md"
 keywords = ["ann", "vector-search", "similarity"]
 categories = ["algorithms"]
-include = ["src/**", "tests/**", "configs/**", "Cargo.toml", "README.md", "LICENSE"]
+include = ["assets/**", "src/**", "tests/**", "configs/**", "Cargo.toml", "README.md", "LICENSE"]
 edition = "2024"
 
 [features]

@@ -1,8 +1,8 @@
-# orion-ann
+<h1><img src="assets/orion-astraeus.png" alt="" width="64" align="center" /> Orion Astraeus · orion-ann</h1>
 
 Adaptive graph search for approximate nearest neighbors.
 
-Part of [Orion ANN](https://github.com/ChanchunhouZEON/Orion). Requires Rust 1.92 or newer. Licensed under MIT.
+Part of [Orion Astraeus](https://github.com/ChanchunhouZEON/Orion). Requires Rust 1.92 or newer. Licensed under MIT.
 
 The runtime-dimensional `Orion<T>` supports native f32/u8 bases, padded SIMD
 storage, adaptive cascades and graph cache I/O. For an owned service API with

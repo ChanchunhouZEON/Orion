@@ -1,4 +1,4 @@
-# Orion: Admission-Aware Graph Search
+<h1><img src="orion/assets/orion-astraeus.png" alt="" width="64" align="center" /> Orion Astraeus: Admission-Aware Graph Search</h1>
 
 [![Cross-platform smoke test](https://img.shields.io/badge/Colima%20x86__64-compile--verified-success?logo=docker&logoColor=white)](benchmark/scripts/ci_smoke_sift.sh)
 [![Tests](https://img.shields.io/badge/tests-415%20passing-success?logo=rust&logoColor=white)](docs/testing.md)
@@ -16,7 +16,7 @@
 [![ParlayANN builder](https://img.shields.io/badge/graph%20builder-ParlayANN%20included-forestgreen)](docs/graph-sources.md)
 [![Rust and Python](https://img.shields.io/badge/API-Rust%20%2B%20Python-blueviolet)](#rust-interface)
 
-Orion is an in-memory approximate nearest neighbor engine in Rust. It combines
+Orion Astraeus (Orion) is an in-memory approximate nearest neighbor engine in Rust. It combines
 an admission-aware search loop, a phased graph layout, and selectable distance
 precision to reduce search work. Graphs can be imported from ParlayANN or built
 in-process with the bundled ParlayANN builder or the Rust DiskANN builder.
