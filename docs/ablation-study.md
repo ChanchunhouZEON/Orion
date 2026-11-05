@@ -8,7 +8,7 @@ Licensed under the MIT License.
 
 This document collects the convergence-side and cascade-stage ablations,
 adaptive-search experiments, and matched-state diagnostics. Run all reproduction commands
-from the repository root; see [Quick Start](../README.md#quick-start) for setup.
+from the repository root; see [Benchmarks and development](../README.md#benchmarks-and-development) for setup.
 
 ## Table of contents
 

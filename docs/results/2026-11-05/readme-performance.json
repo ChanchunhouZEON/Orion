@@ -1,0 +1,323 @@
+{
+  "purpose": "README performance tables; derived from completed runs, no new experiments",
+  "sources": [
+    {
+      "path": "paper/sigmod_v2/sigmod_orion_v2.tex",
+      "sha256": "abde1544e003d40457ea235fa22332641bef74a4c3468200230b81bbc8ced45a"
+    },
+    {
+      "path": "paper/figures/revision_v2/sift1b_qps_recall.json",
+      "sha256": "bdff37346216fbb8bc2f0fe5dfe5bbccaa9c65e07cf6e6ee7e950df61e8513e3"
+    },
+    {
+      "path": "experiment/seven-datasets-near32-20261022/results/comparison.json",
+      "sha256": "3ec0f83063eda96075ab81d278ffcfcd0081bf58a550dba13715ec3da2a6b957"
+    },
+    {
+      "path": "orion/visualizations/wiki_ada_revision/20261009_mips_recipe/three_engine.json",
+      "sha256": "6ed15c7244182fb31d39a875f2a2802a49d1f3b892399e509635d612c184498c"
+    },
+    {
+      "path": "orion/visualizations/wiki_ada_revision/20261009_full/faiss_hnsw_sq.json",
+      "sha256": "ff8be890faf71da56ff0a4fc8957d49fcb30d1948c8957982a379130b8717f05"
+    }
+  ],
+  "wide_panel": {
+    "source_section": "Wider Baseline Panel, tab:widepanel",
+    "hardware": "Apple M4 Max",
+    "threads": 8,
+    "k": 10,
+    "recall_threshold": 0.95,
+    "units": "QPS, rounded to thousands as in the paper",
+    "datasets": [
+      "SIFT1M",
+      "GloVe-25",
+      "GloVe-100",
+      "GIST",
+      "Deep10M",
+      "MS-MARCO"
+    ],
+    "engines": {
+      "Orion": [
+        341000,
+        383000,
+        47000,
+        48000,
+        170000,
+        52000
+      ],
+      "ParlayANN": [
+        257000,
+        247000,
+        37000,
+        29000,
+        143000,
+        38000
+      ],
+      "Microsoft Vamana (DiskANN)": [
+        91000,
+        151000,
+        12000,
+        7000,
+        39000,
+        null
+      ],
+      "USearch HNSW": [
+        59000,
+        102000,
+        null,
+        null,
+        21000,
+        8000
+      ],
+      "LanceDB HNSW (native)": [
+        1000,
+        1000,
+        null,
+        null,
+        null,
+        null
+      ],
+      "HNSW (hnswlib)": [
+        51000,
+        139000,
+        null,
+        null,
+        21000,
+        6000
+      ],
+      "FAISS HNSW+SQ": [
+        54000,
+        null,
+        null,
+        null,
+        15000,
+        5000
+      ],
+      "FAISS IVF-Flat": [
+        9000,
+        33000,
+        3000,
+        null,
+        2000,
+        null
+      ],
+      "Annoy": [
+        1000,
+        3000,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "missing": "Not reaching the target or not directly comparable; Microsoft MS-MARCO excluded for metric mismatch; IVF-PQ omitted below 0.62 recall."
+  },
+  "scale_and_dimension": {
+    "threads": 8,
+    "k": 10,
+    "trials": 3,
+    "selection": "Fastest measured median QPS meeting each target; no interpolation. Parenthesized recalls in README are actual recalls.",
+    "rows": [
+      {
+        "dataset": "SIFT1B",
+        "platform": "Xeon 8358P / Linux / AVX-512",
+        "target": 0.95,
+        "engines": {
+          "orion": {
+            "recall": 0.95799,
+            "qps": 33897.0
+          },
+          "parlayann": {
+            "recall": 0.95033,
+            "qps": 33085.9
+          },
+          "diskann": {
+            "recall": 0.95113,
+            "qps": 10371.0
+          }
+        }
+      },
+      {
+        "dataset": "SIFT1B",
+        "platform": "Xeon 8358P / Linux / AVX-512",
+        "target": 0.98,
+        "engines": {
+          "orion": {
+            "recall": 0.98065,
+            "qps": 20916.0
+          },
+          "parlayann": {
+            "recall": 0.98219,
+            "qps": 17472.4
+          },
+          "diskann": {
+            "recall": 0.98038,
+            "qps": 5647.0
+          }
+        }
+      },
+      {
+        "dataset": "SIFT1B",
+        "platform": "Xeon 8358P / Linux / AVX-512",
+        "target": 0.99,
+        "engines": {
+          "orion": {
+            "recall": 0.99096,
+            "qps": 12788.0
+          },
+          "parlayann": {
+            "recall": 0.99095,
+            "qps": 11329.9
+          },
+          "diskann": {
+            "recall": 0.99147,
+            "qps": 3315.0
+          }
+        }
+      },
+      {
+        "dataset": "Wiki-Ada-1M",
+        "platform": "Apple Silicon / macOS / NEON",
+        "target": 0.99,
+        "engines": {
+          "orion": {
+            "recall": 0.99017,
+            "qps": 133907,
+            "L": 20
+          },
+          "parlayann": {
+            "recall": 0.99034,
+            "qps": 116760.0
+          },
+          "diskann": {
+            "recall": 0.9912,
+            "qps": 33299.0
+          }
+        }
+      },
+      {
+        "dataset": "Wiki-Ada-1M",
+        "platform": "Apple Silicon / macOS / NEON",
+        "target": 0.995,
+        "engines": {
+          "orion": {
+            "recall": 0.99521,
+            "qps": 110666,
+            "L": 36
+          },
+          "parlayann": {
+            "recall": 0.99516,
+            "qps": 87196.1
+          },
+          "diskann": {
+            "recall": 0.995,
+            "qps": 28404.0
+          }
+        }
+      },
+      {
+        "dataset": "Wiki-Ada-1M",
+        "platform": "Apple Silicon / macOS / NEON",
+        "target": 0.999,
+        "engines": {
+          "orion": {
+            "recall": 0.99906,
+            "qps": 43525,
+            "L": 180
+          },
+          "parlayann": {
+            "recall": 0.99903,
+            "qps": 33235.4
+          },
+          "diskann": {
+            "recall": 0.9991,
+            "qps": 14132.0
+          }
+        }
+      }
+    ]
+  },
+  "sift1b_protocol": {
+    "orion_parlayann_run": "results/20261027-165719-orion-parlay-thp-8t-n2qinxh_/snapshot-1793094219333492000",
+    "diskann_run": "results/20261027-115755-three-engine-single-load-8t-kuragosj/snapshot-1793080953931910000",
+    "timing": "Native single-pass timing; median of three trials per parameter within one process/load. Orion then ParlayANN in one head-to-head job; Microsoft measured independently earlier. No paired process-level repetitions.",
+    "recall": {
+      "orion": "strict top-k ID",
+      "diskann": "strict top-k ID",
+      "parlayann": "native boundary-tie-aware"
+    },
+    "orion_thp": "MADV_HUGEPAGE; captured anonymous huge-page fraction 99.9974%"
+  },
+  "ada_protocol": {
+    "orion_study": "sift-ada-near32-20261022; retained by seven-datasets-near32-20261022",
+    "baseline_study": "20261009_mips_recipe/three_engine.json",
+    "orion_binary_sha256": "76d34bfe516ac23551cced754703041f949cec3c667b3a48cd2827c23d707c7c",
+    "orion_prefetch": {
+      "ORION_GRAPH": "parlayann",
+      "ORION_RERANK_FACTOR": "2",
+      "ORION_DSTREAM_LA_Q": "32",
+      "ORION_DSTREAM_LA_TRUTH": "32",
+      "ORION_DSTREAM_SINK_BURST": "32",
+      "ORION_DSTREAM_BURST_TRIGGER_LINES": "8",
+      "ORION_DSTREAM_BURST_AHEAD_VECTORS": "4"
+    },
+    "input": "1M explicitly normalized 1536-D ada-002 base vectors; 10000 queries; exact IP ground truth",
+    "scoring": "Orion JL/MipsI8/IP-f32; ParlayANN 16-bit MIPS, rerank factor 6; Microsoft independently built normalized-L2 graph",
+    "recall": "Orion strict ID recall; ParlayANN retains native tie-aware recall",
+    "comparison": "Orion refreshed on October 22; baseline measurements retained from October 9; not a contemporaneous paired run"
+  },
+  "combined_table": {
+    "target_recall": 0.95,
+    "threads": 8,
+    "k": 10,
+    "selection": "Fastest measured median meeting target; actual recall retained here. Original six columns use paper rounding.",
+    "extra_columns": {
+      "SIFT1B": {
+        "Orion": {
+          "recall": 0.95799,
+          "qps": 33897.0
+        },
+        "ParlayANN": {
+          "recall": 0.95033,
+          "qps": 33085.9
+        },
+        "Microsoft Vamana (DiskANN)": {
+          "recall": 0.95113,
+          "qps": 10371.0
+        },
+        "USearch HNSW": null,
+        "LanceDB HNSW (native)": null,
+        "HNSW (hnswlib)": null,
+        "FAISS HNSW+SQ": null,
+        "FAISS IVF-Flat": null,
+        "Annoy": null
+      },
+      "Wiki-Ada-1M": {
+        "Orion": {
+          "qps": 143954,
+          "recall": 0.98587,
+          "L": 16
+        },
+        "ParlayANN": {
+          "qps": 151258.0,
+          "recall": 0.95378
+        },
+        "Microsoft Vamana (DiskANN)": {
+          "qps": 39915.0,
+          "recall": 0.9847
+        },
+        "USearch HNSW": null,
+        "LanceDB HNSW (native)": null,
+        "HNSW (hnswlib)": null,
+        "FAISS HNSW+SQ": {
+          "qps": 17730,
+          "recall": 0.95508
+        },
+        "FAISS IVF-Flat": null,
+        "Annoy": null
+      }
+    },
+    "extra_null": "Not tested in the retained experiment set; not a failure to reach recall."
+  }
+}

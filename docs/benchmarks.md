@@ -168,7 +168,7 @@ exact interpolation brackets, measured threshold points, recall ranges and audit
 
 ## Reproduction
 
-Use the commands and environment in the [README](../README.md#reproducing-a-sweep),
+Use the commands and environment in the [README](../README.md#benchmarks-and-development),
 with explicit graph source. Run k=10 and k=100 separately, recording
 `--print-config` and binary hashes. Dataset path identity and historical caches
 can vary between machines; a fresh graph need not reproduce a cached graph's

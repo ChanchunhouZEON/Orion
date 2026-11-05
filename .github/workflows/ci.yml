@@ -333,7 +333,8 @@ jobs:
         run: |
           cargo test --locked -p orion-ann-vector --release
           cargo test --locked -p orion-ann-core -p orion-ann-diagnostics -p orion-ann-parlay -p orion-ann -p orion-ann-cli
-          cargo test --locked -p orion-ann-diskann --lib
+          cargo test --locked -p orion-ann-diskann --all-features
+          cargo test --locked -p orion-ann-platform
       - name: Public API examples and warning-free docs
         run: |
           cargo test --locked --doc -p orion-ann-core -p orion-ann

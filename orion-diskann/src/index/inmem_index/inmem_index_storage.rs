@@ -212,7 +212,7 @@ where
                 delete_file_size += std::mem::size_of::<u32>();
 
                 for &item in delete_set.iter() {
-                    writer.write_all(&item.to_be_bytes())?;
+                    writer.write_all(&item.to_le_bytes())?;
                     delete_file_size += std::mem::size_of::<u32>();
                 }
 

@@ -1,0 +1,348 @@
+{
+  "date": "2026-11-05",
+  "source_commit": "97fe271b8a50e82ff1c56a9efe5adcf5380325f9",
+  "platform": "macOS AArch64",
+  "rust": "1.92",
+  "cargo_llvm_cov": "0.6.21",
+  "rust_tests": {
+    "passed": 504,
+    "failed": 0,
+    "ignored": 4
+  },
+  "doctests": {
+    "passed": 42,
+    "failed": 0,
+    "ignored": 1
+  },
+  "line_coverage": {
+    "percent": 90.19898697539797,
+    "covered_lines": 24931,
+    "lines": 27640,
+    "files": 204,
+    "scope": "Rust workspace, all features, excluding orion-ann-python; test/example/vendor paths excluded from coverage report. Native AArch64 compilation only; no doctest, Python or C++ coverage; no uncompiled x86 paths. Inline unit-test code in source files is included.",
+    "by_module": {
+      "adsampling": {
+        "lines": 95,
+        "covered_lines": 94,
+        "percent": 98.9474
+      },
+      "orion-cli": {
+        "lines": 248,
+        "covered_lines": 232,
+        "percent": 93.5484
+      },
+      "orion-core": {
+        "lines": 10771,
+        "covered_lines": 9750,
+        "percent": 90.5208
+      },
+      "orion-diagnostics": {
+        "lines": 281,
+        "covered_lines": 273,
+        "percent": 97.153
+      },
+      "orion-diskann": {
+        "lines": 6241,
+        "covered_lines": 5435,
+        "percent": 87.0854
+      },
+      "orion-error": {
+        "lines": 189,
+        "covered_lines": 168,
+        "percent": 88.8889
+      },
+      "orion-logger": {
+        "lines": 30,
+        "covered_lines": 16,
+        "percent": 53.3333
+      },
+      "orion-parlay": {
+        "lines": 314,
+        "covered_lines": 308,
+        "percent": 98.0892
+      },
+      "orion-runtime": {
+        "lines": 6536,
+        "covered_lines": 5985,
+        "percent": 91.5698
+      },
+      "orion-wasm": {
+        "lines": 37,
+        "covered_lines": 0,
+        "percent": 0.0
+      },
+      "platform": {
+        "lines": 608,
+        "covered_lines": 512,
+        "percent": 84.2105
+      },
+      "vector": {
+        "lines": 2290,
+        "covered_lines": 2158,
+        "percent": 94.2358
+      }
+    }
+  },
+  "commands": {
+    "tests": "cargo +1.92 test --offline --locked --workspace --exclude orion-ann-python --all-features",
+    "doctests": "cargo +1.92 test --offline --locked --workspace --exclude orion-ann-python --all-features --doc",
+    "coverage": "RUSTFLAGS='' CARGO_ENCODED_RUSTFLAGS='' cargo +1.92 llvm-cov --offline --locked --workspace --exclude orion-ann-python --all-features --summary-only --json --ignore-filename-regex '/(tests|examples|vendor)/' --fail-under-lines 90 --output-path coverage.json"
+  },
+  "evidence_sha256": {
+    "orion-coverage-without-buffer-concurrent-attempt-20261105.log": "ff5a5c86e143f874a7a18d52421ea5d88e0530ac429f01a8e63ed89fb7d735aa",
+    "orion-coverage-without-buffer-20261105.json": "404805bc60dacaa76cb27cd36ea1cc84319fa7aa980a8cbe756a0b1d689aeb76",
+    "orion-coverage-without-buffer-20261105.log": "af339f966062765185eb584ea34be4e4d518a5442bddca48b86aadd2c47002da",
+    "orion-doctests-without-buffer-20261105.log": "d691575d4d81cfd5e2fd00d1ccaa8fd24e8f90deff759adb5e0af8cfd98d368c",
+    "orion-default-without-buffer-20261105.log": "094af4bccc322c2702f82d6ca3ba54cdb364cbe993cbdc7ccd3fd30b7055c785",
+    "orion-readme-coverage-20261105.json": "ccbf530281a6d981c8bd19070b9988ff42635769de065a6daf6df4de809e15ff",
+    "orion-coverage-final-20261105.json": "7bf8678a7875450b5bfaab5ad14d02784d3998ca5550875482a26464c6c9da63",
+    "orion-remove-distance-buffer-workspace-check.log": "b620d228652238ec800ee374cd290414a3a212bf5a8fc8e0dcd760df759b2986",
+    "orion-remove-distance-buffer-benchmark-check.log": "44d121e460d0f60e1388352f708aad0c83533f9a1c9df37e4dabc81e368fd6a1"
+  },
+  "readme_examples": {
+    "rust_default_build_calibrate_search": "passed",
+    "python_numpy": "passed",
+    "python_file_snapshot_reopen": "passed"
+  },
+  "ci_badges": "Live GitHub Actions main-branch status; independent of these local measurement snapshots.",
+  "baseline": {
+    "source_commit": "97fe271b8a50e82ff1c56a9efe5adcf5380325f9",
+    "rust_tests": {
+      "passed": 467,
+      "failed": 0,
+      "ignored": 4
+    },
+    "line_coverage": {
+      "percent": 81.17130728829413,
+      "covered_lines": 22564,
+      "lines": 27798,
+      "files": 205,
+      "scope": "Rust workspace, all features, excluding orion-ann-python; test/example/vendor paths excluded from coverage report. Native AArch64 compilation only; no doctest, Python or C++ coverage; no uncompiled x86 paths. Inline unit-test code in source files is included.",
+      "by_module": {
+        "adsampling": {
+          "lines": 95,
+          "covered_lines": 94,
+          "percent": 98.9474
+        },
+        "orion-cli": {
+          "lines": 248,
+          "covered_lines": 179,
+          "percent": 72.1774
+        },
+        "orion-core": {
+          "lines": 10771,
+          "covered_lines": 8678,
+          "percent": 80.5682
+        },
+        "orion-diagnostics": {
+          "lines": 281,
+          "covered_lines": 273,
+          "percent": 97.153
+        },
+        "orion-diskann": {
+          "lines": 6233,
+          "covered_lines": 4484,
+          "percent": 71.9397
+        },
+        "orion-error": {
+          "lines": 189,
+          "covered_lines": 167,
+          "percent": 88.3598
+        },
+        "orion-logger": {
+          "lines": 30,
+          "covered_lines": 16,
+          "percent": 53.3333
+        },
+        "orion-parlay": {
+          "lines": 314,
+          "covered_lines": 308,
+          "percent": 98.0892
+        },
+        "orion-runtime": {
+          "lines": 6546,
+          "covered_lines": 5661,
+          "percent": 86.4803
+        },
+        "orion-wasm": {
+          "lines": 37,
+          "covered_lines": 0,
+          "percent": 0.0
+        },
+        "platform": {
+          "lines": 619,
+          "covered_lines": 460,
+          "percent": 74.3134
+        },
+        "vector": {
+          "lines": 2435,
+          "covered_lines": 2244,
+          "percent": 92.1561
+        }
+      }
+    }
+  },
+  "source_state": "Base commit plus the tested_changes and deleted_sources recorded below; measurements describe the final combined change, independent of its rebased commit ID.",
+  "default_features_tests_and_doctests": {
+    "passed": 516,
+    "failed": 0,
+    "ignored": 5
+  },
+  "release_regressions": {
+    "orion-coverage-release-20261105": {
+      "passed": 12,
+      "failed": 0,
+      "ignored": 0
+    },
+    "orion-diskann-release-20261105": {
+      "passed": 14,
+      "failed": 0,
+      "ignored": 0
+    },
+    "orion-platform-release-20261105": {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    "vector_after_legacy_buffer_removal": {
+      "passed": 63,
+      "failed": 0,
+      "ignored": 0,
+      "scope": "All remaining orion-ann-vector unit and integration tests, native AArch64 release build."
+    }
+  },
+  "new_rust_tests": 42,
+  "local_evidence_directory": "../experiment/coverage-validation-20261105/without-distance-buffer",
+  "ci_coverage": {
+    "workflow": ".github/workflows/coverage.yml",
+    "runner": "macos-15 / AArch64",
+    "minimum_line_percent": 90,
+    "status": "Local 90% gate passed after removal; final rebased commit awaits hosted validation.",
+    "previous_hosted_pass": {
+      "url": "https://github.com/ChanchunhouZEON/Orion/actions/runs/42011938341",
+      "head_sha": "06c40433ba20063872675ba507b5ea9e077fe6fd"
+    }
+  },
+  "tested_changes": {
+    ".github/workflows/ci.yml": "48fc7065822a4d18715dd6ec1a3ba58813369410a2a1ab0ca5112ebcfcb62a33",
+    ".github/workflows/coverage.yml": "e63ebafb5f9d3231d8b75f181e2e058593abedb95f37015144bb1a84a2406e3b",
+    "orion-cli/tests/cli_search.rs": "1f764230b3ad3615aaef29ea3b883dbad4c37ab3404b399ba2b5283480464585",
+    "orion-core/src/index/naive_compressed_index.rs": "a31c86b0d1194116dfc3de63cf07c9d04470b956dbf7f1370ad4b5bf8b370e31",
+    "orion-core/tests/analysis_contract.rs": "fc177e6053275f5f69d8b0b09237b78487801a8803d181558fc3fb58e41f41d5",
+    "orion-core/tests/async_search.rs": "b3654ae22b57b7f075238e5dcf2ed658d07c2d90d1fe110e175256c238b5da77",
+    "orion-core/tests/quantized_spec_kernels.rs": "d27b00b192e469644c2b9fc7b698747414f8346c51f064881771a9c7c158159b",
+    "orion-core/tests/research_baselines.rs": "eccd6574e847f43d547e095dbd8ee8c78a8e835b827eda87feeb109167960241",
+    "orion-core/tests/sidecar_cache_contract.rs": "7db91e9aaec4aee8038ed9984c0ebfc1f0e8abf6e82743ec0d8c3a05ff8c6902",
+    "orion-core/tests/sidecar_decode_contract.rs": "e664e7dcd74d4dab129fa2cc40ba36dcbc1b08698a5310a3c4ce60bafb3fee49",
+    "orion-diskann/src/index/inmem_index/inmem_index.rs": "70a6a1853f38ed78560b2f88c5a9bf2b5e1895e52bea0bb11428ec23a73617cd",
+    "orion-diskann/src/index/inmem_index/inmem_index_storage.rs": "1c8ed125d33fa88e2c2e501ed088b069071259c59cc514678d8681865b49dd84",
+    "orion-diskann/src/model/graph/inmem_graph.rs": "1cb95571354a3276560b53d7e101410a97b151cad8223af14c78a41c4f758bcc",
+    "orion-diskann/tests/cached_writer.rs": "2fbdf3df7a338c01ea00e3689da0918e995a99e612aaa246b1e6ea17c2342de6",
+    "orion-diskann/tests/error_contract.rs": "de49abce519f57c5da2505b13b1c31318fed1cd131da4facc51eaf278bb5a78a",
+    "orion-diskann/tests/graph_roundtrip.rs": "1d606d56679a9f485f82924d3a81ac617bdd5ecaa5aa9a60131f720b12e0ebc0",
+    "orion-diskann/tests/index_lifecycle.rs": "0c577ebf4214c896a96dac835a0bd8ef763ab0e5b782310e700831ee7853b705",
+    "orion-diskann/tests/pq_scratch.rs": "498fa9bc3ff2e030007f4372d172e73fc0c8d3af978a801989b67149233bdcf6",
+    "orion-diskann/tests/support/mod.rs": "4843d777ece797655c10e11d5d4875b2d8cc9737017236418d42866d064dad75",
+    "orion-runtime/src/data/tests/query_source.rs": "da39a5c80e963ce6211e51f9fb6cc6a859cbec8db530b76b375b61990244d848",
+    "orion-runtime/src/driver/presets.rs": "720e207dfbe3068727bb3caa718dd505a82730bcd6bab327be01f439a1ae2243",
+    "orion-runtime/src/driver/tests/presets.rs": "5efc31a4ec2b2aa198c14973bba8d8ad3eb2ae9b3acf11bef14f7591e96b8a88",
+    "orion-runtime/src/search/cascade.rs": "ac4a83cca09d0e5c8cceed024c80d4f549d064d4f4a82e72e462e3270f4c8cd2",
+    "orion-runtime/src/search/tests/cascade.rs": "03a63909d2e5905dd155ca18d034f9aaffef543b61654119d835063908a625ff",
+    "platform/src/aligned_reader.rs": "df7161461278e2c27e2ebe89773ae023ddf79a45ab2c81afb6761f876fce6233",
+    "platform/tests/io_boundaries.rs": "67878c6ac68264fd7239d359046c29560738727ad3af0c7e8ec1dca476d3918c",
+    "platform/tests/support/mod.rs": "4843d777ece797655c10e11d5d4875b2d8cc9737017236418d42866d064dad75",
+    "vector/src/lib.rs": "787514ecaca2a17b87ef24783a448a72032b02ed8a6d611b89b63800407536f2"
+  },
+  "compiler_warnings": 0,
+  "before_legacy_buffer_removal": {
+    "source_commit": "3f031a0",
+    "rust_tests": {
+      "passed": 510,
+      "failed": 0,
+      "ignored": 4
+    },
+    "line_coverage": {
+      "percent": 90.17455461579989,
+      "covered_lines": 25055,
+      "lines": 27785,
+      "files": 205,
+      "scope": "Rust workspace, all features, excluding orion-ann-python; test/example/vendor paths excluded from coverage report. Native AArch64 compilation only; no doctest, Python or C++ coverage; no uncompiled x86 paths. Inline unit-test code in source files is included.",
+      "by_module": {
+        "adsampling": {
+          "lines": 95,
+          "covered_lines": 94,
+          "percent": 98.9474
+        },
+        "orion-cli": {
+          "lines": 248,
+          "covered_lines": 232,
+          "percent": 93.5484
+        },
+        "orion-core": {
+          "lines": 10771,
+          "covered_lines": 9750,
+          "percent": 90.5208
+        },
+        "orion-diagnostics": {
+          "lines": 281,
+          "covered_lines": 273,
+          "percent": 97.153
+        },
+        "orion-diskann": {
+          "lines": 6241,
+          "covered_lines": 5417,
+          "percent": 86.797
+        },
+        "orion-error": {
+          "lines": 189,
+          "covered_lines": 168,
+          "percent": 88.8889
+        },
+        "orion-logger": {
+          "lines": 30,
+          "covered_lines": 16,
+          "percent": 53.3333
+        },
+        "orion-parlay": {
+          "lines": 314,
+          "covered_lines": 308,
+          "percent": 98.0892
+        },
+        "orion-runtime": {
+          "lines": 6536,
+          "covered_lines": 5985,
+          "percent": 91.5698
+        },
+        "orion-wasm": {
+          "lines": 37,
+          "covered_lines": 0,
+          "percent": 0.0
+        },
+        "platform": {
+          "lines": 608,
+          "covered_lines": 512,
+          "percent": 84.2105
+        },
+        "vector": {
+          "lines": 2435,
+          "covered_lines": 2300,
+          "percent": 94.4559
+        }
+      }
+    },
+    "note": "This earlier local AArch64 snapshot included the unused distance buffer. Its dedicated test later exposed invalid AVX-512 size/alignment assumptions in CI."
+  },
+  "removed_legacy_unit_tests": 5,
+  "net_rust_test_increase": 37,
+  "additional_checks": {
+    "workspace_all_features_all_targets": "passed",
+    "benchmark_all_targets": "passed",
+    "avx512_vector_tests_cross_check": "passed; compilation only on local AArch64 host",
+    "format": "passed",
+    "diff": "passed"
+  },
+  "deleted_sources": [
+    "vector/src/distance_buffer.rs"
+  ],
+  "coverage_retry": "The first attempt overlapped the default-feature suite and collided on the legacy PQ validation.bin output; coverage was rerun alone after that suite completed."
+}

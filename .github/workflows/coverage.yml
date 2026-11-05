@@ -1,0 +1,77 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
+name: Rust coverage
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: AArch64 workspace line coverage
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      # Match the README measurement and exercise runtime SIMD selection.
+      RUSTFLAGS: ''
+      CARGO_ENCODED_RUSTFLAGS: ''
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+      - name: Install coverage tools
+        run: |
+          test "$(uname -m)" = arm64
+          rustup component add llvm-tools-preview
+          cargo install cargo-llvm-cov --version 0.6.21 --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: aarch64-coverage
+      - name: Test workspace and enforce coverage floor
+        run: |
+          cargo llvm-cov --locked --workspace --exclude orion-ann-python --all-features \
+            --summary-only --json --ignore-filename-regex '/(tests|examples|vendor)/' \
+            --fail-under-lines 90 --output-path coverage.json
+      - name: Summarize measured coverage
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('coverage.json')
+          if not path.exists():
+              raise SystemExit('Coverage report missing; inspect the test step.')
+          data = json.loads(path.read_text())['data'][0]
+          totals = data['totals']['lines']
+          rows = {}
+          for entry in data['files']:
+              module = Path(entry['filename']).relative_to(Path.cwd()).parts[0]
+              counts = rows.setdefault(module, [0, 0])
+              counts[0] += entry['summary']['lines']['covered']
+              counts[1] += entry['summary']['lines']['count']
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+              out.write(f"Rust line coverage: **{totals['percent']:.2f}%** "
+                        f"({totals['covered']:,}/{totals['count']:,}); required: 90%.\n\n")
+              out.write('| Module | Covered / total lines | Coverage |\n|---|---:|---:|\n')
+              for module, (covered, total) in sorted(rows.items()):
+                  out.write(f'| {module} | {covered:,} / {total:,} | {100 * covered / total:.2f}% |\n')
+              out.write('\nNative AArch64 Rust, all features; excludes the Python extension, '
+                        'test/example/vendor files, doctest execution and uncompiled x86 paths. '
+                        'Inline tests in source files remain included. WASM is tested separately.\n')
+          PY
+      - name: Retain coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-coverage-${{ github.sha }}
+          path: coverage.json
+          if-no-files-found: warn

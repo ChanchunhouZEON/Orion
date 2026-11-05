@@ -59,7 +59,9 @@ where
         // Set compressed_degree for each node by writing the same neighbors
         // with a split at min(max_pruned_degree, degree). No reordering.
         (0..num_nodes).into_par_iter().for_each(|node| {
-            let nbrs = csr.neighbors(node);
+            // The unchecked writer copies into this same slab. Snapshot the
+            // source row so its non-overlapping copy contract remains valid.
+            let nbrs = csr.neighbors(node).to_vec();
             let deg = nbrs.len();
             let cd = deg.min(max_pruned_degree);
             if cd > 0 {

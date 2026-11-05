@@ -42,7 +42,8 @@ impl InMemoryGraph {
     }
 
     pub fn extend(&mut self, size: usize, max_degree: u32) {
-        for id in 0..size {
+        let first_id = self.final_graph.len();
+        for id in first_id..first_id + size {
             self.final_graph
                 .push(RwLock::new(VertexAndNeighbors::for_range(
                     id as u32,
@@ -258,13 +259,10 @@ mod graph_tests {
         assert_eq!(graph.size(), 20);
 
         let capacity = (GRAPH_SLACK_FACTOR * 10_f64).ceil() as usize;
-        let mut id: u32 = 0;
-
         for i in 10..20 {
             let neighbor = graph.final_graph[i].read().unwrap();
-            assert_eq!(neighbor.vertex_id, id);
+            assert_eq!(neighbor.vertex_id, i as u32);
             assert_eq!(neighbor.get_neighbors().capacity(), capacity);
-            id += 1;
         }
     }
 

@@ -38,10 +38,77 @@ byte-distance regressions in debug mode with integer overflow checks enabled.
 Review the job summaries rather than treating a green
 compile as evidence that an unsupported instruction path executed.
 
-No static coverage percentage is claimed. Coverage needs a fresh instrumented
-run with an explicit package/test scope; historical percentages are not an
-up-to-date guarantee. Benchmark timing regressions require controlled repeated
-experiments in addition to correctness tests.
+## README validation snapshot
+
+The test-count, doctest and line-coverage badges describe the **2026-11-05**
+local macOS/AArch64 run on Rust 1.92, including the coverage changes on top of
+`97fe271`, including removal of the unused distance buffer. They are dated
+measurements; the separate GitHub Actions badges show live `main`-branch status.
+
+| Check | Result | Scope |
+|---|---:|---|
+| Rust tests | 504 passed, 4 ignored | Workspace, all features, excluding the Python extension |
+| Doctests | 42 passed, 1 ignored | Same workspace; counted separately from Rust tests |
+| Rust line coverage | 90.20% (24,931 / 27,640 lines) | 204 compiled Rust files; test/example/vendor paths excluded |
+
+The final change adds **42 tests**, removes five unit tests belonging to the
+unused distance buffer, and raises coverage from **81.17% to 90.20%**. All
+504 tests and 42 doctests pass; four ordinary tests and one doctest remain
+explicitly ignored. Default-feature tests and all 63 remaining vector release
+tests also pass, with no compiler warnings.
+
+Before removing the legacy module, coverage was 90.17% across 27,785 lines.
+The module and its dedicated integration test were removed after confirming
+that production search and benchmarks do not use them. No coverage exclusion
+was added; the reporting scope and 90% CI gate remain unchanged.
+
+Coverage uses `cargo-llvm-cov 0.6.21`. It includes the Rust DiskANN code and
+inline unit tests within source files, but not C++, Python, doctest execution or
+x86-only paths absent from this ARM build. The native WASM wrapper is included;
+actual WebAssembly execution is checked separately by `wasm-replay`.
+Coverage measures executed lines, not correctness or memory safety.
+
+Reproduce from the repository root, running the commands sequentially. Some
+legacy DiskANN tests share output filenames within a checkout:
+
+```bash
+cargo +1.92 test --locked --workspace --exclude orion-ann-python --all-features
+cargo +1.92 test --locked --workspace --exclude orion-ann-python --all-features --doc
+rustup component add llvm-tools-preview --toolchain 1.92
+RUSTFLAGS='' CARGO_ENCODED_RUSTFLAGS='' cargo +1.92 llvm-cov \
+  --locked --workspace --exclude orion-ann-python --all-features \
+  --summary-only --json --ignore-filename-regex '/(tests|examples|vendor)/' \
+  --fail-under-lines 90 --output-path coverage.json
+```
+
+[Machine-readable results, per-module coverage and evidence hashes](results/2026-11-05/validation.json).
+Refresh the numeric badges and this snapshot together when rerunning the same
+scope. Compiler/platform changes or a different feature set can change counts.
+Benchmark timing regressions require controlled repeated experiments separately.
+
+The [coverage workflow](../.github/workflows/coverage.yml) repeats this scope on
+an AArch64 runner for pushes and pull requests. It requires at least **90%** line
+coverage and retains the JSON report with a per-module job summary. The portable
+x86 job also runs DiskANN integration and platform I/O tests. These checks do not
+shrink the reporting scope to meet the threshold.
+
+The coverage expansion adds small-data lifecycle and contract tests for:
+
+- DiskANN file/memory builds, insertion, deletion, search, mmap exports and
+  graph/candidate cache round trips;
+- all scalar quantization codecs, sparse JL, Hadamard, kernel-trick and RaBitQ
+  decoding, malformed metadata, truncated readers and sidecar restoration;
+- interruption-aware query streams, ground-truth validation and decoding across
+  batch boundaries;
+- CLI snapshot restoration against Rust search results, persisted calibration
+  and non-overwriting result output;
+- async search phase transitions, benchmark baseline parity and diagnostic counters.
+
+These tests caught and fixed little-/big-endian disagreement in deletion files,
+out-of-range deletion requests, reused IDs after graph extension, an overlapping
+copy in the naive benchmark baseline, overflow in mmap read bounds, and corrupted
+UTF-8 paths during preset substitution. SIMD kernels and prefetch scheduling are
+unchanged. The baseline copy fix only affects benchmark index preparation.
 
 ## Python / shared runtime
 
@@ -64,9 +131,6 @@ and installs the CLI. It also checks default ParlayANN construction with f32/u8
 in installed wheels and independently rebuilds and installs the sdist. These
 checks run on every push and pull request and never publish artifacts.
 
-On 2026-11-01, the macOS ARM64 Rust 1.92 run across all eight public crates
-completed with **415 passed and 2 ignored** tests, including doctests. This is
-the scope of the README test-count badge, not a claim of Windows/WASM coverage.
 DiskANN CSR stride/capacity boundary regressions are included in `portable-api`.
 
 ## Diagnostics and WASM

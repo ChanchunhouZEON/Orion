@@ -594,9 +594,9 @@ where
     }
 
     fn soft_delete_vertex(&self, vertex_id_to_delete: u32) -> ANNResult<()> {
-        if vertex_id_to_delete as usize > self.num_active_pts {
+        if vertex_id_to_delete as usize >= self.num_active_pts {
             return Err(ANNError::log_index_error(format!(
-                "vertex_id_to_delete: {} is greater than the number of active points in the graph: {}",
+                "vertex_id_to_delete: {} is outside the active point range 0..{}",
                 vertex_id_to_delete, self.num_active_pts
             )));
         }
@@ -1206,6 +1206,17 @@ where
         vertex_ids_to_delete: Vec<u32>,
         num_points_to_delete: usize,
     ) -> ANNResult<()> {
+        // Validate the batch before mutating the delete set. In particular, a
+        // count larger than the input must return an error, not index past it.
+        if num_points_to_delete > vertex_ids_to_delete.len()
+            || vertex_ids_to_delete[..num_points_to_delete]
+                .iter()
+                .any(|&id| id as usize >= self.num_active_pts)
+        {
+            return Err(ANNError::log_index_error(
+                "delete count or vertex ID is outside the active input range".to_string(),
+            ));
+        }
         println!("Deleting {} vectors from file.", num_points_to_delete);
 
         let logger = IndexLogger::new(num_points_to_delete);

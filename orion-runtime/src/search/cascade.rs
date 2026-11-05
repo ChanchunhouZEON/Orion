@@ -208,3 +208,7 @@ pub fn search_batch_compose<D: CascadeData>(
         },
     )
 }
+
+#[cfg(all(test, feature = "benchmark"))]
+#[path = "tests/cascade.rs"]
+mod tests;

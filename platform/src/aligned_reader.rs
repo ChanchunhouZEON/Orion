@@ -67,29 +67,16 @@ impl UnixAlignedFileReader {
     /// Read data from the file at the specified offset into the provided buffer.
     /// This copies from the mmap region into the aligned buffer (same API as Windows version).
     pub fn read(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
-        let offset = offset as usize;
-        let len = buf.len();
-
-        if offset + len > self.file_size as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!(
-                    "Read past end of file: offset={}, len={}, file_size={}",
-                    offset, len, self.file_size
-                ),
-            ));
-        }
-
-        buf.copy_from_slice(&self.mmap[offset..offset + len]);
-        Ok(len)
+        buf.copy_from_slice(self.read_slice(offset, buf.len())?);
+        Ok(buf.len())
     }
 
     /// Read data at the specified offset, returning a slice view into the mmap.
     /// Zero-copy access when alignment is not required.
     pub fn read_slice(&self, offset: u64, len: usize) -> io::Result<&[u8]> {
-        let offset = offset as usize;
-
-        if offset + len > self.file_size as usize {
+        // Compare in file-offset units before converting to an address. This
+        // also rejects overflowing ranges instead of wrapping or panicking.
+        if offset > self.file_size || len as u64 > self.file_size - offset {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!(
@@ -99,6 +86,7 @@ impl UnixAlignedFileReader {
             ));
         }
 
+        let offset = offset as usize;
         Ok(&self.mmap[offset..offset + len])
     }
 

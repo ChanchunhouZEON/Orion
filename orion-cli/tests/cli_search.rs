@@ -558,3 +558,116 @@ fn auto_uses_source_specific_default_directories_and_yaml_can_be_strict() {
     successful(run(&["--prepare-only"]));
     successful(run(&["--graph-source", "auto", "--prepare-only"]));
 }
+
+#[test]
+fn snapshot_cli_restores_calibration_and_matches_rust_search() {
+    use orion_ann::{BaseInput, GraphConfig, Index, IndexOptions, QueryBatch, SearchOptions};
+    let f = Fixture::new();
+    let mut index = Index::new(
+        BaseInput::from_file(f.root.join("base.bvecs")),
+        IndexOptions {
+            threads: 1,
+            cache_dir: f.root.join("snapshot-build"),
+            graph: GraphConfig {
+                degree: 15,
+                build_l: 24,
+                max_extra: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let queries: Vec<f32> = f
+        .query_bytes
+        .chunks_exact(132)
+        .flat_map(|row| row[4..].iter().map(|v| f32::from(*v)))
+        .collect();
+    index
+        .calibrate(queries[..128 * 16].to_vec(), 1, Some(24))
+        .unwrap();
+    let expected = index
+        .search(
+            QueryBatch::from_f32(&queries, 128).unwrap(),
+            &SearchOptions::new(1, 24),
+        )
+        .unwrap();
+    let snapshot = f.root.join("snapshot");
+    index.save(&snapshot).unwrap();
+    let command = || {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_orion"));
+        cmd.current_dir(&f.root)
+            .env_remove("ORION_SWEEP_CONFIG")
+            .env_remove("ORION_GRAPH")
+            .env_remove("ORION_STAGED_FILE");
+        cmd.args([
+            "--snapshot",
+            "snapshot",
+            "--base",
+            "base.bvecs",
+            "--query",
+            "query.bvecs",
+            "--k",
+            "1",
+            "--search-l",
+            "24",
+            "--threads",
+            "1",
+            "--query-batch-size",
+            "7",
+        ]);
+        cmd
+    };
+    let lines = successful(
+        command()
+            .args(["--groundtruth", "gt.ivecs"])
+            .output()
+            .unwrap(),
+    );
+    for (line, ids) in lines.iter().zip(expected.rows()) {
+        assert_eq!(line["ids"], serde_json::json!(ids));
+    }
+    assert_eq!(lines.len(), 206);
+    assert_eq!(lines.last().unwrap()["dataset"], "snapshot");
+    assert_eq!(lines.last().unwrap()["recall"], 1.);
+    let summary = successful(
+        command()
+            .args(["--output", "results.jsonl"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(summary.len(), 1);
+    let output = std::fs::read_to_string(f.root.join("results.jsonl")).unwrap();
+    assert_eq!(output.lines().count(), 205);
+    let failed = command()
+        .args(["--output", "results.jsonl"])
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("results.jsonl")).unwrap(),
+        output
+    );
+    // Restore a snapshot without calibration: CLI must surface InvalidState,
+    // rather than quietly recalibrating or searching a different recipe.
+    let uncalibrated = Index::new(
+        BaseInput::from_file(f.root.join("base.bvecs")),
+        IndexOptions {
+            threads: 1,
+            cache_dir: f.root.join("uncalibrated-cache"),
+            graph: GraphConfig {
+                degree: 15,
+                build_l: 24,
+                max_extra: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    std::fs::rename(&snapshot, f.root.join("calibrated-snapshot")).unwrap();
+    uncalibrated.save(&snapshot).unwrap();
+    let failed = command().args(["--error-format", "json"]).output().unwrap();
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("no saved calibration"));
+}

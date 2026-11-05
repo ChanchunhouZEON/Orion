@@ -110,9 +110,6 @@ pub use distance_kernel::{
     L2F32Distance, L2U16Distance, L2U8Distance,
 };
 
-mod distance_buffer;
-pub use distance_buffer::CacheLineDistanceBuffer;
-
 mod distance_stream;
 pub use distance_stream::DistanceStream;
 

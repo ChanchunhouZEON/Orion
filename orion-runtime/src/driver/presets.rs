@@ -453,8 +453,11 @@ pub fn try_resolve_placeholders(s: &str) -> Option<String> {
             out.push_str(&val);
             i = close + 1;
         } else {
-            out.push(bytes[i] as char);
-            i += 1;
+            // `i` stays on UTF-8 boundaries, including after substitutions.
+            // Preserve non-ASCII directory names rather than widening bytes.
+            let character = s[i..].chars().next()?;
+            out.push(character);
+            i += character.len_utf8();
         }
     }
     Some(out)
@@ -586,24 +589,17 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_resolves_pa_root_env() {
-        // SAFETY: env var mutation is process-global, but other tests
-        // here don't read PA_ROOT, and serial-by-default `cargo test`
-        // run order makes this safe. Set + verify + clean up.
-        let prev = std::env::var("PA_ROOT").ok();
-        // SAFETY: see comment above re. process-global env.
-        unsafe {
-            std::env::set_var("PA_ROOT", "/tmp/pa-test-root");
-        }
-        let resolved = try_resolve_placeholders("${PA_ROOT}/data/glove100/x.staged").unwrap();
-        assert_eq!(resolved, "/tmp/pa-test-root/data/glove100/x.staged");
-        match prev {
-            Some(v) => unsafe {
-                std::env::set_var("PA_ROOT", v);
-            },
-            None => unsafe {
-                std::env::remove_var("PA_ROOT");
-            },
-        }
+    fn placeholder_resolves_existing_environment() {
+        // Cargo tests run concurrently. Read an existing value rather than
+        // mutating process-global variables while other loaders use them.
+        let expected = std::env::var("PATH").unwrap();
+        assert_eq!(
+            try_resolve_placeholders("${PATH}/fixture"),
+            Some(format!("{expected}/fixture"))
+        );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/presets.rs"]
+mod contract_tests;
