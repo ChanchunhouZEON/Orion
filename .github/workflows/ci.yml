@@ -314,27 +314,64 @@ jobs:
           python orion-py/tests/run.py --profile python
 
   portable-api:
-    name: Portable x86 / public API and docs
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    name: Native API / ${{ matrix.os }} / ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: Linux
+            arch: x86_64
+            runner: ubuntu-24.04
+            host: x86_64-unknown-linux-gnu
+            backends: 'scalar,avx2'
+          - os: Linux
+            arch: ARM64
+            runner: ubuntu-24.04-arm
+            host: aarch64-unknown-linux-gnu
+            backends: 'scalar,neon'
+          - os: macOS
+            arch: x86_64
+            runner: macos-15-intel
+            host: x86_64-apple-darwin
+            backends: 'scalar,avx2'
+          - os: macOS
+            arch: ARM64
+            runner: macos-15
+            host: aarch64-apple-darwin
+            backends: 'scalar,neon'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     env:
-      # Override repository AVX2 flags: exercise runtime feature dispatch.
-      RUSTFLAGS: '-C target-cpu=x86-64 -D warnings'
+      # Override repository ISA/linker flags; validate downstream-style runtime dispatch.
+      RUSTFLAGS: '-D warnings'
       RUSTDOCFLAGS: '-D warnings'
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: portable-api
+          shared-key: portable-api-${{ matrix.host }}
+      - name: Verify native host
+        env:
+          EXPECTED_HOST: ${{ matrix.host }}
+        run: |
+          test "$(rustc -vV | sed -n 's/^host: //p')" = "$EXPECTED_HOST"
+          uname -sm
       - name: Portable distance and service regressions
         env:
-          ORION_TEST_REQUIRED_BACKENDS: 'scalar,avx2'
+          ORION_TEST_REQUIRED_BACKENDS: ${{ matrix.backends }}
         run: |
           cargo test --locked -p orion-ann-vector --release
           cargo test --locked -p orion-ann-core -p orion-ann-diagnostics -p orion-ann-parlay -p orion-ann -p orion-ann-cli
           cargo test --locked -p orion-ann-diskann --all-features
           cargo test --locked -p orion-ann-platform
+      - name: Native Python and CLI parity
+        run: |
+          python -m pip install 'numpy>=1.24,<3'
+          python orion-py/tests/run.py
       - name: Public API examples and warning-free docs
         run: |
           cargo test --locked --doc -p orion-ann-core -p orion-ann

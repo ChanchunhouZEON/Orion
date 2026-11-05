@@ -88,8 +88,8 @@ Benchmark timing regressions require controlled repeated experiments separately.
 
 The [coverage workflow](../.github/workflows/coverage.yml) repeats this scope on
 an AArch64 runner for pushes and pull requests. It requires at least **90%** line
-coverage and retains the JSON report with a per-module job summary. The portable
-x86 job also runs DiskANN integration and platform I/O tests. These checks do not
+coverage and retains the JSON report with a per-module job summary. The native
+OS/CPU matrix also runs DiskANN integration and platform I/O tests. These checks do not
 shrink the reporting scope to meet the threshold.
 
 The coverage expansion adds small-data lifecycle and contract tests for:

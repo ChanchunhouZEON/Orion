@@ -15,9 +15,10 @@ validation a reviewer can assess independently.
 ## Set up a checkout
 
 Use the toolchain pinned in [rust-toolchain.toml](rust-toolchain.toml), currently
-Rust 1.92. Default graph construction also requires a C++17 compiler. Linux
-x86-64 and macOS Apple Silicon are tested in CI; see [platform support](docs/platforms.md)
-before choosing explicit SIMD compiler flags.
+Rust 1.92. Default graph construction also requires a C++17 compiler. The native
+CI matrix covers Linux and macOS on x86-64 and ARM64; see the
+[validation status](docs/platforms.md#native-ci-matrix) before choosing explicit
+SIMD compiler flags.
 
 ```bash
 git clone https://github.com/ChanchunhouZEON/Orion.git

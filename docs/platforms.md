@@ -12,14 +12,39 @@ repository root. [.cargo/config.toml](../.cargo/config.toml) enables dot-product
 instructions on Apple Silicon (and requests LLD) and AVX2/FMA on x86 targets.
 Explicit `RUSTFLAGS` replaces those target flags; record it in experiment metadata.
 
+## Native CI matrix
+
+OS and CPU badges describe separate target dimensions. The native API job runs
+the following four combinations; each verifies the Rust host triple and executes
+distance, graph construction, persistence, Rust/CLI and Python consistency tests.
+
+| OS | CPU | GitHub runner | Rust host |
+|---|---|---|---|
+| Linux | x86-64 | `ubuntu-24.04` | `x86_64-unknown-linux-gnu` |
+| Linux | ARM64 | `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` |
+| macOS | x86-64 | `macos-15-intel` | `x86_64-apple-darwin` |
+| macOS | ARM64 | `macos-15` | `aarch64-apple-darwin` |
+
+The Linux ARM64 and macOS x86-64 jobs are newly configured and await their first
+hosted run. Linux x86-64 and macOS ARM64 already have runtime validation. Inspect
+the [current CI results](https://github.com/ChanchunhouZEON/Orion/actions/workflows/ci.yml)
+before treating a matrix entry as a passing run. Runner labels follow the
+[GitHub-hosted runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+
+These jobs override repository-specific ISA flags and exercise runtime SIMD
+selection; the existing explicit-ISA jobs remain separate. Native source/API
+validation does not imply a wheel is available for every combination. The
+[package workflow](../.github/workflows/release-check.yml) currently validates
+wheel artifacts on Linux x86-64 and macOS ARM64. Windows is not in this matrix.
+
 ## AArch64
 
 Apple Silicon builds use NEON and `+dotprod`. The local result snapshots use
 macOS/AArch64; Linux THP is not active there. Ensure the target CPU supports any
-optional instructions enabled at compilation. Other operating systems/targets
-need their own runtime verification.
+optional instructions enabled at compilation. Linux ARM64 uses its own native
+CI runner without globally requiring optional dot-product instructions.
 
-## x86 Linux
+## x86 Linux and macOS
 
 For the tested Xeon Platinum 8358P configuration:
 
@@ -56,7 +81,7 @@ AVX2 when a wider kernel would over-read. Existing row layouts are unchanged.
 Ordinary downstream Cargo dependencies do not inherit this repository's
 `.cargo/config.toml`, and automatically use these runtime choices without
 application build flags. Explicit supported target features keep direct
-specialized paths. The portable CI job tests automatic dispatch separately
+specialized paths. The native CI matrix tests automatic dispatch separately
 from explicit SIMD builds. Runtime detection does not make a globally
 AVX-512-compiled binary safe on an AVX2-only CPU.
 

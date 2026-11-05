@@ -5,7 +5,8 @@
 <p align="center">
   <a href=".github/workflows/ci.yml"><img alt="Safety tests: Miri and adversarial inputs" src="https://img.shields.io/badge/safety-Miri_%2B_adversarial_tests-377EAD?style=flat&amp;labelColor=17263D" /></a>
   <a href="orion-runtime/src/guide/cache.md"><img alt="Verified persistence: SHA-256" src="https://img.shields.io/badge/integrity-SHA--256-377EAD?style=flat&amp;labelColor=17263D" /></a>
-  <a href="docs/platforms.md"><img alt="Tested platforms: Linux x86-64 and macOS ARM64" src="https://img.shields.io/badge/platforms-Linux_x86__64_%7C_macOS_ARM64-377EAD?style=flat&amp;labelColor=17263D" /></a>
+  <a href="docs/platforms.md#native-ci-matrix"><img alt="OS targets: Linux and macOS" src="https://img.shields.io/badge/OS-Linux_%7C_macOS-377EAD?style=flat&amp;labelColor=17263D" /></a>
+  <a href="docs/platforms.md#native-ci-matrix"><img alt="CPU targets: x86-64 and ARM64" src="https://img.shields.io/badge/CPU-x86__64_%7C_ARM64-377EAD?style=flat&amp;labelColor=17263D" /></a>
 </p>
 
 <p align="center">
@@ -48,28 +49,26 @@ graph and sidecar objects.
 
 ## Performance
 
-**Highest measured QPS at Recall@10 ≥ 0.95 across the paper's six-dataset wider
-baseline panel**, extended here with billion-vector SIFT1B and high-dimensional
-Wiki-Ada-1M results. All columns use **8 threads, k=10, and recall ≥ 0.95**;
-we select the fastest measured median meeting the target, without interpolation.
-K = 1,000 QPS; the first six columns retain the paper's rounding.
+These datasets span image descriptors, learned visual features, word embeddings
+and passage embeddings, covering low- and high-dimensional search as well as
+million- to billion-vector scale. All columns use **8 threads, k=10, and
+Recall@10 ≥ 0.95**; we select the fastest measured median QPS meeting the
+target, without interpolation.
 
 | Engine · QPS | SIFT1M | GloVe-25 | GloVe-100 | GIST | Deep10M | MS-MARCO | SIFT1B | Wiki-Ada-1M |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Orion** | **341K** | **383K** | **47K** | **48K** | **170K** | **52K** | **33,897** | **143,954** |
-| ParlayANN | 257K | 247K | 37K | 29K | 143K | 38K | 33,086 | 151,258 |
-| Microsoft Vamana (DiskANN) | 91K | 151K | 12K | 7K | 39K | — | 10,371 | 39,915 |
+| **Orion** | **341K** | **383K** | **47K** | **48K** | **170K** | **52K** | **34K** | **144K** |
+| ParlayANN | 257K | 247K | 37K | 29K | 143K | 38K | 33K | 151K |
+| Microsoft Vamana (DiskANN) | 91K | 151K | 12K | 7K | 39K | — | 10K | 40K |
 | USearch HNSW | 59K | 102K | — | — | 21K | 8K | Not tested | Not tested |
 | LanceDB HNSW (native) | 1K | 1K | — | — | — | — | Not tested | Not tested |
 | HNSW (hnswlib) | 51K | 139K | — | — | 21K | 6K | Not tested | Not tested |
-| FAISS HNSW+SQ | 54K | — | — | — | 15K | 5K | Not tested | 17,730 |
+| FAISS HNSW+SQ | 54K | — | — | — | 15K | 5K | Not tested | 18K |
 | FAISS IVF-Flat | 9K | 33K | 3K | — | 2K | — | Not tested | Not tested |
 | Annoy | 1K | 3K | — | — | — | — | Not tested | Not tested |
 
-The six-dataset panel runs on Apple M4 Max. Wiki-Ada-1M contains 1M × 1,536-D
-normalized embeddings on Apple Silicon; SIFT1B contains 1B × 128-D native-u8
-vectors on Xeon Platinum 8358P, Linux/AVX-512 with Orion transparent huge pages.
-Loading, graph construction and calibration are outside search timing.
+SIFT1B runs on an Intel Xeon Platinum 8358P (Linux/AVX-512); the other seven
+datasets run on Apple M4 Max (macOS/NEON).
 
 `Not tested` marks combinations without retained measurements. `—` marks
 measured curves below the target or a non-comparable result. Microsoft Vamana
@@ -178,7 +177,7 @@ in the snapshot. Rust offers the same `Index::save` / `Index::open` workflow.
 
 | Capability | Available today |
 |---|---|
-| Native platforms tested in CI | Linux x86-64 and macOS Apple Silicon |
+| Native CI matrix | Linux and macOS × x86-64 and ARM64; [validation status](docs/platforms.md#native-ci-matrix) |
 | APIs | Rust `Index`; Python 3.9+ / NumPy; standalone CLI |
 | Metrics | f32 L2, cosine and inner product; native-u8 L2 |
 | Dimensions | Runtime dimensions with automatic row padding |

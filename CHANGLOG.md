@@ -15,6 +15,9 @@ unreleased development baseline, not a dated release announcement.
 
 ### Added
 
+- Native API CI matrix entries for Linux ARM64 and macOS x86-64 alongside the
+  existing Linux x86-64 and macOS ARM64 checks; OS and CPU badges are separate.
+
 - A shared Rust `Index` API for file and in-memory inputs, graph construction,
   calibration, batch search and persistence, with Python/NumPy and CLI adapters.
 - Dynamic vector dimensions with row padding, f32 cascades, native-u8 L2 search

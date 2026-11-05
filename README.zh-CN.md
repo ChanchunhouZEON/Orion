@@ -5,7 +5,8 @@
 <p align="center">
   <a href=".github/workflows/ci.yml"><img alt="Safety tests: Miri and adversarial inputs" src="https://img.shields.io/badge/safety-Miri_%2B_adversarial_tests-377EAD?style=flat&amp;labelColor=17263D" /></a>
   <a href="orion-runtime/src/guide/cache.md"><img alt="Verified persistence: SHA-256" src="https://img.shields.io/badge/integrity-SHA--256-377EAD?style=flat&amp;labelColor=17263D" /></a>
-  <a href="docs/platforms.md"><img alt="Tested platforms: Linux x86-64 and macOS ARM64" src="https://img.shields.io/badge/platforms-Linux_x86__64_%7C_macOS_ARM64-377EAD?style=flat&amp;labelColor=17263D" /></a>
+  <a href="docs/platforms.md#native-ci-matrix"><img alt="OS targets: Linux and macOS" src="https://img.shields.io/badge/OS-Linux_%7C_macOS-377EAD?style=flat&amp;labelColor=17263D" /></a>
+  <a href="docs/platforms.md#native-ci-matrix"><img alt="CPU targets: x86-64 and ARM64" src="https://img.shields.io/badge/CPU-x86__64_%7C_ARM64-377EAD?style=flat&amp;labelColor=17263D" /></a>
 </p>
 
 <p align="center">
@@ -37,21 +38,21 @@
 
 ## 性能
 
-在论文涵盖更多基线的六数据集对照中，Orion 在 **Recall@10 ≥ 0.95 时均取得最高实测 QPS**。下表同时列出十亿向量规模的 SIFT1B 和高维 Wiki-Ada-1M 结果。所有列均使用 **8 线程、k=10、recall ≥ 0.95**；每个结果取达到目标召回率的最快实测 QPS 中位数，不进行插值。K 表示 1,000 QPS，前六列沿用论文的舍入精度。
+这些数据集涵盖图像描述子、学习得到的视觉特征、词向量和段落向量，用于检验低维与高维搜索，以及百万到十亿向量规模下的性能。所有列均使用 **8 线程、k=10、Recall@10 ≥ 0.95**；每个结果取达到目标召回率的最快实测 QPS 中位数，不进行插值。
 
 | 引擎 · QPS | SIFT1M | GloVe-25 | GloVe-100 | GIST | Deep10M | MS-MARCO | SIFT1B | Wiki-Ada-1M |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Orion** | **341K** | **383K** | **47K** | **48K** | **170K** | **52K** | **33,897** | **143,954** |
-| ParlayANN | 257K | 247K | 37K | 29K | 143K | 38K | 33,086 | 151,258 |
-| Microsoft Vamana (DiskANN) | 91K | 151K | 12K | 7K | 39K | — | 10,371 | 39,915 |
+| **Orion** | **341K** | **383K** | **47K** | **48K** | **170K** | **52K** | **34K** | **144K** |
+| ParlayANN | 257K | 247K | 37K | 29K | 143K | 38K | 33K | 151K |
+| Microsoft Vamana (DiskANN) | 91K | 151K | 12K | 7K | 39K | — | 10K | 40K |
 | USearch HNSW | 59K | 102K | — | — | 21K | 8K | 未测试 | 未测试 |
 | LanceDB HNSW (native) | 1K | 1K | — | — | — | — | 未测试 | 未测试 |
 | HNSW (hnswlib) | 51K | 139K | — | — | 21K | 6K | 未测试 | 未测试 |
-| FAISS HNSW+SQ | 54K | — | — | — | 15K | 5K | 未测试 | 17,730 |
+| FAISS HNSW+SQ | 54K | — | — | — | 15K | 5K | 未测试 | 18K |
 | FAISS IVF-Flat | 9K | 33K | 3K | — | 2K | — | 未测试 | 未测试 |
 | Annoy | 1K | 3K | — | — | — | — | 未测试 | 未测试 |
 
-前六个数据集的实验运行于 Apple M4 Max。Wiki-Ada-1M 包含 100 万条 1,536 维归一化向量，运行于 Apple Silicon；SIFT1B 包含 10 亿条 128 维原生 u8 向量，运行于 Xeon Platinum 8358P、Linux/AVX-512，Orion 启用了透明大页。搜索计时不包含数据加载、构图和校准。
+SIFT1B 运行于 Intel Xeon Platinum 8358P（Linux/AVX-512）；其余七个数据集运行于 Apple M4 Max（macOS/NEON）。
 
 「未测试」表示没有保留对应测量结果；「—」表示实测曲线未达到目标召回率，或结果不可比。Microsoft Vamana 指 DiskANN 的内存实现，其 MS-MARCO 结果因距离度量不一致而未纳入比较。FAISS IVF-PQ 在前六个数据集上的 recall 均低于 0.62，故未列入。**粗体用于突出 Orion 的结果。**
 [精确 QPS、实际召回率与运行元数据](docs/results/2026-11-05/readme-performance.json) · [实验方法](docs/benchmarks.md) · [SIFT1B 资源规划](docs/large-datasets.md)。
@@ -145,7 +146,7 @@ result = restored.search("queries.fbin", k=10, search_list_size=100)
 
 | 能力 | 当前支持 |
 |---|---|
-| CI 验证的原生平台 | Linux x86-64、macOS Apple Silicon |
+| 原生 CI 矩阵 | Linux、macOS × x86-64、ARM64；[验证状态](docs/platforms.md#native-ci-matrix) |
 | 接口 | Rust `Index`；Python 3.9+ / NumPy；独立 CLI |
 | 距离度量 | f32 L2、余弦和内积；原生 u8 L2 |
 | 维度 | 运行时维度，自动逐行 padding |

@@ -271,7 +271,7 @@
     "target_recall": 0.95,
     "threads": 8,
     "k": 10,
-    "selection": "Fastest measured median meeting target; actual recall retained here. Original six columns use paper rounding.",
+    "selection": "Fastest measured median meeting target; actual recall retained here. All README columns display QPS rounded to the nearest thousand (K).",
     "extra_columns": {
       "SIFT1B": {
         "Orion": {
