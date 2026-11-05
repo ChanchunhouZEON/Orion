@@ -371,6 +371,8 @@ jobs:
       - name: Native Python and CLI parity
         run: |
           python -m pip install 'numpy>=1.24,<3'
+          # The test launcher builds offline; cold runners need Python-only crates too.
+          cargo fetch --locked
           python orion-py/tests/run.py
       - name: Public API examples and warning-free docs
         run: |

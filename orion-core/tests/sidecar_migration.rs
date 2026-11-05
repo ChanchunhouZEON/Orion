@@ -4,13 +4,12 @@
  */
 
 //! Immutable pre-migration artifacts: catch changes to quantization and calibration.
-#![cfg(target_arch = "aarch64")]
-#[cfg(feature = "benchmark")]
+#[cfg(all(feature = "benchmark", target_arch = "aarch64", target_os = "macos"))]
 #[path = "support/index_graph.rs"]
 mod graph_fixture;
-#[cfg(feature = "benchmark")]
+#[cfg(all(feature = "benchmark", target_arch = "aarch64", target_os = "macos"))]
 use graph_fixture::{GraphFixture, from_fixture_graph};
-#[cfg(feature = "benchmark")]
+#[cfg(all(feature = "benchmark", target_arch = "aarch64", target_os = "macos"))]
 use orion_ann_core::CalibrationConfig;
 use orion_ann_core::model::dataset::{
     jl_hadamard_dataset::JlHadamardDataset,
@@ -22,10 +21,11 @@ use orion_ann_core::model::dataset::{
     scalar_dataset::ScalarQuantizedDataset,
 };
 use orion_ann_diskann::model::{InmemDataset, PaddedDataset};
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 use std::path::Path;
 
 #[test]
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 fn frozen_sidecars_and_calibration() {
     let mut base = InmemDataset::<f32, 32>::new(48, 1.0).unwrap();
     for i in 0..48 * 32 {
@@ -109,7 +109,7 @@ fn frozen_sidecars_and_calibration() {
     );
     save!("rabitq.bin", RabitQDataset::build_from(&padded, 42));
     save!("rabitq4.bin", RabitQ4Dataset::build_from(&padded, 42));
-    #[cfg(feature = "benchmark")]
+    #[cfg(all(feature = "benchmark", target_arch = "aarch64", target_os = "macos"))]
     {
         let qs: Vec<[f32; 32]> = (0..8)
             .map(|r| std::array::from_fn(|j| base.data[r * 32 + j] + 0.01))
@@ -165,4 +165,85 @@ fn frozen_sidecars_and_calibration() {
         }
     }
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// The frozen artifacts were generated with Apple's math library. Seeded
+/// Gaussian rotations use ln/cos, whose rounding is not identical across OSes.
+/// Test format portability separately from same-host construction parity;
+/// neither check relaxes byte equality or regenerates a golden artifact.
+#[test]
+fn portable_sidecar_encoding_and_layout_parity() {
+    let mut base = InmemDataset::<f32, 32>::new(48, 1.0).unwrap();
+    for i in 0..48 * 32 {
+        base.data[i] = ((i * 31 + i / 32 * 7) % 103) as f32 / 17. - 3.;
+    }
+    let padded = PaddedDataset::from_packed(
+        &base.data[..48 * 32],
+        orion_ann_vector::PaddedLayout::new::<f32>(32, 256).unwrap(),
+    )
+    .unwrap();
+    macro_rules! check {
+        ($name:literal, $ty:ty, $typed:expr, $dynamic:expr) => {{
+            let fixture = include_bytes!(concat!("fixtures/dynamic-sidecars/", $name));
+            let restored = <$ty>::decode(&mut &fixture[..], fixture.len() as u64).unwrap();
+            let mut encoded = Vec::new();
+            restored.encode(&mut encoded).unwrap();
+            assert_eq!(encoded, fixture, "{}: frozen file round trip", $name);
+            let mut typed = Vec::new();
+            let mut dynamic = Vec::new();
+            $typed.encode(&mut typed).unwrap();
+            $dynamic.encode(&mut dynamic).unwrap();
+            assert_eq!(typed, dynamic, "{}: typed / padded construction", $name);
+        }};
+    }
+    macro_rules! scalar {
+        ($name:literal, $spec:ty) => {
+            check!(
+                $name,
+                ScalarQuantizedDataset<$spec>,
+                ScalarQuantizedDataset::<$spec>::from_f32_dataset(&base),
+                ScalarQuantizedDataset::<$spec>::from_f32_dataset(&padded)
+            );
+        };
+    }
+    scalar!("u8.bin", L2U8);
+    scalar!("u16.bin", L2U16);
+    scalar!("i8.bin", MipsI8);
+    scalar!("i16.bin", MipsI16);
+    check!(
+        "kt.bin",
+        L2KTDataset,
+        L2KTDataset::build_from(&base),
+        L2KTDataset::build_from(&padded)
+    );
+    check!(
+        "jl.bin",
+        JLSparseDataset<1024>,
+        JLSparseDataset::<1024>::build_from(&base, 42),
+        JLSparseDataset::<1024>::build_from(&padded, 42)
+    );
+    check!(
+        "jl-mips.bin",
+        JLSparseDatasetMips<1024>,
+        JLSparseDatasetMips::<1024>::build_from(&base, 42),
+        JLSparseDatasetMips::<1024>::build_from(&padded, 42)
+    );
+    check!(
+        "hadamard.bin",
+        JlHadamardDataset,
+        JlHadamardDataset::build_with_padding(&base, 42, 64),
+        JlHadamardDataset::build_with_padding(&padded, 42, 64)
+    );
+    check!(
+        "rabitq.bin",
+        RabitQDataset,
+        RabitQDataset::build_from(&base, 42),
+        RabitQDataset::build_from(&padded, 42)
+    );
+    check!(
+        "rabitq4.bin",
+        RabitQ4Dataset,
+        RabitQ4Dataset::build_from(&base, 42),
+        RabitQ4Dataset::build_from(&padded, 42)
+    );
 }
