@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 # Testing and CI
 
 [README](../README.md)
@@ -6,7 +11,7 @@ Run checks with the pinned toolchain from the repository root:
 
 ```bash
 cargo test --locked -p orion-ann-cli
-cargo check --locked -p benchmark --bins
+cargo check --locked --manifest-path benchmark/Cargo.toml --bins
 cargo test --locked -p orion-ann-vector --release
 cargo test --locked -p orion-ann --release --lib
 ```
@@ -41,14 +46,14 @@ experiments in addition to correctness tests.
 ## Python / shared runtime
 
 ```bash
-cargo test --locked -p orion-ann-runtime -p orion-ann-cli
+cargo test --locked -p orion-ann -p orion-ann-cli
 python3 orion-py/tests/run.py
 ```
 
 The Python suite uses generated small STAG graphs and NumPy data. It compares
 file/array inputs and CLI IDs/calibration for L2, inner product, cosine and native
-u8, then checks strict cache reopening, invalid inputs and serialized concurrent
-calls. The runner builds a local extension and CLI; no wheel is published.
+u8, then checks strict cache reopening, invalid inputs and concurrent mixed-k/beam
+searches. The runner builds a local extension and CLI; no wheel is published.
 
 Release preparation additionally checks executable Rust configuration/build/cache/
 search examples, CLI/Python error-report consistency and panic-boundary recovery.
@@ -66,10 +71,20 @@ DiskANN CSR stride/capacity boundary regressions are included in `portable-api`.
 
 ## Diagnostics and WASM
 
-`trace_search` regression tests compare f32/u8 regular and observed search across
-beam widths, with and without adaptive search. They check real admission scores,
+`trace_search` regression tests compare f32/u8 adaptive traces with public search
+across beam widths. They also exercise uncalibrated diagnostic traces and, with
+the `benchmark` feature, compare their IDs with the non-adaptive baseline.
+They check real admission scores,
 peel/beam events, budget truncation and error contracts. The pure diagnostics
 configuration (`--no-default-features`) tests schema validation and replay limits.
 The `wasm-replay` CI job builds the browser module and executes it in Node's real
 WebAssembly VM against a freshly generated native trace. Windows and browser-side
 graph search are not covered by that job.
+
+
+The root manifest and lockfile describe the production workspace. The
+experiments use their own workspace and `benchmark/Cargo.lock`, and depend on
+the local Orion crates with the `benchmark` feature. Open the repository root
+in the editor to work with production features; open `benchmark/` as a separate
+project for the experimental build. To use the usual ParlayANN default as well,
+leave rust-analyzer's Cargo default features enabled.

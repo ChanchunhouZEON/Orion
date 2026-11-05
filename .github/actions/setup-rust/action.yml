@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 name: Repository Rust toolchain
 description: Install the toolchain declared by rust-toolchain.toml.
 inputs:

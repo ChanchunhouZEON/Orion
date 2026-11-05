@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Error contracts are shared with Rust and CLI; no Rust panics escape as BaseException."""
 import json
 import os
@@ -43,12 +46,13 @@ class ErrorTests(unittest.TestCase):
         reports = []
         for value in [bad, path]:
             with self.assertRaises(OrionError) as raised:
-                index.search(value, k=3, adaptive=False)
+                index.search(value, k=3)
             reports.append(raised.exception.report)
         self.assertEqual(reports[0], reports[1])
         self.assertEqual(reports[0]['code'], 'ORION_DIMENSION_MISMATCH')
         self.assertEqual(reports[0]['details'], {'field': 'queries.dimension', 'expected': 32, 'actual': 31})
-        self.assertEqual(index.search(queries, k=3, adaptive=False).ids.shape, (24, 3))
+        index.calibrate(queries, k=3)
+        self.assertEqual(index.search(queries, k=3).ids.shape, (24, 3))
 
 
     def test_errors_have_actionable_categories(self):
@@ -62,17 +66,20 @@ class ErrorTests(unittest.TestCase):
         with self.assertRaises(OrionError) as raised:
             index.search(queries, k=3)
         self.assertEqual(raised.exception.code, 'ORION_INVALID_STATE')
+        self.assertEqual(raised.exception.details['k'], 3)
+        with self.assertRaises(TypeError):
+            index.search(queries, k=3, adaptive=False)
         with self.assertRaises(OrionError) as raised:
-            index.search(queries, k=0, adaptive=False)
+            index.search(queries, k=0)
         self.assertEqual(raised.exception.code, 'ORION_INVALID_ARGUMENT')
         self.assertEqual(raised.exception.details['k'], 0)
         saved = self.root / 'snapshot'
-        index.save(saved)
+        reference = index.save(saved)
         metadata = json.loads((saved / 'index.json').read_text())
-        metadata['version'] = 999
+        metadata['payloads']['base_sha256'] = '0' * 64
         (saved / 'index.json').write_text(json.dumps(metadata))
         with self.assertRaises(OrionError) as raised:
-            Index.open(saved, base=base)
+            Index.open(reference, base=base)
         self.assertEqual(raised.exception.code, 'ORION_CACHE_INCOMPATIBLE')
 
 
@@ -103,3 +110,18 @@ class ErrorTests(unittest.TestCase):
         output = subprocess.run([sys.executable, '-c', textwrap.dedent(program), str(path), str(self.staged), str(self.root / 'panic-cache')], capture_output=True, text=True, timeout=60)
         self.assertEqual(output.returncode, 0, output.stderr)
         self.assertIn('interpreter survived', output.stdout)
+
+    def test_read_panic_also_invalidates_the_handle(self):
+        base, queries = self.arrays()
+        index = self.make(base)
+        index.calibrate(queries, k=3)
+        with self.assertRaises(OrionError) as raised:
+            index._handle._test_read_panic()
+        self.assertEqual(raised.exception.code, "ORION_INTERNAL")
+        self.assertTrue(raised.exception.details["requires_reopen"])
+        for operation in [lambda: index.info, lambda: index.search(queries, k=3),
+                          lambda: index.calibrate(queries, k=3),
+                          lambda: index.save(self.root / "invalid")]:
+            with self.assertRaises(OrionError) as rejected:
+                operation()
+            self.assertEqual(rejected.exception.code, "ORION_INVALID_STATE")

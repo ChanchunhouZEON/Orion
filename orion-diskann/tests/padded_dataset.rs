@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 use orion_ann_diskann::model::PaddedDataset;
 use orion_ann_vector::{
     DistanceKernelBackend, IpF32Distance, IpI8Distance, IpI16Distance, L2F32Distance, L2U8Distance,

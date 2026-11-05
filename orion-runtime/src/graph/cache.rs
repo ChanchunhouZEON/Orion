@@ -4,99 +4,169 @@
  */
 
 //! Cache lookup is independent of the availability of the original graph export.
+//! CachePlan selects a Generation containing a CacheManifest and its exact bytes.
+//! Those records precede lookup/publication operations; validation helpers follow.
+use super::staged::SourceFileIdentity;
 use crate::config::{GraphSource, ResolvedRunConfig};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// Selected metadata file and whether its graph/provenance have been validated.
 /// A miss names the destination for a newly built/imported index.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct CachePlan {
     pub metadata_path: PathBuf,
-    pub is_hit: bool,
-    pub is_legacy: bool,
+    pub(super) selected: Option<Generation>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct CacheManifest {
-    version: u32,
+pub(crate) struct CacheManifest {
+    pub(crate) graph_sha256: String,
+    pub(crate) metadata_sha256: String,
     namespace: String,
     num_points: usize,
     dimension: usize,
     imported_from: Option<SourceFileIdentity>,
-    /// Older manifests identify the source through their namespace only.
-    #[serde(default)]
-    graph_source: Option<GraphSource>,
-    #[serde(default)]
+    graph_source: GraphSource,
     builder_recipe: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct SourceFileIdentity {
-    path: PathBuf,
-    size: u64,
-    modified_ns: Option<u128>,
+/// Keep the exact working record used to select and verify a resident graph.
+#[derive(Debug)]
+pub(crate) struct Generation {
+    pub(crate) manifest: CacheManifest,
+    pub(crate) encoded: Vec<u8>,
 }
 
-/// Normalize lexically without requiring the export to still exist on disk.
-#[allow(dead_code)]
-fn normalize_absolute_path(path: &Path) -> Result<PathBuf> {
-    let absolute = if path.is_absolute() {
-        path.to_owned()
-    } else {
-        std::env::current_dir().map_err(Error::from)?.join(path)
-    };
-
-    let mut normalized = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            _ => normalized.push(component.as_os_str()),
-        }
-    }
-    Ok(normalized)
-}
-
-impl SourceFileIdentity {
-    fn read(path: &Path) -> Result<Self> {
-        let metadata = std::fs::metadata(path).map_err(|e| {
-            let message = format!("{}: {e}", path.display());
-            Error::from(e).with_message(message)
-        })?;
-        if !metadata.is_file() {
-            return Err(Error::from(format!("{} is not a file", path.display())));
-        }
-        Ok(Self {
-            path: normalize_absolute_path(path)?,
-            size: metadata.len(),
-            modified_ns: metadata
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_nanos()),
-        })
+impl CachePlan {
+    pub(crate) fn is_hit(&self) -> bool {
+        self.selected.is_some()
     }
 
-    fn matches_requested_export(&self, path: &Path) -> Result<bool> {
-        if self.path != normalize_absolute_path(path)? {
-            return Ok(false);
-        }
+    fn generation(&self) -> Result<&Generation> {
+        self.selected
+            .as_ref()
+            .ok_or_else(|| Error::invalid_state("no selected graph generation"))
+    }
+    pub(crate) fn objects(&self) -> Result<PathBuf> {
+        crate::storage::object_dir(self.metadata_path.parent().unwrap_or(Path::new(".")))
+    }
 
-        // Reusing an explicitly named, since-removed export is still a cache hit.
-        match std::fs::metadata(path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
-            Err(e) => Err(e.into()),
-            Ok(_) => {
-                let current = Self::read(path)?;
-                Ok(current.size == self.size && current.modified_ns == self.modified_ns)
+    pub(crate) fn graph_path(&self) -> Result<PathBuf> {
+        crate::storage::object(
+            &self.objects()?,
+            &self.generation()?.manifest.graph_sha256,
+            "pgraph",
+        )
+    }
+
+    pub(crate) fn lookup_key(config: &ResolvedRunConfig, num_points: usize) -> PathBuf {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(config.cache_namespace.as_bytes());
+        hash.update((num_points as u64).to_le_bytes());
+        config.cache_dir.join(format!("{:x}.bin", hash.finalize()))
+    }
+
+    pub fn resolve(config: &ResolvedRunConfig, num_points: usize) -> Result<Self> {
+        Self::plan(config, num_points, true)
+    }
+
+    pub(crate) fn inspect(config: &ResolvedRunConfig, num_points: usize) -> Result<Self> {
+        Self::plan(config, num_points, false)
+    }
+
+    fn plan(config: &ResolvedRunConfig, num_points: usize, verify_source: bool) -> Result<Self> {
+        let path = Self::lookup_key(config, num_points);
+        let key = manifest_path(&path);
+        let selected = match std::fs::File::open(&key) {
+            Ok(file) => {
+                let encoded = crate::storage::read_bounded_file(file, &key, 1024 * 1024)?;
+                Some(Generation {
+                    manifest: serde_json::from_slice(&encoded)?,
+                    encoded,
+                })
             }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(Error::io("open cache record", &key, e)),
+        };
+        let plan = Self {
+            selected,
+            metadata_path: path,
+        };
+        if plan.metadata_path.try_exists()?
+            || plan.metadata_path.with_extension("pgraph").try_exists()?
+        {
+            return Err(Error::cache(
+                "legacy graph cache; use a fresh working directory",
+            ));
         }
+        if let Some(generation) = &plan.selected {
+            let record = &generation.manifest;
+            validate_manifest(
+                record,
+                &plan.metadata_path,
+                config,
+                num_points,
+                verify_source,
+            )?;
+            let dir = plan.objects()?;
+            validate_headers(
+                &crate::storage::object(&dir, &record.metadata_sha256, "bin")?,
+                &crate::storage::object(&dir, &record.graph_sha256, "pgraph")?,
+                num_points,
+                config.graph_degree,
+            )?;
+        }
+        Ok(plan)
+    }
+
+    /// Publish provenance after graph and metadata have been saved successfully.
+    /// Missing manifests are rejected on the next lookup rather than guessed.
+    pub(super) fn write_manifest(
+        &self,
+        config: &ResolvedRunConfig,
+        num_points: usize,
+        source: Option<SourceFileIdentity>,
+        graph_sha256: &str,
+        metadata_sha256: &str,
+    ) -> Result<Generation> {
+        let path = manifest_path(&self.metadata_path);
+
+        let manifest = CacheManifest {
+            graph_sha256: graph_sha256.into(),
+            metadata_sha256: metadata_sha256.into(),
+            namespace: config.cache_namespace.clone(),
+            num_points: num_points,
+            dimension: config.dimension,
+
+            graph_source: config.graph_source,
+            builder_recipe: if !self.is_hit()
+                && source.is_none()
+                && config.graph_source == GraphSource::Parlayann
+            {
+                Some(super::PARLAY_RECIPE.into())
+            } else {
+                None
+            },
+            imported_from: source,
+        };
+
+        // Sync the complete record before linking it into the working lookup.
+        use std::io::Write;
+        std::fs::create_dir_all(&config.cache_dir)?;
+        let (temporary, mut file) = crate::storage::PendingFile::create(&path)?;
+        let encoded = serde_json::to_vec_pretty(&manifest)?;
+        file.write_all(&encoded)?;
+        file.sync_all()?;
+        drop(file);
+        // A concurrent builder may have produced a different graph for this recipe.
+        // Never replace its record after another reader has selected that generation.
+        std::fs::hard_link(&temporary.0, &path)?;
+        crate::storage::sync_dir(&config.cache_dir)?;
+        Ok(Generation { manifest, encoded })
     }
 }
 
@@ -104,7 +174,7 @@ fn manifest_path(path: &Path) -> PathBuf {
     path.with_extension("cache.json")
 }
 
-fn validate_headers(path: &Path, num_points: usize, degree: u32) -> Result<()> {
+fn validate_headers(path: &Path, graph: &Path, num_points: usize, degree: u32) -> Result<()> {
     let mut metadata_bytes = [0; 8];
     std::fs::File::open(path)
         .and_then(|mut f| f.read_exact(&mut metadata_bytes))
@@ -114,13 +184,12 @@ fn validate_headers(path: &Path, num_points: usize, degree: u32) -> Result<()> {
     // V6 adds logical dataset shape after the unchanged eight-byte prefix.
     // The index loader checks that shape before loading the graph payload;
     // this lightweight lookup also validates the existing provenance manifest.
-    if !matches!(version, 5 | 6) || entry >= num_points {
+    if version != 6 || entry >= num_points {
         return Err(Error::from(format!(
             "invalid cache metadata: version={version}, entry={entry}, N={num_points}"
         )));
     }
 
-    let graph = path.with_extension("pgraph");
     let mut file = std::fs::File::open(&graph).map_err(Error::from)?;
     let mut header = [0; 16];
     file.read_exact(&mut header).map_err(Error::from)?;
@@ -148,16 +217,17 @@ fn validate_headers(path: &Path, num_points: usize, degree: u32) -> Result<()> {
     Ok(())
 }
 
-fn validate_manifest(path: &Path, config: &ResolvedRunConfig, num_points: usize) -> Result<()> {
-    let manifest_bytes = std::fs::read(manifest_path(path)).map_err(Error::from)?;
-    let metadata: CacheManifest = serde_json::from_slice(&manifest_bytes).map_err(Error::from)?;
-    if metadata.version != 1
-        || metadata.namespace != config.cache_namespace
+fn validate_manifest(
+    metadata: &CacheManifest,
+    path: &Path,
+    config: &ResolvedRunConfig,
+    num_points: usize,
+    verify_source: bool,
+) -> Result<()> {
+    if metadata.namespace != config.cache_namespace
         || metadata.num_points != num_points
         || metadata.dimension != config.dimension
-        || metadata
-            .graph_source
-            .is_some_and(|source| source != config.graph_source)
+        || metadata.graph_source != config.graph_source
     {
         return Err(Error::cache(
             "cache provenance does not match the current dataset/configuration",
@@ -173,7 +243,8 @@ fn validate_manifest(path: &Path, config: &ResolvedRunConfig, num_points: usize)
     {
         return Err(Error::cache("unsupported ParlayANN builder recipe").at("load_cache"));
     }
-    if config.graph_source == GraphSource::Parlayann && config.staged_file_explicit {
+    if verify_source && config.graph_source == GraphSource::Parlayann && config.staged_file_explicit
+    {
         let requested = config
             .staged_file
             .as_deref()
@@ -195,207 +266,11 @@ fn validate_manifest(path: &Path, config: &ResolvedRunConfig, num_points: usize)
     Ok(())
 }
 
-fn legacy_cache_path(config: &ResolvedRunConfig, name: &str, num_points: usize) -> PathBuf {
-    let alpha = format!("{:.2}", config.alpha).replace('.', "_");
-    let suffix = if config.graph_source == GraphSource::Parlayann {
-        format!("_pct{}", config.legacy_local_pct)
-    } else {
-        String::new()
-    };
-    config.cache_dir.join(format!(
-        "{name}_n{num_points}_r{}_l{}_a{alpha}_ex{}{suffix}.bin",
-        config.graph_degree, config.build_l, config.max_extra
-    ))
-}
-
-impl CachePlan {
-    pub fn resolve(config: &ResolvedRunConfig, num_points: usize) -> Result<Self> {
-        let path = config
-            .cache_dir
-            .join(format!("{}_n{num_points}.bin", config.cache_namespace));
-
-        let graph = path.with_extension("pgraph");
-
-        // Either file means a cache was started. Reject incomplete pairs instead
-        // of treating them as misses and overwriting the remaining file.
-        if path.try_exists().map_err(|e| {
-            let message = format!("{}: {e}", path.display());
-            Error::from(e).with_message(message)
-        })? || graph.try_exists().map_err(|e| {
-            let message = format!("{}: {e}", graph.display());
-            Error::from(e).with_message(message)
-        })? {
-            validate_headers(&path, num_points, config.graph_degree)?;
-            validate_manifest(&path, config, num_points)?;
-            return Ok(Self {
-                metadata_path: path,
-                is_hit: true,
-                is_legacy: false,
-            });
-        }
-
-        if let Some(name) = &config.legacy_dataset {
-            let legacy = legacy_cache_path(config, name, num_points);
-            if legacy.try_exists().map_err(Error::from)?
-                || legacy
-                    .with_extension("pgraph")
-                    .try_exists()
-                    .map_err(Error::from)?
-            {
-                // Old caches carry no export identity. An explicit alternative export must
-                // not be ignored merely because a name-based legacy cache happens to exist.
-                if config.staged_file_explicit && !manifest_path(&legacy).is_file() {
-                    log::warn!(
-                        "Legacy cache has no source provenance; \
-                         importing the explicitly selected export into a new cache"
-                    );
-                } else {
-                    validate_headers(&legacy, num_points, config.graph_degree)?;
-                    if manifest_path(&legacy).is_file() {
-                        validate_manifest(&legacy, config, num_points)?;
-                    }
-                    log::info!(
-                        "Reusing preset-compatible legacy cache {}",
-                        legacy.display()
-                    );
-                    return Ok(Self {
-                        metadata_path: legacy,
-                        is_hit: true,
-                        is_legacy: true,
-                    });
-                }
-            }
-        }
-
-        Ok(Self {
-            metadata_path: path,
-            is_hit: false,
-            is_legacy: false,
-        })
-    }
-
-    /// Locate the default export (including the historical `_pct60` suffix).
-    /// Only NotFound means unavailable; unreadable/non-file inputs are errors.
-    pub fn available_staged_export(config: &ResolvedRunConfig) -> Result<Option<PathBuf>> {
-        let Some(path) = &config.staged_file else {
-            return Ok(None);
-        };
-        let mut candidates = vec![path.clone()];
-        if !config.staged_file_explicit {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                candidates.push(
-                    path.with_file_name(format!("{stem}_pct{}.staged", config.legacy_local_pct)),
-                );
-            }
-        }
-        for path in candidates {
-            match std::fs::metadata(&path) {
-                Ok(meta) if meta.is_file() => return Ok(Some(path)),
-                Ok(_) => {
-                    return Err(Error::from(format!(
-                        "{} is not a staged file",
-                        path.display()
-                    )));
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(Error::from(format!("{}: {e}", path.display()))),
-            }
-        }
-        Ok(None)
-    }
-
-    /// Resolve import versus in-memory construction before allocating the base.
-    /// Explicit missing exports remain errors, even when the builder is present.
-    pub fn parlay_input(config: &ResolvedRunConfig, num_points: usize) -> Result<Option<PathBuf>> {
-        if config.staged_file_explicit || Self::available_staged_export(config)?.is_some() {
-            return Self::resolve_staged_export(config, num_points).map(Some);
-        }
-        if cfg!(feature = "parlay") {
-            return Ok(None);
-        }
-        Err(Error::unsupported("ParlayANN construction is unavailable; enable the parlay feature or provide a staged export")
-            .at("build_graph").with_detail("backend", "parlayann"))
-    }
-
-    /// Resolve and validate the STAG header on a cache miss.
-    /// Cache hits skip this IO: the original export may have been removed.
-    pub fn resolve_staged_export(config: &ResolvedRunConfig, num_points: usize) -> Result<PathBuf> {
-        let path = Self::available_staged_export(config)?
-            .or_else(|| config.staged_file.clone())
-            .ok_or("ParlayANN cache miss: provide --staged-file or ORION_STAGED_FILE, or set PA_ROOT for the YAML export path. No Rust graph was substituted.")?;
-
-        let mut file = std::fs::File::open(&path).map_err(|e| {
-            let message = format!(
-                "ParlayANN cache miss; cannot import {}: {e}. Set --staged-file/ORION_STAGED_FILE or PA_ROOT (default ../ParlayANN). No Rust graph was substituted.", path.display());
-            Error::io("open", &path, e).with_message(message)
-        })?;
-        let mut header = [0; 24];
-        file.read_exact(&mut header).map_err(|e| {
-            let message = format!("invalid staged header: {e}");
-            Error::from(e).with_message(message)
-        })?;
-
-        // STAG v3 starts with magic, version, and point count. The streaming
-        // importer validates capacities and adjacency records when it loads them.
-        let word = |i: usize| u32::from_le_bytes(header[i * 4..i * 4 + 4].try_into().unwrap());
-        if word(0) != 0x53544147 || word(1) != 3 || word(2) as usize != num_points {
-            return Err(Error::invalid_data(format!(
-                "staged header must be STAG v3 with N={num_points}"
-            )));
-        }
-        Ok(path)
-    }
-
-    /// Publish provenance after graph and metadata have been saved successfully.
-    /// Missing manifests are rejected on the next lookup rather than guessed.
-    pub fn write_manifest(
-        &self,
-        config: &ResolvedRunConfig,
-        num_points: usize,
-        source: Option<&Path>,
-    ) -> Result<()> {
-        let path = manifest_path(&self.metadata_path);
-        if self.is_hit && path.is_file() {
-            return Ok(());
-        }
-
-        let manifest = CacheManifest {
-            version: 1,
-            namespace: config.cache_namespace.clone(),
-            num_points: num_points,
-            dimension: config.dimension,
-            imported_from: source.map(SourceFileIdentity::read).transpose()?,
-            graph_source: Some(config.graph_source),
-            builder_recipe: if !self.is_hit
-                && source.is_none()
-                && config.graph_source == GraphSource::Parlayann
-            {
-                Some(super::PARLAY_RECIPE.into())
-            } else {
-                None
-            },
-        };
-
-        // Publish with a same-directory rename so readers never see partial JSON.
-        let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
-        let bytes = serde_json::to_vec_pretty(&manifest).map_err(Error::from)?;
-        std::fs::write(&temporary, bytes).map_err(Error::from)?;
-        std::fs::rename(&temporary, &path).map_err(Error::from)?;
-        if self.is_legacy {
-            log::warn!(
-                "Legacy headers were validated and current input identity recorded; \
-                 historical export provenance is unavailable"
-            );
-        }
-        Ok(())
-    }
-}
-
 #[cfg(all(test, feature = "cli"))]
 mod tests {
     use super::*;
-    use crate::config::cli::Args;
     use crate::config::{GraphSource, ResolvedRunConfig};
+    use crate::driver::Args;
     use clap::Parser;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -446,7 +321,7 @@ mod tests {
     }
     fn write_cache(path: &Path, n: u32, r: u32) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let bytes = [5u32, 0]
+        let bytes = [6u32, 0]
             .into_iter()
             .flat_map(u32::to_le_bytes)
             .collect::<Vec<_>>();
@@ -464,33 +339,40 @@ mod tests {
         let dir = Temp::new();
         let mut c = config(&dir.0);
         let plan = CachePlan::resolve(&c, 1).unwrap();
-        assert!(!plan.is_hit);
-        write_cache(&plan.metadata_path, 1, 4);
+        assert!(!plan.is_hit());
+        let path = dir.0.join("fixture");
+        write_cache(&path, 1, 4);
+        let store = plan.objects().unwrap();
+        let put = |ext| {
+            crate::storage::put(&store, ext, |w| {
+                std::io::Write::write_all(w, &std::fs::read(path.with_extension(ext))?)?;
+                Ok(())
+            })
+            .unwrap()
+            .1
+        };
+        std::fs::rename(&path, path.with_extension("bin")).unwrap();
+        let graph = put("pgraph");
+        let meta = put("bin");
         let export = dir.0.join("source.staged");
         std::fs::write(&export, b"fixture").unwrap();
-        plan.write_manifest(&c, 1, Some(&export)).unwrap();
+        plan.write_manifest(
+            &c,
+            1,
+            Some(
+                SourceFileIdentity::from_file(&export, std::fs::File::open(&export).unwrap())
+                    .unwrap(),
+            ),
+            &graph,
+            &meta,
+        )
+        .unwrap();
         std::fs::remove_file(&export).unwrap();
-        assert!(CachePlan::resolve(&c, 1).unwrap().is_hit);
+        assert!(CachePlan::resolve(&c, 1).unwrap().is_hit());
         c.staged_file_explicit = true;
         c.staged_file = Some(export);
-        assert!(CachePlan::resolve(&c, 1).unwrap().is_hit);
+        assert!(CachePlan::resolve(&c, 1).unwrap().is_hit());
         c.staged_file = Some(dir.0.join("different.staged"));
-        assert!(CachePlan::resolve(&c, 1).is_err());
-    }
-
-    #[test]
-    fn legacy_lookup_is_opt_in_and_checks_headers() {
-        let dir = Temp::new();
-        let mut c = config(&dir.0);
-        let legacy = dir.0.join("fixture_n1_r4_l100_a1_20_ex16_pct60.bin");
-        write_cache(&legacy, 1, 4);
-        assert!(!CachePlan::resolve(&c, 1).unwrap().is_hit);
-        c.legacy_dataset = Some("fixture".into());
-        let plan = CachePlan::resolve(&c, 1).unwrap();
-        assert!(plan.is_hit && plan.is_legacy);
-        plan.write_manifest(&c, 1, None).unwrap();
-        assert!(CachePlan::resolve(&c, 1).unwrap().is_hit);
-        write_cache(&legacy, 2, 4);
         assert!(CachePlan::resolve(&c, 1).is_err());
     }
 
@@ -498,19 +380,18 @@ mod tests {
     fn explicit_export_does_not_silently_reuse_unverified_legacy() {
         let dir = Temp::new();
         let mut c = config(&dir.0);
-        c.legacy_dataset = Some("fixture".into());
         write_cache(&dir.0.join("fixture_n1_r4_l100_a1_20_ex16_pct60.bin"), 1, 4);
         c.staged_file_explicit = true;
         c.staged_file = Some(dir.0.join("new.staged"));
-        assert!(!CachePlan::resolve(&c, 1).unwrap().is_hit);
+        assert!(!CachePlan::resolve(&c, 1).unwrap().is_hit());
     }
 
     #[test]
     fn pa_miss_requires_export_and_never_changes_graph_source() {
         let dir = Temp::new();
         let c = config(&dir.0);
-        assert!(!CachePlan::resolve(&c, 1).unwrap().is_hit);
-        assert!(CachePlan::resolve_staged_export(&c, 1).is_err());
+        assert!(!CachePlan::resolve(&c, 1).unwrap().is_hit());
+        assert!(crate::graph::staged::resolve_staged_export(&c, 1).is_err());
         assert_eq!(c.graph_source, GraphSource::Parlayann);
     }
 }

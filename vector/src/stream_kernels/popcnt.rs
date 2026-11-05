@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! VPOPCNT-only override; entered after detecting the extra CPU feature.
 pub use super::avx512::IpF32Distance;
 pub use super::avx512::IpI16Distance;

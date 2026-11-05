@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Validate wheels/sdist in fresh venvs outside the checkout. Never publishes."""
 import argparse
 import email

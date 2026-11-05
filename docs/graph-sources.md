@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 # Graph sources and cache provenance
 
 [README](../README.md) · [Configuration](configuration.md)
@@ -54,28 +59,17 @@ absent, an offline estimate can still succeed, including a PA estimate labeled
 
 ## Identity and provenance
 
-An input-keyed `v3_*` namespace includes base file identity, metric, dimension,
-graph construction settings, and **concrete graph source**. Native-u8 storage
-has a separate discriminator. Query paths and the requested auto/explicit policy
-do not change graph identity: automatic and explicit PA can reuse the same cache.
+Graph lookup uses a SHA-256 key over the input identity, indexed row count
+and resolved construction recipe. An available file base is identified by its
+complete contents. Offline preflight without the base estimates resources from
+the preset. Query and timing settings do not change the graph key. The working
+cache records the graph and metadata digests and checks them on load. An
+explicit STAG export is checked against its recorded content when available.
 
-A graph cache consists of metadata `.bin`, slab `.pgraph`, and `.cache.json`
-manifest. New manifests record `graph_source` and, for imports, the export's
-path, size and modification time. These identify inputs rather than provide
-cryptographic content verification. Existing version-1 manifests without the
-new source field remain readable; their namespace already separates sources.
-A conflicting source field is rejected. In-memory builds record `builder_recipe`
-(`parlay-memory-v1-unquantized-two-pass`); unknown recipes are rejected. The recipe
-identifies two unquantized passes, the vendored builder version, and the shared
-extras/partition behavior. Imported caches retain their source-file provenance.
-
-Preset-compatible legacy names are considered only when the input-keyed cache
-is absent. Matching requires the original dataset path/format and construction
-settings, not merely the dataset name. Header validation cannot recover a legacy
-export's historical provenance. Explicit exports cannot reuse an unproven legacy
-cache. An explicit export conflicting with known provenance fails; select another
-`--cache-dir` to import it separately. A cached export can have been deleted,
-provided the requested path still matches recorded provenance.
+Application snapshots store the graph, metadata, provenance and materialized
+sidecars under their individual content hashes. Their entry point is
+`index.json`; for shared storage, verify it with an independently held digest.
+Earlier graph caches and snapshots must be rebuilt.
 
 ## Builder differences
 

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Convert (if needed), preflight, and build a reproducible large ParlayANN run.
 
 Requires a prebuilt neighbors executable. Every invocation uses a new directory;

@@ -1,11 +1,16 @@
-use orion_ann_runtime::{BaseInput, ErrorCode, Index, IndexOptions};
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
+use orion_ann::{BaseInput, ErrorCode, Index, IndexOptions};
 use std::process::Command;
 
 #[test]
 fn rust_and_cli_preserve_the_same_missing_input_report() {
     let path = std::env::temp_dir().join(format!("orion-missing-{}.fbin", std::process::id()));
     assert!(!path.exists());
-    let rust = match Index::new(BaseInput::File(path.clone()), IndexOptions::default()) {
+    let rust = match Index::new(BaseInput::from_file(path.clone()), IndexOptions::default()) {
         Ok(_) => panic!("missing file accepted"),
         Err(error) => error,
     };

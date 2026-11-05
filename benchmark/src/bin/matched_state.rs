@@ -4,22 +4,17 @@
  */
 
 //! Deterministic-prefix replay and local geometric audits; no timing claims.
-use orion_ann::{Error, Result};
-use orion_ann_runtime::search::cascade;
-use orion_ann_runtime::with_supported_dimension;
-use orion_ann_runtime::{
-    config::{cli::Args as RunArgs, ResolvedRunConfig},
-    data::{memory, LoadedDataset},
-    graph,
-};
+use orion_ann::benchmark::cascade;
+use orion_ann::benchmark::{graph, memory, Args as RunArgs, LoadedDataset, ResolvedRunConfig};
+use orion_ann::with_supported_dimension;
+use orion_ann_core::{Error, Result};
 
 use clap::{Parser, ValueEnum};
-use orion_ann::algorithm::search::{
+use orion_ann_core::algorithm::search::stage::admission::ExactAdmission;
+use orion_ann_core::algorithm::search::{
     diagnostics::{Checkpoint, MatchedStateTrace, NeighborMode, NoopObserver},
-    stage::{rerank::NoRerank, AdmissionSession, AdmissionStage, PrefilterStage, RerankStage},
+    stage::{rerank::NoRerank, Admission, AdmissionQuery, Prefilter, Rerank},
 };
-use orion_ann::model::Neighbor;
-use orion_ann_diskann::model::PaddedDataset;
 use serde_json::{json, Value};
 use std::{collections::BTreeSet, fs::OpenOptions, io::Write, path::PathBuf};
 
@@ -56,38 +51,6 @@ struct Args {
 
 fn l2(a: &[f32], b: &[f32]) -> f32 {
     orion_ann_vector::distance_l2_slice_f32(a, b)
-}
-
-struct ExactAdmission<'a>(&'a PaddedDataset<f32>);
-struct ExactSession<'a> {
-    data: &'a PaddedDataset<f32>,
-    query: Vec<f32>,
-}
-impl AdmissionStage for ExactAdmission<'_> {
-    fn open<'a>(&'a self, q: &[f32]) -> Box<dyn AdmissionSession + 'a> {
-        Box::new(ExactSession {
-            data: self.0,
-            query: q.to_vec(),
-        })
-    }
-}
-impl AdmissionSession for ExactSession<'_> {
-    fn entry_distance(&self, id: u32) -> f32 {
-        l2(&self.query, self.data.row(id as usize).unwrap())
-    }
-    unsafe fn admit_stream(&self, ids: &[u32], out: *mut Neighbor, cutoff: f32, _: usize) -> usize {
-        let mut n = 0;
-        for &id in ids {
-            let d = self.entry_distance(id);
-            if d < cutoff {
-                unsafe {
-                    out.add(n).write(Neighbor::new(id, d));
-                }
-                n += 1;
-            }
-        }
-        n
-    }
 }
 
 fn recall(ids: &[u32], truth: &[u32]) -> f64 {
@@ -150,14 +113,14 @@ fn summarize(rows: &[Value]) -> Value {
 }
 
 fn audit<const N: usize>(
-    idx: &orion_ann::Orion,
+    idx: &orion_ann_core::Orion,
     q: &[f32; N],
     truth: &[u32],
     cp: &Checkpoint,
-    session: &dyn AdmissionSession,
+    session: &AdmissionQuery<'_>,
     alpha: f64,
 ) -> Value {
-    let graph = &idx.graph;
+    let graph = idx.graph();
     let u = cp.node;
     let local = graph.local_neighbors(u as usize);
     let remote = graph.remote_neighbors(u as usize);
@@ -167,9 +130,9 @@ fn audit<const N: usize>(
     // If the second parameter is `None`, use the query as the second vector.
     let mut distance = |a: u32, b: Option<u32>| {
         evaluations += 1;
-        let v = idx.dataset.row(a as usize).unwrap();
+        let v = idx.dataset().row(a as usize).unwrap();
         let w = b
-            .map(|id| idx.dataset.row(id as usize).unwrap())
+            .map(|id| idx.dataset().row(id as usize).unwrap())
             .unwrap_or(q);
         (l2(v, w) as f64).max(0.0).sqrt()
     };
@@ -268,7 +231,7 @@ fn audit<const N: usize>(
 }
 
 fn trace_json<const N: usize>(
-    idx: &orion_ann::Orion,
+    idx: &orion_ann_core::Orion,
     q: &[f32; N],
     truth: &[u32],
     trace: &MatchedStateTrace,
@@ -284,7 +247,7 @@ fn trace_json<const N: usize>(
         .iter()
         .filter_map(|&(id, _)| {
             radius.and_then(|r| {
-                let d = (l2(q, idx.dataset.row(id as usize).unwrap()) as f64)
+                let d = (l2(q, idx.dataset().row(id as usize).unwrap()) as f64)
                     .max(0.0)
                     .sqrt();
                 (d > r).then_some(id)
@@ -345,9 +308,9 @@ fn run<const N: usize>(
             queries[..settings.calibration_samples.min(queries.len())].as_flattened(),
             settings.calibration_l,
             config.window_size,
-            orion_ann::CalibrationConfig {
+            orion_ann_core::CalibrationConfig {
                 k: settings.k,
-                metric: orion_ann::CalibrationMetric::L2,
+                metric: orion_ann_core::CalibrationMetric::L2,
             },
         )
         .map_err(Error::from)?;
@@ -365,25 +328,20 @@ fn run<const N: usize>(
     let mut results = Vec::new();
     for &exact in tracks {
         let track = if exact { "exact_l2" } else { "cascade" };
-        let pf: Option<Box<dyn PrefilterStage + '_>> = if exact {
+        let pf: Option<Box<Prefilter<'_>>> = if exact {
             None
         } else {
-            cascade::build_prefilter(
-                &idx,
-                config.search_plan().cascade().prefilter,
-                config.search_plan().cascade().admission,
-            )
+            cascade::build_prefilter(&idx, config.cascade().prefilter, config.cascade().admission)?
         };
-        let ad: Box<dyn AdmissionStage + '_> = if exact {
-            Box::new(ExactAdmission(&idx.dataset))
+        let ad: Box<Admission<'_>> = if exact {
+            Box::new(ExactAdmission(idx.dataset()))
         } else {
-            cascade::build_admission(&idx, config.search_plan().cascade().admission)
-                .map_err(Error::from)?
+            cascade::build_admission(&idx, config.cascade().admission).map_err(Error::from)?
         };
-        let rr: Box<dyn RerankStage + '_> = if exact {
+        let rr: Box<Rerank<'_>> = if exact {
             Box::new(NoRerank)
         } else {
-            cascade::build_rerank(&idx, config.search_plan().cascade().rerank)
+            cascade::build_rerank(&idx, config.cascade().rerank)?
         };
         for &l in &args.diagnostic_ls {
             let mut rows = Vec::new();
@@ -458,9 +416,7 @@ fn run<const N: usize>(
                             &traces[i],
                             &returned[i],
                             mode,
-                            !exact
-                                && config.search_plan().cascade().rerank
-                                    != cascade::RerankChoice::None,
+                            !exact && config.cascade().rerank != cascade::RerankChoice::None,
                             radius,
                         )
                     })

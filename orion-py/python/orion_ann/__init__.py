@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Owned Orion indexes with explicit calibration and NumPy batch search."""
 from dataclasses import asdict, dataclass
 import json
@@ -9,7 +12,23 @@ from ._native import _Index, OrionError
 
 PathLike = Union[str, os.PathLike]
 Input = Union[PathLike, np.ndarray]
-__all__ = ["Index", "GraphConfig", "CascadeConfig", "Calibration", "SearchResult", "OrionError"]
+__all__ = ["Index", "GraphConfig", "CascadeConfig", "Calibration", "SearchResult", "SnapshotRef", "OrionError"]
+
+
+@dataclass(frozen=True)
+class SnapshotRef:
+    """Location and manifest identity returned by Index.save()."""
+    path: str
+    manifest_sha256: str
+
+    def to_json(self) -> str:
+        """Serialize for storage in trusted application configuration."""
+        return json.dumps(asdict(self))
+
+    @classmethod
+    def from_json(cls, value: str) -> "SnapshotRef":
+        """Restore a reference previously saved by the application."""
+        return cls(**json.loads(value))
 
 
 @dataclass(frozen=True)
@@ -69,8 +88,9 @@ def _options(metric, storage, graph, cascade, cache_dir, threads, window_size,
 class Index:
     """An owned base, graph and dedicated thread pool.
 
-    Construct with from_file/from_array/open. Operations on one Index serialize;
-    each batch uses the configured number of workers with the Python GIL released.
+    Construct with from_file/from_array/open. Searches may share one Index;
+    concurrent batches share the configured worker pool with the GIL released.
+    Calibration holds an exclusive lock. Array inputs are copied before release.
     Array inputs must be C-contiguous float32 or uint8; no implicit dtype casting.
     """
     def __init__(self, handle):
@@ -111,15 +131,14 @@ class Index:
         return cls(_Index.from_array(base, options))
 
     @classmethod
-    def open(cls, cache: PathLike, *, base: Input, threads=None, memory_budget_gib=None):
-        """Strictly reopen a trusted snapshot, supplying its unchanged base again.
+    def open(cls, snapshot: Union[PathLike, SnapshotRef], *, base: Input, threads=None, memory_budget_gib=None):
+        """Verify and reopen a snapshot directory or a saved SnapshotRef.
 
-        A miss never rebuilds. Calibration is restored; threads/budget may be
-        overridden. Raises OrionError for stale identity/configuration, malformed
-        metadata or I/O failures. Provenance checks are not authentication of
-        arbitrary hostile files. Keep the base/cache unchanged during this call.
+        With a reference, the manifest must also match the one issued by save().
         """
-        return cls(_Index.open(os.fspath(cache), _input(base), threads, memory_budget_gib))
+        source = (snapshot.to_json() if isinstance(snapshot, SnapshotRef)
+                  else json.dumps(os.fspath(snapshot)))
+        return cls(_Index.open(source, _input(base), threads, memory_budget_gib))
 
     @property
     def info(self) -> dict:
@@ -139,8 +158,8 @@ class Index:
         return Calibration(**json.loads(record))
 
     def search(self, queries: Input, *, k=10, search_list_size=64,
-               adaptive=True, query_format=None) -> SearchResult:
-        """Search a batch. Adaptive search requires prior calibration for this k.
+               query_format=None) -> SearchResult:
+        """Search a batch. Search uses the calibration for this k.
 
         Files are decoded as a complete batch. For bounded memory, pass separate
         ndarray batches. No recall evaluation or cache flushing occurs here.
@@ -155,15 +174,15 @@ class Index:
         invalidates the native handle: reopen it before further operations.
         """
         ids, counts = self._handle.search(_input(queries), k, search_list_size,
-                                         adaptive, query_format)
+                                         query_format=query_format)
         return SearchResult(ids, counts)
 
-    def save(self, cache: PathLike) -> None:
-        """Save graph/configuration/calibration in a new directory, without base.
+    def save(self, cache: PathLike) -> SnapshotRef:
+        """Save a manifest referencing the shared object store and external base.
 
         A staging directory is renamed after writes succeed. Serialize writers
         to the same destination. Raises OrionError for an existing destination,
         changed base, serialization or I/O failure; the loaded index remains
         usable. Rename visibility is not a full filesystem crash-durability claim.
         """
-        self._handle.save(os.fspath(cache))
+        return SnapshotRef.from_json(self._handle.save(os.fspath(cache)))

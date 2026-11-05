@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! 32-byte AVX2 kernels. Integer products widen before accumulation; no
 //! saturating byte dot-product instruction is used (signed extrema are valid).
 use crate::DistanceKernelBackend;

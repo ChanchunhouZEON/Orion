@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # Published ParlayANN recipes shared by preparation and comparison wrappers.
 # These are PA-specific build/query settings, not Orion cascade overrides.
 load_parlay_recipe() {

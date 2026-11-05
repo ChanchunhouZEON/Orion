@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # Example:
 # BIN=./target/release/orion-sweep RUN_DIR=/data/runs/sift1b-001 \
 #   bash benchmark/scripts/run_large_dataset.sh sift1b \

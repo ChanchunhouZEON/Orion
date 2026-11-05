@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Runtime-dimensional storage shared by future Orion/DiskANN adapters.
 //! The existing const-generic dataset is deliberately retained until the
 //! index, vertex and scratch migration; neither owns a second copy here.

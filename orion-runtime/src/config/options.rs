@@ -1,58 +1,21 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Programmatic configuration. These defaults do not read YAML or environment overrides.
+//! IndexOptions is the caller-facing aggregate. Its graph and cascade controls
+//! are declared alongside it, before defaults and validated run resolution.
 use crate::{
-    config::plan::SearchPlan,
+    config::cascade::{AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric},
+    config::plan::IndexPlan,
     config::ResolvedSweep,
     config::*,
     data::VectorFormat,
-    search::cascade::{AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric},
 };
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
-/// Graph source and construction controls. See [configuration](crate::guide::configuration).
-pub struct GraphConfig {
-    /// Graph policy; auto prefers ParlayANN. Without the parlay feature only f32 can fall back to Rust.
-    pub source: GraphSourcePolicy,
-    /// Optional STAG v3 export; selects PA and conflicts with explicit Rust.
-    pub staged_file: Option<PathBuf>,
-    /// Maximum navigation degree, greater than zero.
-    pub degree: u32,
-    /// Construction candidate width, at least degree.
-    pub build_l: usize,
-    /// Finite Vamana pruning alpha, at least 1.0.
-    pub alpha: f32,
-    /// Maximum retained extra candidates per graph node.
-    pub max_extra: usize,
-}
-
-impl Default for GraphConfig {
-    fn default() -> Self {
-        let build = orion_ann::BuildConfig::default();
-        Self {
-            source: GraphSourcePolicy::Auto,
-            staged_file: None,
-            degree: build.degree,
-            build_l: build.build_l,
-            alpha: build.alpha,
-            max_extra: build.max_extra,
-        }
-    }
-}
-
-/// Overrides use the same vocabulary and validation as the CLI cascade.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct CascadeConfig {
-    /// Prefilter identifier in the shared CLI vocabulary.
-    pub prefilter: Option<String>,
-    /// Admission identifier compatible with metric and resident storage.
-    pub admission: Option<String>,
-    /// Reranking identifier; native u8 uses none.
-    pub rerank: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -81,6 +44,36 @@ pub struct IndexOptions {
     pub max_points: Option<usize>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+/// Graph source and construction controls. See [configuration](crate::guide::configuration).
+pub struct GraphConfig {
+    /// Graph policy; auto prefers ParlayANN. Without the parlay feature only f32 can fall back to Rust.
+    pub source: GraphSourcePolicy,
+    /// Optional STAG v3 export; selects PA and conflicts with explicit Rust.
+    pub staged_file: Option<PathBuf>,
+    /// Maximum navigation degree, greater than zero.
+    pub degree: u32,
+    /// Construction candidate width, at least degree.
+    pub build_l: usize,
+    /// Finite Vamana pruning alpha, at least 1.0.
+    pub alpha: f32,
+    /// Maximum retained extra candidates per graph node.
+    pub max_extra: usize,
+}
+
+/// Overrides use the same vocabulary and validation as the CLI cascade.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CascadeConfig {
+    /// Prefilter identifier in the shared CLI vocabulary.
+    pub prefilter: Option<String>,
+    /// Admission identifier compatible with metric and resident storage.
+    pub admission: Option<String>,
+    /// Reranking identifier; native u8 uses none.
+    pub rerank: Option<String>,
+}
+
 impl Default for IndexOptions {
     fn default() -> Self {
         Self {
@@ -90,10 +83,24 @@ impl Default for IndexOptions {
             graph: GraphConfig::default(),
             cascade: CascadeConfig::default(),
             cache_dir: "cache/orion-ann".into(),
-            threads: orion_ann::BuildConfig::default().threads,
+            threads: orion_ann_core::BuildConfig::default().threads,
             window_size: 5,
             memory_budget_gib: None,
             max_points: None,
+        }
+    }
+}
+
+impl Default for GraphConfig {
+    fn default() -> Self {
+        let build = orion_ann_core::BuildConfig::default();
+        Self {
+            source: GraphSourcePolicy::Auto,
+            staged_file: None,
+            degree: build.degree,
+            build_l: build.build_l,
+            alpha: build.alpha,
+            max_extra: build.max_extra,
         }
     }
 }
@@ -111,10 +118,10 @@ impl IndexOptions {
         if count == 0 || count >= u32::MAX as usize || self.max_points == Some(0) {
             return Err("base must contain 1..u32::MAX points (excluding the sentinel)".into());
         }
-        if self.threads > orion_ann::algorithm::search::MAX_WORKERS {
+        if self.threads > orion_ann_core::algorithm::search::MAX_WORKERS {
             return Err(
                 Error::configuration("threads", "thread count exceeds MAX_WORKERS")
-                    .with_detail("maximum", orion_ann::algorithm::search::MAX_WORKERS)
+                    .with_detail("maximum", orion_ann_core::algorithm::search::MAX_WORKERS)
                     .with_detail("actual", self.threads),
             );
         }
@@ -166,7 +173,7 @@ impl IndexOptions {
             cascade.rerank = v.parse()?;
         }
         cascade.validate_cascade_options(self.metric)?;
-        let search_plan = SearchPlan::resolve(
+        let index_plan = IndexPlan::resolve(
             storage,
             dimension,
             self.metric,
@@ -187,7 +194,7 @@ impl IndexOptions {
             replay_queries: false,
             base_format: format,
             query_format: format,
-            search_plan,
+            index_plan,
             memory_budget_gib: self.memory_budget_gib,
             prepare_only: true,
             dimension,
@@ -204,9 +211,11 @@ impl IndexOptions {
             max_points: self.max_points.unwrap_or(count).min(count),
             sweep: ResolvedSweep {
                 k: 1,
+                #[cfg(any(feature = "benchmark", test))]
                 profile: "runtime".into(),
                 search_list_sizes: vec![64],
                 threads: self.threads,
+                #[cfg(any(feature = "benchmark", test))]
                 trials: 1,
                 calibration_samples: 200,
                 calibration_l: 48,
@@ -214,14 +223,10 @@ impl IndexOptions {
             cache_namespace: String::new(),
             cache_dir: self.cache_dir.clone(),
             staged_file_explicit: graph.staged_file.is_some(),
-            legacy_dataset: None,
-            legacy_local_pct: 60,
+            local_pct: 60,
         };
         config.build_config().validate()?;
         config.cache_namespace = config.compute_cache_namespace();
-        if policy == GraphSourcePolicy::Auto {
-            config.select_automatic_graph(true)?;
-        }
         Ok(config)
     }
 }

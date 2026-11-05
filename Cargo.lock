@@ -123,33 +123,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
-name = "benchmark"
-version = "0.1.0"
-dependencies = [
- "adsampling",
- "anyhow",
- "byteorder",
- "clap",
- "comfy-table",
- "env_logger",
- "indicatif",
- "libc",
- "log",
- "ndarray",
- "orion-ann",
- "orion-ann-diskann",
- "orion-ann-platform",
- "orion-ann-runtime",
- "orion-ann-vector",
- "rand",
- "rayon",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror",
-]
-
-[[package]]
 name = "bincode"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -895,6 +868,44 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 name = "orion-ann"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "byteorder",
+ "clap",
+ "comfy-table",
+ "libc",
+ "log",
+ "orion-ann-core",
+ "orion-ann-diagnostics",
+ "orion-ann-diskann",
+ "orion-ann-parlay",
+ "orion-ann-platform",
+ "orion-ann-vector",
+ "rayon",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+]
+
+[[package]]
+name = "orion-ann-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "env_logger",
+ "log",
+ "orion-ann",
+ "orion-ann-core",
+ "orion-ann-vector",
+ "rayon",
+ "serde_json",
+ "serde_yaml",
+]
+
+[[package]]
+name = "orion-ann-core"
+version = "0.1.0"
+dependencies = [
  "anyhow",
  "bincode",
  "bytemuck",
@@ -921,25 +932,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "orion-ann-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "env_logger",
- "log",
- "orion-ann",
- "orion-ann-runtime",
- "orion-ann-vector",
- "rayon",
- "serde_json",
- "serde_yaml",
-]
-
-[[package]]
 name = "orion-ann-diagnostics"
 version = "0.1.0"
 dependencies = [
- "orion-ann",
+ "orion-ann-core",
  "orion-ann-error",
  "serde",
  "serde_json",
@@ -1023,32 +1019,10 @@ version = "0.1.0"
 dependencies = [
  "ndarray",
  "numpy",
- "orion-ann-runtime",
+ "orion-ann",
  "pyo3",
  "pyo3-build-config",
  "serde_json",
-]
-
-[[package]]
-name = "orion-ann-runtime"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "byteorder",
- "clap",
- "comfy-table",
- "libc",
- "log",
- "orion-ann",
- "orion-ann-diagnostics",
- "orion-ann-diskann",
- "orion-ann-parlay",
- "orion-ann-vector",
- "rayon",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
 ]
 
 [[package]]
@@ -1415,6 +1389,16 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest",
+ "sha2-asm",
+]
+
+[[package]]
+name = "sha2-asm"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b845214d6175804686b2bd482bcffe96651bb2d1200742b712003504a2dac1ab"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

@@ -10,16 +10,11 @@
 //! machinery live in the benchmark binaries.
 
 use clap::Parser;
-use orion_ann_runtime::{
-    config::{cli::Args, plan::SearchPlan, ResolvedRunConfig},
-    data::{
-        memory as resources,
-        query::{open_queries, GroundTruthReader},
-        LoadedBase,
-    },
-    search::{F32CascadeBackend, NativeU8L2Backend, SearchBackend},
+use orion_ann::driver::{
+    open_queries, open_snapshot_queries, resources, Args, F32CascadeBackend, GroundTruthReader,
+    LoadedBase, NativeU8L2Backend, QuerySource, ResolvedRunConfig, SearchBackend,
 };
-use orion_ann_runtime::{Error, Result};
+use orion_ann::{Error, Result};
 use std::{
     io::{BufReader, BufWriter, Write},
     path::PathBuf,
@@ -34,6 +29,20 @@ use std::{
 struct Command {
     #[command(flatten)]
     run: Args,
+
+    /// Open a published Index::save snapshot and use its saved calibration.
+    #[arg(
+        long, value_name = "DIR", requires_all = ["base", "query"],
+        conflicts_with_all = [
+            "dataset", "legacy_max_points", "config", "cache_dir", "staged_file",
+            "graph_source", "graph_degree", "build_l", "alpha", "max_extra",
+            "max_points", "window_size", "base_format", "vector_storage", "dimension",
+            "metric", "prefilter", "admission", "rerank", "print_config", "preflight",
+            "prepare_only"
+        ]
+    )]
+    #[cfg_attr(feature = "benchmark", arg(conflicts_with = "trials"))]
+    snapshot: Option<PathBuf>,
 
     /// Single beam width; defaults to max(k, 64).
     /// Sweeps use `orion-sweep`.
@@ -62,16 +71,8 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
     let gt_file = if config.prepare_only {
         None
     } else {
-        config
-            .groundtruth
-            .as_ref()
-            .map(|path| {
-                std::fs::File::open(path)
-                    .map_err(|e| format!("ground truth {}: {e}", path.display()))
-            })
-            .transpose()?
+        open_truth(config.groundtruth.as_deref())?
     };
-
     let mut query_source = if config.prepare_only {
         None
     } else {
@@ -100,22 +101,9 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
 
     let query_source = query_source.as_mut().ok_or("missing query source")?;
 
-    let mut gt =
+    let gt =
         gt_file.map(|file| GroundTruthReader::new(BufReader::new(file), config.sweep.k, points));
-
-    // Results are emitted as JSONL. `create_new` prevents silently overwriting
-    // an existing result file.
-    let mut writer: Box<dyn Write> = match output {
-        Some(path) => Box::new(BufWriter::new(
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
-                .map_err(|e| format!("result output {}: {e}", path.display()))?,
-        )),
-
-        None => Box::new(BufWriter::new(std::io::stdout())),
-    };
+    let writer = open_output(output)?;
 
     // The initial query batch serves two purposes:
     //   1. calibration;
@@ -136,7 +124,7 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
                 &decoded,
                 config.sweep.calibration_l,
                 config.window_size,
-                orion_ann::CalibrationConfig {
+                orion_ann_core::CalibrationConfig {
                     k: config.sweep.k,
                     metric: config.metric.calibration_metric(),
                 },
@@ -148,13 +136,73 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
     // measured search phase reflects the final runtime configuration.
     B::pin_search_storage(&index, config);
 
-    use orion_ann::algorithm::search::{NDC_F32, NDC_I8, VISIT_COUNT};
+    let k = config.sweep.k;
+    let summary = RunSummary {
+        dataset: &config.dataset,
+        k,
+        batch_size: config.query_batch_size,
+        calibration: serde_json::json!({
+            "threshold":calibration.threshold,"early_exit_limit":calibration.early_exit_limit,
+            "search_list_size":config.sweep.calibration_l,
+        }),
+    };
+    stream_results(
+        query_source.as_mut(),
+        decoded,
+        gt,
+        writer,
+        summary,
+        |decoded| {
+            pool.install(|| {
+                B::search_batch(
+                    &index,
+                    decoded,
+                    config,
+                    config.sweep.k,
+                    config.sweep.search_list_sizes[0],
+                    calibration,
+                )
+            })
+        },
+    )
+}
 
-    // Reset global search counters immediately before the measured search phase.
-    NDC_F32.reset();
-    NDC_I8.reset();
-    VISIT_COUNT.reset();
+fn open_truth(path: Option<&std::path::Path>) -> Result<Option<std::fs::File>> {
+    path.map(|p| std::fs::File::open(p).map_err(|e| Error::io("open ground truth", p, e)))
+        .transpose()
+}
 
+fn open_output(output: Option<&PathBuf>) -> Result<Box<dyn Write>> {
+    Ok(match output {
+        Some(path) => Box::new(BufWriter::new(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map_err(|e| format!("result output {}: {e}", path.display()))?,
+        )),
+
+        None => Box::new(BufWriter::new(std::io::stdout())),
+    })
+}
+
+struct RunSummary<'a> {
+    dataset: &'a str,
+    k: usize,
+    batch_size: usize,
+    calibration: serde_json::Value,
+}
+
+fn stream_results(
+    source: &mut dyn QuerySource,
+    mut decoded: Vec<f32>,
+    mut gt: Option<GroundTruthReader<BufReader<std::fs::File>>>,
+    mut writer: Box<dyn Write>,
+    summary: RunSummary<'_>,
+    search: impl Fn(&[f32]) -> Result<orion_ann::SearchResult>,
+) -> Result<()> {
+    use orion_ann_core::algorithm::search::take_search_counts;
+    take_search_counts();
     let (mut count, mut recall_sum, mut search_seconds) = (0usize, 0.0, 0.0);
 
     // `stream_seconds` measures the complete streaming phase, including result
@@ -164,26 +212,11 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
     let stream_started = Instant::now();
 
     loop {
-        // Calibration queries are searched first. Because they are the original
-        // first queries from the input stream, query IDs remain contiguous and
-        // preserve their source ordering.
         let started = Instant::now();
 
-        let results = pool
-            .install(|| {
-                B::search_batch(
-                    &index,
-                    &decoded,
-                    config,
-                    config.sweep.search_list_sizes[0],
-                    calibration,
-                )
-            })
-            .map_err(Error::from)?;
-
+        let results = search(&decoded)?;
         search_seconds += started.elapsed().as_secs_f64();
-
-        for ids in results {
+        for ids in results.rows() {
             // Ground truth is consumed in lockstep with the query stream.
             // This also detects ground-truth files that end too early.
             if let Some(truth) = gt.as_mut() {
@@ -192,7 +225,7 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
                     .ok_or_else(|| format!("ground truth ended before query {count}"))?;
 
                 recall_sum +=
-                    ids.iter().filter(|id| row.contains(id)).count() as f64 / config.sweep.k as f64;
+                    ids.iter().filter(|id| row.contains(id)).count() as f64 / summary.k as f64;
             }
 
             serde_json::to_writer(
@@ -215,7 +248,7 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
         writer.flush().map_err(Error::from)?;
 
         // Refill the reusable decode buffer. A zero-length batch marks EOF.
-        if query_source.read_batch(&mut decoded, config.query_batch_size)? == 0 {
+        if source.read_batch(&mut decoded, summary.batch_size)? == 0 {
             break;
         }
     }
@@ -228,34 +261,93 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
         }
     }
 
+    let (ndc_f32, ndc_byte, visits) = take_search_counts();
     let recall = gt.as_ref().map(|_| recall_sum / count as f64);
 
     println!(
         "{}",
         serde_json::json!({
             "type": "summary",
-            "dataset": config.dataset,
+            "dataset": summary.dataset,
             "queries": count,
             "recall": recall,
-            "k": config.sweep.k,
-            "calibration": {
-                "threshold": calibration.threshold,
-                "early_exit_limit": calibration.early_exit_limit,
-                "search_list_size": config.sweep.calibration_l,
-            },
+            "k": summary.k,
+            "calibration":summary.calibration,
             "search_seconds": search_seconds,
             "qps": count as f64 / search_seconds,
             "stream_seconds": stream_started.elapsed().as_secs_f64(),
-            "ndc_f32": NDC_F32.drain(),
-            "ndc_byte": NDC_I8.drain(),
-            "visits": VISIT_COUNT.drain(),
+            "ndc_f32": ndc_f32,
+            "ndc_byte": ndc_byte,
+            "visits": visits,
         })
     );
 
     Ok(())
 }
 
+fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
+    let args = &command.run;
+    let k = args.k.unwrap_or(10);
+    let beam = match args.sweep.search_list_sizes.as_deref() {
+        Some([beam]) => *beam,
+        Some(_) => {
+            return Err(Error::invalid_argument(
+                "snapshot search requires exactly one search-list size",
+            ))
+        }
+        None => command.search_l.unwrap_or(k.max(64)),
+    };
+    if args.query_batch_size == 0 || k == 0 || beam < k {
+        return Err(Error::invalid_argument(
+            "require positive query batch size and 1 <= k <= search L",
+        ));
+    }
+    let base = args.base.as_ref().ok_or("--base is required")?;
+    let query = args.query.as_deref().ok_or("--query is required")?;
+    let index = orion_ann::OpenOptions {
+        threads: args.sweep.threads,
+        memory_budget_gib: args.memory_budget_gib,
+    }
+    .open(directory, orion_ann::BaseInput::from_file(base))?;
+    let calibration = index.calibration(k).ok_or_else(|| {
+        Error::invalid_state(format!("snapshot has no saved calibration for k={k}"))
+    })?;
+    let summary = RunSummary {
+        dataset: "snapshot",
+        k,
+        batch_size: args.query_batch_size,
+        calibration: serde_json::to_value(calibration)?,
+    };
+    let format = match args.query_format {
+        Some(format) => format,
+        None => orion_ann::VectorFormat::infer(query)?,
+    };
+    let mut source = open_snapshot_queries(query, format, index.dimension(), index.storage())?;
+    let gt = open_truth(args.groundtruth.as_deref())?
+        .map(|f| GroundTruthReader::new(BufReader::new(f), k, index.len()));
+    let mut decoded = Vec::new();
+    if source.read_batch(&mut decoded, args.query_batch_size)? == 0 {
+        return Err("query source is empty".into());
+    }
+    stream_results(
+        source.as_mut(),
+        decoded,
+        gt,
+        open_output(command.output.as_ref())?,
+        summary,
+        |batch| {
+            index.search(
+                orion_ann::QueryBatch::from_f32(batch, index.dimension())?,
+                &orion_ann::SearchOptions::new(k, beam),
+            )
+        },
+    )
+}
+
 fn execute(mut command: Command) -> Result<()> {
+    if let Some(directory) = &command.snapshot {
+        return run_snapshot(&command, directory);
+    }
     // `--search-l` is the single-run shorthand for supplying exactly one search
     // list size through the shared sweep configuration.
     if let Some(search_l) = command.search_l {
@@ -266,10 +358,10 @@ fn execute(mut command: Command) -> Result<()> {
 
     // The search implementation uses a statically bounded worker structure,
     // therefore reject unsupported thread counts before allocating resources.
-    if config.sweep.threads > orion_ann::algorithm::search::MAX_WORKERS {
+    if config.sweep.threads > orion_ann_core::algorithm::search::MAX_WORKERS {
         return Err(format!(
             "--threads exceeds MAX_WORKERS={}",
-            orion_ann::algorithm::search::MAX_WORKERS,
+            orion_ann_core::algorithm::search::MAX_WORKERS,
         )
         .into());
     }
@@ -293,10 +385,14 @@ fn execute(mut command: Command) -> Result<()> {
     log::info!("Run settings: {resolved}");
 
     // Dispatch only on resident coordinate type; dimensions stay runtime values.
-    match config.search_plan() {
-        SearchPlan::F32Cascade { .. } => run::<F32CascadeBackend>(&config, command.output.as_ref()),
+    match config.storage() {
+        orion_ann::VectorStorageKind::F32 => {
+            run::<F32CascadeBackend>(&config, command.output.as_ref())
+        }
 
-        SearchPlan::NativeU8L2 => run::<NativeU8L2Backend>(&config, command.output.as_ref()),
+        orion_ann::VectorStorageKind::U8 => {
+            run::<NativeU8L2Backend>(&config, command.output.as_ref())
+        }
     }
 }
 

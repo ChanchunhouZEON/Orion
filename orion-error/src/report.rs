@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Platform-independent error wire types shared by native and WASM frontends.
 use serde::Serialize;
 use serde_json::Value;

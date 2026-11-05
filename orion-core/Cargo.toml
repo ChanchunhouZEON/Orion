@@ -1,0 +1,51 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
+[package]
+name = "orion-ann-core"
+version = "0.1.0"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Adaptive graph search for approximate nearest neighbors"
+readme = "README.md"
+keywords = ["ann", "vector-search", "similarity"]
+categories = ["algorithms"]
+include = ["assets/**", "src/**", "tests/**", "configs/**", "Cargo.toml", "README.md", "LICENSE"]
+edition = "2024"
+
+[features]
+benchmark = ["search-stats", "orion-ann-vector/benchmark"]
+search-stats = []
+default = ["parlay"]
+parlay = ["dep:orion-ann-parlay"]
+indicatif = ["dep:indicatif"]
+
+[dependencies]
+orion-ann-parlay = { version = "0.1.0", path = "../orion-parlay", optional = true }
+orion-ann-error = { version = "0.1.0", path = "../orion-error" }
+bytemuck = { workspace = true }
+orion-ann-platform = { version = "0.1.0", path = "../platform" }
+orion-ann-vector = { version = "0.1.0", path = "../vector" }
+orion-ann-diskann = { version = "0.1.0", path = "../orion-diskann", features = ["orion"]}
+rand = { workspace = true }
+rayon = { workspace = true }
+crossbeam = { workspace = true }
+ndarray = { workspace = true }
+serde = { workspace = true }
+serde_json.workspace = true
+bincode = { workspace = true}
+memmap2 = { workspace = true }
+thiserror = { workspace = true }
+byteorder = { workspace = true }
+indicatif = { workspace = true, optional = true }
+hashbrown = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+anyhow = "1"
+tokio = { workspace = true }
+futures = { workspace = true }
+
+
+[dev-dependencies]
+orion-ann-parlay = { version = "0.1.0", path = "../orion-parlay", features = ["reference-tests"] }

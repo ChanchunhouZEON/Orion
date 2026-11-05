@@ -52,7 +52,10 @@ impl<T: Default + Copy, const N: usize> InMemQueryScratch<T, N> {
         search_candidate_size: u32,
         index_write_parameter: &IndexWriteParameters,
         init_pq_scratch: bool,
-    ) -> ANNResult<Self> {
+    ) -> ANNResult<Self>
+    where
+        T: bytemuck::Pod,
+    {
         let indexing_candidate_size = index_write_parameter.search_list_size;
         let max_degree = index_write_parameter.max_degree;
         let max_occlusion_size = index_write_parameter.max_occlusion_size;

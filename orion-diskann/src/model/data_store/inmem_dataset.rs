@@ -51,7 +51,10 @@ where
     T: Default + Copy + Sync + Send + Into<f32>,
     [T; N]: FullPrecisionDistance<T, N>,
 {
-    pub fn new(num_points: usize, index_growth_factor: f32) -> ANNResult<Self> {
+    pub fn new(num_points: usize, index_growth_factor: f32) -> ANNResult<Self>
+    where
+        T: bytemuck::Pod,
+    {
         let capacity = checked_capacity(num_points, N, index_growth_factor)?;
         // Trailing pad: SIMD streaming kernels (`DistanceStream` over
         // `IpF32Distance` / `L2F32Distance`) use `CHUNK_BYTES = 64`,

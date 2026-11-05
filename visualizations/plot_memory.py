@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Peak memory comparison across datasets: α-matched DiskANN vs Orion.
 Both engines build at the dataset's PA-aligned `scfg.alpha`; the only
 delta is the `compute_candidate_sets` flag plus the per-node 60/40

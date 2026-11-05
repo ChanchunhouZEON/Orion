@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 [build-system]
 requires = ["maturin>=1.9,<2.0"]
 build-backend = "maturin"

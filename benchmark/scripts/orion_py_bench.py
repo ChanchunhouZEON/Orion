@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Warm-batch f32 Python smoke benchmark using an Index.save() snapshot.
 
 This measures the Python API including query copies and result conversion. It
@@ -12,12 +15,14 @@ import statistics
 import time
 
 from benchmark_support import read_fvecs, read_ivecs, recall_at_k
-from orion_ann import Index
+from orion_ann import Index, SnapshotRef
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cache", type=Path, required=True, help="Index.save() directory")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--cache", type=Path, help="Directory containing a saved snapshot")
+    source.add_argument("--snapshot-ref", type=Path, help="Trusted JSON reference returned by Index.save().to_json()")
     parser.add_argument("--base", type=Path, required=True)
     parser.add_argument("--queries", type=Path, required=True, help="fvecs warmup/search queries")
     parser.add_argument("--groundtruth", type=Path)
@@ -29,7 +34,8 @@ def main():
     args = parser.parse_args()
     if args.trials < 1 or args.output.exists():
         parser.error("trials must be positive and output must be a new path")
-    index = Index.open(args.cache, base=args.base, threads=args.threads)
+    snapshot = args.cache if args.cache is not None else SnapshotRef.from_json(args.snapshot_ref.read_text())
+    index = Index.open(snapshot, base=args.base, threads=args.threads)
     if index.info["storage"] != "f32":
         parser.error("this fvecs smoke benchmark expects an f32 snapshot")
     queries, count, _ = read_fvecs(str(args.queries))

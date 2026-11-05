@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Private scalar kernels. Called only through a capability-checked stream entry.
 
 use crate::DistanceKernelBackend;

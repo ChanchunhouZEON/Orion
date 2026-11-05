@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Resource planning must work before downloading a dataset or building its graph.
 use serde_json::Value;
 use std::{
@@ -71,7 +76,7 @@ fn large_presets_need_no_files_or_additional_parameters() {
         assert_eq!(report["num_queries"], 10_000);
         assert_eq!(report["base_u8_bytes"], count * 128);
         assert_eq!(report["graph_slab_bytes"], count * 384);
-        assert_eq!(report["l2_u8_admission_bytes"], 0);
+        assert_eq!(report["sidecar_bytes"], 0);
         assert_eq!(report["metadata_sources"]["base"], "configuration");
         assert_eq!(report["metadata_sources"]["graph"], "configuration");
         assert!(report["memory_budget_gib"].is_null());
@@ -155,9 +160,7 @@ fn ordinary_execution_still_requires_files() {
 #[test]
 fn custom_declarations_and_existing_graph_query_headers_are_checked() {
     let fixture = Fixture::new();
-    let yaml = orion_ann_runtime::config::presets::DEFAULT_CONFIG
-        .replace("num_points: 1000000000", "num_points: 100")
-        .replace("num_queries: 10000", "num_queries: 2");
+    let yaml = include_str!("fixtures/search.yaml");
     std::fs::write(fixture.0.join("small.yaml"), yaml).unwrap();
     fixture.write_base(100);
     let query = fixture.0.join("data/sift1b/bigann_query.bvecs");
@@ -208,7 +211,6 @@ fn table_and_json_formats_report_the_same_budget_result() {
         "unknown",
         "119.209 GiB",
         "357.628 GiB",
-        "484.289 GiB",
         "known components within budget",
     ] {
         assert!(text.contains(label), "missing {label}: {text}");
@@ -227,6 +229,9 @@ fn table_and_json_formats_report_the_same_budget_result() {
         "900",
     ]);
     assert_eq!(json["budget_exceeded"], false);
+    assert_eq!(json["node_reader_bytes"], 0);
+    let resident = json["resident_lower_bound_gib"].as_f64().unwrap();
+    assert!(text.contains(&format!("{resident:.3} GiB")));
     let exceeded = fixture.run(&[
         "sift1b",
         "--preflight",

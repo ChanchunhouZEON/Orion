@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Stable errors shared by the Rust API, command line and language bindings.
 //!
 //! Constructing or converting an error never logs. Applications decide where

@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 [toolchain]
 channel = "1.92"
 components = ["rust-src", "rust-analyzer", "rustfmt"]

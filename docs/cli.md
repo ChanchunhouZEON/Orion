@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 # Orion CLI and query inputs
 
 [Back to the README](../README.md#contents)
@@ -7,6 +12,22 @@ feature of `orion-runtime` for flags/presets and its shared modules for input
 readers, graph loading, preflight and backend adapters;
 Python uses the same runtime. Neither frontend depends on `benchmark`. The `orion-sweep`
 executable remains in `benchmark` for repeated experimental runs.
+
+The CLI uses `--cache-dir` as its working graph cache. It loads or prepares
+the graph for the resolved recipe and calibrates searches from the first query
+batch. In Rust and Python, `Index.open` reopens a snapshot published by
+`Index.save` and restores the saved calibration. Pass a published snapshot directory to search with its saved configuration
+and calibration. Supply the original external base file and a calibrated k:
+
+```bash
+orion --snapshot cache/sift-snapshot --base data/base.fbin --query data/query.fbin \
+  --k 10 --search-l 96 --threads 8
+```
+
+`--snapshot` opens the directory through the runtime’s snapshot checks. A
+missing calibration is an error. Search never calibrates on the incoming
+query stream in this mode. Thread count and memory budget default to the
+saved values. Use `--cache-dir` separately to build or reuse a working graph.
 
 ## Anonymous datasets and configuration
 
@@ -90,7 +111,7 @@ benchmark warmups or cache flushing.
 ## Repeatable experiments
 
 ```bash
-cargo build --release -p benchmark --bin orion-sweep
+cargo build --release --target-dir target --manifest-path benchmark/Cargo.toml --bin orion-sweep
 ./target/release/orion-sweep sift --search-list-sizes 48,100,200 \
   --threads 8 --trials 3
 ```

@@ -3,7 +3,7 @@
  * Licensed under the MIT License.
  */
 
-use orion_ann_runtime::config::presets as config;
+use orion_ann::benchmark::config;
 mod dataset;
 mod metrics;
 mod report;
@@ -12,7 +12,7 @@ mod runner;
 #[allow(unused_imports)]
 use clap::Parser;
 use dataset::Dataset;
-use orion_ann_runtime::search::utils;
+use orion_ann::benchmark::utils;
 use runner::common::AlgorithmRunner;
 use std::path::PathBuf;
 
@@ -312,7 +312,7 @@ fn main() {
 }
 
 fn run_convergence_diag(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
-    use orion_ann::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion_ann_core::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
@@ -349,28 +349,27 @@ fn run_convergence_diag(dataset: &Dataset, k: usize, overrides: &config::SweepOv
             ).expect("build failed");
             drop(result.index);
 
-            let empty_ds = orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut idx = StaticOrion::<$N>::new(
-                empty_ds, &result.partitions, result.entry_point,
-                ocfg.graph_degree, ocfg.max_extra, None, None, None, false,
+            let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+            let idx = StaticOrion::<$N>::new(
+                graph_dataset, &result.partitions, result.entry_point,
+                ocfg.graph_degree, ocfg.max_extra, None, None,
             );
-            idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
 
             // Calibrate once on the first 200 queries.
             let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(calibration_samples())].to_vec();
             let calib_l = calibration_l(k);
-            let calib = idx.calibrate(&calib_qs, calib_l, ws, orion_ann::CalibrationConfig { k, ..Default::default() }).expect("calibrate failed");
+            let calib = idx.calibrate(&calib_qs, calib_l, ws, orion_ann_core::CalibrationConfig { k, ..Default::default() }).expect("calibrate failed");
             let thr = calib.threshold;
             let ee = calib.early_exit_limit;
             println!("Calibrated: threshold={:.2}, early_exit_limit={}\n", thr, ee);
 
             // Graph structure stats (same graph across all L).
-            let n = idx.graph.num_nodes();
+            let n = idx.graph().num_nodes();
             let (mut sum_deg, mut sum_local, mut sum_extra) = (0usize, 0usize, 0usize);
             for i in 0..n {
-                sum_deg += idx.graph.degree(i);
-                sum_local += idx.graph.local_count(i);
-                sum_extra += idx.graph.extra_count(i);
+                sum_deg += idx.graph().degree(i);
+                sum_local += idx.graph().local_count(i);
+                sum_extra += idx.graph().extra_count(i);
             }
             let avg_deg = sum_deg as f64 / n as f64;
             let avg_local = sum_local as f64 / n as f64;
@@ -817,7 +816,7 @@ fn run_thread_sweep(dataset: &Dataset, k: usize, overrides: &config::SweepOverri
 }
 
 fn run_build_profile(dataset: &Dataset, _k: usize) {
-    use orion_ann::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion_ann_core::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
     use std::time::Instant;
 
     let num_points = dataset.num_base();
@@ -900,20 +899,17 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
 
                 // Orion overhead: StaticOrion::new (extract + clustering + reorder).
                 let t_ov = Instant::now();
-                let empty_ds =
-                    orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                let mut idx = StaticOrion::<$N>::new(
-                    empty_ds,
+                let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                let idx = StaticOrion::<$N>::new(
+                    graph_dataset,
                     &result.partitions,
                     result.entry_point,
                     ocfg.graph_degree,
                     ocfg.max_extra,
                     None,
                     None,
-                    None,
-                    false,
                 );
-                idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+
                 let orion_overhead_s = t_ov.elapsed().as_secs_f64();
                 drop(idx);
                 drop(result.index);
@@ -996,7 +992,7 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
 }
 
 fn run_search_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
-    use orion_ann::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion_ann_core::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
 
     let run = experiment("diagnostic", k, overrides);
 
@@ -1025,19 +1021,16 @@ fn run_search_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOver
             .expect("build failed");
             drop(result.index);
 
-            let empty_ds = orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut idx = StaticOrion::<$N>::new(
-                empty_ds,
+            let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+            let idx = StaticOrion::<$N>::new(
+                graph_dataset,
                 &result.partitions,
                 result.entry_point,
                 32,
                 4,
                 None,
                 None,
-                None,
-                false,
             );
-            idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
 
             let queries: Vec<[f32; $N]> = dataset
                 .queries
@@ -1090,7 +1083,7 @@ fn run_search_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOver
                     &calib_sample,
                     calibration_l(k),
                     ws,
-                    orion_ann::CalibrationConfig {
+                    orion_ann_core::CalibrationConfig {
                         k,
                         ..Default::default()
                     },
@@ -1196,10 +1189,10 @@ fn run_search_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOver
 }
 
 fn run_memory_profile(dataset: &Dataset) {
-    use orion_ann::{StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion_ann_core::{StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
     use orion_ann_diskann::index::{create_inmem_index, ANNInmemIndex};
     use orion_ann_diskann::model::configuration::index_write_parameters::IndexWriteParametersBuilder;
-    use orion_ann_diskann::model::{IndexConfiguration, InmemDataset};
+    use orion_ann_diskann::model::IndexConfiguration;
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
@@ -1298,19 +1291,17 @@ fn run_memory_profile(dataset: &Dataset) {
             let orion_peak_abs = ALLOCATOR.peak_bytes();
             drop(idx);
 
-            let empty_ds = InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut idx = StaticOrion::<$N>::new(
-                empty_ds,
+            let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+            let idx = StaticOrion::<$N>::new(
+                graph_dataset,
                 &partitions,
                 entry_point,
                 ocfg.graph_degree,
                 ocfg.max_extra,
                 None,
                 None,
-                None,
-                false,
             );
-            idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+
             let orion_final_abs = ALLOCATOR.current_bytes();
             drop(idx);
             (orion_peak_abs, orion_final_abs)
@@ -1599,11 +1590,11 @@ fn run_ads_comparison(dataset: &Dataset, k: usize, overrides: &config::SweepOver
 }
 
 fn run_cliff_profile(dataset: &Dataset) {
-    use orion_ann::algorithm::analysis::{
+    use orion_ann_core::algorithm::analysis::{
         annotate_bf_ranks, compute_cliff_stats, print_node_cliff_detail, summarize_cliff_ranks,
         summarize_cliff_stats,
     };
-    use orion_ann::{build_diskann_index, PhasedGraph};
+    use orion_ann_core::build_diskann_index;
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
@@ -1629,8 +1620,20 @@ fn run_cliff_profile(dataset: &Dataset) {
         16,
     )
     .expect("build failed");
-    let phased = PhasedGraph::build_from_partitions(&result.partitions, 16, 4);
-    let graph = &phased;
+    let owner = orion_ann_core::Orion::from_graph_partitions(
+        orion_ann_core::PaddedDataset::from_packed(
+            &flat_base,
+            orion_ann_core::PaddedLayout::for_kernel::<orion_ann_vector::L2F32Distance>(dimension)
+                .unwrap(),
+        )
+        .unwrap(),
+        &result.partitions,
+        0,
+        graph_degree,
+        16,
+    )
+    .expect("invalid graph partitions");
+    let graph = owner.graph();
 
     // ── Phase 1: Full cliff analysis (all nodes, no brute-force) ────────
     println!(
@@ -1773,7 +1776,7 @@ fn run_cliff_profile(dataset: &Dataset) {
     }
 
     // ── Phase 5: Rank-Precision Cliff ───────────────────────────────────
-    use orion_ann::algorithm::analysis::{
+    use orion_ann_core::algorithm::analysis::{
         compute_rank_precision_profiles, sort_neighbors_by_distance, summarize_rank_precision,
     };
 
@@ -1811,8 +1814,8 @@ fn run_cliff_profile(dataset: &Dataset) {
 }
 
 fn run_neighbor_contribution_profile(dataset: &Dataset) {
-    use orion_ann::algorithm::search::convergence::SearchConvergenceChecker;
-    use orion_ann::{build_diskann_index, StaticOrion};
+    use orion_ann_core::algorithm::search::convergence::SearchConvergenceChecker;
+    use orion_ann_core::{build_diskann_index, StaticOrion};
     use orion_ann_diskann::model::{Neighbor as DNeighbor, Vertex};
     use orion_ann_vector::Metric;
 
@@ -1837,15 +1840,14 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
             ).expect("build failed");
             let entry = result.entry_point;
             drop(result.index);
-            let empty_ds = orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut idx = StaticOrion::<$N>::new(
-                empty_ds, &result.partitions, entry,
-                ocfg.graph_degree, ocfg.max_extra, None, None, None, false,
+            let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+            let idx = StaticOrion::<$N>::new(
+                graph_dataset, &result.partitions, entry,
+                ocfg.graph_degree, ocfg.max_extra, None, None,
             );
-            idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
 
-            let graph = &idx.graph;
-            let ds = &idx.dataset;
+            let graph = idx.graph();
+            let ds = idx.dataset();
 
             // Per-zone counters split by phase.
             // Zones: local (0..local_count), remote (local_count..degree), extra
@@ -2092,7 +2094,7 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
 }
 
 fn run_extra_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
-    use orion_ann::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion_ann_core::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
     let ocfg = crate::config::load_dataset_config_by_dim(dataset.dimension).orion;
     let run = experiment("single", k, overrides);
     assert_eq!(
@@ -2148,27 +2150,23 @@ fn run_extra_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOverr
                 let entry = result.entry_point;
                 drop(result.index);
 
-                let empty_ds =
-                    orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                let mut idx = StaticOrion::<$N>::new(
-                    empty_ds,
+                let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                let idx = StaticOrion::<$N>::new(
+                    graph_dataset,
                     &result.partitions,
                     entry,
                     32,
                     max_extra,
                     None,
                     None,
-                    None,
-                    false,
                 );
-                idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
 
                 let avg_extra = (0..num_points)
-                    .map(|i| idx.graph.extra_count(i))
+                    .map(|i| idx.graph().extra_count(i))
                     .sum::<usize>() as f64
                     / num_points as f64;
                 let avg_local = (0..num_points)
-                    .map(|i| idx.graph.local_count(i))
+                    .map(|i| idx.graph().local_count(i))
                     .sum::<usize>() as f64
                     / num_points as f64;
 
@@ -2178,7 +2176,7 @@ fn run_extra_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOverr
                         &queries[..queries.len().min(calibration_samples())],
                         calibration_l(k),
                         ocfg.window_size,
-                        orion_ann::CalibrationConfig {
+                        orion_ann_core::CalibrationConfig {
                             k,
                             ..Default::default()
                         },
@@ -2236,7 +2234,15 @@ fn run_extra_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOverr
             )
             .expect("build failed");
             drop(result_cov.index);
-            let pg = orion_ann::PhasedGraph::build_from_partitions(&result_cov.partitions, 32, 32);
+            let owner = orion_ann_core::StaticOrion::<$N>::from_graph_partitions(
+                rebuild_dataset::<$N>(&flat_base, num_points),
+                &result_cov.partitions,
+                0,
+                32,
+                32,
+            )
+            .expect("invalid graph partitions");
+            let pg = owner.graph();
 
             let dim = $N;
             let l2 = |a: usize, b: usize| -> f32 {
@@ -2337,7 +2343,7 @@ fn run_extra_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOverr
 }
 
 fn run_calibration_diag(dataset: &Dataset, k: usize) {
-    use orion_ann::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
+    use orion_ann_core::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
     use std::time::Instant;
 
     let num_points = dataset.num_base();
@@ -2372,12 +2378,12 @@ fn run_calibration_diag(dataset: &Dataset, k: usize) {
             drop(result.index);
 
             let t_staged = Instant::now();
-            let empty_ds = orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-            let mut idx = StaticOrion::<$N>::new(
-                empty_ds, &result.partitions, result.entry_point,
-                ocfg.graph_degree, ocfg.max_extra, None, None, None, false,
+            let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+            let idx = StaticOrion::<$N>::new(
+                graph_dataset, &result.partitions, result.entry_point,
+                ocfg.graph_degree, ocfg.max_extra, None, None,
             );
-            idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+
             let staged_overhead_s = t_staged.elapsed().as_secs_f64();
             let total_build_s = t_build.elapsed().as_secs_f64();
 
@@ -2391,7 +2397,7 @@ fn run_calibration_diag(dataset: &Dataset, k: usize) {
 
             // Calibrate with diagnostics
             let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(calibration_samples())].to_vec();
-            let diag = idx.calibrate_with_diagnostics(&calib_qs, config::load_sweep_config().calibration.diagnostic_search_list_size(k), ocfg.window_size, orion_ann::CalibrationConfig {
+            let diag = idx.calibrate_with_diagnostics(&calib_qs, config::load_sweep_config().calibration.diagnostic_search_list_size(k), ocfg.window_size, orion_ann_core::CalibrationConfig {
                 k, metric: ocfg.admission.calibration_metric(),
             })
                 .expect("calibrate failed");
@@ -2471,7 +2477,7 @@ fn run_calibration_diag(dataset: &Dataset, k: usize) {
 /// confounds: one graph, one calibration, all variants on the same
 /// search path with only the two convergence-side flags toggled.
 fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
-    use orion_ann::{
+    use orion_ann_core::{
         build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_960,
     };
     use rayon::prelude::*;
@@ -2559,10 +2565,10 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
             let idx: StaticOrion<$N> = pool.install(|| {
                 if cache_path.exists() && pgraph_path.exists() {
                     println!("  → cache hit: loading {:?}", pgraph_path);
-                    let empty_ds = orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                    let mut idx = StaticOrion::<$N>::load_from_cache(&cache_path, empty_ds)
-                        .expect("load_from_cache failed");
-                    idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                    let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                    let idx = orion_ann::benchmark::graph::load_working(&cache_path, graph_dataset)
+                        .expect("load benchmark graph cache");
+
                     idx
                 } else if let Ok(staged_file_path) = std::env::var("ORION_STAGED_FILE") {
                     println!("  → import PA .staged from {}", staged_file_path);
@@ -2573,19 +2579,19 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
                     )
                     .expect("parlayann_bridge::load_from_staged_file failed");
                     let max_extra_from_file = input.max_extra as usize;
-                    let empty_ds = orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                    let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
                     let mut idx = StaticOrion::<$N>::new(
-                        empty_ds,
+                        graph_dataset,
                         &input.partitions,
                         input.entry_point,
                         ocfg.graph_degree,
                         max_extra_from_file,
                         None,
                         None,
-                        Some(cache_path.clone()),
-                        true,
                     );
-                    idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                    orion_ann::benchmark::graph::save_working(&mut idx, &cache_path)
+                        .expect("save benchmark graph cache");
+
                     idx
                 } else {
                     println!(
@@ -2608,19 +2614,19 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
                     .expect("build failed");
                     let entry = result.entry_point;
                     drop(result.index);
-                    let empty_ds = orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                    let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
                     let mut idx = StaticOrion::<$N>::new(
-                        empty_ds,
+                        graph_dataset,
                         &result.partitions,
                         entry,
                         ocfg.graph_degree,
                         ocfg.max_extra,
                         None,
                         None,
-                        Some(cache_path.clone()),
-                        true,
                     );
-                    idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                    orion_ann::benchmark::graph::save_working(&mut idx, &cache_path)
+                        .expect("save benchmark graph cache");
+
                     idx
                 }
             });
@@ -2632,7 +2638,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
             let calib_qs: Vec<[f32; $N]> =
                 queries[..queries.len().min(calibration_samples())].to_vec();
             let calib = idx
-                .calibrate(&calib_qs, calibration_l(k), ocfg.window_size, orion_ann::CalibrationConfig {
+                .calibrate(&calib_qs, calibration_l(k), ocfg.window_size, orion_ann_core::CalibrationConfig {
                     k, metric: ocfg.admission.calibration_metric(),
                 })
                 .expect("calibrate failed");
@@ -2705,7 +2711,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
             // This is the 2×2 factorial's bare reference point — deltas
             // to the other three attribute cleanly to (a) extras alone,
             // (b) early-stop alone, (c) the combined effect.
-            orion_ann::algorithm::search::set_include_extras(false);
+            orion_ann_core::algorithm::search::set_include_extras(false);
             let origin_data = measure("origin (cascade-only)", &|q, sls| {
                 search_compose::<_>(
                     &idx,
@@ -2724,7 +2730,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
 
             // ── 1. Full ──
             // Default INCLUDE_EXTRAS=true; convergence + early-exit on.
-            orion_ann::algorithm::search::set_include_extras(true);
+            orion_ann_core::algorithm::search::set_include_extras(true);
             let full_data = measure("full", &|q, sls| {
                 search_compose::<_>(
                     &idx,
@@ -2744,7 +2750,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
             // ── 2. No early-stop (convergence on, ee = MAX) ──
             // Convergence detection still fires; just doesn't terminate
             // the beam early. Extras still walked post-convergence.
-            orion_ann::algorithm::search::set_include_extras(true);
+            orion_ann_core::algorithm::search::set_include_extras(true);
             let no_ee_data = measure("no-early-stop", &|q, sls| {
                 search_compose::<_>(
                     &idx,
@@ -2764,7 +2770,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
             // ── 3. No extra — same graph, post-convergence branch
             //     falls back to local+remote (see `INCLUDE_EXTRAS`
             //     plumbing in `algorithm::search::mod`).
-            orion_ann::algorithm::search::set_include_extras(false);
+            orion_ann_core::algorithm::search::set_include_extras(false);
             let no_extra_data = measure("no-extra", &|q, sls| {
                 search_compose::<_>(
                     &idx,
@@ -2783,7 +2789,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
             // Restore default so any subsequent code (other dataset
             // dispatch arms, downstream tests in the same process)
             // gets production semantics.
-            orion_ann::algorithm::search::set_include_extras(true);
+            orion_ann_core::algorithm::search::set_include_extras(true);
 
             // ── Summary table ──
             println!(
@@ -2872,7 +2878,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
 /// `calibrate()` call so thermal / cache / build-jitter drift can't
 /// account for the QPS gaps.
 fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides) {
-    use orion_ann::{
+    use orion_ann_core::{
         build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_960,
     };
     use rayon::prelude::*;
@@ -2924,7 +2930,7 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
             // populated `cache/orion_parlayann/<ds>_n…_r…_l…_a…_ex…_pct60.{bin,pgraph}`,
             // this benchmark loads the same graph in ~1–3s instead of
             // rebuilding for 30–120s. Three paths, in priority order:
-            //   1. `.bin`+`.pgraph` on disk        → `load_from_cache` (fast)
+            //   1. `.bin`+`.pgraph` on disk        → `load_working` (fast)
             //   2. `ORION_STAGED_FILE` env set    → import PA `.staged`, save to cache
             //   3. neither                          → in-process Vamana, save to cache
             //
@@ -2959,10 +2965,10 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
             let idx: StaticOrion<$N> = pool.install(|| {
                 if cache_path.exists() && pgraph_path.exists() {
                     println!("  → cache hit: loading PhasedGraph from {:?}", pgraph_path);
-                    let empty_ds = orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                    let mut idx = StaticOrion::<$N>::load_from_cache(&cache_path, empty_ds)
-                        .expect("load_from_cache failed");
-                    idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                    let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                    let idx = orion_ann::benchmark::graph::load_working(&cache_path, graph_dataset)
+                        .expect("load benchmark graph cache");
+
                     idx
                 } else if let Ok(staged_file_path) = std::env::var("ORION_STAGED_FILE") {
                     println!(
@@ -2978,13 +2984,15 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
                     // from the C++ partition rule) rather than ocfg's static
                     // value — keeps the imported graph faithful.
                     let max_extra_from_file = input.max_extra as usize;
-                    let empty_ds = orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                    let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
                     let mut idx = StaticOrion::<$N>::new(
-                        empty_ds, &input.partitions, entry,
+                        graph_dataset, &input.partitions, entry,
                         ocfg.graph_degree, max_extra_from_file,
-                        None, None, Some(cache_path.clone()), true,
+                        None, None,
                     );
-                    idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                    orion_ann::benchmark::graph::save_working(&mut idx, &cache_path)
+                        .expect("save benchmark graph cache");
+
                     idx
                 } else {
                     println!(
@@ -2999,13 +3007,15 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
                     ).expect("build failed");
                     let entry = result.entry_point;
                     drop(result.index);
-                    let empty_ds = orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
+                    let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
                     let mut idx = StaticOrion::<$N>::new(
-                        empty_ds, &result.partitions, entry,
+                        graph_dataset, &result.partitions, entry,
                         ocfg.graph_degree, ocfg.max_extra,
-                        None, None, Some(cache_path.clone()), true,
+                        None, None,
                     );
-                    idx.dataset = rebuild_dataset::<$N>(&flat_base, num_points);
+                    orion_ann::benchmark::graph::save_working(&mut idx, &cache_path)
+                        .expect("save benchmark graph cache");
+
                     idx
                 }
             });
@@ -3013,7 +3023,7 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
 
             // Calibrate once with the default cascade settings.
             let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(calibration_samples())].to_vec();
-            let calib = idx.calibrate(&calib_qs, calibration_l(k), ocfg.window_size, orion_ann::CalibrationConfig {
+            let calib = idx.calibrate(&calib_qs, calibration_l(k), ocfg.window_size, orion_ann_core::CalibrationConfig {
                 k, metric: ocfg.admission.calibration_metric(),
             }).expect("calibrate failed");
             let thr = calib.threshold;
@@ -3061,7 +3071,6 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
                     }
                 }
             });
-
 
             // Closure: time `search_compose` over `queries` × `search_list_sizes`
             // × `trials`, return median QPS per L plus the matching recall.

@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 # Platforms and build variants
 
 [README](../README.md)
@@ -21,7 +26,7 @@ For the tested Xeon Platinum 8358P configuration:
 ```bash
 RUSTFLAGS='-C target-cpu=x86-64 -C target-feature=+avx2,+fma,+f16c,+avx512f,+avx512bw,+avx512dq,+avx512vl,+avx512vpopcntdq' \
   cargo build --locked --release --target x86_64-unknown-linux-gnu \
-  -p benchmark --bin orion-sweep
+  --target-dir target --manifest-path benchmark/Cargo.toml --bin orion-sweep
 ```
 
 This is an AVX-512 build for a compatible CPU. The AVX2 variant uses

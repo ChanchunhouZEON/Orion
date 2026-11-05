@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 #include "../vendor/algorithms/utils/euclidian_point.h"
 #include "../vendor/algorithms/utils/mips_point.h"
 #include "../vendor/algorithms/utils/staged_export.h"

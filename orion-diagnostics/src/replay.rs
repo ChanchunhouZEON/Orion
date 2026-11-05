@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 use crate::{Result, SearchTrace, TraceEvent};
 
 /// Replay owns a validated trace. Cursor positions refer to events, not graph hops.

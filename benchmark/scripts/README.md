@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 # Benchmark scripts
 
 Run wrappers from any working directory. Relative data, configuration and output
@@ -37,8 +42,7 @@ vectors have already been normalized.
 
 `baseline_comparison.py` refreshes the maintained three-engine comparison, or
 reads its JSON with `--no-rust`. It no longer calls the removed
-`qps-recall-sweep` algorithm. `orion_py_bench.py` requires `ORION_CACHE_PATH`
-instead of guessing a cache name from an obsolete naming scheme.
+`qps-recall-sweep` algorithm. `orion_py_bench.py` accepts a snapshot directory with `--cache` or a saved JSON reference with `--snapshot-ref`.
 
 Validation (no full datasets required):
 

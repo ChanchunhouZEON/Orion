@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 use orion_ann_vector::{distance_l2_adsampling_slice_f32, FullPrecisionDistance};
 
 fn compare<const N: usize>() {

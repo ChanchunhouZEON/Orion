@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Numerical parity for the kernels used by native SIFT admission.
 //! Run on the target architecture to exercise its stream unrolling.
 

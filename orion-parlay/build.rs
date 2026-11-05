@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 fn main() {
     println!("cargo:rerun-if-changed=cpp");
     println!("cargo:rerun-if-changed=vendor");

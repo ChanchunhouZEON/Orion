@@ -1,13 +1,14 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Per-query prefilter trajectories. Instrumented diagnostics, never QPS timings.
 use clap::Parser;
-use orion_ann::algorithm::search::diagnostics::{NeighborMode, NoopObserver, SearchObserver};
-use orion_ann::{Error, Result};
-use orion_ann_runtime::{
-    config::{cli::Args as RunArgs, ResolvedRunConfig},
-    data::{memory, LoadedDataset},
-    graph,
-};
-use orion_ann_runtime::{search::cascade, with_supported_dimension};
+use orion_ann::benchmark::{graph, memory, Args as RunArgs, LoadedDataset, ResolvedRunConfig};
+use orion_ann::{benchmark::cascade, with_supported_dimension};
+use orion_ann_core::algorithm::search::diagnostics::{NeighborMode, NoopObserver, SearchObserver};
+use orion_ann_core::{Error, Result};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -98,17 +99,17 @@ where
             queries[..s.calibration_samples.min(queries.len())].as_flattened(),
             s.calibration_l,
             config.window_size,
-            orion_ann::CalibrationConfig {
+            orion_ann_core::CalibrationConfig {
                 k: s.k,
                 metric: config.metric.calibration_metric(),
             },
         )
         .map_err(Error::from)?;
-    let c = config.search_plan().cascade();
-    let pf = cascade::build_prefilter(&idx, c.prefilter, c.admission)
+    let c = config.cascade();
+    let pf = cascade::build_prefilter(&idx, c.prefilter, c.admission)?
         .ok_or("This experiment requires an enabled prefilter; use --prefilter jl")?;
     let ad = cascade::build_admission(&idx, c.admission).map_err(Error::from)?;
-    let rr = cascade::build_rerank(&idx, c.rerank);
+    let rr = cascade::build_rerank(&idx, c.rerank)?;
     let limit = if args.disable_ee {
         usize::MAX
     } else {

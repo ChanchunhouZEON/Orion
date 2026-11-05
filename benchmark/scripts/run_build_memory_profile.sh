@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # α-matched build + memory profile across the four reference datasets.
 #
 # Both engines run at the dataset's PA-aligned `scfg.alpha` so the only

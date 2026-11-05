@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Run with DISKANN_BINARY pointing to the prebuilt executable."""
 import tempfile,struct,subprocess,pathlib,os
 binary=pathlib.Path(os.environ.get('DISKANN_BINARY', 'target/debug/diskann_sweep')).resolve()

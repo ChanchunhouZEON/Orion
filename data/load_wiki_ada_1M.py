@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Build a 1M base + 10K query slice of Wikipedia + OpenAI ada-002
 embeddings from `nlpkevinl/wikipedia_openai_embeddings`.
 

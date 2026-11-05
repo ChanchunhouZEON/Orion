@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # One-time ParlayANN data prep for a dataset: convert rust-side fvecs
 # to ParlayANN's fbin + gt format, then build the `.staged` export via
 # ParlayANN's `./neighbors -staged_outfile`.

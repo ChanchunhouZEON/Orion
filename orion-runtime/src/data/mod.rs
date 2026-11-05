@@ -5,14 +5,18 @@
 
 //! Bounded-buffer vector loading into the allocation transferred to Orion.
 use crate::{Error, Result};
-pub mod memory;
+
 pub mod padded;
+#[cfg(any(test, feature = "cli", feature = "benchmark", feature = "file-queries"))]
 pub mod query;
 
+use crate::config::cascade::SearchMetric;
+#[cfg(any(feature = "cli", feature = "benchmark"))]
 use crate::config::{ResolvedRunConfig, VectorStorageKind};
-use crate::search::cascade::SearchMetric;
 use orion_ann_diskann::common::AlignedBoxWithSlice;
-use std::io::{BufReader, Read};
+#[cfg(any(test, feature = "benchmark"))]
+use std::io::BufReader;
+use std::io::Read;
 #[cfg(test)]
 use std::io::{Seek, SeekFrom};
 use std::path::Path;
@@ -184,9 +188,10 @@ pub fn inspect_vector_file(path: &Path, format: VectorFormat) -> Result<VectorHe
 /// - whether encoded `f32` coordinates are accepted,
 /// - what post-load normalization is required by the search metric.
 pub trait BaseElement:
-    Default + Copy + Send + Sync + Into<f32> + orion_ann::index::compressed_index::DynamicElement
+    Default + Copy + Send + Sync + Into<f32> + orion_ann_core::index::compressed_index::DynamicElement
 {
     /// Resident storage representation selected by this element type.
+    #[cfg(any(feature = "cli", feature = "benchmark"))]
     const STORAGE: VectorStorageKind;
 
     /// Exposes resident bytes only when they are already native u8 coordinates.
@@ -209,6 +214,7 @@ pub trait BaseElement:
 }
 
 impl BaseElement for f32 {
+    #[cfg(any(feature = "cli", feature = "benchmark"))]
     const STORAGE: VectorStorageKind = VectorStorageKind::F32;
 
     fn from_byte(value: u8) -> Self {
@@ -225,6 +231,7 @@ impl BaseElement for f32 {
 }
 
 impl BaseElement for u8 {
+    #[cfg(any(feature = "cli", feature = "benchmark"))]
     const STORAGE: VectorStorageKind = VectorStorageKind::U8;
 
     fn native_bytes_mut(data: &mut [Self]) -> Option<&mut [u8]> {
@@ -372,7 +379,7 @@ fn read_native_bytes<R: Read>(reader: &mut R, output: &mut [u8]) -> std::io::Res
 /// A `LoadedBase` is normally constructed from a validated
 /// [`ResolvedRunConfig`] using [`load`](Self::load). The resulting base
 /// allocation can then be moved into an
-/// [`Orion`](orion_ann::Orion) index via
+/// [`Orion`](orion_ann_core::Orion) index via
 /// [`take_index_dataset`](Self::take_index_dataset).
 ///
 /// This ownership-transfer path avoids keeping a second copy of the original
@@ -386,18 +393,21 @@ pub struct LoadedBase<T = f32> {
 }
 
 /// Replayable experiment inputs. Ordinary search uses LoadedBase + QuerySource.
+#[cfg(any(all(test, feature = "cli"), feature = "benchmark"))]
 pub struct LoadedDataset<T = f32> {
     pub base_data: LoadedBase<T>,
     pub queries: Vec<Vec<f32>>,
     pub ground_truth: Option<Vec<Vec<u32>>>,
 }
 
+#[cfg(any(all(test, feature = "cli"), feature = "benchmark"))]
 impl<T> std::ops::Deref for LoadedDataset<T> {
     type Target = LoadedBase<T>;
     fn deref(&self) -> &Self::Target {
         &self.base_data
     }
 }
+#[cfg(any(all(test, feature = "cli"), feature = "benchmark"))]
 impl<T> std::ops::DerefMut for LoadedDataset<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.base_data
@@ -441,8 +451,9 @@ impl<T: BaseElement> LoadedBase<T> {
     /// dataset dimensions are inconsistent, the point count is invalid,
     /// memory-budget validation fails, allocation fails, or any input file
     /// cannot be loaded or validated.
+    #[cfg(any(feature = "cli", feature = "benchmark"))]
     pub fn load(config: &ResolvedRunConfig) -> Result<Self> {
-        if config.search_plan().storage().kind != T::STORAGE {
+        if config.storage() != T::STORAGE {
             return Err("this executable expects f32 storage; use the orion binary for native u8, or --vector-storage f32 --admission l2-u8".into());
         }
         let base_header = inspect_vector_file(&config.base, config.base_format)?;
@@ -462,7 +473,7 @@ impl<T: BaseElement> LoadedBase<T> {
         }
         let dimension = base_header.dimension;
 
-        crate::data::memory::check_memory_budget(config, num_points)?;
+        crate::preflight::check_memory_budget(config, num_points)?;
 
         let layout = orion_ann_vector::PaddedLayout::for_kernel::<T::Kernel>(dimension)?;
         let dataset = padded::load::<T>(
@@ -481,7 +492,9 @@ impl<T: BaseElement> LoadedBase<T> {
     }
 }
 
+#[cfg(any(all(test, feature = "cli"), feature = "benchmark"))]
 impl<T: BaseElement> LoadedDataset<T> {
+    #[cfg(any(feature = "cli", feature = "benchmark"))]
     pub fn load(config: &ResolvedRunConfig) -> Result<Self> {
         if config.prepare_only {
             return Ok(Self {
@@ -501,17 +514,17 @@ impl<T: BaseElement> LoadedDataset<T> {
         {
             return Err("sweep/diagnostics require a replayable query file; use orion for streaming queries".into());
         }
-        let report = crate::data::memory::preflight_report(config)?;
-        crate::data::memory::enforce_budget(&report)?;
+        let points = inspect_vector_file(&config.base, config.base_format)?
+            .count
+            .min(config.max_points);
+        let report = crate::preflight::estimate_resident_memory(config, points)?;
+        crate::preflight::enforce_budget(&report)?;
         let mut source = crate::data::query::open_queries(config)?;
         let mut batch = Vec::new();
         let mut queries = Vec::new();
         while source.read_batch(&mut batch, 1024)? != 0 {
             queries.extend(batch.chunks_exact(config.dimension).map(|row| row.to_vec()));
         }
-        let points = inspect_vector_file(&config.base, config.base_format)?
-            .count
-            .min(config.max_points);
         let ground_truth = if let Some(path) = &config.groundtruth {
             let file = std::fs::File::open(path).map_err(|e| Error::io("open", path, e))?;
             let mut reader = crate::data::query::GroundTruthReader::new(
@@ -625,6 +638,7 @@ impl<T> std::fmt::Debug for LoadedBase<T> {
     }
 }
 
+#[cfg(any(all(test, feature = "cli"), feature = "benchmark"))]
 impl<T> std::fmt::Debug for LoadedDataset<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoadedDataset")
@@ -816,3 +830,10 @@ mod format_tests {
         std::fs::remove_file(p).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "tests/padded_input.rs"]
+mod padded_input_tests;
+#[cfg(test)]
+#[path = "tests/query_source.rs"]
+mod query_source_tests;

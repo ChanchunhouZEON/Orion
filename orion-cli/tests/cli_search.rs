@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 use serde_json::Value;
 use std::{
     io::Write,
@@ -275,7 +280,7 @@ fn anonymous_config_uses_defaults_and_preset_evaluation_can_be_disabled() {
         String::from_utf8_lossy(&out.stderr)
     );
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(report["l2_u8_admission_bytes"], 0);
+    assert_eq!(report["sidecar_bytes"], 0);
     assert_eq!(report["query_buffered_rows"], 0);
 
     let out = f
@@ -296,21 +301,9 @@ fn anonymous_config_uses_defaults_and_preset_evaluation_can_be_disabled() {
 // checked against the cache files actually produced by execution.
 impl Fixture {
     fn auto_config(&self) {
-        let mut yaml: serde_yaml::Value =
-            serde_yaml::from_str(orion_ann_runtime::config::presets::DEFAULT_CONFIG).unwrap();
-        yaml["datasets"] = serde_yaml::from_str(
-            r#"
-fixture:
-  dimension: 128
-  metric: l2
-  paths: {base: base.bvecs, query: query.bvecs}
-  base_graph: {source: auto, staged_file: graph.staged}
-"#,
-        )
-        .unwrap();
         std::fs::write(
             self.root.join("auto.yaml"),
-            serde_yaml::to_string(&yaml).unwrap(),
+            include_str!("fixtures/search.yaml"),
         )
         .unwrap();
     }
@@ -329,10 +322,7 @@ fixture:
         serde_json::from_slice(&out.stdout).unwrap()
     }
     fn cache_manifest(&self, report: &Value) -> Value {
-        let path = self
-            .root
-            .join(report["cache_path"].as_str().unwrap())
-            .with_extension("cache.json");
+        let path = self.root.join(report["cache_path"].as_str().unwrap());
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     }
 }
@@ -372,9 +362,7 @@ fn automatic_selection_prefers_pa_cache_then_export_then_memory_build() {
     );
 
     let path = f.root.join(pa["cache_path"].as_str().unwrap());
-    for extension in ["bin", "pgraph", "cache.json"] {
-        std::fs::remove_file(path.with_extension(extension)).unwrap();
-    }
+    std::fs::remove_file(path).unwrap();
     let built = f.preflight();
     assert_eq!(built["graph_source"], "parlayann");
     assert_eq!(built["cache_hit"], false);
@@ -452,8 +440,16 @@ fn auto_does_not_hide_invalid_exports_or_incomplete_caches() {
     assert_eq!(f.preflight()["graph_action"], "import PA staged export");
     successful(f.auto_command().arg("--prepare-only").output().unwrap());
     let report = f.preflight();
-    let metadata = f.root.join(report["cache_path"].as_str().unwrap());
-    std::fs::remove_file(metadata.with_extension("pgraph")).unwrap();
+    let digest = f.cache_manifest(&report)["graph_sha256"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    std::fs::remove_file(
+        f.root
+            .join("cache.objects")
+            .join(format!("{digest}.pgraph")),
+    )
+    .unwrap();
     assert!(!f
         .auto_command()
         .arg("--preflight")
@@ -480,19 +476,22 @@ fn auto_does_not_hide_invalid_exports_or_incomplete_caches() {
 }
 
 #[test]
-fn cache_source_is_validated_and_old_manifests_remain_readable() {
+fn cache_source_is_required_and_validated() {
     let f = Fixture::new();
     f.auto_config();
     successful(f.auto_command().arg("--prepare-only").output().unwrap());
     let report = f.preflight();
-    let path = f
-        .root
-        .join(report["cache_path"].as_str().unwrap())
-        .with_extension("cache.json");
+    let path = f.root.join(report["cache_path"].as_str().unwrap());
     let mut manifest = f.cache_manifest(&report);
     manifest.as_object_mut().unwrap().remove("graph_source");
     std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-    assert_eq!(f.preflight()["cache_hit"], true);
+    assert!(!f
+        .auto_command()
+        .arg("--preflight")
+        .output()
+        .unwrap()
+        .status
+        .success());
     manifest["graph_source"] = "rust".into();
     std::fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     assert!(!f

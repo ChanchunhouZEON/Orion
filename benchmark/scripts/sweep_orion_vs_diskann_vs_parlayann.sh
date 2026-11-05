@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # Back-to-back sweep of Orion vs ParlayANN Vamana on the same
 # ParlayANN-built base graph. Runs each implementation NUM_RUNS times
 # with COOLDOWN_S seconds between runs, then parses the outputs into a

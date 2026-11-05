@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Collect full-query k=100 baselines without modifying existing experiment artifacts."""
 import argparse
 import datetime

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Convergence diagnostics (SIFT + GIST): steps saved, distance calls saved,
 graph structure, trade-off.
 

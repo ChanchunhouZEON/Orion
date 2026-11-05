@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Run full-query k=100 sweeps, retaining raw results and resolved configs."""
 import argparse
 import datetime

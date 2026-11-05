@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # CI smoke test — runs inside the x86_64 Linux container (see
 # Dockerfile.ci). Validates that the workspace **cross-compiles
 # correctly to x86_64-unknown-linux-gnu** end-to-end:
 #
 #   1. `vector/` (NEON gated out, AVX2/scalar fallbacks active) compiles.
-#   2. `orion/` (RaBitQ, JL, visited_set quantized codecs) compiles.
+#   2. `orion-core/` (RaBitQ, JL, visited_set quantized codecs) compiles.
 #   3. The `benchmark` binary (the SIFT entry point) links cleanly.
 #
 # Each phase is timed so we know which step blew the budget under
@@ -85,8 +88,10 @@ phase_diskann_check() {
 }
 
 phase_build_benchmark() {
-    banner "Phase 5: cargo build -p benchmark --release --bin benchmark"
-    time cargo build --release -p benchmark -p orion-ann-cli --bins
+    banner "Phase 5: cargo build --manifest-path benchmark/Cargo.toml --release --bin benchmark"
+    local target_dir="${BUILD_DIR:-${CARGO_TARGET_DIR:-$ROOT/target}}"
+    time cargo build --locked --release --target-dir "$target_dir" -p orion-ann-cli --bin orion
+    time cargo build --locked --release --manifest-path benchmark/Cargo.toml --target-dir "$target_dir" --bins
     # Verify the produced ELF is actually x86_64.
     file "$(binary_path benchmark)" "$(binary_path orion)" "$(binary_path orion-sweep)"
 }

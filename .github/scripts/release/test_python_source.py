@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Regression coverage for the Python source-workspace lockfile guard."""
 import unittest
 

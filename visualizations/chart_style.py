@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Shared chart styling: GLM-inspired palette, rounded bars, clean layout."""
 
 import matplotlib.patches as mpatches

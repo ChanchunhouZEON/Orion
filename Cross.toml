@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 [build.env]
 passthrough = ["RUSTFLAGS"]
 

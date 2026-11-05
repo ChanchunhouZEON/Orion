@@ -1,8 +1,13 @@
-pub(crate) use orion_ann_runtime::search::cascade;
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
+pub(crate) use orion_ann::benchmark::cascade;
 pub mod common;
 pub mod diskann_ads_runner;
 pub mod diskann_runner;
-pub(crate) use orion_ann_runtime::graph::parlayann as parlayann_bridge;
+pub(crate) use orion_ann::benchmark::parlayann as parlayann_bridge;
 pub mod orion_ads_runner;
 pub mod orion_runner;
 

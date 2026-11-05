@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 target
 
 *.hdf5
@@ -49,7 +52,7 @@ core.*
 # Default `Orion::new` cache dir — kicks in when the e2e
 # integration test fixture doesn't override `cache_base_path`. The
 # dir auto-creates next to the test binary's cwd.
-/orion/orion_graphs/
+/orion-core/orion_graphs/
 /orion_graphs/
 
 # Local Python extension/package tests (never dataset or experiment outputs).

@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 import concurrent.futures
 import json
 import os
@@ -8,7 +11,7 @@ import tempfile
 import unittest
 
 import numpy as np
-from orion_ann import Index, GraphConfig, CascadeConfig, OrionError
+from orion_ann import Index, SnapshotRef, GraphConfig, CascadeConfig, OrionError
 
 
 def write_vectors(path, values):
@@ -97,10 +100,93 @@ class IndexTests(unittest.TestCase):
                     self.assertAlmostEqual(fc.threshold, summary["calibration"]["threshold"], places=7)
                     self.assertEqual(fc.early_exit_limit, summary["calibration"]["early_exit_limit"])
                 snapshot = self.root / ("snapshot" + metric + suffix + str(dim))
-                file_index.save(snapshot)
-                loaded = Index.open(snapshot, base=base_file, threads=1)
+                ref_snapshot = file_index.save(snapshot)
+                loaded = Index.open(ref_snapshot, base=base_file, threads=1)
                 self.assert_results(f, loaded.search(queries, k=10, search_list_size=24))
                 self.assertEqual(loaded.info["threads"], 1)
+
+    def test_cli_snapshot_restores_python_calibration_across_batches(self):
+        for metric, dtype, suffix in [("l2", np.float32, ".fbin"),
+                                      ("cosine", np.float32, ".fvecs"),
+                                      ("l2", np.uint8, ".u8bin")]:
+            with self.subTest(metric=metric, dtype=dtype):
+                folder = self.root / (metric + suffix)
+                folder.mkdir()
+                base, queries = self.arrays(dtype=dtype)
+                base_path, query_path = folder / ("base" + suffix), folder / ("query" + suffix)
+                write_vectors(base_path, base)
+                write_vectors(query_path, queries)
+                index = Index.from_file(base_path, metric=metric, graph=self.graph,
+                                        cache_dir=folder / "build", threads=2)
+                # The CLI will see different queries in batches of three. It must
+                # restore this five-query calibration, including its original beam.
+                calibration = index.calibrate(queries[:5], k=3, search_list_size=12)
+                snapshot = index.save(folder / "snapshot")
+                reopened = Index.open(snapshot, base=base_path, threads=1)
+                expected = reopened.search(queries, k=3, search_list_size=24)
+                command = [os.environ["ORION_TEST_CLI"], "--snapshot", snapshot.path,
+                           "--base", str(base_path), "--query", str(query_path),
+                           "--query-batch-size", "3", "--threads", "1", "--search-l", "24"]
+                result = subprocess.run(command + ["--k", "3"], text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                records = [json.loads(line) for line in result.stdout.splitlines()]
+                rows, summary = records[:-1], records[-1]
+                self.assertEqual([r["query_id"] for r in rows], list(range(len(queries))))
+                self.assertEqual([r["ids"] for r in rows],
+                                 [row[:n].tolist() for row, n in zip(expected.ids, expected.counts)])
+                saved = dict(summary["calibration"])
+                expected_calibration = vars(calibration).copy()
+                self.assertEqual(np.float32(saved.pop("threshold")).tobytes(),
+                                 np.float32(expected_calibration.pop("threshold")).tobytes())
+                self.assertEqual(saved, expected_calibration)
+                self.assertEqual(summary["queries"], len(queries))
+                missing = subprocess.run(command + ["--k", "4", "--error-format", "json"],
+                                         text=True, capture_output=True)
+                self.assertNotEqual(missing.returncode, 0)
+                self.assertIn("no saved calibration for k=4", missing.stderr)
+                self.assertFalse(missing.stdout)
+                conflict = subprocess.run(command + ["--cache-dir", str(folder / "wrong")],
+                                          text=True, capture_output=True)
+                self.assertNotEqual(conflict.returncode, 0)
+                self.assertIn("--cache-dir", conflict.stderr)
+                self.assertFalse((folder / "wrong").exists())
+
+    def test_snapshot_requests_select_k_and_beam_without_mutating_calibration(self):
+        # CLI snapshot search delegates to Rust Index::search; compare the same
+        # restored generation against concurrent NumPy requests with mixed controls.
+        for dtype, metric in [(np.uint8, "l2"), (np.float32, "cosine")]:
+            with self.subTest(dtype=dtype, metric=metric):
+                folder = self.root / metric
+                folder.mkdir()
+                base, queries = self.arrays(dtype=dtype, dimension=13)
+                suffix = ".u8bin" if dtype == np.uint8 else ".fbin"
+                base_path, query_path = folder / ("base" + suffix), folder / ("query" + suffix)
+                write_vectors(base_path, base)
+                write_vectors(query_path, queries)
+                index = Index.from_file(base_path, metric=metric, graph=self.graph,
+                                        cache_dir=folder / "build", threads=2)
+                controls = [(3, 12), (5, 24), (10, 40)]
+                for k, beam in controls:
+                    index.calibrate(queries[:8], k=k, search_list_size=beam)
+                reference = index.save(folder / "snapshot")
+                before = index.info
+                manifest = (Path(reference.path) / "index.json").read_bytes()
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                    futures = [executor.submit(index.search, queries, k=k, search_list_size=beam)
+                               for k, beam in controls]
+                    for (k, beam), future in zip(controls, futures):
+                        expected = future.result(timeout=20)
+                        command = [os.environ["ORION_TEST_CLI"], "--snapshot", reference.path,
+                                   "--base", str(base_path), "--query", str(query_path),
+                                   "--query-batch-size", "3", "--threads", "2",
+                                   "--k", str(k), "--search-l", str(beam)]
+                        output = subprocess.run(command, text=True, capture_output=True, timeout=20)
+                        self.assertEqual(output.returncode, 0, output.stderr)
+                        records = [json.loads(line) for line in output.stdout.splitlines()]
+                        rows = [record["ids"] for record in records if record["type"] == "result"]
+                        self.assertEqual(rows, [row[:n].tolist() for row, n in zip(expected.ids, expected.counts)])
+                self.assertEqual(index.info, before)
+                self.assertEqual((Path(reference.path) / "index.json").read_bytes(), manifest)
 
     def test_array_snapshot_identity_and_calibration(self):
         base, queries = self.arrays()
@@ -110,31 +196,33 @@ class IndexTests(unittest.TestCase):
         index.calibrate(queries, k=3)
         expected = index.search(queries, k=3, search_list_size=32)
         path = self.root / "saved"
-        index.save(path)
-        restored = Index.open(path, base=base.copy())
+        ref_path = index.save(path)
+        restored = Index.open(SnapshotRef.from_json(ref_path.to_json()), base=base.copy())
         self.assert_results(expected, restored.search(queries, k=3, search_list_size=32))
         with self.assertRaisesRegex(OrionError, "calibrate"):
             restored.search(queries, k=4)
         changed = base.copy(); changed[0, 0] += 1
         with self.assertRaisesRegex(OrionError, "identity"):
-            Index.open(path, base=changed)
+            Index.open(ref_path, base=changed)
         with self.assertRaisesRegex(OrionError, "already exists"):
             index.save(path)
+        local = Index.open(path, base=base)
+        self.assert_results(expected, local.search(queries, k=3, search_list_size=32))
         with self.assertRaises(OrionError):
             Index.open(self.root / "missing", base=base)
         # Export changes after loading must not be misrecorded as the source
         # of the resident graph when another snapshot is saved.
-        original_manifest = json.loads(next(path.glob("*.cache.json")).read_text())
+        original_manifest = json.loads((path / "index.json").read_text())["payloads"]["provenance_sha256"]
         self.staged.write_bytes(b"changed after import")
-        saved_again = self.root / "saved-again"; index.save(saved_again)
-        self.assertEqual(original_manifest, json.loads(next(saved_again.glob("*.cache.json")).read_text()))
-        self.assert_results(expected, Index.open(saved_again, base=base).search(queries, k=3, search_list_size=32))
+        saved_again = self.root / "saved-again"; ref_saved_again = index.save(saved_again)
+        self.assertEqual(original_manifest, json.loads((saved_again / "index.json").read_text())["payloads"]["provenance_sha256"])
+        self.assert_results(expected, Index.open(ref_saved_again, base=base).search(queries, k=3, search_list_size=32))
         # Restored calibration cannot be silently combined with a changed cascade.
         metadata = json.loads((path / "index.json").read_text())
         metadata["options"]["window_size"] = 6
         (path / "index.json").write_text(json.dumps(metadata))
-        with self.assertRaisesRegex(OrionError, "configuration"):
-            Index.open(path, base=base)
+        with self.assertRaisesRegex(OrionError, "manifest"):
+            Index.open(ref_path, base=base)
 
     def test_runtime_dimensions_array_persistence_and_rust_builder(self):
         for dim in (3, 31, 33, 129, 1537):
@@ -144,12 +232,13 @@ class IndexTests(unittest.TestCase):
                 index.calibrate(queries, k=3)
                 expected = index.search(queries, k=3, search_list_size=32)
                 saved = self.root / ("odd-snapshot-" + str(dim))
-                index.save(saved)
-                self.assert_results(expected, Index.open(saved, base=base.copy()).search(queries, k=3, search_list_size=32))
+                ref_saved = index.save(saved)
+                self.assert_results(expected, Index.open(ref_saved, base=base.copy()).search(queries, k=3, search_list_size=32))
         base, queries = self.arrays(dimension=33)
         graph = GraphConfig(source="rust", degree=8, build_l=32, alpha=1.2, max_extra=4)
         index = Index.from_array(base, graph=graph, threads=2, cache_dir=self.root / "rust-odd")
-        result = index.search(base[:3], k=1, search_list_size=64, adaptive=False)
+        index.calibrate(queries, k=1)
+        result = index.search(base[:3], k=1, search_list_size=64)
         np.testing.assert_array_equal(result.ids[:, 0], [0, 1, 2])
 
     def test_bad_inputs_are_errors(self):
@@ -167,23 +256,39 @@ class IndexTests(unittest.TestCase):
             Index.from_array(base, threads=0, graph=self.graph, cache_dir=self.root / "bad")
         index = self.make(base)
         for k, beam in [(0, 32), (65, 65), (10, 9)]:
-            with self.assertRaises(OrionError): index.search(queries, k=k, search_list_size=beam, adaptive=False)
-        with self.assertRaises(OrionError): index.search(queries[:, :31], adaptive=False)
-        with self.assertRaises(OrionError): index.search(queries.astype(np.float64), adaptive=False)
+            with self.assertRaises(OrionError): index.search(queries, k=k, search_list_size=beam)
+        with self.assertRaises(OrionError): index.search(queries[:, :31])
+        with self.assertRaises(OrionError): index.search(queries.astype(np.float64))
         with self.assertRaises(OrionError): index.calibrate(queries[:0])
-        result = index.search(queries[:0], k=3, adaptive=False)
+        with self.assertRaises(OrionError) as missing:
+            index.search(queries[:0], k=3)
+        self.assertEqual(missing.exception.code, "ORION_INVALID_STATE")
+        index.calibrate(queries, k=3)
+        result = index.search(queries[:0], k=3)
         self.assertEqual(result.ids.shape, (0, 3))
         self.assertEqual(result.counts.shape, (0,))
 
     def test_owned_base_and_concurrent_calls(self):
-        base, queries = self.arrays()
-        index = self.make(base)
-        index.calibrate(queries, k=3)
-        expected = index.search(queries, k=3, search_list_size=24)
-        base[:] = 0  # Caller mutation cannot change the index's owned base.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            futures = [executor.submit(index.search, queries, k=3, search_list_size=24) for _ in range(6)]
-            for future in futures: self.assert_results(expected, future.result(timeout=20))
+        for dtype, metric in [(np.float32, "l2"), (np.float32, "cosine"), (np.uint8, "l2")]:
+            with self.subTest(dtype=dtype, metric=metric):
+                base, queries = self.arrays(dtype=dtype, dimension=13)
+                original_queries = queries.copy()
+                index = self.make(base, metric=metric)
+                controls = [(3, 12), (5, 24), (10, 40)]
+                for k, beam in controls:
+                    index.calibrate(queries, k=k, search_list_size=beam)
+                expected = [index.search(queries, k=k, search_list_size=beam) for k, beam in controls]
+                before = index.info
+                base[:] = 0  # Caller mutation cannot change the index's owned base.
+                def request(i):
+                    k, beam = controls[i % len(controls)]
+                    return index.search(queries, k=k, search_list_size=beam)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                    futures = [executor.submit(request, i) for i in range(24)]
+                    for i, future in enumerate(futures):
+                        self.assert_results(expected[i % len(controls)], future.result(timeout=20))
+                np.testing.assert_array_equal(queries, original_queries)
+                self.assertEqual(index.info, before)
 
     def test_native_u8_constraints_and_array_roundtrip(self):
         base, queries = self.arrays(np.uint8, 128)
@@ -191,15 +296,22 @@ class IndexTests(unittest.TestCase):
             Index.from_array(base, graph=GraphConfig(source="rust"), cache_dir=self.root / "bad")
         built = Index.from_array(base, graph=GraphConfig(), cache_dir=self.root / "no-export")
         self.assertEqual(built.info["graph_source"], "parlayann")
-        index = self.make(base)
-        exact = index.search(base, k=1, search_list_size=64, adaptive=False)
+        # Make every row reachable on the first expansion so exact self-matches
+        # test native-u8 ranking independently of adaptive stopping.
+        degree = len(base) - 1
+        write_staged(self.staged, len(base), degree=degree, extra=0)
+        graph = GraphConfig(source="parlayann", staged_file=self.staged,
+                            degree=degree, build_l=64, max_extra=0)
+        index = Index.from_array(base, graph=graph, threads=2, cache_dir=self.root / "complete")
+        index.calibrate(queries, k=1)
+        exact = index.search(base, k=1, search_list_size=64)
         np.testing.assert_array_equal(exact.ids[:, 0], np.arange(64))
-        with self.assertRaises(OrionError): index.search(queries.astype(np.float32), adaptive=False)
+        with self.assertRaises(OrionError): index.search(queries.astype(np.float32))
         with self.assertRaises(OrionError):
             self.make(base, cascade=CascadeConfig(rerank="f32"))
         index.calibrate(queries, k=10)
-        snapshot = self.root / "native-saved"; index.save(snapshot)
-        restored = Index.open(snapshot, base=base)
+        snapshot = self.root / "native-saved"; ref_snapshot = index.save(snapshot)
+        restored = Index.open(ref_snapshot, base=base)
         self.assert_results(index.search(queries, k=10), restored.search(queries, k=10))
         self.assertEqual(restored.info["storage"], "u8")
 
@@ -208,16 +320,21 @@ class IndexTests(unittest.TestCase):
         path = self.root / "base.custom"; write_vectors(path, base)
         index = Index.from_file(path, base_format="fbin", graph=self.graph, cache_dir=self.root / "file-cache")
         index.calibrate(queries, k=3)
-        saved = self.root / "file-saved"; index.save(saved)
-        graph = next(saved.glob("*.pgraph"))
-        graph.write_bytes(graph.read_bytes()[:-4])
-        with self.assertRaises(OrionError): Index.open(saved, base=path)
+        saved = self.root / "file-saved"; ref_saved = index.save(saved)
+        manifest = json.loads((saved / "index.json").read_text())
+        graph = Path(manifest["object_store"]) / (manifest["payloads"]["graph_sha256"] + ".pgraph")
+        original = graph.read_bytes()
+        graph.write_bytes(original[:-4])
+        with self.assertRaises(OrionError): Index.open(ref_saved, base=path)
+        with self.assertRaisesRegex(OrionError, "length mismatch"):
+            index.save(self.root / "bad-graph-save")
+        graph.write_bytes(original)
         bad_query = self.root / "bad.fbin"; write_vectors(bad_query, queries)
         bad_query.write_bytes(bad_query.read_bytes()[:-1])
         with self.assertRaises(OrionError): index.search(bad_query, k=3)
-        saved2 = self.root / "file-saved2"; index.save(saved2)
+        saved2 = self.root / "file-saved2"; ref_saved2 = index.save(saved2)
         with path.open("r+b") as file: file.seek(8); file.write(struct.pack("<f", 1234))
-        with self.assertRaisesRegex(OrionError, "identity"): Index.open(saved2, base=path)
+        with self.assertRaisesRegex(OrionError, "identity"): Index.open(ref_saved2, base=path)
         with self.assertRaisesRegex(OrionError, "changed"): index.save(self.root / "stale-save")
 
     def test_auto_parlay_build_and_reuse(self):
@@ -258,8 +375,8 @@ class IndexTests(unittest.TestCase):
         base, queries = self.arrays(dimension=960)
         index = self.make(base)
         index.calibrate(queries, k=10)
-        saved = self.root / "high-saved"; index.save(saved)
-        restored = Index.open(saved, base=base)
+        saved = self.root / "high-saved"; ref_saved = index.save(saved)
+        restored = Index.open(ref_saved, base=base)
         self.assert_results(index.search(queries, k=10), restored.search(queries, k=10))
         write_staged(self.staged, 128)
         base = self.rng.integers(0, 240, (128, 32)).astype(np.float32)
@@ -285,7 +402,7 @@ class IndexTests(unittest.TestCase):
         write_staged(self.staged, 32)
         index = Index.from_file(path, graph=self.graph, max_points=32, cache_dir=self.root / "prefix")
         index.calibrate(queries, k=3)
-        saved = self.root / "prefix-saved"; index.save(saved)
-        restored = Index.open(saved, base=path)
+        saved = self.root / "prefix-saved"; ref_saved = index.save(saved)
+        restored = Index.open(ref_saved, base=path)
         self.assertEqual(restored.info["num_points"], 32)
         self.assert_results(index.search(queries, k=3), restored.search(queries, k=3))

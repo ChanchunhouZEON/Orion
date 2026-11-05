@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Parse ParlayANN `neighbors` stdout + Orion sweep stdout +
 DiskANN sweep stdout from a back-to-back three-engine run, compute
 per-recall medians across NUM_RUNS, and emit a single JSON consumable

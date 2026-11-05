@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 
 [Back to the main README](../README.md#table-of-contents)
 
@@ -91,7 +96,7 @@ schedule. This isolates neighbor selection, not every difference from a
 conventional beam implementation.
 
 ```bash
-cargo run --release -p benchmark --bin adaptive -- sift \
+cargo run --release --manifest-path benchmark/Cargo.toml --bin adaptive -- sift \
   --graph-source parlayann --k 10 --search-list-sizes 48,100,200,256 \
   --threads 8 --trials 5 --diagnostic-queries 1000
 ```
@@ -148,7 +153,7 @@ convergence-dependent flush scheduling. The two EE arms share one calibrated
 EE limit; `--ee-limit` can override it for controlled experiments.
 
 ```bash
-cargo run --release -p benchmark --bin adaptive_ee_ablation -- sift \
+cargo run --release --manifest-path benchmark/Cargo.toml --bin adaptive_ee_ablation -- sift \
   --graph-source parlayann --k 10 --threads 8 --trials 5 \
   --diagnostic-queries 0 --recall-targets 0.9,0.95,0.99 \
   --output visualizations/adaptive_ee_ablation_sift_k10.json
@@ -177,7 +182,7 @@ neighbors. It then follows full, local-only, and local-plus-extra policies with
 EE disabled. It measures no QPS and never overwrites existing output files.
 
 ```bash
-cargo run --release -p benchmark --bin matched_state -- sift \
+cargo run --release --manifest-path benchmark/Cargo.toml --bin matched_state -- sift \
   --graph-source parlayann --k 10 --diagnostic-queries 200 \
   --diagnostic-ls 64,128,256 --track both --geometry-alpha 1.1 \
   --output visualizations/matched_state_sift_k10.json

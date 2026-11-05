@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Bounded, versioned diagnostics. The default native adapter consumes Orion's
 //! observer hooks. Disable default features for the OS-independent replay layer.
 #[cfg(feature = "native")]

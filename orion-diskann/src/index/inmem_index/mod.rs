@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 #[allow(clippy::module_inception)]
 mod inmem_index;
 pub use inmem_index::InmemIndex;

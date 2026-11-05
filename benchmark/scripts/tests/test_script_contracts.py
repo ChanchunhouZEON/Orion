@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Small fixtures and fake executables exercise wrappers without dataset runs."""
 import ast
 import json

@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Exact calibration kernels accept logical slices, including SIMD tails.
 #[test]
 fn runtime_exact_distances_cover_unaligned_rows_and_tails() {

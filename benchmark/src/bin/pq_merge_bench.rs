@@ -13,7 +13,7 @@
 //!
 //! Run with: `cargo run --release --bin pq_merge_bench`
 
-use orion_ann::model::{Neighbor, NeighborPriorityQueue};
+use orion_ann_core::model::{Neighbor, NeighborPriorityQueue};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use std::time::Instant;

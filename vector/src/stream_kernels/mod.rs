@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! CPU selection lives outside the streaming loop. DistanceIsa kernels stay private:
 //! their safe trait methods may contain instructions requiring the checked ISA.
 //! Never expose these types as user-selectable DistanceKernelBackend implementations.

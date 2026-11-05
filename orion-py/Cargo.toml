@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 [package]
 publish = false
 name = "orion-ann-python"
@@ -17,7 +20,7 @@ test = false
 test-hooks = []
 
 [dependencies]
-orion-ann-runtime = { version = "0.1.0", path = "../orion-runtime" }
+orion-ann = { version = "0.1.0", path = "../orion-runtime", features = ["file-queries"] }
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
 numpy = "0.22"
 ndarray.workspace = true

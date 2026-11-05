@@ -3,61 +3,35 @@
  * Licensed under the MIT License.
  */
 
-//! Resolve storage representation and search-stage compatibility before any
-//! large dataset allocation.
-//!
-//! The resulting [`SearchPlan`] is the validated execution contract shared by
-//! loading, preflight estimation, memory accounting, and search dispatch.
-
-use crate::config::{GraphSource, VectorStorageKind};
-use crate::data::VectorFormat;
-use crate::search::cascade::{
+//! Resolve base representation and search compatibility together, before I/O.
+//! Only this module can assemble a plan; other layers borrow validated views.
+use crate::config::cascade::{
     AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric,
 };
+use crate::config::{GraphSource, VectorStorageKind};
+use crate::data::VectorFormat;
 use crate::{Error, Result};
 
-/// Fully resolved search execution plan.
-///
-/// Resolution collapses the user-facing combination of storage, metric,
-/// vector formats, cascade stages, and graph source into one of the supported
-/// execution paths:
-///
-/// - [`SearchPlan::F32Cascade`] keeps the base in `f32` and uses the configured
-///   precision cascade.
-/// - [`SearchPlan::NativeU8L2`] keeps the base in its original `u8` form and
-///   performs native byte-space L2 admission without auxiliary reranking.
-///
-/// Once constructed through [`SearchPlan::resolve`], a plan is expected to be
-/// internally compatible and may be consumed directly by loaders and search
-/// dispatch without repeating option validation.
+/// Immutable compatibility boundary for base representation and search recipe.
+/// The private fields prevent independently replacing one half of a valid plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchPlan {
-    /// Conventional `f32` resident storage with a configurable search cascade.
-    F32Cascade { cascade: Cascade },
-
-    /// Native `u8` resident storage with exact L2 admission over the byte base.
-    NativeU8L2,
+pub(crate) struct IndexPlan {
+    base: BaseRepresentation,
+    search: SearchRecipe,
 }
 
-/// Resident-storage properties derived from a validated [`SearchPlan`].
-///
-/// This is the shared source of truth for loaders, preflight checks, and
-/// resident-memory accounting, avoiding independent interpretations of the
-/// user-facing configuration.
+/// Coordinate representation, independent of the source file and search stages.
+/// Padding/stride remain properties of the dataset's PaddedLayout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StorageLayout {
-    /// Resident base-vector representation.
-    pub kind: VectorStorageKind,
-
-    /// Bytes occupied by one resident coordinate.
-    pub element_bytes: usize,
-
-    /// Whether the plan additionally requires a quantized `u8` L2 admission
-    /// sidecar alongside an `f32` resident base.
-    pub has_l2_u8_sidecar: bool,
+pub(crate) struct BaseRepresentation(VectorStorageKind);
+/// How search evaluates candidates; it does not own the base representation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchRecipe {
+    Cascade(Cascade),
+    NativeL2U8,
 }
 
-impl SearchPlan {
+impl IndexPlan {
     /// Resolves user-facing search options into one validated execution plan.
     ///
     /// Validation happens before large allocations so unsupported combinations
@@ -66,7 +40,7 @@ impl SearchPlan {
     /// original byte representation rather than constructing auxiliary
     /// quantized storage.
     #[allow(clippy::too_many_arguments)]
-    pub fn resolve(
+    pub(crate) fn resolve(
         vector_storage: VectorStorageKind,
         dimension: usize,
         metric: SearchMetric,
@@ -130,7 +104,11 @@ impl SearchPlan {
                 )
                 .at("configure"))
             } else {
-                Ok(Self::F32Cascade { cascade })
+                cascade.validate_cascade_options(metric)?;
+                Ok(Self {
+                    base: BaseRepresentation(vector_storage),
+                    search: SearchRecipe::Cascade(cascade),
+                })
             };
         }
 
@@ -183,65 +161,180 @@ impl SearchPlan {
             .at("configure"));
         }
 
-        Ok(Self::NativeU8L2)
+        Ok(Self {
+            base: BaseRepresentation(vector_storage),
+            search: SearchRecipe::NativeL2U8,
+        })
     }
 
-    /// Returns the effective cascade represented by this execution plan.
-    ///
-    /// Native u8 has no stored `Cascade` field because its stage composition is
-    /// fixed by construction; this method reconstructs that canonical form when
-    /// callers need a uniform view for logging or reporting.
-    pub fn cascade(self) -> Cascade {
-        match self {
-            Self::F32Cascade { cascade } => cascade,
+    pub(crate) fn base(self) -> BaseRepresentation {
+        self.base
+    }
+    pub(crate) fn cascade(self) -> Cascade {
+        self.search.cascade()
+    }
 
-            Self::NativeU8L2 => Cascade {
+    /// Resolve auxiliary allocations for the run phase from the validated recipe.
+    /// The same list drives preparation and preflight; storage arithmetic stays
+    /// with the quantized dataset implementation.
+    pub(crate) fn sidecar_requirements(
+        self,
+        prepare_only: bool,
+    ) -> Vec<crate::sidecars::requirements::SidecarRequirement> {
+        if prepare_only {
+            return Vec::new();
+        }
+        self.search.cascade().sidecar_requirements()
+    }
+}
+
+impl BaseRepresentation {
+    pub(crate) fn kind(self) -> VectorStorageKind {
+        self.0
+    }
+    pub(crate) fn element_bytes(self) -> usize {
+        match self.0 {
+            VectorStorageKind::F32 => size_of::<f32>(),
+            VectorStorageKind::U8 => size_of::<u8>(),
+        }
+    }
+}
+
+impl SearchRecipe {
+    fn cascade(self) -> Cascade {
+        match self {
+            Self::Cascade(cascade) => cascade,
+            Self::NativeL2U8 => Cascade {
                 prefilter: PrefilterChoice::None,
                 admission: AdmissionChoice::NativeL2U8,
                 rerank: RerankChoice::None,
             },
         }
     }
+}
 
-    /// Returns the resident-storage layout implied by this plan.
-    ///
-    /// This keeps storage decisions derived from the validated execution plan
-    /// rather than duplicating mutable configuration elsewhere.
-    pub fn storage(self) -> StorageLayout {
-        match self {
-            Self::NativeU8L2 => StorageLayout {
-                kind: VectorStorageKind::U8,
-                element_bytes: 1,
-                has_l2_u8_sidecar: false,
-            },
-
-            Self::F32Cascade { cascade } => StorageLayout {
-                kind: VectorStorageKind::F32,
-                element_bytes: 4,
-
-                // `L2U8` denotes a quantized admission sidecar attached to an
-                // otherwise f32-resident search path.
-                has_l2_u8_sidecar: cascade.admission == AdmissionChoice::L2U8,
-            },
-        }
+// Keep run logs and snapshot execution signatures stable across this refactor.
+impl serde::Serialize for IndexPlan {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("vector_storage", &self.base.kind())?;
+        map.serialize_entry("cascade", &self.search.cascade())?;
+        map.end()
     }
 }
 
-// Preserve the existing public run-log shape without storing duplicate mutable
-// copies of vector storage and cascade configuration inside `SearchPlan`.
-//
-// Both fields are instead derived from the validated plan at serialization
-// time, keeping the plan itself as the single source of truth.
-impl serde::Serialize for SearchPlan {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        let mut map = serializer.serialize_map(Some(2))?;
+    fn native_cascade() -> Cascade {
+        Cascade {
+            prefilter: PrefilterChoice::None,
+            admission: AdmissionChoice::NativeL2U8,
+            rerank: RerankChoice::None,
+        }
+    }
 
-        map.serialize_entry("vector_storage", &self.storage().kind)?;
+    #[test]
+    fn resolved_plans_preserve_the_existing_serialized_identity() {
+        // This was the original SearchPlan wire representation. Snapshot
+        // execution signatures hash these exact bytes, including field order.
+        #[derive(serde::Serialize)]
+        struct PreviousWire {
+            vector_storage: VectorStorageKind,
+            cascade: Cascade,
+        }
+        for (storage, format, source, cascade, element_bytes) in [
+            (
+                VectorStorageKind::F32,
+                VectorFormat::Bvecs,
+                GraphSource::Rust,
+                Cascade::default_for_specified_dimension_and_metric(128, SearchMetric::L2),
+                4,
+            ),
+            (
+                VectorStorageKind::U8,
+                VectorFormat::U8bin,
+                GraphSource::Parlayann,
+                native_cascade(),
+                1,
+            ),
+        ] {
+            let plan = IndexPlan::resolve(
+                storage,
+                128,
+                SearchMetric::L2,
+                format,
+                format,
+                cascade,
+                source,
+            )
+            .unwrap();
+            assert_eq!(plan.base().kind(), storage);
+            assert_eq!(plan.base().element_bytes(), element_bytes);
+            assert_eq!(
+                serde_json::to_vec(&plan).unwrap(),
+                serde_json::to_vec(&PreviousWire {
+                    vector_storage: storage,
+                    cascade
+                })
+                .unwrap()
+            );
+        }
+    }
 
-        map.serialize_entry("cascade", &self.cascade())?;
-
-        map.end()
+    #[test]
+    fn resolver_rejects_incompatible_representation_and_search_recipes() {
+        let native = native_cascade();
+        let quantized = Cascade::default_for_specified_dimension_and_metric(128, SearchMetric::L2);
+        for (storage, metric, format, source, cascade) in [
+            (
+                VectorStorageKind::F32,
+                SearchMetric::L2,
+                VectorFormat::Fbin,
+                GraphSource::Rust,
+                native,
+            ),
+            (
+                VectorStorageKind::U8,
+                SearchMetric::L2,
+                VectorFormat::U8bin,
+                GraphSource::Parlayann,
+                quantized,
+            ),
+            (
+                VectorStorageKind::U8,
+                SearchMetric::InnerProduct,
+                VectorFormat::U8bin,
+                GraphSource::Parlayann,
+                native,
+            ),
+            (
+                VectorStorageKind::U8,
+                SearchMetric::L2,
+                VectorFormat::Fbin,
+                GraphSource::Parlayann,
+                native,
+            ),
+            (
+                VectorStorageKind::U8,
+                SearchMetric::L2,
+                VectorFormat::U8bin,
+                GraphSource::Rust,
+                native,
+            ),
+            (
+                VectorStorageKind::F32,
+                SearchMetric::InnerProduct,
+                VectorFormat::Fbin,
+                GraphSource::Rust,
+                quantized,
+            ),
+        ] {
+            assert!(
+                IndexPlan::resolve(storage, 128, metric, format, format, cascade, source).is_err()
+            );
+        }
     }
 }

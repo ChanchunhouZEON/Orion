@@ -1,10 +1,15 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 Configure an embedded index with [`crate::IndexOptions`]. These options do not
 read CLI presets or environment overrides. Validation happens when an index is
 created/opened, not when a struct is constructed or deserialized.
 
 ```rust
-use orion_ann_runtime::{GraphConfig, IndexOptions};
-use orion_ann_runtime::config::GraphSourcePolicy;
+use orion_ann::{GraphConfig, IndexOptions};
+use orion_ann::GraphSourcePolicy;
 let options = IndexOptions {
     threads: 8,
     graph: GraphConfig {

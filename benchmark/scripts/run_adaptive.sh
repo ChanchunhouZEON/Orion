@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # EE-disabled neighbor-policy analysis: benchmark -> JSON/logs -> PNG/PDF.
 set -euo pipefail
 
@@ -118,7 +121,7 @@ if [[ "$PLOT_ONLY" == 0 ]]; then
     done
   done
   if [[ "$BUILD" == 1 ]]; then
-    show cargo build --release -p benchmark --bin adaptive --target-dir "$BUILD_DIR"
+    show cargo build --release --manifest-path benchmark/Cargo.toml --bin adaptive --target-dir "$BUILD_DIR"
     if [[ "$DRY_RUN" == 0 ]]; then
       build_binary adaptive
     fi

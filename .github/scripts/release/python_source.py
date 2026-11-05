@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Prepare a self-contained Python workspace with an unchanged dependency set.
 
 Maturin trims non-Python workspace members from an sdist but copies the original

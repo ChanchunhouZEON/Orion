@@ -1,5 +1,8 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 [package]
-name = "orion-ann-runtime"
+name = "orion-ann"
 version = "0.1.0"
 rust-version.workspace = true
 license.workspace = true
@@ -12,13 +15,16 @@ include = ["src/**", "tests/**", "examples/**", "configs/**", "Cargo.toml", "REA
 edition = "2021"
 
 [features]
+file-queries = []
+benchmark = ["cli", "orion-ann-core/benchmark"]
 default = ["parlay"]
-parlay = ["orion-ann/parlay"]
+parlay = ["orion-ann-core/parlay"]
 cli = ["dep:clap", "dep:serde_yaml"]
 
 [dependencies]
+orion-ann-platform = { version = "0.1.0", path = "../platform" }
 orion-ann-diagnostics = { version = "0.1.0", path = "../orion-diagnostics" }
-orion-ann = { version = "0.1.0", path = "../orion", default-features = false }
+orion-ann-core = { version = "0.1.0", path = "../orion-core", default-features = false }
 orion-ann-diskann = { version = "0.1.0", path = "../orion-diskann" }
 orion-ann-vector = { version = "0.1.0", path = "../vector" }
 rayon.workspace = true
@@ -35,3 +41,7 @@ serde_yaml = { version = "0.9", optional = true }
 
 [dev-dependencies]
 orion-ann-parlay = { version = "0.1.0", path = "../orion-parlay", features = ["reference-tests"] }
+
+# On AArch64 sha2 0.10 enables runtime SHA instruction dispatch via this feature.
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+sha2 = { version = "0.10", features = ["asm"] }

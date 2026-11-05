@@ -4,18 +4,14 @@
  */
 
 //! Same-graph 2x2 neighbor-switching / early-exit experiment.
-use orion_ann::{Error, Result};
-use orion_ann_runtime::search::cascade;
-use orion_ann_runtime::search::utils;
-use orion_ann_runtime::with_supported_dimension;
-use orion_ann_runtime::{
-    config::{cli::Args as RunArgs, ResolvedRunConfig},
-    data::{memory, LoadedDataset},
-    graph,
-};
+use orion_ann::benchmark::cascade;
+use orion_ann::benchmark::utils;
+use orion_ann::benchmark::{graph, memory, Args as RunArgs, LoadedDataset, ResolvedRunConfig};
+use orion_ann::with_supported_dimension;
+use orion_ann_core::{Error, Result};
 
 use clap::Parser;
-use orion_ann::algorithm::search::diagnostics::{
+use orion_ann_core::algorithm::search::diagnostics::{
     NeighborMode, NoopObserver, PhaseWork, SynergyTrace,
 };
 use rayon::prelude::*;
@@ -126,7 +122,7 @@ where
     }
 
     if settings.threads == 0
-        || settings.threads > orion_ann::algorithm::search::MAX_WORKERS
+        || settings.threads > orion_ann_core::algorithm::search::MAX_WORKERS
         || settings.trials == 0
         || settings.search_list_sizes.is_empty()
         || settings.calibration_samples == 0
@@ -161,7 +157,7 @@ where
                 queries[..settings.calibration_samples.min(queries.len())].as_flattened(),
                 settings.calibration_l,
                 config.window_size,
-                orion_ann::CalibrationConfig {
+                orion_ann_core::CalibrationConfig {
                     k: settings.k,
                     metric: config.metric.calibration_metric(),
                 },
@@ -175,14 +171,10 @@ where
         calib.threshold
     );
 
-    let pf = cascade::build_prefilter(
-        &idx,
-        config.search_plan().cascade().prefilter,
-        config.search_plan().cascade().admission,
-    );
-    let ad = cascade::build_admission(&idx, config.search_plan().cascade().admission)
-        .map_err(Error::from)?;
-    let rr = cascade::build_rerank(&idx, config.search_plan().cascade().rerank);
+    let pf =
+        cascade::build_prefilter(&idx, config.cascade().prefilter, config.cascade().admission)?;
+    let ad = cascade::build_admission(&idx, config.cascade().admission).map_err(Error::from)?;
+    let rr = cascade::build_rerank(&idx, config.cascade().rerank)?;
 
     let count = if args.diagnostic_queries == 0 {
         queries.len()
@@ -240,9 +232,7 @@ where
                             )));
                         }
 
-                        let rerank = if config.search_plan().cascade().rerank
-                            == cascade::RerankChoice::None
-                        {
+                        let rerank = if config.cascade().rerank == cascade::RerankChoice::None {
                             0
                         } else {
                             trace.rerank_candidates

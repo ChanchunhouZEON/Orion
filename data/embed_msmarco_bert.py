@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Embed a 1M-passage / 10K-query slice of MS-MARCO with a
 sentence-transformers BERT model and emit Yael `.fvecs` + `.ivecs`
 files compatible with `orion`.

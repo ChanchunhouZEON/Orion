@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 [package]
 name = "orion-ann-diagnostics"
 version = "0.1.0"
@@ -11,10 +14,10 @@ include = ["src/**", "Cargo.toml", "README.md", "LICENSE"]
 
 [features]
 default = ["native"]
-native = ["dep:orion-ann"]
+native = ["dep:orion-ann-core"]
 
 [dependencies]
 orion-ann-error = { version = "0.1.0", path = "../orion-error" }
-orion-ann = { version = "0.1.0", path = "../orion", default-features = false, optional = true }
+orion-ann-core = { version = "0.1.0", path = "../orion-core", default-features = false, optional = true }
 serde.workspace = true
 serde_json.workspace = true

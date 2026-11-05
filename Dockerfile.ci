@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # CI / SIFT smoke-test image for x86_64 Linux. Built on top of the
 # pinned Rust 1.92.0 toolchain (matches `rust-toolchain.toml`).
 #

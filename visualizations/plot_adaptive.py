@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Plot schema-v1 adaptive benchmark JSON without mixing runs or k values.
 
 Usage:

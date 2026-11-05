@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Brute-force top-k ground-truth computer — used when we truncate a
 dataset to a size different from the one the provided `.ivecs` gt was
 computed on (e.g. GIST-100k sampled from GIST-1M).

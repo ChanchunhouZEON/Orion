@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 # orion-ann-parlay
 
 In-memory ParlayANN Vamana construction for Orion. The runtime enables this

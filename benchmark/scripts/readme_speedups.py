@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Print README speedups from the existing k=10 panel data; never rewrite results."""
 import argparse
 import json

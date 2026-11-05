@@ -13,7 +13,7 @@
 use crate::report::table::BuildTiming;
 use crate::runner::common::{AlgorithmRunner, SearchResult};
 use adsampling::Rotator;
-use orion_ann::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
+use orion_ann_core::{build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_32, DIM_960};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -58,33 +58,23 @@ macro_rules! build_orion_ads {
     ($self:ident, $rotated:ident, $num_points:ident, $result:ident, $N:literal, $variant:ident) => {{
         drop($result.index);
         let t1 = Instant::now();
-        let empty_ds = orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-        // Pass `Some(cache_path)` + save=true on cache-enabled runs so
-        // the PhasedGraph slab is written next to the runner's bin
-        // path. The next invocation will land on the cache-hit
-        // `load_from_cache` arm in `build()` and skip the Vamana build
-        // entirely.
-        let (cache_arg, save_arg) = match &$self.cache_path {
-            Some(p) => (Some(p.clone()), true),
-            None => (None, false),
-        };
+        let mut ds =
+            orion_ann_diskann::model::InmemDataset::<f32, $N>::new($num_points, 1.0).unwrap();
+        ds.data.memcpy(&$rotated[..$num_points * $N]).unwrap();
         let mut orion = StaticOrion::<$N>::new(
-            empty_ds,
+            ds,
             &$result.partitions,
             $result.entry_point,
             $self.graph_degree as u32,
             $self.max_extra,
             None,
             None,
-            cache_arg,
-            save_arg,
         );
+        if let Some(path) = &$self.cache_path {
+            orion_ann::benchmark::graph::save_working(&mut orion, path)
+                .expect("save ADS benchmark graph cache");
+        }
         log::info!("Orion+ADS overhead: {:.2}s", t1.elapsed().as_secs_f32());
-
-        let mut ds =
-            orion_ann_diskann::model::InmemDataset::<f32, $N>::new($num_points, 1.0).unwrap();
-        ds.data.memcpy(&$rotated[..$num_points * $N]).unwrap();
-        orion.dataset = ds;
 
         // Auto-calibrate τ/ee using rotated warmup queries (same space as the graph).
         let calib_n = $num_points.min(200);
@@ -127,8 +117,9 @@ macro_rules! search_orion_ads {
         let rr = crate::runner::cascade::build_rerank::<_>(
             $orion,
             crate::runner::cascade::RerankChoice::F32,
-        );
-        $orion.search_unified::<orion_ann::algorithm::search::stage::NoPrefilter, _, _>(
+        )
+        .expect("benchmark sidecar initialization failed");
+        $orion.search_unified::<orion_ann_core::algorithm::search::stage::NoPrefilter, _, _>(
             &q,
             $k,
             $self.search_list_size,
@@ -255,15 +246,12 @@ impl AlgorithmRunner for OrionAdsRunner {
                 log::info!("Loading cached Orion+ADS from {:?}", cache);
                 macro_rules! load_cached_ads {
                     ($N:literal, $variant:ident) => {{
-                        let empty_ds =
-                            orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                        let mut orion = StaticOrion::<$N>::load_from_cache(&cache, empty_ds)
-                            .expect("StaticOrion::load_from_cache failed");
                         let mut ds =
                             orion_ann_diskann::model::InmemDataset::<f32, $N>::new(num_points, 1.0)
                                 .unwrap();
                         ds.data.memcpy(&rotated[..num_points * $N]).unwrap();
-                        orion.dataset = ds;
+                        let orion = orion_ann::benchmark::graph::load_working(&cache, ds)
+                            .expect("load benchmark graph cache");
 
                         // Re-calibrate from rotated warmup queries —
                         // the cached PhasedGraph carries no calibration

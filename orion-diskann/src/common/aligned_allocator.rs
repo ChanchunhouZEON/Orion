@@ -8,17 +8,42 @@
 
 use std::alloc::Layout;
 use std::ops::{Deref, DerefMut, Range};
-use std::ptr::copy_nonoverlapping;
+use std::ptr::NonNull;
 
 use super::{ANNError, ANNResult};
 
+/// Owned, aligned storage for plain data. The allocation is freed with exactly
+/// the layout used to create it, including any Linux huge-page alignment.
+///
+/// Zero initialization is only available for POD elements:
+/// ```compile_fail
+/// use orion_ann_diskann::common::AlignedBoxWithSlice;
+/// let _ = AlignedBoxWithSlice::<std::num::NonZeroU32>::new(1, 64);
+/// ```
 pub struct AlignedBoxWithSlice<T> {
     layout: Layout,
-    val: Box<[T]>,
+    ptr: NonNull<T>,
+    len: usize,
 }
 
+// SAFETY: this allocation has unique ownership. Shared access exposes only &T,
+// and mutation requires &mut self, just as for Vec<T>.
+unsafe impl<T: Send> Send for AlignedBoxWithSlice<T> {}
+unsafe impl<T: Sync> Sync for AlignedBoxWithSlice<T> {}
+
 impl<T> AlignedBoxWithSlice<T> {
-    pub fn new(capacity: usize, alignment: usize) -> ANNResult<Self> {
+    /// Allocate zeroed POD elements. A smaller requested alignment is raised to
+    /// the element alignment. Empty and zero-sized slices do not allocate.
+    ///
+    /// # Errors
+    /// Rejects non-power-of-two/zero alignment, layout overflow and allocation failure.
+    pub fn new(capacity: usize, alignment: usize) -> ANNResult<Self>
+    where
+        T: bytemuck::Pod,
+    {
+        // Validate the caller's request before raising it to T's alignment.
+        Layout::from_size_align(0, alignment).map_err(ANNError::log_mem_alloc_layout_error)?;
+        let alignment = alignment.max(std::mem::align_of::<T>());
         let allocsize = capacity
             .checked_mul(std::mem::size_of::<T>())
             .ok_or_else(|| ANNError::log_index_error("capacity overflow".to_string()))?;
@@ -38,7 +63,19 @@ impl<T> AlignedBoxWithSlice<T> {
             layout
         };
 
-        let val = unsafe {
+        if layout.size() == 0 {
+            // A slice needs an aligned, non-null pointer even when it has no bytes.
+            let ptr = NonNull::new(std::ptr::without_provenance_mut::<T>(layout.align())).unwrap();
+            return Ok(Self {
+                layout,
+                ptr,
+                len: capacity,
+            });
+        }
+
+        // SAFETY: the nonzero Layout covers every element and its alignment.
+        // Pod permits zeroed values; allocation failure is checked before access.
+        let ptr = unsafe {
             #[cfg(target_os = "linux")]
             let use_huge_pages = allocsize >= orion_ann_platform::memory::HUGE_PAGE_ALIGNMENT;
             #[cfg(not(target_os = "linux"))]
@@ -65,46 +102,40 @@ impl<T> AlignedBoxWithSlice<T> {
                 }
                 std::ptr::write_bytes(mem, 0, allocsize);
             }
-            let ptr = mem as *mut T;
-            let slice = std::slice::from_raw_parts_mut(ptr, capacity);
-            std::boxed::Box::from_raw(slice)
+            NonNull::new_unchecked(mem.cast::<T>())
         };
 
-        Ok(Self { layout, val })
+        Ok(Self {
+            layout,
+            ptr,
+            len: capacity,
+        })
     }
 
     pub fn as_slice(&self) -> &[T] {
-        &self.val
+        // SAFETY: all len elements are initialized and live for this borrow.
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        &mut self.val
+        // SAFETY: &mut self excludes all other access to the owned allocation.
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
     }
 
-    pub fn memcpy(&mut self, src: &[T]) -> ANNResult<()> {
-        if src.len() > self.val.len() {
+    /// Copy into the start of this allocation, retaining the remaining elements.
+    pub fn memcpy(&mut self, src: &[T]) -> ANNResult<()>
+    where
+        T: Copy,
+    {
+        if src.len() > self.len {
             return Err(ANNError::log_index_error(format!(
                 "source slice is too large (src:{}, dst:{})",
                 src.len(),
-                self.val.len()
+                self.len
             )));
         }
-
-        let src_ptr = src.as_ptr();
-        let src_end = unsafe { src_ptr.add(src.len()) };
-        let dst_ptr = self.val.as_mut_ptr();
-        let dst_end = unsafe { dst_ptr.add(self.val.len()) };
-
-        if src_ptr < dst_end && src_end > dst_ptr {
-            return Err(ANNError::log_index_error(
-                "Source and destination overlap".to_string(),
-            ));
-        }
-
-        unsafe {
-            copy_nonoverlapping(src.as_ptr(), self.val.as_mut_ptr(), src.len());
-        }
-
+        // Safe borrows already rule out overlapping source and destination.
+        self.as_mut_slice()[..src.len()].copy_from_slice(src);
         Ok(())
     }
 
@@ -113,35 +144,35 @@ impl<T> AlignedBoxWithSlice<T> {
         range: Range<usize>,
         slice_len: usize,
     ) -> ANNResult<Vec<&mut [T]>> {
-        if range.len() % slice_len != 0 || range.end > self.len() {
+        if slice_len == 0
+            || range.start > range.end
+            || range.end > self.len
+            || range.len() % slice_len != 0
+        {
             return Err(ANNError::log_index_error(format!(
-                "Cannot split range ({:?}) of AlignedBoxWithSlice (len: {}) into nonoverlapping mutable slices with length {}",
-                range,
-                self.len(),
-                slice_len,
+                "invalid slice range {range:?}, chunk length {slice_len}, allocation length {}",
+                self.len
             )));
         }
-
-        let mut slices = Vec::with_capacity(range.len() / slice_len);
-        let mut remaining_slice = &mut self.val[range];
-
-        while remaining_slice.len() >= slice_len {
-            let (left, right) = remaining_slice.split_at_mut(slice_len);
-            slices.push(left);
-            remaining_slice = right;
-        }
-
-        Ok(slices)
+        Ok(self.as_mut_slice()[range]
+            .chunks_exact_mut(slice_len)
+            .collect())
     }
 }
 
 impl<T> Drop for AlignedBoxWithSlice<T> {
     fn drop(&mut self) {
-        let val = std::mem::take(&mut self.val);
-        let mut val2 = std::mem::ManuallyDrop::new(val);
-        let ptr = val2.as_mut_ptr();
-
-        unsafe { std::alloc::dealloc(ptr as *mut u8, self.layout) }
+        // SAFETY: the elements are initialized and uniquely owned; nonempty
+        // allocations are freed exactly once using their original Layout.
+        unsafe {
+            std::ptr::drop_in_place(std::ptr::slice_from_raw_parts_mut(
+                self.ptr.as_ptr(),
+                self.len,
+            ));
+            if self.layout.size() != 0 {
+                std::alloc::dealloc(self.ptr.as_ptr().cast::<u8>(), self.layout);
+            }
+        }
     }
 }
 
@@ -149,19 +180,75 @@ impl<T> Deref for AlignedBoxWithSlice<T> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
-        &self.val
+        self.as_slice()
     }
 }
 
 impl<T> DerefMut for AlignedBoxWithSlice<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.val
+        self.as_mut_slice()
+    }
+}
+
+// Log allocation metadata, never the potentially multi-terabyte payload.
+impl<T> std::fmt::Debug for AlignedBoxWithSlice<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AlignedBoxWithSlice")
+            .field("element_type", &std::any::type_name::<T>())
+            .field("len", &self.len)
+            .field("layout", &self.layout)
+            .finish_non_exhaustive()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_and_zero_sized_slices_keep_requested_alignment() {
+        let mut empty = AlignedBoxWithSlice::<u64>::new(0, 128).unwrap();
+        assert!(empty.is_empty());
+        assert_eq!(empty.as_ptr().addr() % 128, 0);
+        empty.memcpy(&[]).unwrap();
+        assert!(
+            empty
+                .split_into_nonoverlapping_mut_slices(0..0, 1)
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut units = AlignedBoxWithSlice::<()>::new(7, 64).unwrap();
+        assert_eq!(units.len(), 7);
+        assert_eq!(units.as_ptr().addr() % 64, 0);
+        units.memcpy(&[(); 7]).unwrap();
+        assert_eq!(
+            units
+                .split_into_nonoverlapping_mut_slices(1..7, 2)
+                .unwrap()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn element_alignment_is_a_lower_bound() {
+        let mut values = AlignedBoxWithSlice::<u64>::new(3, 1).unwrap();
+        assert_eq!(values.as_ptr().addr() % std::mem::align_of::<u64>(), 0);
+        values.memcpy(&[42, 17]).unwrap();
+        assert_eq!(values.as_slice(), &[42, 17, 0]);
+    }
+
+    #[test]
+    fn allocation_can_be_moved_and_shared_between_threads() {
+        let mut values = AlignedBoxWithSlice::<u32>::new(4, 64).unwrap();
+        values.memcpy(&[1, 2, 3, 4]).unwrap();
+        let values = std::thread::spawn(move || values).join().unwrap();
+        std::thread::scope(|scope| {
+            let sum = scope.spawn(|| values.iter().sum::<u32>());
+            assert_eq!(sum.join().unwrap(), 10);
+        });
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -209,16 +296,5 @@ mod tests {
         }
         let expected_arr = [0.0f32, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 0.0, 0.0];
         assert_eq!(data.as_ref(), &expected_arr);
-    }
-}
-
-// Log allocation metadata, never the potentially multi-terabyte payload.
-impl<T> std::fmt::Debug for AlignedBoxWithSlice<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AlignedBoxWithSlice")
-            .field("element_type", &std::any::type_name::<T>())
-            .field("len", &self.val.len())
-            .field("layout", &self.layout)
-            .finish_non_exhaustive()
     }
 }

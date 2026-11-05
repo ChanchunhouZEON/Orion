@@ -1,6 +1,11 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 # Orion Python interface
 
-The distribution `orion-ann` exposes `orion-ann-runtime` through PyO3 and NumPy.
+The distribution `orion-ann` exposes `orion-ann` through PyO3 and NumPy.
 Import it as `orion_ann`; the extension `orion_ann._native` is private.
 The source directory remains `orion-py`.
 
@@ -46,9 +51,9 @@ index = Index.from_file(
 index.calibrate('/data/warmup.fbin', k=10)
 result = index.search('/data/queries.fbin', k=10, search_list_size=100)
 print(result.ids, result.counts)
-index.save('/data/orion-snapshot')  # New directory; does not copy base vectors.
+snapshot = index.save('/data/orion-snapshot')  # New directory; does not copy base vectors.
 
-reopened = Index.open('/data/orion-snapshot', base='/data/base.fbin', threads=8)
+reopened = Index.open(snapshot, base='/data/base.fbin', threads=8)
 result = reopened.search('/data/queries.fbin', k=10, search_list_size=100)
 ```
 
@@ -83,8 +88,9 @@ result = index.search(queries, k=10, search_list_size=100)
   before construction if only a prefix is wanted.
 - Query batches are copied before releasing the GIL; heavy graph operations,
   calibration and search execute without the GIL. Do not mutate inputs during
-  their copy. Each index owns a fixed-size Rayon pool; simultaneous operations
-  on the same index serialize, while its batch search runs in parallel.
+  their copy. Searches on one handle share a read lock and a fixed-size Rayon
+  pool. Calibration uses an exclusive write lock. A backend panic invalidates
+  the handle; reopen it before retrying.
 - File queries are decoded as a complete batch. For bounded query memory, call
   `search` with successive ndarray batches; calibrate once using a warmup batch.
 - Dimensions are inferred at runtime; each resident row is padded for SIMD.
@@ -108,24 +114,20 @@ first 200 query rows by default; supply the same rows to compare its parameters.
 Different k values have separate calibration records. `CascadeConfig` selects
 `prefilter`, `admission` and `rerank` using CLI names, with the same validation.
 
-`search(..., adaptive=True)` requires calibration for that k. Setting
-`adaptive=False` disables convergence and early exit. Results contain uint32
+`search(queries, k=k)` uses the calibration for that `k`. A missing record
+raises `OrionError` with code `ORION_INVALID_STATE`, including for an empty batch. Results contain uint32
 `ids` of shape `(queries, k)` and uint32 `counts` of shape `(queries,)`. Only the
 first `counts[i]` IDs of a row are valid; unused positions contain `UINT32_MAX`.
 There is no fabricated distance array or automatic recall evaluation.
 
-`save(new_directory)` writes the graph, configuration, base identity and all
-calibrations, then publishes the directory. Derived sidecars are rebuilt lazily
-from the base on reopen. `open(directory, base=...)` requires a complete matching
-snapshot and never builds a missing graph. Base vectors remain external:
-
-- File identity uses canonical path, size and modification time, matching the
-  existing CLI convention. Keep that file unchanged and at the same path.
-- Array identity uses SHA-256 of its complete original contents, dtype and shape.
-- Graph file size/timestamps and an execution-settings signature bind saved
-  calibrations to the graph/cascade/window. Truncation, stale input or changed
-  execution settings fail explicitly; these are local caches, not an untrusted
-  interchange format.
+`save(new_directory)` publishes one manifest with configuration, calibration and
+references to the SHA-256 objects in the sibling `<cache_dir>.objects` store.
+Keep this store when clearing the working cache or copying a snapshot. Base vectors remain external. Reopen with
+`Index.open(directory, base=...)` loads and verifies the current snapshot.
+Pass the `SnapshotRef` returned by save to also pin the manifest identity.
+Keep `snapshot.to_json()` in trusted application configuration and restore it
+with `SnapshotRef.from_json(...)` after restarting. Missing stages are constructed
+in memory. Rebuild snapshots created with older layouts.
 
 `index.info` reports shape, metric, storage, actual graph source, cascade,
 thread count and calibrations. Python type/shape errors raise `TypeError` or
@@ -173,4 +175,4 @@ and is excluded from normal builds.
 
 CLI services can request `--error-format json`; error reports go to stderr and
 successful JSONL output is unchanged. For the embedded Rust API and signatures,
-run `cargo doc -p orion-ann -p orion-ann-runtime --no-deps`.
+run `cargo doc -p orion-ann-core -p orion-ann --no-deps`.

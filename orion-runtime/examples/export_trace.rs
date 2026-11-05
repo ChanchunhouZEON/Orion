@@ -1,6 +1,11 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Generate a portable trace with the production native-u8 search path.
-use orion_ann_runtime::diagnostics::TraceLimits;
-use orion_ann_runtime::{BaseInput, GraphConfig, Index, IndexOptions, Result};
+use orion_ann::diagnostics::TraceLimits;
+use orion_ann::{BaseInput, GraphConfig, Index, IndexOptions, Result};
 fn main() -> Result<()> {
     let destination = std::env::args()
         .nth(1)
@@ -25,8 +30,16 @@ fn main() -> Result<()> {
                 ..Default::default()
             },
         )?;
-        let expected = index.search(query.clone(), 5, 16, false)?;
-        let trace = index.trace_search(query, 5, 16, false, TraceLimits::default())?;
+        index.calibrate(
+            base[..16 * 13].iter().copied().map(f32::from).collect(),
+            5,
+            Some(16),
+        )?;
+        let expected = index.search(
+            orion_ann::QueryBatch::from_f32(&query, index.dimension())?,
+            &orion_ann::SearchOptions::new(5, 16),
+        )?;
+        let trace = index.trace_search(query, 5, 16, true, TraceLimits::default())?;
         assert_eq!(
             &trace.result_ids,
             &expected.ids[..expected.counts[0] as usize]
@@ -36,7 +49,7 @@ fn main() -> Result<()> {
             base[..13].iter().map(|&v| v as f32).collect(),
             5,
             16,
-            false,
+            true,
             TraceLimits {
                 max_events: 1,
                 max_items: 6,
@@ -48,10 +61,9 @@ fn main() -> Result<()> {
         )?;
         let mut unsupported = trace;
         unsupported.schema_version = 999;
-        let error = orion_ann_runtime::diagnostics::SearchTrace::from_json(&serde_json::to_string(
-            &unsupported,
-        )?)
-        .unwrap_err();
+        let error =
+            orion_ann::diagnostics::SearchTrace::from_json(&serde_json::to_string(&unsupported)?)
+                .unwrap_err();
         std::fs::write(
             std::path::Path::new(&destination).with_extension("error.json"),
             serde_json::to_string(&error.report())?,

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Build overhead at matched α: trial-range box (left) + extras % bars (right).
 
 Both engines build at the dataset's PA-aligned `scfg.alpha`; every build

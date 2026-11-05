@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 pub mod neighbor;
 pub use neighbor::Neighbor;
 pub use neighbor::NeighborPriorityQueue;

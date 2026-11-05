@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Same-L k=10 NDC reductions. Actual recall is retained in companion JSON."""
 import argparse
 import json

@@ -4,16 +4,15 @@
  */
 
 //! Orion sweep driver: resolve config, load padded data, search with runtime dimensions.
-//! The shared runtime uses runtime-dimensional `orion_ann::Orion` for every recipe.
+//! The shared runtime uses runtime-dimensional `orion_ann_core::Orion` for every recipe.
 
-use orion_ann::{Error, Result};
+use orion_ann_core::{Error, Result};
 use std::time::Instant;
 
 use clap::Parser;
-use orion_ann_runtime::{
-    config::{cli::Args, plan::SearchPlan, ResolvedRunConfig},
-    data::{memory, LoadedDataset},
-    search::{utils, F32CascadeBackend, NativeU8L2Backend, SearchBackend},
+use orion_ann::benchmark::{
+    memory, utils, Args, F32CascadeBackend, LoadedDataset, NativeU8L2Backend, ResolvedRunConfig,
+    SearchBackend,
 };
 
 /// Promote the calling thread to the highest QoS tier (`USER_INTERACTIVE`,
@@ -170,7 +169,7 @@ fn run_sweep<B: SearchBackend>(
     // would also trigger these via `ensure_*`, but we kick them
     // here so the build/load latency is logged separately from
     // the timed sweep's setup.
-    log::info!("Cascade: {}", config.search_plan().cascade().label());
+    log::info!("Cascade: {}", config.cascade().label());
 
     // Calibrate on the full graph with the cascade's exact metric
     // and top-k target, including unnormalized MIPS datasets.
@@ -180,7 +179,7 @@ fn run_sweep<B: SearchBackend>(
             &calib_qs,
             run.calibration_l,
             config.window_size,
-            orion_ann::CalibrationConfig {
+            orion_ann_core::CalibrationConfig {
                 k,
                 metric: config.metric.calibration_metric(),
             },
@@ -190,7 +189,7 @@ fn run_sweep<B: SearchBackend>(
     let early_exit_limit = calib.early_exit_limit;
     log::info!(
         "Calibrated ({}): threshold={:.2}, early_exit_limit={}",
-        config.search_plan().cascade().label(),
+        config.cascade().label(),
         threshold,
         early_exit_limit
     );
@@ -249,7 +248,7 @@ fn run_sweep<B: SearchBackend>(
         config.graph_degree,
         config.alpha,
         config.window_size,
-        config.search_plan().cascade().label()
+        config.cascade().label()
     );
 
     // Per-cascade sidecars + mlock pins. `pin_cascade` walks the
@@ -261,11 +260,10 @@ fn run_sweep<B: SearchBackend>(
     // Both storage paths pin their resident base, graph slab and query batch.
     // Native u8 owns only this one base buffer, with no f32 or quantized copy.
     {
-        let ds_bytes_ptr = idx.dataset.as_slice().as_ptr() as *const u8;
-        let ds_bytes_len =
-            idx.dataset.as_slice().len() * config.search_plan().storage().element_bytes;
+        let ds_bytes_ptr = idx.dataset().as_slice().as_ptr() as *const u8;
+        let ds_bytes_len = idx.dataset().as_slice().len() * std::mem::size_of::<B::Element>();
         mlock_bytes("resident base", ds_bytes_ptr, ds_bytes_len);
-        let pg = idx.graph.buffer_bytes();
+        let pg = idx.graph().buffer_bytes();
         mlock_bytes("pgraph slab", pg.as_ptr(), pg.len());
         let q_bytes_ptr = queries_arr.as_ptr() as *const u8;
         let q_bytes_len = queries_arr.len() * std::mem::size_of::<f32>();
@@ -280,14 +278,14 @@ fn run_sweep<B: SearchBackend>(
     // first timed L (16) ~5–10% slower than its run-2 reading
     // due to lingering cold-cache + DVFS-ramp jitter.
     for _ in 0..1 {
-        let _warm =
-            pool.install(|| B::search_batch(&idx, &queries_arr, config, warmup_l, calib).unwrap());
+        let _warm = pool
+            .install(|| B::search_batch(&idx, &queries_arr, config, k, warmup_l, calib).unwrap());
         drop(_warm);
     }
     // Reset the per-phase atomic counters so the warmup's stats
     // don't contaminate the first timed L's averages.
     {
-        use orion_ann::algorithm::search::{
+        use orion_ann_core::algorithm::search::{
             NDC_F32, NDC_I8, POST_CONV_ADMITS, POST_CONV_HOPS, PRE_CONV_ADMITS, PRE_CONV_HOPS,
             QUERY_COUNT, RAW_VISIT_COUNT, SETUP_NS, VISIT_COUNT,
         };
@@ -313,7 +311,7 @@ fn run_sweep<B: SearchBackend>(
             utils::flush_cache();
             let t = Instant::now();
             let results =
-                pool.install(|| B::search_batch(&idx, &queries_arr, config, l, calib).unwrap());
+                pool.install(|| B::search_batch(&idx, &queries_arr, config, k, l, calib).unwrap());
             let wall = t.elapsed();
             samples.push(query_count as f64 / wall.as_secs_f64());
             recall = gt.as_ref().map(|truth| mean_recall(&results, truth, k));
@@ -328,7 +326,7 @@ fn run_sweep<B: SearchBackend>(
         // Compares directly against PA's `average visited` and
         // exposes pre/post-convergence yield for diagnosis.
 
-        use orion_ann::algorithm::search::{
+        use orion_ann_core::algorithm::search::{
             NDC_F32, NDC_I8, POST_CONV_ADMITS, POST_CONV_HOPS, PRE_CONV_ADMITS, PRE_CONV_HOPS,
             QUERY_COUNT, RAW_VISIT_COUNT, SETUP_NS, VISIT_COUNT,
         };
@@ -424,13 +422,13 @@ fn run_sweep<B: SearchBackend>(
     Ok(())
 }
 
-fn mean_recall(results: &[Vec<u32>], gt: &[Vec<u32>], k: usize) -> f64 {
+fn mean_recall(results: &orion_ann_core::SearchResult, gt: &[Vec<u32>], k: usize) -> f64 {
     use std::collections::HashSet;
     let mut sum = 0.0f64;
     let n = results.len();
-    for i in 0..n {
-        let truth: HashSet<u32> = gt[i].iter().take(k).copied().collect();
-        let hits = results[i].iter().filter(|x| truth.contains(x)).count();
+    for (ids, ground_truth) in results.rows().zip(gt) {
+        let truth: HashSet<u32> = ground_truth.iter().take(k).copied().collect();
+        let hits = ids.iter().filter(|x| truth.contains(x)).count();
         sum += hits as f64 / k as f64;
     }
     sum / n as f64
@@ -449,12 +447,12 @@ fn execute(args: Args) -> Result<()> {
         return memory::enforce_budget(&report);
     }
     log::info!("Run settings: {resolved}");
-    match config.search_plan() {
-        SearchPlan::F32Cascade { .. } => {
+    match config.storage() {
+        orion_ann::VectorStorageKind::F32 => {
             let data = LoadedDataset::<f32>::load(&config)?;
             run_sweep::<F32CascadeBackend>(&config, data)
         }
-        SearchPlan::NativeU8L2 => {
+        orion_ann::VectorStorageKind::U8 => {
             let data = LoadedDataset::<u8>::load(&config)?;
             run_sweep::<NativeU8L2Backend>(&config, data)
         }

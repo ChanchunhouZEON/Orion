@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Private avx512 kernels. Called only through a capability-checked stream entry.
 
 use crate::DistanceKernelBackend;

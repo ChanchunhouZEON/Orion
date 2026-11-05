@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Extra enrichment + early stop analysis with GLM styling."""
 
 import json, os, sys

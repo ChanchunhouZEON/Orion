@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Low-dimensional groups and the high-dimensional signed-byte GIST kernel.
 use orion_ann_vector::{DistanceKernelBackend, DistanceStream, IpI8Distance};
 

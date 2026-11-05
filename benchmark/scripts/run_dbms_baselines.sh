@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # In-process Milvus Lite + USearch panel across the headline datasets.
 #
 # Phase 1: For every dataset, run dbms_baselines.py which adds two

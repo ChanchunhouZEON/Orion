@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Build and test locally, without installing/publishing a wheel or touching data."""
 import argparse
 import json

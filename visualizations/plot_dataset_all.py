@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Per-dataset QPS-vs-Recall@10 plot — three engines on one figure:
 
   * **Orion** (ours)

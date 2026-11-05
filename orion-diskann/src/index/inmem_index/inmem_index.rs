@@ -72,7 +72,10 @@ where
     [T; N]: FullPrecisionDistance<T, N>,
 {
     /// Create Index obj based on configuration
-    pub fn new(mut config: IndexConfiguration) -> ANNResult<Self> {
+    pub fn new(mut config: IndexConfiguration) -> ANNResult<Self>
+    where
+        T: bytemuck::Pod,
+    {
         if config.max_points == 0 {
             config.max_points = 1;
         }
@@ -124,7 +127,10 @@ where
             .get_distance(id1, id2, self.configuration.dist_metric)
     }
 
-    fn build_with_data_populated(&mut self) -> ANNResult<()> {
+    fn build_with_data_populated(&mut self) -> ANNResult<()>
+    where
+        T: bytemuck::Pod,
+    {
         log::info!(
             "Starting index build with {} points...",
             self.num_active_pts
@@ -613,7 +619,10 @@ where
         &mut self,
         num_threads: u32,
         search_candidate_size: u32,
-    ) -> ANNResult<()> {
+    ) -> ANNResult<()>
+    where
+        T: bytemuck::Pod,
+    {
         self.query_scratch_queue.reserve(num_threads as usize)?;
         for _ in 0..num_threads {
             let scratch = Box::new(InMemQueryScratch::<T, N>::new(
@@ -795,7 +804,10 @@ where
     pub fn extract_graph_and_candidates(
         &mut self,
         max_extra: usize,
-    ) -> ANNResult<Vec<(Vec<u32>, Vec<u32>, Vec<u32>)>> {
+    ) -> ANNResult<Vec<(Vec<u32>, Vec<u32>, Vec<u32>)>>
+    where
+        T: bytemuck::Pod,
+    {
         use crate::utils::mem_usage;
         use std::collections::HashSet;
 

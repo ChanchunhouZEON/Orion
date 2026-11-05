@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Cascade-stage ablation panel: QPS vs Recall@10 for four cascade
 variants on the same built graph.
 

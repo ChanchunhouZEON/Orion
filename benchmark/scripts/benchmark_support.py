@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Shared paths, vector I/O and evaluation for standalone benchmark scripts.
 
 Preset resolution belongs to Rust; Python consumes its JSON contract instead of

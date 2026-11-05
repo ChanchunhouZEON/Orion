@@ -1,5 +1,10 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! The only conversion boundary between Orion errors and Python exceptions.
-use orion_ann_runtime::{Error, Result};
+use orion_ann::{Error, Result};
 use pyo3::prelude::*;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -27,7 +32,7 @@ pub fn result<T>(py: Python<'_>, value: Result<T>) -> PyResult<T> {
 
 /// Catch only unforeseen unwinding failures. Normal failures use `Result`.
 /// The closure never publishes a partially constructed object. Existing Index
-/// mutations hold their mutex inside the closure, so an unwind poisons the
+/// mutations hold their exclusive write lock inside the closure, so an unwind poisons the
 /// handle and future calls reject it rather than using partially mutated state.
 /// Python's process-wide panic hook is deliberately left untouched.
 pub fn boundary<T>(

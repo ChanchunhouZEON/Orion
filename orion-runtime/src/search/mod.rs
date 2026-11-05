@@ -10,14 +10,20 @@
 //! search backend and its resident element representation.
 
 use crate::Result;
-use orion_ann::algorithm::search::diagnostics::SearchObserver;
+use orion_ann_core::algorithm::search::diagnostics::SearchObserver;
 pub mod cascade;
 pub mod utils;
 
-use crate::{
-    config::ResolvedRunConfig,
-    data::{BaseElement, LoadedBase},
-};
+use crate::{config::ResolvedRunConfig, data::BaseElement};
+
+#[cfg(feature = "cli")]
+use crate::data::LoadedBase;
+
+mod sealed {
+    pub trait BuiltIn {}
+    impl BuiltIn for super::F32CascadeBackend {}
+    impl BuiltIn for super::NativeU8L2Backend {}
+}
 
 /// Backend-specific hooks used by the common search driver.
 ///
@@ -26,41 +32,64 @@ use crate::{
 /// query streaming, and reporting, while implementations provide only the
 /// operations that vary by backend:
 ///
-/// - loading the corresponding [`orion_ann::Orion`] index,
+/// - loading the corresponding [`orion_ann_core::Orion`] index,
 /// - pinning backend-specific search sidecars,
 /// - dispatching the corresponding batch-search pipeline.
-pub trait SearchBackend {
+pub trait SearchBackend: sealed::BuiltIn {
     /// Resident element representation used by this backend.
     type Element: BaseElement;
 
     /// Loads or constructs the index used by this backend.
+    #[cfg(feature = "cli")]
     fn load_index(
         config: &ResolvedRunConfig,
         data: &mut LoadedBase<Self::Element>,
-    ) -> Result<orion_ann::Orion<Self::Element>>;
+    ) -> Result<orion_ann_core::Orion<Self::Element>>;
 
     /// Pins backend-specific search storage before measured execution.
     ///
     /// This hook may be a no-op when all required storage is already covered
     /// by the common driver.
-    fn pin_search_storage(index: &orion_ann::Orion<Self::Element>, config: &ResolvedRunConfig);
+    #[cfg(any(feature = "cli", feature = "benchmark"))]
+    fn pin_search_storage(index: &orion_ann_core::Orion<Self::Element>, config: &ResolvedRunConfig);
+
+    /// Materialize the recipe before publishing a calibrated, shareable index.
+    fn prepare_search(
+        index: &orion_ann_core::Orion<Self::Element>,
+        config: &ResolvedRunConfig,
+    ) -> Result<()>;
 
     /// Executes one batch using the backend-specific search pipeline.
     fn search_batch(
-        index: &orion_ann::Orion<Self::Element>,
+        index: &orion_ann_core::Orion<Self::Element>,
         queries: &[f32],
         config: &ResolvedRunConfig,
+        k: usize,
         beam: usize,
-        calibration: orion_ann::CalibratedParams,
-    ) -> Result<Vec<Vec<u32>>>;
+        calibration: orion_ann_core::CalibratedParams,
+    ) -> Result<orion_ann_core::SearchResult>;
 
-    /// Optional diagnostic single-query path; third-party backends may opt in.
+    /// Byte input for native storage; the f32 backend converts before dispatch.
+    fn search_batch_u8(
+        index: &orion_ann_core::Orion<Self::Element>,
+        queries: &[u8],
+        config: &ResolvedRunConfig,
+        k: usize,
+        beam: usize,
+        calibration: orion_ann_core::CalibratedParams,
+    ) -> Result<orion_ann_core::SearchResult> {
+        let values: Vec<f32> = queries.iter().map(|&v| f32::from(v)).collect();
+        Self::search_batch(index, &values, config, k, beam, calibration)
+    }
+
+    /// Optional diagnostic single-query path for built-in backends.
     fn search_observed<O: SearchObserver>(
-        _index: &orion_ann::Orion<Self::Element>,
+        _index: &orion_ann_core::Orion<Self::Element>,
         _query: &[f32],
         _config: &ResolvedRunConfig,
+        _k: usize,
         _beam: usize,
-        _calibration: orion_ann::CalibratedParams,
+        _calibration: orion_ann_core::CalibratedParams,
         _observer: &mut O,
     ) -> Result<Vec<u32>> {
         Err(crate::Error::unsupported(
@@ -77,32 +106,53 @@ pub struct F32CascadeBackend;
 impl SearchBackend for F32CascadeBackend {
     type Element = f32;
 
+    fn prepare_search(
+        index: &orion_ann_core::Orion<f32>,
+        config: &ResolvedRunConfig,
+    ) -> Result<()> {
+        crate::sidecars::requirements::prepare(
+            index,
+            &config.index_plan().sidecar_requirements(false),
+        )
+    }
+
+    #[cfg(feature = "cli")]
     fn load_index(
         config: &ResolvedRunConfig,
         data: &mut LoadedBase<Self::Element>,
-    ) -> Result<orion_ann::Orion<Self::Element>> {
+    ) -> Result<orion_ann_core::Orion<Self::Element>> {
         crate::graph::load_index(config, data)
     }
 
-    fn pin_search_storage(index: &orion_ann::Orion<Self::Element>, config: &ResolvedRunConfig) {
-        let cascade = config.search_plan().cascade();
+    #[cfg(any(feature = "cli", feature = "benchmark"))]
+    fn pin_search_storage(
+        index: &orion_ann_core::Orion<Self::Element>,
+        config: &ResolvedRunConfig,
+    ) {
+        let cascade = config.cascade();
 
-        cascade::pin_cascade(index, cascade.prefilter, cascade.admission, cascade.rerank);
+        crate::driver::pinning::pin_cascade(
+            index,
+            cascade.prefilter,
+            cascade.admission,
+            cascade.rerank,
+        );
     }
 
     fn search_batch(
-        index: &orion_ann::Orion<Self::Element>,
+        index: &orion_ann_core::Orion<Self::Element>,
         queries: &[f32],
         config: &ResolvedRunConfig,
+        k: usize,
         beam: usize,
-        calibration: orion_ann::CalibratedParams,
-    ) -> Result<Vec<Vec<u32>>> {
-        let cascade = config.search_plan().cascade();
+        calibration: orion_ann_core::CalibratedParams,
+    ) -> Result<orion_ann_core::SearchResult> {
+        let cascade = config.cascade();
 
         cascade::search_batch_compose(
             index,
             queries,
-            config.sweep.k,
+            k,
             beam,
             config.window_size,
             calibration.threshold,
@@ -113,30 +163,31 @@ impl SearchBackend for F32CascadeBackend {
         )
     }
     fn search_observed<O: SearchObserver>(
-        index: &orion_ann::Orion<Self::Element>,
+        index: &orion_ann_core::Orion<Self::Element>,
         query: &[f32],
         config: &ResolvedRunConfig,
+        k: usize,
         beam: usize,
-        calibration: orion_ann::CalibratedParams,
+        calibration: orion_ann_core::CalibratedParams,
         observer: &mut O,
     ) -> Result<Vec<u32>> {
-        let stages = config.search_plan().cascade();
+        crate::sidecars::requirements::prepare(
+            index,
+            &config.index_plan().sidecar_requirements(false),
+        )?;
+        let stages = config.cascade();
         let ad = cascade::build_admission(index, stages.admission)?;
-        let pf = cascade::build_prefilter(index, stages.prefilter, stages.admission);
-        let rr = cascade::build_rerank(index, stages.rerank);
+        let pf = cascade::build_prefilter(index, stages.prefilter, stages.admission)?;
+        let rr = cascade::build_rerank(index, stages.rerank)?;
         index.search_cascade_observed(
             query,
-            diagnostic_config(config, beam, calibration),
-            orion_ann::DynamicCascade {
+            search_config(config, k, beam, calibration),
+            orion_ann_core::DynamicCascade {
                 prefilter: pf.as_deref(),
                 admission: ad.as_ref(),
                 rerank: rr.as_ref(),
             },
-            if orion_ann::algorithm::search::include_extras() {
-                orion_ann::algorithm::search::diagnostics::NeighborMode::LocalExtra
-            } else {
-                orion_ann::algorithm::search::diagnostics::NeighborMode::FullNeighbor
-            },
+            orion_ann_core::algorithm::search::diagnostics::NeighborMode::default(),
             observer,
         )
     }
@@ -153,29 +204,53 @@ pub struct NativeU8L2Backend;
 impl SearchBackend for NativeU8L2Backend {
     type Element = u8;
 
+    fn prepare_search(
+        _index: &orion_ann_core::Orion<u8>,
+        _config: &ResolvedRunConfig,
+    ) -> Result<()> {
+        Ok(()) // Native admission shares the base and needs no sidecars.
+    }
+
+    fn search_batch_u8(
+        index: &orion_ann_core::Orion<u8>,
+        queries: &[u8],
+        config: &ResolvedRunConfig,
+        k: usize,
+        beam: usize,
+        calibration: orion_ann_core::CalibratedParams,
+    ) -> Result<orion_ann_core::SearchResult> {
+        index.search_batch_l2(queries, search_config(config, k, beam, calibration))
+    }
+
+    #[cfg(feature = "cli")]
     fn load_index(
         config: &ResolvedRunConfig,
         data: &mut LoadedBase<Self::Element>,
-    ) -> Result<orion_ann::Orion<Self::Element>> {
+    ) -> Result<orion_ann_core::Orion<Self::Element>> {
         crate::graph::load_u8_index(config, data)
     }
 
-    fn pin_search_storage(_index: &orion_ann::Orion<Self::Element>, _config: &ResolvedRunConfig) {
+    #[cfg(any(feature = "cli", feature = "benchmark"))]
+    fn pin_search_storage(
+        _index: &orion_ann_core::Orion<Self::Element>,
+        _config: &ResolvedRunConfig,
+    ) {
         // No backend-specific sidecar. The resident byte base is pinned by the
         // common driver.
     }
 
     fn search_batch(
-        index: &orion_ann::Orion<Self::Element>,
+        index: &orion_ann_core::Orion<Self::Element>,
         queries: &[f32],
         config: &ResolvedRunConfig,
+        k: usize,
         beam: usize,
-        calibration: orion_ann::CalibratedParams,
-    ) -> Result<Vec<Vec<u32>>> {
+        calibration: orion_ann_core::CalibratedParams,
+    ) -> Result<orion_ann_core::SearchResult> {
         index.search_batch_l2_byte_queries(
             queries,
-            orion_ann::DynamicSearchConfig {
-                k: config.sweep.k,
+            orion_ann_core::DynamicSearchConfig {
+                k,
                 search_list_size: beam,
                 window_size: config.window_size,
                 epsilon: calibration.threshold,
@@ -184,11 +259,12 @@ impl SearchBackend for NativeU8L2Backend {
         )
     }
     fn search_observed<O: SearchObserver>(
-        index: &orion_ann::Orion<Self::Element>,
+        index: &orion_ann_core::Orion<Self::Element>,
         query: &[f32],
         config: &ResolvedRunConfig,
+        k: usize,
         beam: usize,
-        calibration: orion_ann::CalibratedParams,
+        calibration: orion_ann_core::CalibratedParams,
         observer: &mut O,
     ) -> Result<Vec<u32>> {
         if query
@@ -202,19 +278,20 @@ impl SearchBackend for NativeU8L2Backend {
         let bytes: Vec<u8> = query.iter().map(|&v| v as u8).collect();
         index.search_l2_observed(
             &bytes,
-            diagnostic_config(config, beam, calibration),
+            search_config(config, k, beam, calibration),
             observer,
         )
     }
 }
 
-fn diagnostic_config(
+fn search_config(
     config: &ResolvedRunConfig,
+    k: usize,
     beam: usize,
-    calibration: orion_ann::CalibratedParams,
-) -> orion_ann::DynamicSearchConfig {
-    orion_ann::DynamicSearchConfig {
-        k: config.sweep.k,
+    calibration: orion_ann_core::CalibratedParams,
+) -> orion_ann_core::DynamicSearchConfig {
+    orion_ann_core::DynamicSearchConfig {
+        k,
         search_list_size: beam,
         window_size: config.window_size,
         epsilon: calibration.threshold,

@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 [package]
 name = "orion-ann-platform"
 version = "0.1.0"

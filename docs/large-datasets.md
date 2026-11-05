@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 # Large datasets on the in-memory Orion path
 
 The standalone `orion` executable (from the `orion-cli` crate) supports a native-u8 search path for SIFT.
@@ -87,7 +92,7 @@ instruction set; do not copy a native binary between incompatible CPUs.
 
 ```bash
 cargo build --release -p orion-ann-cli --bin orion
-cargo build --release -p benchmark --bin orion-sweep
+cargo build --release --target-dir target --manifest-path benchmark/Cargo.toml --bin orion-sweep
 
 # The preset points to data/sift1b/{bigann_base.bvecs,bigann_query.bvecs,idx_1000M.ivecs}.
 # Override each path as needed. The PA export must already exist on a cache miss.
@@ -178,7 +183,7 @@ search recall, zero f32 search comparisons, and absence of admission sidecars:
 cargo test -p orion-ann-vector --offline
 cargo test -p orion-ann --offline
 cargo test -p orion-ann-cli --offline
-cargo build -p benchmark --bin orion-sweep --offline
+cargo build --target-dir target --manifest-path benchmark/Cargo.toml --bin orion-sweep --offline
 ORION_BINARY="$PWD/target/debug/orion-sweep" python3 -m unittest discover \
   -s benchmark/scripts/tests -v
 ```
@@ -248,7 +253,7 @@ requires cache removal. Keep immutable inputs and separate experiment caches.
 Validation:
 
 ```bash
-cargo test -p benchmark --bin diskann_sweep
+cargo test --manifest-path benchmark/Cargo.toml --bin diskann_sweep
 DISKANN_BINARY=./target/debug/diskann_sweep \
   python3 benchmark/scripts/tests/check_diskann_streaming.py
 ```

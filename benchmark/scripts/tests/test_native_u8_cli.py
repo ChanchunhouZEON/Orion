@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Optional real CLI coverage; set ORION_BINARY to the freshly built orion-sweep executable."""
 import json
 import os

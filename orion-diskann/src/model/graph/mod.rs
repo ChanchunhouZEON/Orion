@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 mod adjacency_list;
 pub use adjacency_list::AdjacencyList;
 

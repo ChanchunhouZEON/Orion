@@ -29,6 +29,7 @@ use crate::CACHE_LINE_BYTES;
 /// the initial budget, not a claim that the new policy is already tuned.
 /// Set ORION_DSTREAM_SINK_BURST=0 to disable far prefetching.
 #[inline]
+#[cfg(feature = "benchmark")]
 fn sink_burst() -> usize {
     use std::sync::OnceLock;
     static BURST: OnceLock<usize> = OnceLock::new();
@@ -41,9 +42,15 @@ fn sink_burst() -> usize {
     })
 }
 
+#[cfg(not(feature = "benchmark"))]
+fn sink_burst() -> usize {
+    12
+}
+
 /// Grouping is configured once per process, in logical cache-line units.
 /// A vector occupies ceil(compute_bytes / CACHE_LINE_BYTES) such units;
 /// padding between vectors is not counted as compute work.
+#[cfg(feature = "benchmark")]
 fn burst_group_config() -> (usize, usize) {
     use std::sync::OnceLock;
     static CONFIG: OnceLock<(usize, usize)> = OnceLock::new();
@@ -60,6 +67,11 @@ fn burst_group_config() -> (usize, usize) {
             read("ORION_DSTREAM_BURST_AHEAD_VECTORS", 4),
         )
     })
+}
+
+#[cfg(not(feature = "benchmark"))]
+fn burst_group_config() -> (usize, usize) {
+    (4, 4)
 }
 
 /// No accumulated burst debt: the next group can only fill its own window.

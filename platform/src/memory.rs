@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Best-effort operating-system hints for large resident allocations.
 
 /// Align large allocations to the usual Linux PMD huge-page boundary.

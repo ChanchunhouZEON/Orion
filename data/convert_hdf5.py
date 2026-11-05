@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Convert ann-benchmarks HDF5 datasets to fvecs/ivecs format.
 
 Usage: python3 convert_hdf5.py input.hdf5 output_dir [--normalize]

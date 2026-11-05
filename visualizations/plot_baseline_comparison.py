@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """SIFT 1M multi-algorithm QPS-vs-Recall@10 comparison at 8 threads.
 
 Reads:

@@ -47,7 +47,12 @@ pub fn prefetch_vector<T>(vec: &[T]) {
         #[cfg(target_arch = "aarch64")]
         unsafe {
             let addr = vec_ptr.add(off);
+            // Miri checks the address arithmetic but cannot execute ARM asm.
+            // Prefetch has no effect on the values observed by the program.
+            #[cfg(not(miri))]
             std::arch::asm!("prfm pldl1keep, [{x}]", x = in(reg) addr);
+            #[cfg(miri)]
+            let _ = addr;
         }
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {

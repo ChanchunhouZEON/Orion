@@ -1,8 +1,13 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 #![cfg(feature = "parlay")]
-use orion_ann_runtime::diagnostics::{
+use orion_ann::diagnostics::{
     Candidate, Phase, Score, SearchTrace, TraceEvent, TraceLimits, TraceReplay,
 };
-use orion_ann_runtime::{BaseInput, CascadeConfig, ErrorCode, GraphConfig, Index, IndexOptions};
+use orion_ann::{BaseInput, CascadeConfig, ErrorCode, GraphConfig, Index, IndexOptions};
 use std::sync::atomic::{AtomicUsize, Ordering};
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 struct Temp(std::path::PathBuf);
@@ -25,7 +30,7 @@ impl Drop for Temp {
 fn diagnostics_uses_the_native_public_error_type() {
     let error = SearchTrace::from_json("{}").unwrap_err();
     let report = error.report();
-    let same_error: orion_ann::Error = error;
+    let same_error: orion_ann_core::Error = error;
     assert_eq!(same_error.report(), report);
 }
 
@@ -77,17 +82,40 @@ fn f32_u8_trace_and_truncated_trace_match_normal_search() {
             .trace_search(query.clone(), 5, 16, true, TraceLimits::default())
             .unwrap_err();
         assert_eq!(err.code(), ErrorCode::InvalidState);
-        index
-            .calibrate(values[..24 * DIM].to_vec(), 5, Some(16))
-            .unwrap();
         for adaptive in [false, true] {
+            if adaptive {
+                index
+                    .calibrate(values[..24 * DIM].to_vec(), 5, Some(16))
+                    .unwrap();
+            }
             for beam in [8, 16, 32] {
-                let result = index.search(query.clone(), 5, beam, adaptive).unwrap();
-                let expected = &result.ids[..result.counts[0] as usize];
                 let trace = index
                     .trace_search(query.clone(), 5, beam, adaptive, TraceLimits::default())
                     .unwrap();
-                assert_eq!(trace.result_ids, expected);
+                if adaptive {
+                    let result = index
+                        .search(
+                            orion_ann::QueryBatch::from_f32(&query, index.dimension()).unwrap(),
+                            &orion_ann::SearchOptions::new(5, beam),
+                        )
+                        .unwrap();
+                    assert_eq!(trace.result_ids, result.ids[..result.counts[0] as usize]);
+                } else {
+                    #[cfg(feature = "benchmark")]
+                    {
+                        let baseline = orion_ann::benchmark::search_non_adaptive(
+                            &mut index,
+                            query.clone(),
+                            5,
+                            beam,
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            trace.result_ids,
+                            baseline.ids[..baseline.counts[0] as usize]
+                        );
+                    }
+                }
                 assert!(!trace.truncated);
                 assert!(matches!(
                     trace.events.first(),
@@ -141,7 +169,7 @@ fn f32_u8_trace_and_truncated_trace_match_normal_search() {
                     )
                     .unwrap();
                 assert!(prefix.truncated);
-                assert_eq!(prefix.result_ids, expected);
+                assert_eq!(prefix.result_ids, trace.result_ids);
                 assert_eq!(prefix.events, trace.events[..1]);
             }
         }
@@ -160,6 +188,21 @@ fn f32_u8_trace_and_truncated_trace_match_normal_search() {
                 }
             )
             .is_err());
-        assert!(index.search(query, 5, 16, false).is_ok());
+        assert_eq!(
+            index
+                .search(
+                    orion_ann::QueryBatch::from_f32(&query, index.dimension()).unwrap(),
+                    &orion_ann::SearchOptions::new(4, 16)
+                )
+                .unwrap_err()
+                .code(),
+            ErrorCode::InvalidState
+        );
+        assert!(index
+            .search(
+                orion_ann::QueryBatch::from_f32(&query, index.dimension()).unwrap(),
+                &orion_ann::SearchOptions::new(5, 16)
+            )
+            .is_ok());
     }
 }

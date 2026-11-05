@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # QPS-Recall Sweep Configuration
 #
 # Shared search schedules and calibration defaults for `main.rs` and

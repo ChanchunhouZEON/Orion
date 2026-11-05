@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 name: Release validation
 
 # Validate every pushed commit and PR, not only a tag. This workflow never publishes.

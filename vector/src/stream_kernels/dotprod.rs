@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Optional ARM dot-product kernel; all other metrics reuse NEON.
 pub use super::neon::IpF32Distance;
 pub use super::neon::IpI16Distance;

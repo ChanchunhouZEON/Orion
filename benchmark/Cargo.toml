@@ -1,32 +1,54 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 [package]
 publish = false
+rust-version = "1.92"
 name = "benchmark"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-orion-ann-runtime = { version = "0.1.0", path = "../orion-runtime", features = ["cli"] }
+orion-ann = { version = "0.1.0", path = "../orion-runtime", features = ["cli", "benchmark"] }
 adsampling = { path = "../adsampling" }
 orion-ann-diskann = { version = "0.1.0", path = "../orion-diskann" }
 orion-ann-platform = { version = "0.1.0", path = "../platform" }
-orion-ann = { version = "0.1.0", path = "../orion", default-features = false }
+orion-ann-core = { version = "0.1.0", path = "../orion-core", default-features = false, features = ["benchmark"] }
 orion-ann-vector = { version = "0.1.0", path = "../vector" }
 anyhow = "1"
-rayon = { workspace = true }
-ndarray = { workspace = true }
-clap = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-byteorder = { workspace = true }
-indicatif = { workspace = true }
-thiserror = { workspace = true }
-rand = { workspace = true }
-libc = { workspace = true }
-log = { workspace = true }
-env_logger = { workspace = true }
-comfy-table = { workspace = true }
+rayon = "1"
+ndarray = { version = "0.16", features = ["rayon", "serde"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+byteorder = "1"
+indicatif = "0.17"
+thiserror = "2"
+rand = "0.10"
+libc = "0.2"
+log = "0.4"
+env_logger = "0.11"
+comfy-table = "=7.1.4"
 serde_yaml = "0.9"
 
 [[bin]]
 name = "orion-sweep"
 path = "src/bin/orion_sweep.rs"
+
+# Resolve experiments independently of the production feature graph.
+[workspace]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "fat"
+strip = "symbols"
+panic = "abort"
+
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = 2
+lto = "thin"
+codegen-units = 4

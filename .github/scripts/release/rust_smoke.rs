@@ -1,18 +1,15 @@
-use orion_ann_runtime::{BaseInput, ErrorCode, GraphConfig, Index, IndexOptions};
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
+use orion_ann::{BaseInput, ErrorCode, GraphConfig, Index, IndexOptions};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = std::env::current_dir()?.join("index-fixtures");
     let bytes: Vec<u8> = (0..96 * 13)
         .map(|i| ((i * 73 + i / 13 * 11) % 251) as u8)
         .collect();
     let floats: Vec<f32> = bytes.iter().map(|&x| x as f32).collect();
-    let build = orion_ann::BuildConfig { degree: 8, build_l: 24, max_extra: 4,
-        threads: 2, ..Default::default() };
-    let core_f32 = orion_ann::Orion::<f32>::build_from_slice(&floats, 13, build.clone())?;
-    let core_u8 = orion_ann::Orion::<u8>::build_from_slice(&bytes, 13, build)?;
-    assert_eq!(core_f32.num_nodes, 96);
-    assert_eq!(core_u8.num_nodes, 96);
-    assert!(!core_f32.is_save && !core_u8.is_save);
-
     for native in [false, true] {
         let dir = root.join(if native { "u8" } else { "f32" });
         let input = || {
@@ -40,18 +37,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let queries = floats[..8 * 13].to_vec();
         assert_eq!(
             index
-                .search(queries.clone(), 3, 24, true)
+                .search(
+                    orion_ann::QueryBatch::from_f32(&queries, index.dimension())?,
+                    &orion_ann::SearchOptions::new(3, 24)
+                )
                 .err()
                 .unwrap()
                 .code(),
             ErrorCode::InvalidState
         );
         index.calibrate(queries.clone(), 3, Some(24))?;
-        let expected = index.search(queries.clone(), 3, 24, true)?;
+        let expected = index.search(
+            orion_ann::QueryBatch::from_f32(&queries, index.dimension())?,
+            &orion_ann::SearchOptions::new(3, 24),
+        )?;
         assert_eq!(expected.counts, vec![3; 8]);
-        index.save(&dir.join("snapshot"))?;
-        let mut restored = Index::open(&dir.join("snapshot"), input()?, Some(1), None)?;
-        assert_eq!(restored.search(queries, 3, 24, true)?.ids, expected.ids);
+        let snapshot = index.save(&dir.join("snapshot"))?;
+        let restored = Index::open(&snapshot, input()?)?;
+        assert_eq!(
+            restored
+                .search(
+                    orion_ann::QueryBatch::from_f32(&queries, index.dimension())?,
+                    &orion_ann::SearchOptions::new(3, 24)
+                )?
+                .ids,
+            expected.ids
+        );
     }
     println!("Packaged Rust consumer: default ParlayANN f32/u8 + calibration/search/cache passed");
     Ok(())

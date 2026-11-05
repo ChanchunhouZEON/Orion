@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Verifies the generic DiskANN dataset uses the new full-precision byte kernel.
 //! Orion's separate f32-only dataset path is deliberately not implied by this test.
 use orion_ann_diskann::model::InmemDataset;

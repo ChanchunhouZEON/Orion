@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Runtime row layout for full-block SIMD computation.
 //!
 //! Padding is per row, not a readable tail after the entire allocation.

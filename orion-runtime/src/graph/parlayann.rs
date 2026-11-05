@@ -4,7 +4,7 @@
  */
 
 //! Load a ParlayANN-built Orion index (`.staged` v3) and pass the
-//! `(local, remote, extra)` partitions through to `Orion::from_phased_graph`.
+//! `(local, remote, extra)` partitions through to `Orion::from_graph_partitions`.
 //!
 //! File format (from `ParlayANN/algorithms/utils/staged_export.h`, v3):
 //!   [u32 magic=0x53544147 "STAG"][u32 version=3]
@@ -22,151 +22,145 @@
 //! Entry point: the file header's `entry_point` is PA's hard-coded 0; we
 //! recompute medoid over a stride sample instead.
 
-use crate::{Error, Result};
+pub use orion_ann_core::build::sampled_medoid_rows;
 
-use rayon::prelude::*;
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
+#[cfg(any(feature = "benchmark", all(test, feature = "cli")))]
+pub use reference::*;
+#[cfg(any(feature = "benchmark", all(test, feature = "cli")))]
+mod reference {
+    use crate::{Error, Result};
+    pub use orion_ann_core::build::sampled_medoid;
 
-pub type Partition = (Vec<u32>, Vec<u32>, Vec<u32>);
+    use rayon::prelude::*;
+    use std::fs::File;
+    use std::io::Read;
+    use std::path::Path;
 
-#[allow(dead_code)]
-pub struct StagedInput {
-    pub partitions: Vec<Partition>,
-    pub entry_point: u32,
-    pub num_nodes: usize,
-    pub max_deg: u32,
-    pub max_extra: u32,
-}
+    pub type Partition = (Vec<u32>, Vec<u32>, Vec<u32>);
 
-const MAGIC: u32 = 0x53544147;
-const VERSION: u32 = 3;
-
-/// Read an u32 at the given byte offset from `buf`.
-#[inline]
-fn read_u32_at(buf: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
-}
-
-/// Read `n` u32s starting at `off` into a fresh `Vec<u32>` (little-endian).
-#[inline]
-fn read_u32_vec_at(buf: &[u8], off: usize, n: usize) -> Vec<u32> {
-    let mut v = vec![0u32; n];
-    let bytes = unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut u8, n * 4) };
-    bytes.copy_from_slice(&buf[off..off + n * 4]);
-    v
-}
-
-pub fn load_from_staged_file<P: AsRef<Path>>(
-    path: P,
-    base_flat: &[f32],
-    dim: usize,
-) -> Result<StagedInput> {
-    // Slurp the whole file (.staged is ~ 1× graph size — fits comfortably
-    // alongside the dataset). With the file in RAM we can do an O(n)
-    // sequential offset-scan, then parse partitions in parallel via
-    // `into_par_iter()`. Streaming reads can't parallelize since each
-    // per-node block's start depends on previous block's sizes.
-    let mut buf = Vec::new();
-    File::open(&path)?.read_to_end(&mut buf)?;
-    if buf.len() < 24 {
-        return Err(Error::invalid_data(format!(
-            "staged file too short ({} bytes)",
-            buf.len()
-        )));
+    #[allow(dead_code)]
+    #[derive(Debug)]
+    pub struct StagedInput {
+        pub partitions: Vec<Partition>,
+        pub entry_point: u32,
+        pub num_nodes: usize,
+        pub max_deg: u32,
+        pub max_extra: u32,
     }
 
-    let magic = read_u32_at(&buf, 0);
-    if magic != MAGIC {
-        return Err(Error::invalid_data(format!(
-            "staged file magic mismatch: got 0x{:08x}, expected 0x{:08x}",
-            magic, MAGIC
-        )));
-    }
-    let version = read_u32_at(&buf, 4);
-    if version != VERSION {
-        return Err(Error::invalid_data(format!(
-            "staged file version mismatch: got {}, expected {}",
-            version, VERSION
-        )));
-    }
-    let n = read_u32_at(&buf, 8) as usize;
-    let max_deg = read_u32_at(&buf, 12);
-    let max_extra = read_u32_at(&buf, 16);
-    let _entry_hint = read_u32_at(&buf, 20);
+    const MAGIC: u32 = 0x53544147;
+    const VERSION: u32 = 3;
 
-    log::info!(
-        "ParlayANN staged v3: n={}, max_deg={}, max_extra={}",
-        n,
-        max_deg,
-        max_extra
-    );
-
-    assert_eq!(base_flat.len(), n * dim, "base_flat size mismatch");
-
-    // Pass 1 (sequential, O(n)): scan per-node block offsets.
-    // Each block: 3×u32 header + (lc+rc+ec)×4 bytes of IDs.
-    let mut offsets: Vec<usize> = Vec::with_capacity(n);
-    let mut p = 24usize;
-    for _ in 0..n {
-        offsets.push(p);
-        let lc = read_u32_at(&buf, p) as usize;
-        let rc = read_u32_at(&buf, p + 4) as usize;
-        let ec = read_u32_at(&buf, p + 8) as usize;
-        p += 12 + (lc + rc + ec) * 4;
+    /// Read an u32 at the given byte offset from `buf`.
+    #[inline]
+    fn read_u32_at(buf: &[u8], off: usize) -> u32 {
+        u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
     }
 
-    // Pass 2 (parallel): parse each block at its offset.
-    let partitions: Vec<Partition> = offsets
-        .into_par_iter()
-        .map(|off| {
-            let lc = read_u32_at(&buf, off) as usize;
-            let rc = read_u32_at(&buf, off + 4) as usize;
-            let ec = read_u32_at(&buf, off + 8) as usize;
-            let mut q = off + 12;
-            let local = read_u32_vec_at(&buf, q, lc);
-            q += lc * 4;
-            let remote = read_u32_vec_at(&buf, q, rc);
-            q += rc * 4;
-            let extra = read_u32_vec_at(&buf, q, ec);
-            (local, remote, extra)
+    /// Read `n` u32s starting at `off` into a fresh `Vec<u32>` (little-endian).
+    #[inline]
+    fn read_u32_vec_at(buf: &[u8], off: usize, n: usize) -> Vec<u32> {
+        buf[off..off + n * 4]
+            .chunks_exact(4)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+            .collect()
+    }
+
+    pub fn load_from_staged_file<P: AsRef<Path>>(
+        path: P,
+        base_flat: &[f32],
+        dim: usize,
+    ) -> Result<StagedInput> {
+        // Slurp the whole file (.staged is ~ 1× graph size — fits comfortably
+        // alongside the dataset). With the file in RAM we can do an O(n)
+        // sequential offset-scan, then parse partitions in parallel via
+        // `into_par_iter()`. Streaming reads can't parallelize since each
+        // per-node block's start depends on previous block's sizes.
+        let mut buf = Vec::new();
+        File::open(&path)?.read_to_end(&mut buf)?;
+        if buf.len() < 24 {
+            return Err(Error::invalid_data(format!(
+                "staged file too short ({} bytes)",
+                buf.len()
+            )));
+        }
+
+        let magic = read_u32_at(&buf, 0);
+        if magic != MAGIC {
+            return Err(Error::invalid_data(format!(
+                "staged file magic mismatch: got 0x{:08x}, expected 0x{:08x}",
+                magic, MAGIC
+            )));
+        }
+        let version = read_u32_at(&buf, 4);
+        if version != VERSION {
+            return Err(Error::invalid_data(format!(
+                "staged file version mismatch: got {}, expected {}",
+                version, VERSION
+            )));
+        }
+        let n = read_u32_at(&buf, 8) as usize;
+        let max_deg = read_u32_at(&buf, 12);
+        let max_extra = read_u32_at(&buf, 16);
+        let _entry_hint = read_u32_at(&buf, 20);
+
+        log::info!(
+            "ParlayANN staged v3: n={}, max_deg={}, max_extra={}",
+            n,
+            max_deg,
+            max_extra
+        );
+
+        assert_eq!(base_flat.len(), n * dim, "base_flat size mismatch");
+
+        // Pass 1 (sequential, O(n)): scan per-node block offsets.
+        // Each block: 3×u32 header + (lc+rc+ec)×4 bytes of IDs.
+        let mut offsets: Vec<usize> = Vec::with_capacity(n);
+        let mut p = 24usize;
+        for _ in 0..n {
+            offsets.push(p);
+            let lc = read_u32_at(&buf, p) as usize;
+            let rc = read_u32_at(&buf, p + 4) as usize;
+            let ec = read_u32_at(&buf, p + 8) as usize;
+            p += 12 + (lc + rc + ec) * 4;
+        }
+
+        // Pass 2 (parallel): parse each block at its offset.
+        let partitions: Vec<Partition> = offsets
+            .into_par_iter()
+            .map(|off| {
+                let lc = read_u32_at(&buf, off) as usize;
+                let rc = read_u32_at(&buf, off + 4) as usize;
+                let ec = read_u32_at(&buf, off + 8) as usize;
+                let mut q = off + 12;
+                let local = read_u32_vec_at(&buf, q, lc);
+                q += lc * 4;
+                let remote = read_u32_vec_at(&buf, q, rc);
+                q += rc * 4;
+                let extra = read_u32_vec_at(&buf, q, ec);
+                (local, remote, extra)
+            })
+            .collect();
+
+        let entry_point = sampled_medoid(base_flat, dim);
+
+        let total_local: usize = partitions.iter().map(|(l, _, _)| l.len()).sum();
+        let total_remote: usize = partitions.iter().map(|(_, r, _)| r.len()).sum();
+        let total_extra: usize = partitions.iter().map(|(_, _, e)| e.len()).sum();
+        log::info!(
+            "ParlayANN bridge: entry={}, mean local={:.1}, remote={:.1}, extra={:.1}",
+            entry_point,
+            total_local as f64 / n as f64,
+            total_remote as f64 / n as f64,
+            total_extra as f64 / n as f64,
+        );
+
+        Ok(StagedInput {
+            partitions,
+            entry_point,
+            num_nodes: n,
+            max_deg,
+            max_extra,
         })
-        .collect();
-
-    let entry_point = sampled_medoid(base_flat, dim);
-
-    let total_local: usize = partitions.iter().map(|(l, _, _)| l.len()).sum();
-    let total_remote: usize = partitions.iter().map(|(_, r, _)| r.len()).sum();
-    let total_extra: usize = partitions.iter().map(|(_, _, e)| e.len()).sum();
-    log::info!(
-        "ParlayANN bridge: entry={}, mean local={:.1}, remote={:.1}, extra={:.1}",
-        entry_point,
-        total_local as f64 / n as f64,
-        total_remote as f64 / n as f64,
-        total_extra as f64 / n as f64,
-    );
-
-    Ok(StagedInput {
-        partitions,
-        entry_point,
-        num_nodes: n,
-        max_deg,
-        max_extra,
-    })
-}
-
-// Kept at this path for existing STAG import callers.
-pub use orion_ann::build::{sampled_medoid, sampled_medoid_rows};
-
-// Keep diagnostics bounded: do not format vector payloads or working buffers.
-impl std::fmt::Debug for StagedInput {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StagedInput")
-            .field("entry_point", &self.entry_point)
-            .field("num_nodes", &self.num_nodes)
-            .field("max_deg", &self.max_deg)
-            .field("max_extra", &self.max_extra)
-            .finish_non_exhaustive()
     }
 }

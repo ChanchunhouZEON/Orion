@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Bounded-memory conversion to ParlayANN binary vectors and ground truth.
 
 Byte coordinates stay bytes; no whole-file read or whole-dataset f32 expansion.

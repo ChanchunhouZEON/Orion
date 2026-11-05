@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # Shared Python-environment setup. Source this from any wrapper:
 #
 #   source "$(dirname "$0")/_env.sh"

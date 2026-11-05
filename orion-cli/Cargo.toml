@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 [package]
 name = "orion-ann-cli"
 version = "0.1.0"
@@ -17,11 +20,12 @@ path = "src/main.rs"
 
 [features]
 default = ["parlay"]
-parlay = ["orion-ann-runtime/parlay"]
+parlay = ["orion-ann/parlay"]
+benchmark = ["orion-ann/benchmark"]
 
 [dependencies]
-orion-ann-runtime = { version = "0.1.0", path = "../orion-runtime", default-features = false, features = ["cli"] }
-orion-ann = { version = "0.1.0", path = "../orion", default-features = false }
+orion-ann = { version = "0.1.0", path = "../orion-runtime", default-features = false, features = ["cli"] }
+orion-ann-core = { version = "0.1.0", path = "../orion-core", default-features = false, features = ["search-stats"] }
 orion-ann-vector = { version = "0.1.0", path = "../vector" }
 rayon = { workspace = true }
 clap = { workspace = true }

@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Run using an isolated installed interpreter: python -I wheel_smoke.py."""
 import json
 from pathlib import Path
@@ -46,8 +49,8 @@ with tempfile.TemporaryDirectory(prefix='orion-installed-') as directory:
         result = index.search(queries, k=3, search_list_size=24)
         assert result.ids.shape == (8, 3) and result.ids.dtype == np.uint32
         assert np.all(result.counts == 3)
-        index.save(folder / 'snapshot')
-        restored = Index.open(folder / 'snapshot', base=base, threads=1)
+        snapshot = index.save(folder / 'snapshot')
+        restored = Index.open(snapshot, base=base, threads=1)
         again = restored.search(queries, k=3, search_list_size=24)
         np.testing.assert_array_equal(result.ids, again.ids)
         np.testing.assert_array_equal(result.counts, again.counts)

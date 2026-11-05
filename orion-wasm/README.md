@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 # orion-ann-wasm
 
 Initial browser interface for replaying native Orion search traces. This stage
@@ -22,7 +27,7 @@ From the workspace root, install `wasm32-unknown-unknown` for Rust 1.92 and a
 cargo build --locked -p orion-ann-wasm --target wasm32-unknown-unknown
 wasm-bindgen --target web --out-dir target/wasm-replay \
   target/wasm32-unknown-unknown/debug/orion_ann_wasm.wasm
-cargo run --locked -p orion-ann-runtime --example export_trace -- target/native-trace.json
+cargo run --locked -p orion-ann --example export_trace -- target/native-trace.json
 ```
 
 Load the generated ES module in a Web Worker and initialize it before use:

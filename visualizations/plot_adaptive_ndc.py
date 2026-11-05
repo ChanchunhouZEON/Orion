@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Plot k=10 adaptive-search NDC versus recall from existing results.
 
 Only plotting is performed. Ratios compare mean summed stage evaluations at

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # ADSampling 4-way comparison driver.
 #
 # Builds the `benchmark` binary, runs `--algorithms ads-comparison` on

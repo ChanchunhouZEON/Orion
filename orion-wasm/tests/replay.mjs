@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 // Runs the browser-target JS glue and actual WASM in Node's WebAssembly VM.
 // No search implementation or mocked binding is substituted here.
 import assert from "node:assert/strict";

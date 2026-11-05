@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # macOS search-only CPU Counters capture. Preserve logs even on failure.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"

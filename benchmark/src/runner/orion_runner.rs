@@ -6,7 +6,7 @@
 use crate::report::table::BuildTiming;
 use crate::runner::cascade::{AdmissionChoice, PrefilterChoice, RerankChoice};
 use crate::runner::common::{AlgorithmRunner, SearchResult};
-use orion_ann::{
+use orion_ann_core::{
     build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_784, DIM_960,
 };
 use std::path::PathBuf;
@@ -43,7 +43,7 @@ pub struct OrionRunner {
     inner: Option<OrionInner>,
     /// Optional cache path. When set and `<cache>.bin` + `<cache>.pgraph`
     /// both exist, `build()` loads from disk and skips the in-process
-    /// Vamana build entirely — mirrors `orion`'s `load_from_cache`
+    /// Vamana build entirely — mirrors `orion`'s `load_working`
     /// arm so thread-sweep and orion run on identical graphs.
     cache_path: Option<PathBuf>,
 }
@@ -67,24 +67,19 @@ macro_rules! build_orion {
         );
 
         let t1 = Instant::now();
-        let empty_ds = orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-        let mut idx = StaticOrion::<$N>::new(
-            empty_ds,
+        let mut ds =
+            orion_ann_diskann::model::InmemDataset::<f32, $N>::new($num_points, 1.0).unwrap();
+        ds.data.memcpy(&$data[..$num_points * $N]).unwrap();
+        let idx = StaticOrion::<$N>::new(
+            ds,
             &$result.partitions,
             $result.entry_point,
             $self.graph_degree as u32,
             $self.max_extra,
             None,
             None,
-            None,
-            false,
         );
         log::info!("Orion overhead: {:.2}s", t1.elapsed().as_secs_f32());
-
-        let mut ds =
-            orion_ann_diskann::model::InmemDataset::<f32, $N>::new($num_points, 1.0).unwrap();
-        ds.data.memcpy(&$data[..$num_points * $N]).unwrap();
-        idx.dataset = ds;
 
         // Auto-calibrate convergence parameters from warmup queries.
         let calib_n = $num_points.min(500);
@@ -99,7 +94,7 @@ macro_rules! build_orion {
             &calib_queries,
             $self.search_list_size,
             $self.window_size,
-            orion_ann::CalibrationConfig {
+            orion_ann_core::CalibrationConfig {
                 metric: $self.admission.calibration_metric(),
                 ..Default::default()
             },
@@ -127,10 +122,12 @@ macro_rules! search_orion {
         let eps = $self.epsilon;
         let ee = $self.early_exit_limit;
         let pf =
-            crate::runner::cascade::build_prefilter::<_>($idx, $self.prefilter, $self.admission);
+            crate::runner::cascade::build_prefilter::<_>($idx, $self.prefilter, $self.admission)
+                .expect("benchmark sidecar initialization failed");
         let ad = crate::runner::cascade::build_admission::<_>($idx, $self.admission)
             .expect("f32 OrionRunner does not support native-l2-u8 admission");
-        let rr = crate::runner::cascade::build_rerank::<_>($idx, $self.rerank);
+        let rr = crate::runner::cascade::build_rerank::<_>($idx, $self.rerank)
+            .expect("benchmark sidecar initialization failed");
         $idx.search_unified(
             &q,
             $k,
@@ -183,14 +180,14 @@ macro_rules! search_batch_orion {
 macro_rules! pin_orion_hot {
     ($idx:ident, $self:ident) => {{
         // f32 base dataset is always hot regardless of cascade choice.
-        let ds_ptr = $idx.dataset.data.as_ptr() as *const u8;
-        let ds_len = $idx.dataset.data.len() * std::mem::size_of::<f32>();
+        let ds_ptr = $idx.dataset().data.as_ptr() as *const u8;
+        let ds_len = $idx.dataset().data.len() * std::mem::size_of::<f32>();
         crate::utils::mlock_bytes("orion dataset (f32)", ds_ptr, ds_len);
 
         crate::runner::cascade::pin_cascade($idx, $self.prefilter, $self.admission, $self.rerank);
 
         // PhasedGraph slot slab.
-        let pg = $idx.graph.buffer_bytes();
+        let pg = $idx.graph().buffer_bytes();
         crate::utils::mlock_bytes("orion pgraph slab", pg.as_ptr(), pg.len());
     }};
 }
@@ -227,9 +224,9 @@ impl OrionRunner {
     /// params match and the QPS gap from calibration drift closes.
     pub fn recalibrate(&mut self, queries: &[Vec<f32>], sample: usize, k: usize) {
         let n = sample.min(queries.len());
-        let sls = orion_ann::calibration_search_list_size!(self.search_list_size, k);
+        let sls = orion_ann_core::calibration_search_list_size!(self.search_list_size, k);
         let ws = self.window_size;
-        let config = orion_ann::CalibrationConfig {
+        let config = orion_ann_core::CalibrationConfig {
             k,
             metric: self.admission.calibration_metric(),
         };
@@ -312,7 +309,7 @@ impl AlgorithmRunner for OrionRunner {
         // + `<cache>.pgraph` exist on disk, skip the in-process Vamana
         // build and the Orion partition+slot construction — load
         // straight from the cached PhasedGraph. Mirrors `orion`'s
-        // `load_from_cache` arm so both binaries run on the same graph
+        // `load_working` arm so both binaries run on the same graph
         // instance and topology jitter from rebuild-each-run goes away.
         if let Some(cache) = self.cache_path.clone() {
             let pgraph_path = cache.with_extension("pgraph");
@@ -320,15 +317,12 @@ impl AlgorithmRunner for OrionRunner {
                 log::info!("Loading cached Orion from {:?}", cache);
                 macro_rules! load_cached {
                     ($N:literal, $variant:ident) => {{
-                        let empty_ds =
-                            orion_ann_diskann::model::InmemDataset::<f32, $N>::new(0, 1.0).unwrap();
-                        let mut idx = StaticOrion::<$N>::load_from_cache(&cache, empty_ds)
-                            .expect("StaticOrion::load_from_cache failed");
                         let mut ds =
                             orion_ann_diskann::model::InmemDataset::<f32, $N>::new(num_points, 1.0)
                                 .unwrap();
                         ds.data.memcpy(&data[..num_points * $N]).unwrap();
-                        idx.dataset = ds;
+                        let idx = orion_ann::benchmark::graph::load_working(&cache, ds)
+                            .expect("load benchmark graph cache");
                         self.inner = Some(OrionInner::$variant { idx });
                     }};
                 }
@@ -410,7 +404,7 @@ impl AlgorithmRunner for OrionRunner {
     /// Per-query duration is not preserved (callers that need wall time
     /// measure the whole batch externally — see `search_batch_with_threads`).
     fn search_batch(&self, queries: &[Vec<f32>], k: usize) -> Vec<SearchResult> {
-        let neighbors_vec: Vec<Vec<u32>> = match self.inner.as_ref().expect("Index not built") {
+        let neighbors_vec = match self.inner.as_ref().expect("Index not built") {
             OrionInner::Dim32 { idx } => search_batch_orion!(idx, queries, k, self, 32),
             OrionInner::Dim100 { idx } => search_batch_orion!(idx, queries, k, self, 100),
             OrionInner::Dim128 { idx } => search_batch_orion!(idx, queries, k, self, 128),
@@ -421,9 +415,9 @@ impl AlgorithmRunner for OrionRunner {
         }
         .expect("Batch searching process failed");
         neighbors_vec
-            .into_iter()
+            .rows()
             .map(|n| SearchResult {
-                neighbors: n,
+                neighbors: n.to_vec(),
                 duration: Duration::default(),
             })
             .collect()

@@ -1,9 +1,47 @@
-A saved snapshot contains graph metadata, graph files, provenance and per-k
-calibration. **The base vectors remain external** and must be supplied again.
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
+## Working cache and snapshot
+
+Use a **working cache** to reuse the cost of building or importing a graph.
+Set `IndexOptions::cache_dir` (CLI `--cache-dir`) when creating an index.
+Orion can reuse a matching graph and lazily load or rebuild quantized sidecars.
+Even on a cache hit, `Index::new` starts with no calibration records.
+
+Use a **snapshot** to record a particular configuration and its per-`k`
+calibrations. `Index::save` publishes a single `index.json` in a new directory.
+It records the SHA-256 identities of the graph, its metadata, build provenance
+and each materialized sidecar. Adding a calibration writes another small
+manifest. The graph and sidecars keep their existing files.
+
+With `cache_dir = "service/work"`, two snapshots can share this layout:
+
+```text
+service/
+  work/                  # Disposable build and sidecar lookup records
+  work.objects/          # Persistent objects shared by this cache and its snapshots
+    <sha256>.pgraph      # Graph slab
+    <sha256>.bin         # Graph header metadata
+    <sha256>.cache.json  # Build provenance
+    <sha256>.qds         # Example f32 admission sidecar, created on first use
+  k10/index.json
+  k10-k100/index.json
+```
+
+Keep snapshots outside the working directory. Stop active cache writers before
+removing `work/`. `Index::open` (CLI `--snapshot`) needs the snapshot manifest,
+the object store at the absolute path recorded in `object_store`, and the original
+base input. It can open either snapshot after `work/` is gone. Back up all three.
+Clearing the working cache never garbage-collects objects, so older manifests
+continue to resolve. Independent working directories have independent sibling
+stores. Older standalone snapshots can also be opened; their directory serves
+as the object store for snapshots subsequently saved from that handle.
 
 ```rust
-use orion_ann_runtime::{BaseInput, GraphConfig, Index, IndexOptions, Result};
-use orion_ann_runtime::config::GraphSourcePolicy;
+use orion_ann::{BaseInput, GraphConfig, Index, IndexOptions, QueryBatch, SearchOptions, OpenOptions, SnapshotRef};
+use orion_ann::GraphSourcePolicy;
 # let dir = std::env::temp_dir().join(format!("orion-doc-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
 let values: Vec<f32> = (0..24).map(|x| x as f32 / 24.0).collect();
 let options = IndexOptions {
@@ -15,42 +53,54 @@ let options = IndexOptions {
 };
 let mut index = Index::new(BaseInput::from_f32(&values, 3)?, options)?;
 index.calibrate(values[..6].to_vec(), 2, Some(8))?;
-let snapshot = dir.join("snapshot");
-index.save(&snapshot)?;
-let mut reopened = Index::open(&snapshot,
-    BaseInput::from_f32(&values, 3)?, Some(1), None)?;
-assert_eq!(reopened.len(), index.len());
-assert_eq!(reopened.search(values[..3].to_vec(), 2, 8, true)?.counts, vec![2]);
+let expected = index.search(QueryBatch::from_f32(&values[..3], 3)?, &SearchOptions::new(2, 8))?;
+let snapshot = index.save(&dir.join("snapshot"))?;
+drop(index);
+std::fs::remove_dir_all(dir.join("build"))?; // The sibling build.objects/ stays in place.
+
+// Keep this reference in trusted application state between service runs.
+let record = serde_json::to_string(&snapshot)?;
+let reference: SnapshotRef = serde_json::from_str(&record)?;
+let mut reopened = OpenOptions { threads: Some(2), ..Default::default() }
+    .open(&reference, BaseInput::from_f32(&values, 3)?)?;
+assert_eq!(reopened.search(QueryBatch::from_f32(&values[..3], 3)?, &SearchOptions::new(2, 8))?, expected);
 # drop(reopened);
-# drop(index);
 # std::fs::remove_dir_all(&dir)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-## Integrity and errors
+The reference serialization in this example uses `serde_json` as an application dependency.
 
-`Index::open` never rebuilds on a miss. It checks metadata version, input identity,
-configuration, recorded graph stamps and calibration. A mismatch returns
-`CacheIncompatible`; malformed serialized data returns `InvalidData`; filesystem
-failures return `Io`. File bases are identified by their canonical path and file
-stamp; copied arrays use their content identity. This is cache provenance,
-not cryptographic authentication of every graph/sidecar byte.
+## Integrity and publication
 
-Caches are native trusted artifacts produced by this library, not an interchange
-format for arbitrary hostile files. Keep bases/cache files unchanged while
-opening or saving. Do not assume graph slab files are portable between every
-architecture or future version. STAG import and native cache loading are different
-operations; use the runtime to enforce provenance and compatibility.
+The manifest binds graph metadata, native graph bytes, build provenance, materialized
+sidecars and the external base to the manifest in `index.json`. File input uses
+all original bytes, including rows outside a selected prefix. Array input uses
+its typed shape and row contents. Opening rejects inconsistent inputs and
+can materialize additional derived stages into the same store when first needed.
 
-## Publication and concurrency
+A session retains the identities of the graph generation and sidecars it loaded.
+Each graph or sidecar decoder hashes its input stream during the read. With an
+authenticated base, working sidecar keys include the source identity, row prefix,
+dimension, representation, metric and codec. The first use of an older working
+sidecar record rebuilds that record. Existing snapshot references still identify
+the original objects.
 
-`save` writes into a sibling staging directory and renames it after successful
-writes. It rejects an existing destination and attempts staging cleanup on error;
-the in-memory index stays usable. Serialize publishers targeting the same
-location. Directory rename visibility does not guarantee complete crash durability
-on all filesystems (parent directory fsync is not performed).
+Repeated searches use resident data. Opening a new session verifies its inputs
+again, and saving a file-backed session rechecks the external base because another
+process could have replaced it since opening.
 
-The lower-level `Orion::save/load_from_cache` pair stores graph metadata and a
-`.pgraph` file, not a runtime snapshot. Its two renames are not a multi-file
-transaction, and it does not provide the runtime's base identity/calibration
-contract. Do not substitute it for `Index::save/open` in an application service.
+Keep the `SnapshotRef` returned by `Index::save` in trusted application state.
+A local application can simply call `Index::open("cache/sift", base)?` to
+load the current snapshot in that directory. Both forms verify all payloads.
+Passing a reference additionally checks the manifest identity before parsing it.
+Serialize the reference with Serde when it needs to survive a restart.
+Payload filenames use the full SHA-256 of their bytes. Start a fresh cache when
+upgrading from older cache layouts.
+
+Object publication syncs the encoded payload before exposing its content name.
+A save syncs the manifest in a new sibling staging directory (owner-only on Unix),
+then renames that directory. Unix also syncs the staging and parent directories. If the last sync fails after rename, inspect the
+destination before retrying. Serialize writers to the same destination and
+keep the external input immutable. Search and dropping an index never commit
+a snapshot.

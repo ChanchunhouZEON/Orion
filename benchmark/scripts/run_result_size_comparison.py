@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Compare k=10/100 with the full calibrated Orion pipeline at identical L."""
 import argparse
 import datetime

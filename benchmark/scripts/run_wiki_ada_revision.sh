@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # Full-size normalized ada-002 extension. No embedding API calls are made.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"

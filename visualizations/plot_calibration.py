@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Calibration diagnostics: per-dataset admission-rate curve + useful-gap PDF.
 
 Original 4×2 layout (one row per dataset). Font sizes are pushed up so the

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # Shared wrapper contract: paths are relative to the repository, never the caller.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -12,7 +15,9 @@ binary_path() {
 }
 
 build_binary() {
-  cargo build --release --bin "$1" --target-dir "${BUILD_DIR:-${CARGO_TARGET_DIR:-$ROOT/target}}"
+  local manifest=benchmark/Cargo.toml
+  [[ "$1" != orion ]] || manifest=orion-cli/Cargo.toml
+  cargo build --locked --manifest-path "$manifest" --release --bin "$1" --target-dir "${BUILD_DIR:-${CARGO_TARGET_DIR:-$ROOT/target}}"
 }
 
 # Resolve through Rust so config overrides, preset paths and metrics have one owner.

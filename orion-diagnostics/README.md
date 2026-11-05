@@ -1,7 +1,12 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 # orion-ann-diagnostics
 
 Opt-in diagnostics for Orion's production search loop. The default `native`
-feature provides `RecordingObserver` and depends on `orion-ann`. Orion itself
+feature provides `RecordingObserver` and depends on `orion-ann-core`. Orion itself
 only defines observer hooks and does not depend on this crate.
 
 Disable default features to use the versioned trace schema, validation and
@@ -11,7 +16,7 @@ implementation is defined here.
 
 ## Recording
 
-Use `orion_ann_runtime::Index::trace_search(query, k, beam, adaptive, limits)`.
+Use `orion_ann::Index::trace_search(query, k, beam, adaptive, limits)`.
 The call accepts exactly one logical f32 query row, normalizes it like ordinary
 search, and requires calibration for adaptive search. Native-u8 indexes require
 exact byte-valued coordinates. It returns a `SearchTrace`, including final IDs.

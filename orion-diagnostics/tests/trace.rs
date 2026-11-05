@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 use orion_ann_diagnostics::*;
 
 fn metadata() -> TraceMetadata {

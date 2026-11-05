@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Optional subprocess tests enabled by PARLAY_NEIGHBORS, with tiny generated data."""
 import json
 import os

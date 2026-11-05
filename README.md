@@ -1,4 +1,4 @@
-<h1><img src="orion/assets/orion-astraeus.png" alt="" width="64" align="center" /> Orion Astraeus: Admission-Aware Graph Search</h1>
+<h1><img src="orion-core/assets/orion-astraeus.png" alt="" width="64" align="center" /> Orion Astraeus: Admission-Aware Graph Search</h1>
 
 [![Cross-platform smoke test](https://img.shields.io/badge/Colima%20x86__64-compile--verified-success?logo=docker&logoColor=white)](benchmark/scripts/ci_smoke_sift.sh)
 [![Tests](https://img.shields.io/badge/tests-415%20passing-success?logo=rust&logoColor=white)](docs/testing.md)
@@ -48,7 +48,7 @@ portable x86 build flags are in [Platforms](docs/platforms.md).
 ```bash
 rustup toolchain install 1.92
 cargo build --locked --release -p orion-ann-cli --bin orion
-cargo build --locked --release -p benchmark --bin orion-sweep
+cargo build --locked --release --target-dir target --manifest-path benchmark/Cargo.toml --bin orion-sweep
 ```
 
 With your own data, a preset and ground truth are optional. Dimension is read
@@ -64,7 +64,7 @@ are `fvecs`, `bvecs`, `fbin`, and `u8bin`.
 This is an `anonymous` dataset. With no cached graph or STAG export available,
 the default path builds a ParlayANN graph in memory and caches it. Add `--groundtruth /data/gt.ivecs` to measure
 ID recall; otherwise recall is absent. `--query - --query-format bvecs` accepts
-a query stream on stdin. See [CLI and inputs](docs/cli.md).
+a query stream on stdin. Use `--snapshot DIR` to search a saved index with its existing calibration. See [CLI and inputs](docs/cli.md).
 
 Presets are in [sweep.yaml](benchmark/configs/sweep.yaml). They provide paths,
 metric, dimension, construction settings, and cascade overrides:
@@ -85,39 +85,26 @@ loads replayable queries and runs all requested L values/trials in one process.
 
 ## Rust interface
 
-Use `orion_ann_runtime::Index` for owned file/array input, calibration, batch search
-and cache snapshots, or `orion_ann::Orion::build_from_slice` for standalone
+Use `orion_ann::Index` for owned file/array input, calibration, batch search
+and cache snapshots, or `orion_ann_core::Orion::build_from_slice` for standalone
 in-memory construction from f32/u8 vectors. `BuildConfig` controls the backend,
 degree, construction width, extras and threads; `Orion::build` accepts an owned
 padded dataset without another base copy. Saving remains explicit.
-Both return the shared `orion_ann::Result<T>` with structured `Error` values. Errors
+Both return the shared `orion_ann_core::Result<T>` with structured `Error` values. Errors
 provide a stable code, operation, details and original source chain; creating an
 error does not log it. `Error::report()` supplies the same payload exposed by
 Python and the CLI's `--error-format json` option.
 
-The prepared Cargo package names are `orion-ann` and `orion-ann-runtime`;
+The prepared Cargo package names are `orion-ann-core` and `orion-ann`;
 Python uses distribution `orion-ann` and import `orion_ann`. Publication is deferred until the peer-review process is complete.
 
-A standalone native-u8 index needs only the core crate:
-
-```rust
-use orion_ann::{BuildConfig, DynamicSearchConfig, Orion};
-
-let base: Vec<u8> = (0..64 * 13).map(|i| (i % 251) as u8).collect();
-let index = Orion::<u8>::build_from_slice(&base, 13, BuildConfig {
-    degree: 8, build_l: 24, max_extra: 4, threads: 2,
-    ..Default::default()
-})?;
-let neighbors = index.search_batch_l2(&base[..3 * 13], DynamicSearchConfig {
-    k: 3, search_list_size: 32, ..Default::default()
-})?;
-println!("{index:?}"); // Summary; does not print the vectors or graph edges.
-```
+Add `orion-ann` as the sole application dependency. Select built-in prefilter, admission and rerank policies through the index options.
+The optional `benchmark` feature exposes research diagnostics and timing controls.
 
 For an embedded service that owns input decoding, calibration and search workers:
 
 ```rust
-use orion_ann_runtime::{BaseInput, GraphConfig, Index, IndexOptions};
+use orion_ann::{BaseInput, GraphConfig, Index, IndexOptions, QueryBatch, SearchOptions};
 
 let base: Vec<f32> = (0..256 * 128).map(|i| (i % 251) as f32).collect();
 let mut index = Index::new(BaseInput::from_f32(&base, 128)?, IndexOptions {
@@ -128,23 +115,24 @@ let mut index = Index::new(BaseInput::from_f32(&base, 128)?, IndexOptions {
 })?;
 let queries = base[..32 * 128].to_vec(); // Replace with representative queries.
 index.calibrate(queries.clone(), 10, Some(64))?;
-let results = index.search(queries, 10, 100, true)?;
-index.save(std::path::Path::new("cache/snapshot"))?; // New directory.
-let reopened = Index::open(std::path::Path::new("cache/snapshot"),
-    BaseInput::from_f32(&base, 128)?, Some(8), None)?;
+let batch = QueryBatch::from_f32(&queries, index.dimension())?;
+let results = index.search(batch, &SearchOptions::new(10, 100))?;
+let snapshot = index.save(std::path::Path::new("cache/snapshot"))?; // New directory.
+let reopened = Index::open(&snapshot,
+    BaseInput::from_f32(&base, 128)?)?;
 ```
 
 Use representative queries for calibration. Core L2 methods use full-precision
-distances along an approximate graph; runtime adaptive search requires prior
-calibration. Snapshots preserve calibration but **do not embed the base vectors**.
-See the [core examples](orion/README.md) for backend selection, owned padded
+distances along an approximate graph. The Rust and Python `Index` APIs require
+calibration for the requested `k`. Snapshots preserve calibration but **do not embed the base vectors**.
+See the [core examples](orion-core/README.md) for backend selection, owned padded
 storage and structured errors, and the [service example](orion-runtime/README.md)
 for complete array construction, result handling and snapshot validation.
 
 Generate the public API reference and Rust examples with:
 
 ```bash
-cargo doc --locked -p orion-ann -p orion-ann-runtime --no-deps --open
+cargo doc --locked -p orion-ann-core -p orion-ann --no-deps --open
 ```
 
 ## Python interface
@@ -167,8 +155,8 @@ index.calibrate(queries[:200], k=10)
 result = index.search(queries, k=10, search_list_size=100)
 print(result.ids, result.counts)  # uint32 IDs (nq, k), valid counts (nq,)
 
-index.save("/data/orion-snapshot")  # New directory; base vectors remain separate.
-reopened = Index.open("/data/orion-snapshot", base="/data/base.fbin", threads=8)
+snapshot = index.save("/data/orion-snapshot")  # New directory; base vectors remain separate.
+reopened = Index.open(snapshot, base="/data/base.fbin", threads=8)
 ```
 
 Use `Index.from_array(base, metric="l2", threads=8)` for a NumPy base, or pass a
@@ -233,7 +221,7 @@ Effective source is part of cache identity. Default directories are
 `cache/orion_parlayann` and `cache/orion`; `--cache-dir` overrides the directory,
 not source separation. Printed configuration, preflight and new cache manifests
 record the concrete source. [Graph sources](docs/graph-sources.md) explains
-precedence, provenance, legacy cache compatibility, and builder differences.
+precedence, provenance, SHA-256 cache identity, and builder differences.
 
 ## Measured performance
 
@@ -301,6 +289,7 @@ export ORION_DSTREAM_LA_TRUTH=32
 export ORION_DSTREAM_SINK_BURST=32
 export ORION_DSTREAM_BURST_TRIGGER_LINES=8
 export ORION_DSTREAM_BURST_AHEAD_VECTORS=4
+# Benchmark-only override (the compiled default is also 2).
 export ORION_RERANK_FACTOR=2
 
 ./target/release/orion-sweep gist --graph-source parlayann \
@@ -318,8 +307,8 @@ causal speedup.
 ## Development and documentation
 
 ```bash
-cargo test --locked -p orion-ann-runtime -p orion-ann-cli
-cargo check --locked -p benchmark --bins
+cargo test --locked -p orion-ann -p orion-ann-cli
+cargo check --locked --manifest-path benchmark/Cargo.toml --bins
 cargo test --locked -p orion-ann-vector --release
 ```
 

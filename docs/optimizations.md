@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 # Key Optimizations
 
 [← Back to main README](../README.md)
@@ -37,14 +42,14 @@ Sub-sections below walk the stages in execution order; the **shared kernels** (`
 
 A `InMemScratchPool` allocates `num_threads` `InMemSearchScratch` buffers up front, handed out through crossbeam's lock-free `ArrayQueue` (no mutex). Each query takes one, runs `prepare_for_query()` to clear PQ / seen-set / `dist_buffer` / `merge_scratch` **in place** (no realloc), and returns it. The four critical fields are sized once at construction so the steady-state hop never touches the allocator:
 
-- **`pad16` PQ buffer alignment.** `pq.data` and `merge_scratch` capacities both rounded up to a multiple of 16 `Neighbor`s (12 B/entry → 192-B boundary = 12 NEON regs = 1.5 M2 lines). `mem::swap` between the two on every `batch_merge` without resize; `copy_within` in `insert` uses full-vector loads. Killed the L-mod-8 jitter signal (L=18 / L=22 had 3–5× the CV of L=16 / L=24). [`orion/src/model/neighbor/neighbor_priority_queue.rs:27`]
-- **`dist_buffer` fixed at `MAX_GRAPH_DEGREE × MAX_FLUSH_INTERVAL = 100 × 4 = 400`.** Sized at construction; per-hop `reserve()` removed so cmov-compact's write pointer stays valid across `FLUSH_INTERVAL=4` post-converged hops. [`orion/src/model/scratch.rs:85–119`]
-- **Visited-set — linear-probe, PA-aligned sizing.** Initial table = `2 × (L + 1) × max_degree` rounded to next pow-2; SIFT L=64 → 16384 slots / 64 KB, fits L1 with load < 50 %. A bucketed SwissTable variant was reverted — probe-chain false-positives at >50 % load → recall regressions. [`orion/src/model/visited_set.rs`]
-- **`prepare_for_query` resets in place.** `pq.clear() + set_capacity`, `seen.resize_for` (only grows if `L` increased vs the last query), threshold-EMA fields zeroed, convergence + early-exit checkers reset. [`orion/src/model/scratch.rs:123–144`]
+- **`pad16` PQ buffer alignment.** `pq.data` and `merge_scratch` capacities both rounded up to a multiple of 16 `Neighbor`s (12 B/entry → 192-B boundary = 12 NEON regs = 1.5 M2 lines). `mem::swap` between the two on every `batch_merge` without resize; `copy_within` in `insert` uses full-vector loads. Killed the L-mod-8 jitter signal (L=18 / L=22 had 3–5× the CV of L=16 / L=24). [`orion-core/src/model/neighbor/neighbor_priority_queue.rs:27`]
+- **`dist_buffer` fixed at `MAX_GRAPH_DEGREE × MAX_FLUSH_INTERVAL = 100 × 4 = 400`.** Sized at construction; per-hop `reserve()` removed so cmov-compact's write pointer stays valid across `FLUSH_INTERVAL=4` post-converged hops. [`orion-core/src/model/scratch.rs:85–119`]
+- **Visited-set — linear-probe, PA-aligned sizing.** Initial table = `2 × (L + 1) × max_degree` rounded to next pow-2; SIFT L=64 → 16384 slots / 64 KB, fits L1 with load < 50 %. A bucketed SwissTable variant was reverted — probe-chain false-positives at >50 % load → recall regressions. [`orion-core/src/model/visited_set.rs`]
+- **`prepare_for_query` resets in place.** `pq.clear() + set_capacity`, `seen.resize_for` (only grows if `L` increased vs the last query), threshold-EMA fields zeroed, convergence + early-exit checkers reset. [`orion-core/src/model/scratch.rs:123–144`]
 
 #### 2. Warm-up — 3-hop loop peeling
 
-The first three hops run a dedicated **`expand_peeled_hop_l2`** (one variant per admission tier) that skips convergence / flush / 3-way merge bookkeeping. During hops 0..=2 the PQ transitions empty → partial → just-full, so none of that machinery can fire — but in the main loop it lives behind branches and pollutes the icache. Peeling them out strips ~10 instructions / vertex from the warm-up window and saves the branch-predictor's first warm-up misses. **+1.2 – 2.3× low-`L` QPS.** [`orion/src/algorithm/search/in_mem_search_l2.rs:65–261`]
+The first three hops run a dedicated **`expand_peeled_hop_l2`** (one variant per admission tier) that skips convergence / flush / 3-way merge bookkeeping. During hops 0..=2 the PQ transitions empty → partial → just-full, so none of that machinery can fire — but in the main loop it lives behind branches and pollutes the icache. Peeling them out strips ~10 instructions / vertex from the warm-up window and saves the branch-predictor's first warm-up misses. **+1.2 – 2.3× low-`L` QPS.** [`orion-core/src/algorithm/search/in_mem_search_l2.rs:65–261`]
 
 #### 3. Prefilter tier (`--prefilter`)
 
@@ -53,11 +58,11 @@ After warm-up, every neighbour fetched off the graph hits the prefilter first (i
 | Option | Per-vertex sidecar | Score | Best for | impl |
 |---|---|---|---|---|
 | `none` | — | — | low/mid-D, hop ≤ 4 lines | — |
-| `jl` | 1024-bit JL Sparse (NZ=9) + `‖v‖` (MIPS only) | popcount (L2) / popcount × `‖v‖` (MIPS) | high-D L2 / cosine (GIST, Wiki-ada) | `orion/src/model/dataset/jl_sparse_dataset.rs:115`, `:376` (MIPS) |
-| `jl-hadamard` | 1024-bit FWHT sign sketch | popcount | dense-D where JL Sparse plateaus | `orion/src/algorithm/search/stage/prefilter/jl_hadamard.rs` |
-| `rabitq` | RaBitQ B=1 / B=4 rotated sign-pack | popcount | sub-bit discrimination; GIST high-recall | `orion/src/algorithm/search/stage/prefilter/rabitq.rs` |
+| `jl` | 1024-bit JL Sparse (NZ=9) + `‖v‖` (MIPS only) | popcount (L2) / popcount × `‖v‖` (MIPS) | high-D L2 / cosine (GIST, Wiki-ada) | `orion-core/src/model/dataset/jl_sparse_dataset.rs:115`, `:376` (MIPS) |
+| `jl-hadamard` | 1024-bit FWHT sign sketch | popcount | dense-D where JL Sparse plateaus | `orion-core/src/algorithm/search/stage/prefilter/jl_hadamard.rs` |
+| `rabitq` | RaBitQ B=1 / B=4 rotated sign-pack | popcount | sub-bit discrimination; GIST high-recall | `orion-core/src/algorithm/search/stage/prefilter/rabitq.rs` |
 
-L2 / MIPS split lives in the type — `JLSparseDataset` (no norms) vs `JLSparseDatasetMips` (norms slab cache-aligned next to codes), separate so L2 pays nothing for an unused norms slab. NZ tunables are per-dataset (L2=9, MIPS=9 in the GLM-vivid sweep). [`orion/src/algorithm/search/stage/prefilter/jl.rs:35–117`, `:119–200`]
+L2 / MIPS split lives in the type — `JLSparseDataset` (no norms) vs `JLSparseDatasetMips` (norms slab cache-aligned next to codes), separate so L2 pays nothing for an unused norms slab. NZ tunables are per-dataset (L2=9, MIPS=9 in the GLM-vivid sweep). [`orion-core/src/algorithm/search/stage/prefilter/jl.rs:35–117`, `:119–200`]
 
 A u8-as-L2-proxy prefilter was tried and discarded for angular: on unit-norm vectors the L2² range collapses to `[0, 4]`, so 256 quantisation levels coarsen to where everything passes — bit-sign sketches are what pays.
 
@@ -65,7 +70,7 @@ A u8-as-L2-proxy prefilter was tried and discarded for angular: on unit-norm vec
 
 Survivors of the prefilter enter the admission tier — the per-hop main work. Two pieces, both stage-uniform:
 
-**(a) Storage — `QuantizedDataset<Q, N>` + the `QuantSpec` trait.** Spec-trait machinery bundling storage element, scaling, NEON kernel, sidecar magic, and `ALIGN_ELEMS` (rounds `STRIDE × sizeof(Storage)` up to a 32-B SIMD-aligned vertex stride). The alignment knob fixed the glove-100 unaligned-load tax — `id × 100` is not 16-byte-aligned in a packed `Vec<i8>` — for the **0.70× → 0.96× PA** single biggest jump in the angular stack. Sidecars built lazily on first `ensure_quantized_dataset_*`, memcpy-loaded thereafter (~50 ms / 1.2 M points); storage is `AlignedBoxWithSlice<Q::Storage>` at 32 B. [`orion/src/model/dataset/quantized_dataset.rs:52–138` trait, `:503–512` struct + `STRIDE`, `:619–670` sidecar I/O]
+**(a) Storage — `QuantizedDataset<Q, N>` + the `QuantSpec` trait.** Spec-trait machinery bundling storage element, scaling, NEON kernel, sidecar magic, and `ALIGN_ELEMS` (rounds `STRIDE × sizeof(Storage)` up to a 32-B SIMD-aligned vertex stride). The alignment knob fixed the glove-100 unaligned-load tax — `id × 100` is not 16-byte-aligned in a packed `Vec<i8>` — for the **0.70× → 0.96× PA** single biggest jump in the angular stack. Sidecars built lazily on first `ensure_quantized_dataset_*`, memcpy-loaded thereafter (~50 ms / 1.2 M points); storage is `AlignedBoxWithSlice<Q::Storage>` at 32 B. [`orion-core/src/model/dataset/quantized_dataset.rs:52–138` trait, `:503–512` struct + `STRIDE`, `:619–670` sidecar I/O]
 
 | Spec | CLI | Storage | Kernel | Score | impl |
 |---|---|---|---|---|---|
@@ -79,15 +84,15 @@ The **L2-kernel-trick** (`l2-kt`) is the headline admission optimisation on high
 
 **(b) Per-hop cadence — admit, flush, merge.** Each hop runs `admit → flush → merge` against the shared scratch:
 
-- **Branch-free admission via cmov-compact.** Per-hop kernel writes every `(id, dist)` into `dist_buffer` and advances the write pointer conditionally (`w += (dist < pq_worst) as usize`). Kills the 50/50 mispredict at mid-`L`. [`orion/src/algorithm/search/unified.rs:411–424`]
-- **Flush cadence: `FLUSH_INTERVAL = [1, 4]`.** Pre-convergence flush every hop, post-convergence every 4 — amortises the merge fixed cost when admissions thin out. [`orion/src/algorithm/search/in_mem_search.rs:266–270`]
+- **Branch-free admission via cmov-compact.** Per-hop kernel writes every `(id, dist)` into `dist_buffer` and advances the write pointer conditionally (`w += (dist < pq_worst) as usize`). Kills the 50/50 mispredict at mid-`L`. [`orion-core/src/algorithm/search/unified.rs:411–424`]
+- **Flush cadence: `FLUSH_INTERVAL = [1, 4]`.** Pre-convergence flush every hop, post-convergence every 4 — amortises the merge fixed cost when admissions thin out. [`orion-core/src/algorithm/search/in_mem_search.rs:266–270`]
 - **3-way merge routing** at flush time, picked by `K` (admits) vs `L` (PQ capacity):
   - `K · 8 < L` → per-element `pq.insert` (cache-friendly small-K, no scratch swap)
   - `L / 8 ≤ K ≤ L · 0.67` → `pq.batch_merge_gallop` (`partition_point` + bulk memcpy, +10–30 ns)
   - `K · 1.5 > L` → linear `pq.batch_merge` (two-way set-union, near-capacity admits)
 
-  Comparisons lower to pure shifts (`K << 3`, `K + (K >> 1)`). [`orion/src/algorithm/search/in_mem_search.rs:97–110`]
-- **Reversible convergence + early exit.** Single converged hop doesn't lock out navigation — protects against false-trigger recall loss. Once stably converged, `EarlyExitChecker` terminates on N consecutive zero-admission hops. GIST-960 L=200: cuts ~20 % of distance calls for < 0.4 pp recall loss. [`orion/src/algorithm/search/convergence.rs`, `early_exit.rs`]
+  Comparisons lower to pure shifts (`K << 3`, `K + (K >> 1)`). [`orion-core/src/algorithm/search/in_mem_search.rs:97–110`]
+- **Reversible convergence + early exit.** Single converged hop doesn't lock out navigation — protects against false-trigger recall loss. Once stably converged, `EarlyExitChecker` terminates on N consecutive zero-admission hops. GIST-960 L=200: cuts ~20 % of distance calls for < 0.4 pp recall loss. [`orion-core/src/algorithm/search/convergence.rs`, `early_exit.rs`]
 
 #### 5. Rerank tier (`--rerank`)
 
@@ -110,7 +115,7 @@ Three pieces used by every stage above:
 
 **Distance functions — `vector/src/*_neon_distance.rs`.** The NEON kernel set the admission + rerank tiers parameterise over. **Every kernel is 4× internally unrolled into independent accumulator chains** so the CPU's register-renamer dispatches four FMAs / SDOTs in flight per chunk — single-accumulator forces RAW on one phys reg (1 FMA / ~4 cy on the M2 FMA pipe), 4-chain saturates the pipeline (~1 FMA / cy). Reductions fold the chains as `vaddq_f32(s0, s1) + vaddq_f32(s2, s3)` then `vaddvq_f32`. [single-point `vector/src/ip_neon_distance.rs:38–82`] A speculative **batch-4 candidate variant** (`distance_ip_vector_f32_batch4`, `:111–148`) applies the same trick *across* candidates so 4 cold-DRAM reads could overlap through the M2 MSHR queue, but it's not currently wired into any callsite — the cold-cache rerank top-20 walk goes through plain `DistanceStream<IpF32Distance>` with the single-point kernel, which `LA_TRUTH = 6` prefetch hides the misses for.
 
-**`Neighbor` PQ — `total_cmp`.** Branchless integer-compare `Neighbor::cmp` — no `Option` overhead from default `f32::partial_cmp`. Combined with `pad16` alignment (above) this is what makes the 3-way merge cadence in §4(b) hold steady at low `L`. [`orion/src/model/neighbor/neighbor.rs:48`]
+**`Neighbor` PQ — `total_cmp`.** Branchless integer-compare `Neighbor::cmp` — no `Option` overhead from default `f32::partial_cmp`. Combined with `pad16` alignment (above) this is what makes the 3-way merge cadence in §4(b) hold steady at low `L`. [`orion-core/src/model/neighbor/neighbor.rs:48`]
 
 #### Per-dataset default cascade
 
@@ -127,7 +132,7 @@ Three pieces used by every stage above:
 
 What makes the cascade compose:
 
-- **Metric-agnostic auto-calibration.** `calibrate()` derives `(threshold, early_exit_limit)` from admit-rate topology, not the distance function — same output drives every metric. [`orion/src/algorithm/search/calibrate.rs`]
+- **Metric-agnostic auto-calibration.** `calibrate()` derives `(threshold, early_exit_limit)` from admit-rate topology, not the distance function — same output drives every metric. [`orion-core/src/algorithm/search/calibrate.rs`]
 - **No normalize at load.** Earlier MIPS paths L2-normalised at load, silently converting raw MIPS → cosine and breaking `msmarco_bert_1M` against its raw-dot-product GT. The whole `normalize_all` infrastructure was removed; admission tiers either consume unit-norm-by-construction input (glove, wiki-ada) or raw vectors (msmarco_bert).
 - **PA 2-pass base graph default.** Every entry in `sweep.yaml` points at `${PA_ROOT}/data/<ds>/<stub>.staged` (PA `-num_passes 2` refine; ~10 % matched-recall lift over a 1-pass build; ~3 s one-time import). [`benchmark/src/runner/parlayann_bridge.rs`]
 - **Cascade-uniform machinery.** Adding a new admission tier means writing one `QuantSpec` impl — the preparation, peeled warm-up, per-hop cadence, rerank, and shared kernels are reused unchanged.

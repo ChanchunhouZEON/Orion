@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """
 Additional baseline algorithms: FAISS (IVF-Flat, IVF-PQ), Annoy, PyNNDescent.
 Appends results to existing baseline_{dataset}.json.

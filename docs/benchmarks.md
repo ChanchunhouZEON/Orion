@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 # Benchmark evidence
 
 [README](../README.md) · [Historical figures](historical-benchmarks.md)

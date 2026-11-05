@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # Run the full multi-algorithm SIFT 1M baseline panel at 8 threads.
 #
 # Order:

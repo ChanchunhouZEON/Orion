@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Browser-facing replay of native Orion traces. No graph search or filesystem
 //! support is implied by this initial interface. Run in a Web Worker for large traces.
 // Keep bindings available to host type checking and rust-analyzer. JavaScript

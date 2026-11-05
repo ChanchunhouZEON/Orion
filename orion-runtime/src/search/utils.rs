@@ -9,10 +9,12 @@
 #![allow(dead_code)]
 use crate::{Error, Result};
 
+#[cfg(feature = "benchmark")]
 use std::hint::black_box;
 
 /// Fixed query-array dimensions used only by legacy diagnostic binaries.
 /// The main sweep, CLI and Python runtime do not use this dispatch.
+#[cfg(feature = "benchmark")]
 #[macro_export]
 macro_rules! with_supported_dimension {
     ($dimension:expr, |$d:ident| $body:expr) => {
@@ -59,6 +61,7 @@ pub fn validate_ground_truth(gt: &[Vec<u32>], queries: usize, k: usize) -> Resul
 }
 
 /// Preserve published top-10 paths; do not overwrite them with other k runs.
+#[cfg(feature = "benchmark")]
 pub fn result_path(prefix: &str, dataset: &str, k: usize) -> String {
     let suffix = if k == 10 {
         String::new()
@@ -83,6 +86,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "benchmark")]
     fn result_paths_separate_top_k_runs() {
         assert_eq!(
             result_path("ablation", "sift", 10),
@@ -125,6 +129,7 @@ mod tests {
 /// `black_box` replaces the `volatile` keyword that PA uses — same
 /// intent: forbid the optimizer from dead-code-eliminating the
 /// allocation + touch-work.
+#[cfg(feature = "benchmark")]
 #[inline(never)]
 pub fn flush_cache() {
     const N: usize = 5_000_000;
@@ -152,6 +157,7 @@ pub fn flush_cache() {
 /// non-macOS targets.
 #[cfg(target_os = "macos")]
 #[inline]
+#[cfg(feature = "benchmark")]
 pub fn set_thread_qos_user_interactive() {
     extern "C" {
         fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
@@ -164,6 +170,7 @@ pub fn set_thread_qos_user_interactive() {
 
 #[cfg(not(target_os = "macos"))]
 #[inline]
+#[cfg(feature = "benchmark")]
 pub fn set_thread_qos_user_interactive() {}
 
 /// `mlock(2)` a byte range so its pages cannot be paged out. Used to

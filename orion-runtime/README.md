@@ -1,26 +1,41 @@
-# orion-ann-runtime
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
+# orion-ann
 
 Owned build, calibration, search and cache API for Orion ANN.
 
 Part of [Orion ANN](https://github.com/ChanchunhouZEON/Orion). Requires Rust 1.92 or newer. Licensed under MIT.
 
-Use `orion_ann_runtime::{Index, IndexOptions, BaseInput}` for owned construction,
+Use `orion_ann::{Index, IndexOptions, QueryBatch, SearchOptions, BaseInput}` for owned construction,
 calibration, batch search and persistence. The `guide` module contains executable
 examples for configuration, build, cache and search, with errors, concurrency and
 panic contracts. Enable `cli` only for preset/command-line configuration support.
 
 ```toml
 [dependencies]
-orion-ann-runtime = "0.1.0"
+orion-ann = "0.1.0"
 ```
 
 The embedded preset is `configs/sweep.yaml`. Runtime use does not depend on the
-repository's benchmark folder. Base vectors are external to saved snapshots.
+repository's benchmark folder. Each snapshot directory contains one manifest. Keep the external base and the
+shared object store beside the working cache when backing up or clearing cache files.
 
 The default `parlay` feature bundles the ParlayANN memory builder for f32/u8 and
 requires a C++17 compiler on Linux/macOS. Cache/STAG loading remains available
 with `default-features = false`; automatic construction then falls back to Rust
 for f32 only. Explicit missing staged files and corrupt caches remain errors.
+
+Ordinary applications need only this package. Search stages are supplied by Orion. Enable `benchmark` for research-only diagnostics and timing controls.
+
+The default Rust API exports the owned index, input constructors, configuration
+and result types, snapshot references, errors and search traces. CLI plumbing
+is available under `driver` with the `cli` feature. Python enables
+`file-queries` for query-file decoding. The separate experiment executables use
+the `benchmark` module. Raw allocations, graph loaders and resolved recipes
+are not part of the default API.
 
 ## Build, calibrate, search and reopen
 
@@ -28,7 +43,7 @@ Arrays are row-major f32 or native u8. `Index` owns a worker pool and reuses it
 for construction and search. Adaptive search requires calibration for its `k`.
 
 ```rust
-use orion_ann_runtime::{BaseInput, GraphConfig, Index, IndexOptions};
+use orion_ann::{BaseInput, GraphConfig, Index, IndexOptions, QueryBatch, SearchOptions};
 # let root = std::env::temp_dir().join(format!("orion-runtime-readme-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()));
 let base: Vec<f32> = (0..64 * 13).map(|i| (i % 251) as f32).collect();
 let options = IndexOptions {
@@ -41,15 +56,15 @@ let options = IndexOptions {
 let mut index = Index::new(BaseInput::from_f32(&base, 13)?, options)?;
 let queries = base[..8 * 13].to_vec();
 index.calibrate(queries.clone(), 3, Some(24))?;
-let results = index.search(queries.clone(), 3, 32, true)?;
+let results = index.search(QueryBatch::from_f32(&queries, index.dimension())?, &SearchOptions::new(3, 32))?;
 for (row, &count) in results.ids.chunks(results.k).zip(&results.counts) {
     println!("{:?}", &row[..count as usize]); // Ignore any u32::MAX padding.
 }
 let snapshot = std::path::PathBuf::from("cache/snapshot"); // Must not exist.
 # let snapshot = root.join("snapshot");
-index.save(&snapshot)?;
-let mut reopened = Index::open(&snapshot, BaseInput::from_f32(&base, 13)?, Some(2), None)?;
-assert_eq!(reopened.search(queries, 3, 32, true)?, results);
+let snapshot = index.save(&snapshot)?;
+let reopened = Index::open(&snapshot, BaseInput::from_f32(&base, 13)?)?;
+assert_eq!(reopened.search(QueryBatch::from_f32(&queries, index.dimension())?, &SearchOptions::new(3, 32))?, results);
 println!("{reopened:?}"); // Shape, worker count and calibration count, not vectors.
 # drop(reopened);
 # drop(index);
@@ -57,14 +72,15 @@ println!("{reopened:?}"); // Shape, worker count and calibration count, not vect
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Use `BaseInput::File("base.fbin".into())` instead of `from_f32` for file input,
+Use `BaseInput::from_file("base.fbin")` instead of `from_f32` for file input,
 or `BaseInput::from_u8(&bytes, dimension)` for native bytes. File format overrides
 belong to `IndexOptions::base_format`; the runtime handles decoding and cosine
 normalization. The same base must be supplied when reopening a snapshot.
 
-For uncalibrated graph/cascade search, pass `adaptive=false` to `search`. This
-remains approximate search. Search requires mutable access to the handle;
-serialize requests with a mutex when sharing one `Index` across threads. `Index`
-and `BaseInput` are movable and implement summary `Debug`, but deliberately do
+Calibrate each requested `k` before search, or open a snapshot containing that
+calibration. Missing calibration returns `InvalidState`. Search takes `&self` and a
+borrowed `QueryBatch`; share an index through `Arc` for concurrent requests.
+`SearchOptions` supplies each request's k and beam without changing index state.
+Calibration still requires exclusive `&mut` access. `Index` and `BaseInput` are movable and implement summary `Debug`, but deliberately do
 not implement `Clone` or `Default`. `SearchResult` implements `Clone`, `PartialEq`
 and `Eq`; its `Debug` shows dimensions/counts rather than every result ID.

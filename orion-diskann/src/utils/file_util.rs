@@ -261,7 +261,10 @@ mod dataset_read_tests {
         let mut padded = [1f32, 2., 99., 99., 3., 4., 99., 99.];
         save_data_in_base_dimensions(file.0.to_str().unwrap(), &mut padded, 2, 2, 4, 0).unwrap();
         let saved = std::fs::read(&file.0).unwrap();
-        assert_eq!(&saved[8..], bytemuck::cast_slice(&[1f32, 2., 3., 4.]));
+        assert_eq!(
+            &saved[8..],
+            bytemuck::cast_slice::<f32, u8>(&[1f32, 2., 3., 4.])
+        );
     }
     struct Input(std::path::PathBuf);
     impl Input {

@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # Don't ship multi-GB host artifacts to the docker build context.
 # The bind-mount at run-time gives the container access to whatever
 # it needs without paying the daemon-context cost up front.

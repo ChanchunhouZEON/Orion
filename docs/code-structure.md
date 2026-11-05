@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 # Code Structure
 
 The runtime is grouped by responsibility and shared directly by CLI, Python and
@@ -7,28 +12,31 @@ and legacy environment resolution; Python's programmatic options do not depend
 on those features.
 
 ```text
-orion-runtime/src/
-  lib.rs                   # Public module boundary and ergonomic Index/config exports
-  index.rs                 # Owned Index session, dedicated pool, calibration and snapshots
-  config/
-    mod.rs                 # Resolved settings and automatic graph-source policy
-    options.rs             # Programmatic IndexOptions, GraphConfig, CascadeConfig
-    plan.rs                # Validated storage/cascade plan
-    cli.rs                 # Optional CLI/environment/preset resolution
-    presets.rs             # Optional sweep.yaml parsing and preset metadata
-  data/
-    mod.rs                 # Aligned base ownership, formats and block readers
-    query.rs               # Read-based query and ground-truth decoding
-    memory.rs              # Memory preflight and budget enforcement
+orion-runtime/src/          # Public orion-ann facade
+  lib.rs                   # Small application-facing API and diagnostics exports
+  index/                   # Owned resident session and dedicated Rayon pool
+    base.rs                # File/array input identity, validation and normalization
+    prepare.rs             # Build or restore working graph and sidecar state
+    calibration.rs         # Per-k calibration and derived stage preparation
+    query.rs               # Borrowed QueryBatch, SearchOptions and shared search
+    view.rs                # Resident generation, payload identities and engine
+    snapshot/              # Manifest encoding, verification and publication
+  config/                  # Programmatic options and validated execution plan
+  driver/                  # Optional CLI/environment/preset parsing and affinity
+  data/                    # Formats, padded readers and streaming query decoding
   graph/
-    mod.rs                 # Build/import/load and transfer base ownership
-    cache.rs               # Cache identity, validation and provenance manifests
-    parlayann.rs           # STAG v3 import support
-    build_parlay.rs        # Borrow base rows, map FFI errors, fill final graph slab
-  search/
-    mod.rs                 # Typed f32/native-u8 backend dispatch
-    cascade.rs             # Metric/stage selection and cascade construction
-    utils.rs               # Dimension dispatch, validation and benchmark helpers
+    mod.rs                 # Build/import/load orchestration
+    selection.rs           # Automatic or explicitly strict source selection
+    cache.rs               # Working lookup records and build provenance
+    persistence.rs         # Graph encoding and verified decoding
+    staged.rs              # STAG import and metadata validation
+    parlayann.rs            # In-memory ParlayANN construction
+  sidecars/                # Deduplicated requirements and working sidecar storage
+  preflight/               # Memory budgets and CLI reports
+  integrity.rs             # SHA-256 calculation and verified decoder streams
+  storage/                 # Immutable object store and atomic publication
+  search/                  # f32/native-u8 backend and official cascade dispatch
+  benchmark.rs             # Experimental controls behind the benchmark feature
 
 orion-parlay/
   src/lib.rs               # Safe borrowed builder handle over a private C ABI
@@ -44,14 +52,15 @@ orion-py/
   python/orion_ann/        # Public Index/config/result API
   tests/                   # NumPy/file/cache and CLI result consistency checks
 
-orion/
+orion-core/
   src/
     model/
       phased_graph.rs               # PhasedGraph: AlignedBoxWithSlice slab + 60%-by-distance
                                     #   (origin + extras) partition + write queue
       dataset/
-        quantized_dataset.rs        # QuantizedDataset<Q,N> (L2U8 / L2U16 / MipsI8 / MipsI16) +
-                                    #   AlignedBoxWithSlice 32B-stride storage + sidecar load/build
+        quantized_dataset.rs        # Sealed sidecar contract: shape, build, compute and memory
+        quantized_spec.rs           # Official quantization specifications
+        scalar_dataset.rs           # Padded L2U8 / L2U16 / MipsI8 / MipsI16 storage
         l2_kt_dataset.rs            # L2 kernel-trick: i8 base + per-vert ‖x_i8‖² for
                                     #   `‖q−x‖² = ‖q‖² + ‖x‖² − 2·⟨q,x⟩` (sdot-friendly)
         jl_sparse_dataset.rs        # JL Sparse 1024-bit signature — NZ=9 sparse projection
@@ -69,9 +78,9 @@ orion/
                                     #   MetricsTable + define_metric! handles
                                     #   (VISIT_COUNT, RAW_VISIT_COUNT, NDC_I8, NDC_F32, SETUP_NS, …)
                                     #   used by every cascade stage + the unified loop
-        in_mem_search.rs            # **Unified cascade beam loop** — search_unified /
-                                    #   search_batch_unified, generic over (P, A, R) trait
-                                    #   triple; one body monomorphises per recipe
+        in_mem_search.rs            # **Shared cascade/native-L2 traversal** — search_sessions
+                                    #   Legacy search_unified / search_batch_unified wrappers
+                                    #   are exposed only with the benchmark feature
         utils.rs                    # Search-loop tuning constants (FLUSH_INTERVAL,
                                     #   insert_route_mul / linear_merge_mul, dstream_la_*),
                                     #   AlignedQuery, SearchProfile{,Stats}, search_diag /
@@ -161,7 +170,7 @@ benchmark/
 
 - `orion-error/`: the single public `Error`, `ErrorCode`, `ErrorReport` and `Result`
   implementation. Native and WASM frontends use the same wire report.
-- `orion/`: search and lightweight `SearchObserver` hooks. It re-exports shared
+- `orion-core/`: search and lightweight `SearchObserver` hooks. It re-exports shared
   errors and has no dependency on the new diagnostics crate.
 - `orion-diagnostics/`: schema, validation and replay. Its default `native`
   feature depends on Orion and supplies the production observer adapter.
@@ -172,5 +181,5 @@ benchmark/
   the initial WASM functionality.
 
 DiskANN owns its optional conversion to the shared error; the error crate never
-imports DiskANN. Existing `orion_ann::Error` and `orion_ann::error` imports remain
+imports DiskANN. Existing `orion_ann::Error` and `orion_ann_core::error` imports remain
 valid re-exports. No duplicate native error wrapper is introduced.

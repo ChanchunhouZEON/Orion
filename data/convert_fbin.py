@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Convert BigANN-style `.fbin` (Yandex/Microsoft) → `.fvecs` (Yael format).
 
 Used to bring Deep10M (and similar BigANN-track datasets) into the

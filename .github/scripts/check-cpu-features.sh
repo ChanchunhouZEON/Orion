@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # Run on the same Linux host that will execute the compiled test binaries.
 set -euo pipefail
 required=${1:?Usage: check-cpu-features.sh 'avx2 fma f16c ...'}

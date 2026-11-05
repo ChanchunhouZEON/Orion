@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """In-process baseline panel — LanceDB + USearch + Faiss HNSW+SQ.
 
 In-process engines:

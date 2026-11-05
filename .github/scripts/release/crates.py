@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Verify all public packaged crates and an external consumer. Never uploads."""
 import argparse
 import json
@@ -23,7 +26,9 @@ with tempfile.TemporaryDirectory(prefix='orion-crate-validation-') as temporary:
         package_dir = args.archives.resolve()
     else:
         target = scratch / 'package-target'
-        command = ['cargo', 'package', '--locked', '--workspace', '--exclude', 'benchmark',
+        # Validate extracted archives together below, including the CLI installation.
+        # Unpublished workspace crates cannot be verified through the public registry.
+        command = ['cargo', 'package', '--locked', '--no-verify', '--workspace',
                    '--exclude', 'adsampling', '--exclude', 'orion-ann-python',
                    '--exclude', 'orion-ann-wasm', '--target-dir', target]
         if args.allow_dirty:
@@ -49,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix='orion-crate-validation-') as temporary:
     assert set(packages) == PACKAGES, packages
     assert (packages['orion-ann-parlay'] / 'cpp/bridge.cpp').is_file()
     assert (packages['orion-ann-parlay'] / 'vendor/algorithms/vamana/index.h').is_file()
-    assert (packages['orion-ann-runtime'] / 'configs/sweep.yaml').is_file()
+    assert (packages['orion-ann'] / 'configs/sweep.yaml').is_file()
 
     # Patch only the unpublished Orion packages, using extracted .crate payloads.
     # The consumer has no dependency on the checkout, scripts, or its .cargo flags.
@@ -62,7 +67,6 @@ name = "orion-release-consumer"
 version = "0.0.0"
 edition = "2021"
 [dependencies]
-orion-ann-runtime = "=0.1.0"
 orion-ann = "=0.1.0"
 ''' + patches)
     shutil.copy2(Path(__file__).with_name('rust_smoke.rs'), consumer / 'src/main.rs')

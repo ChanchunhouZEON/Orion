@@ -7,4 +7,4 @@ Part of [Orion ANN](https://github.com/ChanchunhouZEON/Orion). Requires Rust 1.9
 This is Orion's modified DiskANN backend, not the Microsoft `diskann` package
 on crates.io. Original Microsoft copyright notices remain in source files.
 The source is derived from [Microsoft DiskANN](https://github.com/microsoft/DiskANN).
-Use `orion-ann-runtime` for the supported application-level API.
+Use `orion-ann` for the supported application-level API.

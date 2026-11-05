@@ -1,4 +1,9 @@
-use orion_ann_runtime::{
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
+use orion_ann::{
     BaseInput, Calibration, CascadeConfig, GraphConfig, Index, IndexOptions, SearchResult,
 };
 use std::fmt::Debug;
@@ -15,12 +20,12 @@ fn public_service_types_are_inspectable_and_movable() {
     debug::<Calibration>();
     debug::<SearchResult>();
     debug::<Index>();
+    debug::<orion_ann::QueryBatch<'_>>();
+    debug::<orion_ann::SearchOptions>();
+    shareable::<orion_ann::QueryBatch<'_>>();
     shareable::<Index>();
     shareable::<BaseInput>();
     shareable::<SearchResult>();
-    struct OpaqueReader;
-    debug::<orion_ann_runtime::data::query::VectorReader<OpaqueReader>>();
-    debug::<orion_ann_runtime::data::query::GroundTruthReader<OpaqueReader>>();
 }
 
 #[test]

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # Unified ablation driver — runs both ablation panels per dataset and
 # renders the matching figures.
 #

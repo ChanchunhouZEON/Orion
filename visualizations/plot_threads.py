@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Multi-thread scaling per dataset: median QPS line + min/max band."""
 
 import json, os, sys

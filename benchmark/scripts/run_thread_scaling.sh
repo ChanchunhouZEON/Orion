@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 # Thread-scaling sweep across SIFT 1M and GIST 1M at PA-aligned build
 # params (R / L_build / α resolved from `benchmark/configs/sweep.yaml`).
 #

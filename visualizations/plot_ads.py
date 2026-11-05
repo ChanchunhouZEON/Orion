@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """4-way ADSampling comparison: DiskANN / DiskANN+ADS / Orion / Orion+ADS."""
 
 import json, os, sys

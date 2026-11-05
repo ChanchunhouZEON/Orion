@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 # orion-ann-error
 
 Shared Error, ErrorCode, ErrorReport and Result for Rust, Python and WASM.

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Convergence-side ablation panel: QPS vs Recall@10 for the four
 convergence variants on the per-dataset default cascade.
 

@@ -1,3 +1,6 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
 """Little-endian Yael vector writers shared by data preparation scripts."""
 from pathlib import Path
 import numpy as np

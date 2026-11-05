@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Chanchunhou. All rights reserved.
+Licensed under the MIT License.
+-->
+
 # Configuration
 
 [README](../README.md) · [CLI](cli.md) · [Graph sources](graph-sources.md)

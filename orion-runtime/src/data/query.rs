@@ -12,13 +12,15 @@
 //! inputs are widened only into this bounded query buffer and never into the
 //! resident base representation.
 
+use crate::config::cascade::SearchMetric;
 use crate::data::{validate_and_normalize_vectors, VectorFormat};
-use crate::search::cascade::SearchMetric;
 use crate::{Error, Result};
 use std::io::Read;
 
 pub trait QuerySource {
+    #[cfg(any(test, feature = "cli", feature = "benchmark"))]
     fn dimension(&self) -> usize;
+    #[cfg(any(test, feature = "cli", feature = "benchmark"))]
     fn count_hint(&self) -> Option<usize>;
 
     /// Replaces `output` with at most `max_queries` vectors.
@@ -233,10 +235,12 @@ impl<R: Read> VectorReader<R> {
 }
 
 impl<R: Read> QuerySource for VectorReader<R> {
+    #[cfg(any(test, feature = "cli", feature = "benchmark"))]
     fn dimension(&self) -> usize {
         self.dimension
     }
 
+    #[cfg(any(test, feature = "cli", feature = "benchmark"))]
     fn count_hint(&self) -> Option<usize> {
         self.declared_count
     }
@@ -269,6 +273,7 @@ impl<R: Read> QuerySource for VectorReader<R> {
 ///
 /// Ground truth is optional for search. When supplied, however, every row must
 /// align with the query stream and all rows must use a consistent width.
+#[cfg(any(feature = "cli", feature = "benchmark"))]
 pub struct GroundTruthReader<R> {
     reader: R,
     k: usize,
@@ -277,6 +282,7 @@ pub struct GroundTruthReader<R> {
     rows_read: usize,
 }
 
+#[cfg(any(feature = "cli", feature = "benchmark"))]
 impl<R: Read> GroundTruthReader<R> {
     pub fn new(reader: R, k: usize, base_count: usize) -> Self {
         Self {
@@ -338,14 +344,70 @@ impl<R: Read> GroundTruthReader<R> {
 ///
 /// `-` reads from stdin. Any other path is opened as a regular file. Neither
 /// source requires `Seek`.
+#[cfg(any(feature = "cli", feature = "benchmark"))]
 pub fn open_queries(config: &crate::config::ResolvedRunConfig) -> Result<Box<dyn QuerySource>> {
-    use std::io::BufReader;
-
     let path = config
         .query
         .as_deref()
         .ok_or("--query is required for search")?;
+    open_stream(path, config.query_format, config.dimension, config.metric)
+}
 
+#[cfg(feature = "cli")]
+pub fn open_snapshot_queries(
+    path: &std::path::Path,
+    format: VectorFormat,
+    dimension: usize,
+    storage: crate::VectorStorageKind,
+) -> Result<Box<dyn QuerySource>> {
+    validate_query_format(storage, format)?;
+    open_stream(path, format, dimension, SearchMetric::L2)
+}
+
+#[cfg(any(feature = "cli", feature = "file-queries"))]
+fn validate_query_format(storage: crate::VectorStorageKind, format: VectorFormat) -> Result<()> {
+    if storage == crate::VectorStorageKind::U8 && !is_byte_vector(format) {
+        return Err("native u8 queries require bvecs/u8bin input".into());
+    }
+    Ok(())
+}
+
+/// Decode packed query rows. Index normalizes the decoded values during search.
+#[cfg(feature = "file-queries")]
+pub fn read_query_file(
+    path: &std::path::Path,
+    format: Option<VectorFormat>,
+    dimension: usize,
+    storage: crate::VectorStorageKind,
+) -> Result<Vec<f32>> {
+    let format = match format {
+        Some(f) => f,
+        None => VectorFormat::infer(path)?,
+    };
+    validate_query_format(storage, format)?;
+    let file = std::fs::File::open(path).map_err(|e| Error::io("open", path, e))?;
+    let mut reader = VectorReader::new(
+        std::io::BufReader::new(file),
+        format,
+        dimension,
+        SearchMetric::L2,
+    )?;
+    let mut values = Vec::new();
+    let mut batch = Vec::new();
+    while reader.read_batch(&mut batch, 1024)? != 0 {
+        values.extend_from_slice(&batch);
+    }
+    Ok(values)
+}
+
+#[cfg(any(feature = "cli", feature = "benchmark"))]
+fn open_stream(
+    path: &std::path::Path,
+    format: VectorFormat,
+    dimension: usize,
+    metric: SearchMetric,
+) -> Result<Box<dyn QuerySource>> {
+    use std::io::BufReader;
     let reader: Box<dyn Read> = if path == std::path::Path::new("-") {
         Box::new(std::io::stdin())
     } else {
@@ -355,12 +417,7 @@ pub fn open_queries(config: &crate::config::ResolvedRunConfig) -> Result<Box<dyn
         })?)
     };
 
-    let reader = VectorReader::new(
-        BufReader::new(reader),
-        config.query_format,
-        config.dimension,
-        config.metric,
-    )?;
+    let reader = VectorReader::new(BufReader::new(reader), format, dimension, metric)?;
 
     Ok(Box::new(reader))
 }
@@ -378,6 +435,7 @@ impl<R> std::fmt::Debug for VectorReader<R> {
     }
 }
 
+#[cfg(any(feature = "cli", feature = "benchmark"))]
 impl<R> std::fmt::Debug for GroundTruthReader<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GroundTruthReader")

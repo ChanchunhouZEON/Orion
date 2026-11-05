@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! Shared arithmetic driver. Kernels determine compute granularity; the
 //! inlined callback advances the stream's near-prefetch cursor by one line.
 use crate::DistanceKernelBackend;

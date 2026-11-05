@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Chanchunhou. All rights reserved.
+ * Licensed under the MIT License.
+ */
+
 //! In-memory ParlayANN construction. Direct builds borrow input rows and the
 //! final output slab synchronously. The owning reference builder borrows input
 //! until dropped; its partitions borrow a bounded batch until the next operation.
