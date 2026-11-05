@@ -247,6 +247,8 @@ cargo doc --locked -p orion-ann --no-deps --open
 [Testing and CI](docs/testing.md) · [Code structure](docs/code-structure.md) ·
 [Ablation studies](docs/ablation-study.md) · [Historical figures](docs/historical-benchmarks.md).
 
+[Contributing](CONTRIBUTION.md) · [Changelog](CHANGLOG.md).
+
 ## License
 
 [MIT](LICENSE). Copyright Chanchunhou; inherited Microsoft DiskANN files retain

@@ -197,6 +197,8 @@ cargo doc --locked -p orion-ann --no-deps --open
 
 [架构](docs/architecture.md) · [优化](docs/optimizations.md) · [测试与 CI](docs/testing.md) · [代码结构](docs/code-structure.md) · [消融实验](docs/ablation-study.md) · [历史图表](docs/historical-benchmarks.md)。
 
+[贡献指南](CONTRIBUTION.md) · [变更记录](CHANGLOG.md)。
+
 ## 许可证
 
 [MIT](LICENSE)。Copyright Chanchunhou；继承自 Microsoft DiskANN 的文件保留其原有 Microsoft 版权声明。
