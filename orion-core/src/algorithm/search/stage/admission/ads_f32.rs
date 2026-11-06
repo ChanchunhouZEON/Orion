@@ -62,6 +62,13 @@ unsafe impl<'a, const N: usize> AdmissionStage for AdsF32Admission<'a, N>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
+        use crate::model::dataset::quantized_dataset::capabilities::Precision as P;
+        Some(P::Exact)
+    }
+
     fn shape(&self) -> Option<(usize, usize)> {
         Some((N, self.dataset.num_active_pts))
     }
@@ -164,6 +171,13 @@ impl<'a> DynamicAdsF32Admission<'a> {
 // SAFETY: shape describes the borrowed base; sessions own checked query storage
 // and cannot outlive that base.
 unsafe impl AdmissionStage for DynamicAdsF32Admission<'_> {
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
+        use crate::model::dataset::quantized_dataset::capabilities::Precision as P;
+        Some(P::Exact)
+    }
+
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.dataset.layout().logical_dim(), self.dataset.len()))
     }

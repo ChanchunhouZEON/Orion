@@ -46,6 +46,14 @@ impl<'a, const NZ: usize> JlPrefilter<'a, NZ> {
 // SAFETY: shape describes the borrowed base; sessions own checked query storage
 // and cannot outlive that base.
 unsafe impl<'a, const NZ: usize> PrefilterStage for JlPrefilter<'a, NZ> {
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
+        use crate::model::dataset::quantized_dataset::QuantizedKind as K;
+        use crate::model::dataset::quantized_dataset::capabilities::Precision as P;
+        Some(P::Quantized(K::JlSparse))
+    }
+
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.dataset.dimension, self.dataset.num_vertices))
     }
@@ -137,6 +145,14 @@ impl<'a, const NZ: usize> JlMipsPrefilter<'a, NZ> {
 // SAFETY: shape describes the borrowed base; sessions own checked query storage
 // and cannot outlive that base.
 unsafe impl<'a, const NZ: usize> PrefilterStage for JlMipsPrefilter<'a, NZ> {
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
+        use crate::model::dataset::quantized_dataset::QuantizedKind as K;
+        use crate::model::dataset::quantized_dataset::capabilities::Precision as P;
+        Some(P::Quantized(K::JlSparseMips))
+    }
+
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.dataset.dimension, self.dataset.num_vertices))
     }

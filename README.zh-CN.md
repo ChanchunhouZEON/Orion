@@ -1,6 +1,6 @@
 <h1 align="center"><img src="orion-core/assets/orion-astraeus.png" alt="" width="64" align="center" /> 猎户·阿斯特俄斯：面向候选准入的图搜索</h1>
 
-<p align="center"><a href="README.md" lang="en">English</a> · <strong>简体中文</strong></p>
+<p align="center"><a href="README.md" lang="en">English</a> · <strong>简体中文</strong> · <a href="README.yue.md" lang="yue">粵語</a></p>
 
 <p align="center">
   <a href=".github/workflows/ci.yml"><img alt="Safety tests: Miri and adversarial inputs" src="https://img.shields.io/badge/safety-Miri_%2B_adversarial_tests-377EAD?style=flat&amp;labelColor=17263D" /></a>
@@ -38,17 +38,17 @@
 
 ## 性能
 
-这些数据集涵盖图像描述子、学习得到的视觉特征、词向量和段落向量，用于检验低维与高维搜索，以及百万到十亿向量规模下的性能。所有列均使用 **8 线程、k=10、Recall@10 ≥ 0.95**；每个结果取达到目标召回率的最快实测 QPS 中位数，不进行插值。
+这些数据集涵盖图像描述子、学习得到的视觉特征、词向量和段落向量，用于检验低维与高维搜索，以及百万到十亿向量规模下的性能。所有列均使用 **8 线程、k=10、Recall@10 ≥ 0.95**；每个结果取达到目标召回率的最快实测 QPS 中位数，不进行插值。Wiki-Ada-1M 单元格的括号内标出实际 Recall@10；所选测量点的召回率并不相同。
 
-| 引擎 · QPS | SIFT1M | GloVe-25 | GloVe-100 | GIST | Deep10M | MS-MARCO | SIFT1B | Wiki-Ada-1M |
+| 引擎 · QPS | SIFT1M | GloVe-25 | GloVe-100 | GIST | Deep10M | MS-MARCO | SIFT1B | Wiki-Ada-1M<br>QPS (Recall@10) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Orion** | **341K** | **383K** | **47K** | **48K** | **170K** | **52K** | **34K** | **144K** |
-| ParlayANN | 257K | 247K | 37K | 29K | 143K | 38K | 33K | 151K |
-| Microsoft Vamana (DiskANN) | 91K | 151K | 12K | 7K | 39K | — | 10K | 40K |
+| **Orion** | **341K** | **383K** | **47K** | **48K** | **170K** | **52K** | **34K** | **144K** (0.98587) |
+| ParlayANN | 257K | 247K | 37K | 29K | 143K | 38K | 33K | 151K (0.95378) |
+| Microsoft Vamana (DiskANN) | 91K | 151K | 12K | 7K | 39K | — | 10K | 40K (0.98470) |
 | USearch HNSW | 59K | 102K | — | — | 21K | 8K | 未测试 | 未测试 |
 | LanceDB HNSW (native) | 1K | 1K | — | — | — | — | 未测试 | 未测试 |
 | HNSW (hnswlib) | 51K | 139K | — | — | 21K | 6K | 未测试 | 未测试 |
-| FAISS HNSW+SQ | 54K | — | — | — | 15K | 5K | 未测试 | 18K |
+| FAISS HNSW+SQ | 54K | — | — | — | 15K | 5K | 未测试 | 18K (0.95508) |
 | FAISS IVF-Flat | 9K | 33K | 3K | — | 2K | — | 未测试 | 未测试 |
 | Annoy | 1K | 3K | — | — | — | — | 未测试 | 未测试 |
 

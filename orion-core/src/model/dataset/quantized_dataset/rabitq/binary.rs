@@ -34,10 +34,12 @@
 //! integration into `compressed_index.rs` /
 //! `ensure_quantized_dataset_rabitq()` land in a follow-up pass.
 
-use super::quantized_dataset::{QuantizedDataset, QuantizedDatasetShape, ResidentMemory};
-use super::rows::F32Rows;
-use super::validation::{self, CheckedRows};
 use crate::Result;
+use crate::model::dataset::quantized_dataset::{
+    QuantizedDataset, QuantizedDatasetShape, ResidentMemory,
+};
+use crate::model::dataset::rows::F32Rows;
+use crate::model::dataset::validation::{self, CheckedRows};
 use orion_ann_diskann::common::AlignedBoxWithSlice;
 #[cfg(feature = "benchmark")]
 use std::sync::OnceLock;
@@ -316,7 +318,7 @@ impl RabitQDataset {
         w.write_all(s_bytes)?;
 
         // Codes.
-        super::rows::write_rows(
+        crate::model::dataset::rows::write_rows(
             w,
             self.codes.as_slice(),
             self.stride,
@@ -394,7 +396,8 @@ impl RabitQDataset {
 
         let disk_stride = stride;
         let stride = rabitq_code_stride(dim);
-        let codes = super::rows::read_rows::<u8>(r, num_vertices, stride, disk_stride)?;
+        let codes =
+            crate::model::dataset::rows::read_rows::<u8>(r, num_vertices, stride, disk_stride)?;
 
         validation::finite(rotation.as_slice(), false)?;
         validation::finite(&norms, true)?;
@@ -1169,7 +1172,7 @@ impl RabitQDataset {
     }
 }
 
-impl super::quantized_dataset::sealed::Sealed for RabitQDataset {}
+impl crate::model::dataset::quantized_dataset::sealed::Sealed for RabitQDataset {}
 impl QuantizedDataset for RabitQDataset {
     type BuildOptions = u64;
     fn default_build_options() -> Self::BuildOptions {

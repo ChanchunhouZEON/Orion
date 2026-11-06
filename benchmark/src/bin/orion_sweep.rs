@@ -165,10 +165,8 @@ fn run_sweep<B: SearchBackend>(
     let queries_arr: Vec<f32> = data.queries.iter().flatten().copied().collect();
     let query_count = data.queries.len();
 
-    // Per-cascade sidecar materialisation. `pin_cascade` below
-    // would also trigger these via `ensure_*`, but we kick them
-    // here so the build/load latency is logged separately from
-    // the timed sweep's setup.
+    // Resolve all dataset requirements before timing. Pinning never builds.
+    B::prepare_search(&idx, config).expect("prepare search datasets");
     log::info!("Cascade: {}", config.cascade().label());
 
     // Calibrate on the full graph with the cascade's exact metric
@@ -251,18 +249,11 @@ fn run_sweep<B: SearchBackend>(
         config.cascade().label()
     );
 
-    // Per-cascade sidecars + mlock pins. `pin_cascade` walks the
-    // three axes (prefilter / admission / rerank), materialises
-    // each tier's sidecar via the orion accessor, and pins the
-    // byte ranges. Idempotent — safe to call before warmup and
-    // before the timed sweep.
-    B::pin_search_storage(&idx, config);
-    // Both storage paths pin their resident base, graph slab and query batch.
-    // Native u8 owns only this one base buffer, with no f32 or quantized copy.
+    let _residency = B::auto_pin_search_storage(&idx, config)
+    .expect("pin prepared search datasets");
+    // Required base/sidecar buffers are covered by the guard above. Graph and
+    // query allocations remain separate benchmark resources.
     {
-        let ds_bytes_ptr = idx.dataset().as_slice().as_ptr() as *const u8;
-        let ds_bytes_len = idx.dataset().as_slice().len() * std::mem::size_of::<B::Element>();
-        mlock_bytes("resident base", ds_bytes_ptr, ds_bytes_len);
         let pg = idx.graph().buffer_bytes();
         mlock_bytes("pgraph slab", pg.as_ptr(), pg.len());
         let q_bytes_ptr = queries_arr.as_ptr() as *const u8;

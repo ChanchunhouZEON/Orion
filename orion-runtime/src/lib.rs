@@ -78,7 +78,10 @@ mod data;
 mod graph;
 mod integrity;
 mod preflight;
+mod residency;
 mod sidecars;
+pub use orion_ann_core::model::dataset::quantized_dataset::QuantizedKind;
+pub use residency::{DatasetPin, PinHint, PinMode, PinOptions, PinReport, PinnedDatasets};
 mod storage;
 
 pub mod guide;
@@ -109,3 +112,6 @@ pub mod diagnostics {
         TraceMetadata, TraceReplay,
     };
 }
+
+/// Deployment policy for independently pageable product-quantization codes.
+pub use orion_ann_core::model::dataset::quantized_dataset::pq::PqCodeStorage;

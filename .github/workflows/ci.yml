@@ -368,6 +368,10 @@ jobs:
           cargo test --locked -p orion-ann-core -p orion-ann-diagnostics -p orion-ann-parlay -p orion-ann -p orion-ann-cli
           cargo test --locked -p orion-ann-diskann --all-features
           cargo test --locked -p orion-ann-platform
+      - name: Product quantization in ordinary builds
+        run: |
+          cargo test --locked -p orion-ann-core --no-default-features --lib --test product_quantization
+          cargo test --locked -p orion-ann-diskann --no-default-features --test pq_scratch
       - name: Native Python and CLI parity
         run: |
           python -m pip install 'numpy>=1.24,<3'

@@ -31,6 +31,21 @@ fn every_official_recipe_agrees_between_single_and_batch_search() {
     for (pf, ad, rr) in [
         (
             PrefilterChoice::None,
+            AdmissionChoice::PqL2,
+            RerankChoice::F32,
+        ),
+        (
+            PrefilterChoice::Jl,
+            AdmissionChoice::PqIp,
+            RerankChoice::IpF32,
+        ),
+        (
+            PrefilterChoice::None,
+            AdmissionChoice::PqL2,
+            RerankChoice::None,
+        ),
+        (
+            PrefilterChoice::None,
             AdmissionChoice::L2U8,
             RerankChoice::F32,
         ),
@@ -83,11 +98,28 @@ fn every_official_recipe_agrees_between_single_and_batch_search() {
             assert_eq!(batch.rows().nth(i).unwrap(), single);
             assert_eq!(single.len(), 3);
         }
-        // Pinning is best effort: correctness cannot depend on mlock privilege.
-        // Building the same adapters afterwards must preserve the search result.
-        crate::driver::pinning::pin_prefilter(&index, pf, ad);
-        crate::driver::pinning::pin_admission(&index, ad);
-        crate::driver::pinning::pin_rerank(&index, rr);
+        // Pinning consumes prepared requirements and cannot rebuild a sidecar.
+        let requirements = crate::config::cascade::Cascade {
+            prefilter: pf,
+            admission: ad,
+            rerank: rr,
+        }
+        .dataset_requirements();
+        let residency = crate::residency::pin(
+            &index,
+            bytemuck::cast_slice(index.dataset().as_slice()),
+            orion_ann_core::QuantizedDatasetShape {
+                rows: count,
+                dimension,
+            },
+            &requirements,
+            &crate::PinOptions {
+                budget_bytes: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(residency.pinned_bytes(), 0);
         assert_eq!(
             search_batch_compose(
                 &index,

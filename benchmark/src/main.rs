@@ -352,8 +352,7 @@ fn run_convergence_diag(dataset: &Dataset, k: usize, overrides: &config::SweepOv
             let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
             let idx = StaticOrion::<$N>::new(
                 graph_dataset, &result.partitions, result.entry_point,
-                ocfg.graph_degree, ocfg.max_extra, None, None,
-            );
+                ocfg.graph_degree, ocfg.max_extra);
 
             // Calibrate once on the first 200 queries.
             let calib_qs: Vec<[f32; $N]> = queries[..queries.len().min(calibration_samples())].to_vec();
@@ -624,7 +623,7 @@ fn run_thread_sweep(dataset: &Dataset, k: usize, overrides: &config::SweepOverri
     // warmup pass below, just not formally mlocked. If `RLIMIT_MEMLOCK`
     // is too low the calls log a warning and fall back to ordinary
     // paging without aborting.
-    orion_runner.pin_hot_regions();
+    let _residency = orion_runner.pin_hot_regions();
     {
         // Queries are a `Vec<Vec<f32>>`. The outer Vec's heap is small
         // (one `Vec<f32>` header per query); the actual f32 payload
@@ -906,8 +905,6 @@ fn run_build_profile(dataset: &Dataset, _k: usize) {
                     result.entry_point,
                     ocfg.graph_degree,
                     ocfg.max_extra,
-                    None,
-                    None,
                 );
 
                 let orion_overhead_s = t_ov.elapsed().as_secs_f64();
@@ -1028,8 +1025,6 @@ fn run_search_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOver
                 result.entry_point,
                 32,
                 4,
-                None,
-                None,
             );
 
             let queries: Vec<[f32; $N]> = dataset
@@ -1298,8 +1293,6 @@ fn run_memory_profile(dataset: &Dataset) {
                 entry_point,
                 ocfg.graph_degree,
                 ocfg.max_extra,
-                None,
-                None,
             );
 
             let orion_final_abs = ALLOCATOR.current_bytes();
@@ -1843,8 +1836,7 @@ fn run_neighbor_contribution_profile(dataset: &Dataset) {
             let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
             let idx = StaticOrion::<$N>::new(
                 graph_dataset, &result.partitions, entry,
-                ocfg.graph_degree, ocfg.max_extra, None, None,
-            );
+                ocfg.graph_degree, ocfg.max_extra);
 
             let graph = idx.graph();
             let ds = idx.dataset();
@@ -2151,15 +2143,8 @@ fn run_extra_profile(dataset: &Dataset, k: usize, overrides: &config::SweepOverr
                 drop(result.index);
 
                 let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
-                let idx = StaticOrion::<$N>::new(
-                    graph_dataset,
-                    &result.partitions,
-                    entry,
-                    32,
-                    max_extra,
-                    None,
-                    None,
-                );
+                let idx =
+                    StaticOrion::<$N>::new(graph_dataset, &result.partitions, entry, 32, max_extra);
 
                 let avg_extra = (0..num_points)
                     .map(|i| idx.graph().extra_count(i))
@@ -2381,8 +2366,7 @@ fn run_calibration_diag(dataset: &Dataset, k: usize) {
             let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
             let idx = StaticOrion::<$N>::new(
                 graph_dataset, &result.partitions, result.entry_point,
-                ocfg.graph_degree, ocfg.max_extra, None, None,
-            );
+                ocfg.graph_degree, ocfg.max_extra);
 
             let staged_overhead_s = t_staged.elapsed().as_secs_f64();
             let total_build_s = t_build.elapsed().as_secs_f64();
@@ -2514,7 +2498,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
 
     macro_rules! run_ablation_inner {
         ($N:literal) => {{
-            use crate::runner::cascade::{search_compose, PrefilterChoice};
+            use crate::runner::cascade::search_compose;
 
             let queries: Vec<[f32; $N]> = dataset
                 .queries
@@ -2585,10 +2569,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
                         &input.partitions,
                         input.entry_point,
                         ocfg.graph_degree,
-                        max_extra_from_file,
-                        None,
-                        None,
-                    );
+                        max_extra_from_file);
                     orion_ann::benchmark::graph::save_working(&mut idx, &cache_path)
                         .expect("save benchmark graph cache");
 
@@ -2620,10 +2601,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
                         &result.partitions,
                         entry,
                         ocfg.graph_degree,
-                        ocfg.max_extra,
-                        None,
-                        None,
-                    );
+                        ocfg.max_extra);
                     orion_ann::benchmark::graph::save_working(&mut idx, &cache_path)
                         .expect("save benchmark graph cache");
 
@@ -2648,26 +2626,11 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
                 thr, ee
             );
 
-            // Pre-materialise sidecars for the chosen cascade so per-L
-            // QPS isn't biased by first-touch sidecar build. Sidecar
-            // build is rayon-parallel (KMeans / k-means++ inner loops);
-            // run it inside the 8-thread pool for consistency with the
-            // measurement phase.
-            pool.install(|| {
-                crate::runner::cascade::pin_admission(&idx, ocfg.admission);
-                match ocfg.prefilter {
-                    PrefilterChoice::None => {}
-                    PrefilterChoice::Jl => {
-                        let _ = idx.ensure_quantized_dataset_jl();
-                    }
-                    PrefilterChoice::JlHadamard => {
-                        let _ = idx.ensure_quantized_dataset_jl_hadamard();
-                    }
-                    PrefilterChoice::Rabitq => {
-                        let _ = idx.ensure_quantized_dataset_rabitq();
-                    }
-                }
-            });
+            let requirements=orion_ann::benchmark::residency::DatasetRequirements::from_cascade(
+                ocfg.prefilter,ocfg.admission,ocfg.rerank).expect("dataset requirements");
+            pool.install(|| orion_ann::benchmark::residency::prepare(&idx,&requirements)).expect("prepare datasets");
+            let _residency=orion_ann::benchmark::residency::pin(&idx,&requirements,
+                &orion_ann::PinOptions{budget_bytes:usize::MAX,..Default::default()}).expect("pin datasets");
 
             // Generic measure closure: time a search fn over `queries`
             // × `search_list_sizes` × `trials`, return median QPS per L.
@@ -2987,9 +2950,7 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
                     let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
                     let mut idx = StaticOrion::<$N>::new(
                         graph_dataset, &input.partitions, entry,
-                        ocfg.graph_degree, max_extra_from_file,
-                        None, None,
-                    );
+                        ocfg.graph_degree, max_extra_from_file);
                     orion_ann::benchmark::graph::save_working(&mut idx, &cache_path)
                         .expect("save benchmark graph cache");
 
@@ -3010,9 +2971,7 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
                     let graph_dataset = rebuild_dataset::<$N>(&flat_base, num_points);
                     let mut idx = StaticOrion::<$N>::new(
                         graph_dataset, &result.partitions, entry,
-                        ocfg.graph_degree, ocfg.max_extra,
-                        None, None,
-                    );
+                        ocfg.graph_degree, ocfg.max_extra);
                     orion_ann::benchmark::graph::save_working(&mut idx, &cache_path)
                         .expect("save benchmark graph cache");
 
@@ -3040,6 +2999,12 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
             // our 8-thread pool rather than the global all-cores pool.
             pool.install(|| {
                 match ocfg.admission {
+                    crate::runner::cascade::AdmissionChoice::PqL2
+                    | crate::runner::cascade::AdmissionChoice::PqIp => {
+                        // Both ADC metrics share the same trained codes and codebook.
+                        idx.try_ensure_quantized_dataset_pq()
+                            .expect("prepare PQ admission sidecar");
+                    }
                     crate::runner::cascade::AdmissionChoice::L2U8 => {
                         let _ = idx.ensure_quantized_dataset();
                     }

@@ -123,6 +123,7 @@ fn canonical_list_initializes_exactly_the_requested_lazy_slots() {
     )
     .unwrap();
     let kinds = [
+        SidecarKind::Pq,
         SidecarKind::L2U8,
         SidecarKind::L2U16,
         SidecarKind::MipsI8,
@@ -148,6 +149,10 @@ fn canonical_list_initializes_exactly_the_requested_lazy_slots() {
     let report =
         estimate_sidecars(QuantizedDatasetShape { rows, dimension }, &requirements).unwrap();
     let resident = [
+        index
+            .try_ensure_quantized_dataset_pq()
+            .unwrap()
+            .resident_memory(),
         index
             .try_ensure_quantized_dataset()
             .unwrap()
@@ -221,5 +226,35 @@ fn implicit_and_explicit_equivalent_widths_share_storage() {
     assert_eq!(
         report.total_bytes(),
         implicit.estimate(input_shape).unwrap().total_bytes()
+    );
+}
+
+#[test]
+fn pq_options_resolve_before_deduplication_and_match_actual_allocation() {
+    use orion_ann_core::model::dataset::quantized_dataset::pq::{PqBuildOptions, PqDataset};
+    let shape = QuantizedDatasetShape {
+        rows: 23,
+        dimension: 33,
+    };
+    let canonical = PqBuildOptions::default();
+    let explicit = canonical.resolved(shape.dimension).unwrap();
+    let requirements = [
+        SidecarRequirement::Pq(canonical),
+        SidecarRequirement::Pq(explicit),
+    ];
+    let report = estimate_sidecars(shape, &requirements).unwrap();
+    assert_eq!(report.allocations().len(), 1);
+    let data = PqDataset::build(&base(shape.rows, shape.dimension), &canonical).unwrap();
+    assert_eq!(report.total_bytes(), data.resident_memory().total_bytes());
+    let different = SidecarRequirement::Pq(PqBuildOptions {
+        seed: 43,
+        ..canonical
+    });
+    assert_eq!(
+        estimate_sidecars(shape, &[requirements[0], different])
+            .unwrap()
+            .allocations()
+            .len(),
+        2
     );
 }

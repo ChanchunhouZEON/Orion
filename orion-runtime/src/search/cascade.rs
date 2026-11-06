@@ -38,7 +38,7 @@ pub fn build_prefilter<'a, D: CascadeData>(
 ) -> Result<Option<Box<orion_ann_core::algorithm::search::stage::Prefilter<'a>>>> {
     let admission_is_mips = matches!(
         admission,
-        AdmissionChoice::MipsI8 | AdmissionChoice::MipsI16
+        AdmissionChoice::MipsI8 | AdmissionChoice::MipsI16 | AdmissionChoice::PqIp
     );
     Ok(match choice {
         PrefilterChoice::None => None,
@@ -76,6 +76,16 @@ pub fn build_admission<'a, D: CascadeData>(
     choice: AdmissionChoice,
 ) -> Result<Box<orion_ann_core::algorithm::search::stage::Admission<'a>>> {
     Ok(match choice {
+        AdmissionChoice::PqL2 | AdmissionChoice::PqIp => Box::new(
+            orion_ann_core::algorithm::search::stage::admission::PqAdmission::new(
+                orion.try_ensure_quantized_dataset_pq()?,
+                if choice == AdmissionChoice::PqIp {
+                    orion_ann_core::model::dataset::quantized_dataset::pq::PqMetric::InnerProduct
+                } else {
+                    orion_ann_core::model::dataset::quantized_dataset::pq::PqMetric::L2
+                },
+            ),
+        ),
         AdmissionChoice::NativeL2U8 => {
             return Err(Error::configuration(
                 "admission",
@@ -132,15 +142,21 @@ pub fn search_compose<D: CascadeData>(
     admission: AdmissionChoice,
     rerank: RerankChoice,
 ) -> Result<Vec<u32>> {
-    crate::sidecars::requirements::prepare(
-        orion,
-        &Cascade {
-            prefilter,
-            admission,
-            rerank,
-        }
-        .sidecar_requirements(),
-    )?;
+    let recipe = Cascade {
+        prefilter,
+        admission,
+        rerank,
+    };
+    let metric = if matches!(
+        admission,
+        AdmissionChoice::MipsI8 | AdmissionChoice::MipsI16 | AdmissionChoice::PqIp
+    ) {
+        SearchMetric::InnerProduct
+    } else {
+        SearchMetric::L2
+    };
+    recipe.validate_cascade_options(metric)?;
+    crate::sidecars::requirements::prepare(orion, &recipe.sidecar_requirements())?;
     let ad = build_admission(orion, admission)?;
     let pf = build_prefilter(orion, prefilter, admission)?;
     let rr = build_rerank(orion, rerank)?;
@@ -165,8 +181,8 @@ pub fn search_compose<D: CascadeData>(
 ///
 /// Builds all three adapters via the per-axis builders, then hands
 /// the boxed dyn refs to `search_batch_cascade` (dyn vtable on the
-/// hot loop). Call `pin_cascade` once before the timed loop to keep
-/// every sidecar resident.
+/// hot loop). Prepare the requirements before timing; optional scoped pinning
+/// consumes those allocations without fitting or changing the search recipe.
 #[allow(clippy::too_many_arguments)]
 pub fn search_batch_compose<D: CascadeData>(
     orion: &CompressedIndex<D>,
@@ -180,15 +196,21 @@ pub fn search_batch_compose<D: CascadeData>(
     admission: AdmissionChoice,
     rerank: RerankChoice,
 ) -> Result<orion_ann_core::SearchResult> {
-    crate::sidecars::requirements::prepare(
-        orion,
-        &Cascade {
-            prefilter,
-            admission,
-            rerank,
-        }
-        .sidecar_requirements(),
-    )?;
+    let recipe = Cascade {
+        prefilter,
+        admission,
+        rerank,
+    };
+    let metric = if matches!(
+        admission,
+        AdmissionChoice::MipsI8 | AdmissionChoice::MipsI16 | AdmissionChoice::PqIp
+    ) {
+        SearchMetric::InnerProduct
+    } else {
+        SearchMetric::L2
+    };
+    recipe.validate_cascade_options(metric)?;
+    crate::sidecars::requirements::prepare(orion, &recipe.sidecar_requirements())?;
     let ad = build_admission(orion, admission)?;
     let pf = build_prefilter(orion, prefilter, admission)?;
     let rr = build_rerank(orion, rerank)?;

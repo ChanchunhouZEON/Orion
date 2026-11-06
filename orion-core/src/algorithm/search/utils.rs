@@ -12,13 +12,13 @@ use orion_ann_vector::FullPrecisionDistance;
 pub use super::diagnostics::{SearchProfile, SearchProfileStats};
 
 // ── Search-loop tuning constants ──────────────────────────────────────────
-/// Cache-line lookahead for the software-pipelined `DistanceStream`
-/// **Stage-1 quantized prefilter**. Stage-1 vert sizes:
-/// glove100 i8 = **1 line/vert** (LA=12 ⇒ 12 verts ahead),
-/// glove100 i16 = 2 lines/vert (LA=12 ⇒ 6 verts ahead),
-/// SIFT u8 = 1 line/vert. Steady-state issues `LA_Q` prfm per outer
-/// iter; M2 MSHR ≈ 12. Override via `ORION_DSTREAM_LA_Q=<N>`
-/// (back-compat: `ORION_DSTREAM_LOOKAHEAD` still honored).
+// Admission/prefilter and rerank use the same 32-cache-line near window.
+// These defaults match the validated near32/burst32 stream schedule. Units are
+// cache lines, not vector counts; no CPU-cache residency is implied.
+const DEFAULT_NEAR_LINES: usize = 32;
+
+/// Near lookahead for quantized stages. Benchmark builds may override it;
+/// ordinary Rust/Python/CLI consumers always use the measured default.
 #[cfg(feature = "benchmark")]
 pub(super) fn dstream_la_q() -> usize {
     use std::sync::OnceLock;
@@ -29,31 +29,16 @@ pub(super) fn dstream_la_q() -> usize {
             .or_else(|| std::env::var("ORION_DSTREAM_LOOKAHEAD").ok())
             .and_then(|s| s.parse::<usize>().ok())
             .filter(|&v| v <= 128)
-            // 64 chosen via LA × L sweep on glove100 i8 with the
-            // sliding-window continuous-stride prefetch design.
-            // LA=64 wins low/mid band (L=16=204k, L=32=126k, L=56=86k)
-            // and ties LA=48/128 at high L. Yields 1.34× geomean PA
-            // across 7 recall-aligned anchor points. Larger LA
-            // (96/128) over-prefetches at narrow beam (L=16); smaller
-            // LA (8/16) under-fills the MSHR queue.
-            .unwrap_or(10)
+            .unwrap_or(DEFAULT_NEAR_LINES)
     })
 }
 
 #[cfg(not(feature = "benchmark"))]
 pub(super) fn dstream_la_q() -> usize {
-    10
+    DEFAULT_NEAR_LINES
 }
 
-/// Cache-line lookahead for the software-pipelined `DistanceStream`
-/// **Stage-2 f32 truth**. f32 vert sizes are larger:
-/// glove100 f32 = 4 lines/vert (LA=12 ⇒ **3 verts ahead**),
-/// SIFT f32 = 4 lines/vert, GIST f32 = **30 lines/vert** (LA=12 ⇒
-/// 0 verts — LA is sub-vert here, prologue still primes lines for
-/// the in-progress vert). Stage-2's per-vert compute (~25 ns @ N=100,
-/// 4-acc kernel) is ~4× longer than Stage-1's, so the same line
-/// budget translates to similar runway in nanoseconds.
-/// Override via `ORION_DSTREAM_LA_TRUTH=<N>`.
+/// Near lookahead for reranking; measured in cache lines just like admission.
 #[cfg(feature = "benchmark")]
 pub(super) fn dstream_la_truth() -> usize {
     use std::sync::OnceLock;
@@ -63,21 +48,13 @@ pub(super) fn dstream_la_truth() -> usize {
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .filter(|&v| v <= 256)
-            // 64 — same default as `dstream_la_q`. Sliding-window
-            // continuous-stride prefetch in `DistanceStream::run`
-            // works the same way for Stage-1 quantized and Stage-2
-            // f32 truth: one prfm per outer iter at distance
-            // `lookahead_lines` ahead, keeping MSHR at steady state
-            // without burst eviction. Larger LA gives a deeper
-            // runway to hide DRAM latency on the f32 truth read,
-            // which has the same per-line miss cost as Stage-1.
-            .unwrap_or(6)
+            .unwrap_or(DEFAULT_NEAR_LINES)
     })
 }
 
 #[cfg(not(feature = "benchmark"))]
 pub(super) fn dstream_la_truth() -> usize {
-    6
+    DEFAULT_NEAR_LINES
 }
 
 /// Flush cadence by phase: `FLUSH_INTERVAL[converged as usize]` hops.
@@ -125,7 +102,7 @@ pub struct AlignedQuery<const N: usize>(pub [f32; N]);
 
 // ── PQ helpers (formerly in utils.rs) ──────────────────────
 
-use orion_ann_diskann::model::FixedChunkPQTable;
+use crate::model::dataset::quantized_dataset::pq::FixedChunkPQTable;
 use std::sync::Arc;
 
 impl<const N: usize> StaticOrion<N>

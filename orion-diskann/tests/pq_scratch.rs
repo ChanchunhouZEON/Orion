@@ -2,6 +2,7 @@
  * Copyright (c) Chanchunhou. All rights reserved.
  * Licensed under the MIT License.
  */
+
 use orion_ann_diskann::model::scratch::pq_scratch::PQScratch;
 #[test]
 fn pq_scratch_aligns_buffers_and_resets_normalized_queries() {

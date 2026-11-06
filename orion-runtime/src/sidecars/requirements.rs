@@ -11,28 +11,29 @@
 //! Descriptors and report types precede the list-level estimate/prepare operations.
 //! Per-kind recipe resolution and dataset dispatch are implementation details below.
 use crate::Result;
+use orion_ann_core::model::dataset::quantized_dataset::pq::{PqBuildOptions, PqDataset};
 use orion_ann_core::model::dataset::{
     quantized_dataset::HadamardOptions, rabitq_dataset::RabitQDataset, *,
 };
 
-/// Official representations supported by the index's canonical lazy slots.
+pub(crate) use orion_ann_core::model::dataset::quantized_dataset::QuantizedKind as SidecarKind;
+
+/// Canonical recipes belong to runtime preparation, not the representation ID.
+pub(crate) trait SidecarRecipe {
+    fn requirement(self) -> SidecarRequirement;
+}
+
+/// Search storage requirements include a borrowed exact base where necessary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum SidecarKind {
-    L2U8,
-    L2U16,
-    MipsI8,
-    MipsI16,
-    L2Kt,
-    JlSparse,
-    JlSparseMips,
-    JlHadamard,
-    Rabitq,
-    Rabitq4,
+pub(crate) enum DatasetRequirement {
+    Base,
+    Sidecar(SidecarRequirement),
 }
 
 /// Fully specified representation, without allocating its payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SidecarRequirement {
+    Pq(PqBuildOptions),
     L2U8,
     L2U16,
     MipsI8,
@@ -122,6 +123,9 @@ pub(crate) fn prepare<D: orion_ann_core::model::dataset::rows::F32Rows>(
     }
     for requirement in requirements {
         match requirement.kind() {
+            SidecarKind::Pq => {
+                index.try_ensure_quantized_dataset_pq()?;
+            }
             SidecarKind::L2U8 => {
                 index.try_ensure_quantized_dataset()?;
             }
@@ -157,10 +161,11 @@ pub(crate) fn prepare<D: orion_ann_core::model::dataset::rows::F32Rows>(
     Ok(())
 }
 
-impl SidecarKind {
+impl SidecarRecipe for SidecarKind {
     /// Recipe shared by lazy construction and budgeting.
-    pub(crate) fn requirement(self) -> SidecarRequirement {
+    fn requirement(self) -> SidecarRequirement {
         match self {
+            Self::Pq => SidecarRequirement::Pq(PqBuildOptions::default()),
             Self::L2U8 => SidecarRequirement::L2U8,
             Self::L2U16 => SidecarRequirement::L2U16,
             Self::MipsI8 => SidecarRequirement::MipsI8,
@@ -184,6 +189,7 @@ impl SidecarKind {
 impl SidecarRequirement {
     pub(crate) fn kind(self) -> SidecarKind {
         match self {
+            Self::Pq(_) => SidecarKind::Pq,
             Self::L2U8 => SidecarKind::L2U8,
             Self::L2U16 => SidecarKind::L2U16,
             Self::MipsI8 => SidecarKind::MipsI8,
@@ -201,6 +207,7 @@ impl SidecarRequirement {
     pub(crate) fn resolved(self, input_shape: QuantizedDatasetShape) -> Result<Self> {
         self.estimate(input_shape)?;
         Ok(match self {
+            Self::Pq(options) => Self::Pq(options.resolved(input_shape.dimension)?),
             Self::JlHadamard(options) => Self::JlHadamard(HadamardOptions {
                 padded_dimension: Some(match options.padded_dimension {
                     Some(width) => width,
@@ -224,6 +231,7 @@ impl SidecarRequirement {
     /// Propagates shape, recipe and allocation-size errors from the dataset.
     pub(crate) fn estimate(self, input_shape: QuantizedDatasetShape) -> Result<ResidentMemory> {
         match self {
+            Self::Pq(options) => PqDataset::estimate_resident_memory(input_shape, &options),
             Self::L2U8 => {
                 <ScalarQuantizedDataset<L2U8>>::estimate_resident_memory(input_shape, &())
             }

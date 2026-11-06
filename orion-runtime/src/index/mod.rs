@@ -14,6 +14,7 @@ mod base;
 mod calibration;
 mod prepare;
 mod query;
+mod residency;
 mod snapshot;
 mod view;
 use crate::{

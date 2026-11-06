@@ -117,7 +117,7 @@
     "threads": 8,
     "k": 10,
     "trials": 3,
-    "selection": "Fastest measured median QPS meeting each target; no interpolation. Parenthesized recalls in README are actual recalls.",
+    "selection": "Fastest measured median QPS meeting each target; no interpolation. Actual recalls are retained for each measurement.",
     "rows": [
       {
         "dataset": "SIFT1B",
@@ -271,7 +271,7 @@
     "target_recall": 0.95,
     "threads": 8,
     "k": 10,
-    "selection": "Fastest measured median meeting target; actual recall retained here. All README columns display QPS rounded to the nearest thousand (K).",
+    "selection": "Fastest measured median meeting target; actual recall retained here. All README columns display QPS rounded to the nearest thousand (K). Wiki-Ada-1M cells also show actual Recall@10 in parentheses; selection uses a minimum-recall threshold, not identical measured recalls.",
     "extra_columns": {
       "SIFT1B": {
         "Orion": {

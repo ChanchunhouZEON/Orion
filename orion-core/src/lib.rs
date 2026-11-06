@@ -58,7 +58,6 @@ pub use orion_ann_diskann::model::PaddedDataset;
 pub use orion_ann_vector::PaddedLayout;
 pub mod index;
 pub mod model;
-mod pq;
 pub mod storage;
 pub mod utils;
 

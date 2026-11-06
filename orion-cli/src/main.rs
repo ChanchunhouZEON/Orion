@@ -132,9 +132,10 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
         })
         .map_err(Error::from)?;
 
-    // Apply implementation-specific pinning only after calibration so the
-    // measured search phase reflects the final runtime configuration.
-    B::pin_search_storage(&index, config);
+    // Prepare once, then retain optional RAM locks across the measured phase.
+    // Pinning itself never constructs sidecars or changes calibration.
+    pool.install(|| B::prepare_search(&index, config))?;
+    let _residency = B::auto_pin_search_storage(&index, config)?;
 
     let k = config.sweep.k;
     let summary = RunSummary {
@@ -312,6 +313,7 @@ fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
     let calibration = index.calibration(k).ok_or_else(|| {
         Error::invalid_state(format!("snapshot has no saved calibration for k={k}"))
     })?;
+    let _residency = resources::pin_snapshot_storage(&index)?;
     let summary = RunSummary {
         dataset: "snapshot",
         k,

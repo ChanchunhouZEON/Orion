@@ -27,13 +27,23 @@
 //! assert_eq!(query.distance(0)?, 0.0);
 //! # Ok::<(), orion_ann_core::Error>(())
 //! ```
-use super::{rows::F32Rows, validation};
+use crate::model::dataset::{rows::F32Rows, validation};
 use crate::{Error, Result};
 
 pub(crate) mod sealed {
     pub trait Sealed {}
 }
+#[doc(hidden)]
+pub mod capabilities;
 mod compute;
+pub use capabilities::QuantizedKind;
+pub(crate) mod exact;
+pub mod jl;
+pub mod kernel_trick;
+pub mod pq;
+pub mod rabitq;
+pub(crate) mod residency;
+pub mod scalar;
 
 /// Logical input to quantized dataset construction: rows and original dimension.
 /// This is not the encoded stride or the projected output width.
@@ -48,7 +58,8 @@ impl QuantizedDatasetShape {
     }
 }
 
-/// Total owned heap payload in bytes, including padding and transform storage.
+/// Total dataset payload in bytes, including padding and transform storage.
+/// For mapped PQ codes this counts the mapped span, not instantaneous RSS.
 ///
 /// Allocator metadata, inline fields and build/query scratch are excluded.
 /// Storage components are implementation details and are not part of this API.

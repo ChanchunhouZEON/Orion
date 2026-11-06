@@ -50,10 +50,12 @@ mod native_u8;
 pub use ads_f32::AdsF32Admission;
 pub use l2kt::L2KTAdmission;
 pub use l2u8::L2U8Admission;
+mod pq;
 pub use l2u16::L2U16Admission;
 pub use mips_i8::MipsI8Admission;
 pub use mips_i16::MipsI16Admission;
 pub use native_u8::NativeU8Admission;
+pub use pq::PqAdmission;
 
 use crate::model::Neighbor;
 
@@ -67,6 +69,4 @@ pub type Admission<'a> = dyn AdmissionStage + 'a;
 pub type AdmissionQuery<'a> = dyn AdmissionSession + 'a;
 
 #[cfg(feature = "benchmark")]
-mod reference;
-#[cfg(feature = "benchmark")]
-pub use reference::ExactAdmission;
+pub use crate::model::dataset::quantized_dataset::exact::reference::ExactAdmission;

@@ -53,5 +53,5 @@ pub(super) fn build(dataset: PaddedDataset<f32>, config: &BuildConfig) -> Result
     // Saving and sidecar calibration are separate operations.
     let graph =
         PhasedGraph::try_from_partitions(&build.partitions, config.degree, config.max_extra)?;
-    Ok(Orion::from_phased_graph(dataset, graph, entry, None, None))
+    Ok(Orion::from_phased_graph(dataset, graph, entry))
 }

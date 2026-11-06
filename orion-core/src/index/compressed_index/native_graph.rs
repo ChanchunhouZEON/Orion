@@ -107,7 +107,7 @@ impl<D: IndexData, S: Default> CompressedIndex<D, S> {
             }
         }
         let graph = PhasedGraph::decode(graph, graph_bytes)?;
-        let idx = Self::from_phased_graph(dataset, graph, meta.entry, None, None);
+        let idx = Self::from_phased_graph(dataset, graph, meta.entry);
         idx.validate_dataset_graph()?;
         Ok(idx)
     }

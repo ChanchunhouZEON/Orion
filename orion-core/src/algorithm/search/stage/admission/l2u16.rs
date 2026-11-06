@@ -30,6 +30,14 @@ impl<'a> L2U16Admission<'a> {
 // SAFETY: shape describes the borrowed base; sessions own checked query storage
 // and cannot outlive that base.
 unsafe impl<'a> AdmissionStage for L2U16Admission<'a> {
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
+        use crate::model::dataset::quantized_dataset::QuantizedKind as K;
+        use crate::model::dataset::quantized_dataset::capabilities::Precision as P;
+        Some(P::Quantized(K::L2U16))
+    }
+
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.dataset.dimension, self.dataset.n))
     }

@@ -12,8 +12,9 @@ use std::mem;
 use hashbrown::HashSet;
 
 use crate::common::{ANNError, ANNResult, AlignedBoxWithSlice};
+use crate::model::PQScratch;
 use crate::model::configuration::index_write_parameters::IndexWriteParameters;
-use crate::model::{Neighbor, NeighborPriorityQueue, PQScratch};
+use crate::model::{Neighbor, NeighborPriorityQueue};
 
 use super::Scratch;
 

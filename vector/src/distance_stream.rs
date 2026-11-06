@@ -24,10 +24,15 @@
 use crate::distance_kernel::DistanceKernelBackend;
 use crate::CACHE_LINE_BYTES;
 
-/// Maximum far-prefetch requests per compute group. The historical value
-/// 12 benefited GIST L2-KT with the old per-vertex scheduler; it remains
-/// the initial budget, not a claim that the new policy is already tuned.
-/// Set ORION_DSTREAM_SINK_BURST=0 to disable far prefetching.
+// Shared defaults for production and benchmark builds. Keep the measured
+// near32/burst32 schedule active even when no environment overrides are read.
+const DEFAULT_BURST_LINES: usize = 32;
+const DEFAULT_TRIGGER_LINES: usize = 8;
+const DEFAULT_AHEAD_VECTORS: usize = 4;
+
+/// Maximum far-prefetch requests per compute group. The default of 32 cache
+/// lines is the validated general-purpose schedule; hardware/workload-specific
+/// experiments may override it in benchmark builds (0 disables far prefetch).
 #[inline]
 #[cfg(feature = "benchmark")]
 fn sink_burst() -> usize {
@@ -38,13 +43,13 @@ fn sink_burst() -> usize {
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .filter(|&v| v <= 64)
-            .unwrap_or(12)
+            .unwrap_or(DEFAULT_BURST_LINES)
     })
 }
 
 #[cfg(not(feature = "benchmark"))]
 fn sink_burst() -> usize {
-    12
+    DEFAULT_BURST_LINES
 }
 
 /// Grouping is configured once per process, in logical cache-line units.
@@ -63,15 +68,15 @@ fn burst_group_config() -> (usize, usize) {
                 .unwrap_or(default)
         };
         (
-            read("ORION_DSTREAM_BURST_TRIGGER_LINES", 4),
-            read("ORION_DSTREAM_BURST_AHEAD_VECTORS", 4),
+            read("ORION_DSTREAM_BURST_TRIGGER_LINES", DEFAULT_TRIGGER_LINES),
+            read("ORION_DSTREAM_BURST_AHEAD_VECTORS", DEFAULT_AHEAD_VECTORS),
         )
     })
 }
 
 #[cfg(not(feature = "benchmark"))]
 fn burst_group_config() -> (usize, usize) {
-    (4, 4)
+    (DEFAULT_TRIGGER_LINES, DEFAULT_AHEAD_VECTORS)
 }
 
 /// No accumulated burst debt: the next group can only fill its own window.
@@ -202,7 +207,8 @@ impl<'a, K: DistanceKernelBackend> DistanceStream<'a, K> {
     /// - `compute_bytes` must be a multiple of `K::CHUNK_BYTES`; zero-pad
     ///   both base rows and query to that boundary for shorter dimensions.
     /// - Each addressed base row must contain `compute_bytes` readable bytes.
-    /// - `query_ptr` valid for `compute_bytes` bytes (padded).
+    /// - `query_ptr` valid for `(compute_bytes / K::CHUNK_BYTES) *
+    ///   K::QUERY_CHUNK_BYTES` bytes, aligned as required by `K::step`.
     /// - `id_stride_bytes` should be a multiple of `CACHE_LINE_BYTES`
     ///   (128 B on M2) for clean prfm targeting; unaligned strides
     ///   work but waste one prfm per vert on the leading partial line.
@@ -240,6 +246,10 @@ impl<'a, K: DistanceKernelBackend> DistanceStream<'a, K> {
         self,
     ) -> DistanceStream<'a, J> {
         debug_assert!(self.compute_bytes.is_multiple_of(J::CHUNK_BYTES));
+        debug_assert_eq!(
+            K::QUERY_CHUNK_BYTES * J::CHUNK_BYTES,
+            J::QUERY_CHUNK_BYTES * K::CHUNK_BYTES
+        );
         DistanceStream {
             base_ptr: self.base_ptr,
             id_stride_bytes: self.id_stride_bytes,

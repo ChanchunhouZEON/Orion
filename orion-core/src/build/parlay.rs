@@ -58,7 +58,7 @@ macro_rules! build {
                 },
             )?;
             let entry = sampled_medoid_rows(dataset.len(), |id| dataset.row(id).unwrap());
-            Ok(Orion::from_phased_graph(dataset, graph, entry, None, None))
+            Ok(Orion::from_phased_graph(dataset, graph, entry))
         }
     };
 }

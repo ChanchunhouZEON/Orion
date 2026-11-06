@@ -7,6 +7,10 @@ use super::{InMemSearchScratch, Neighbor};
 
 /// Final precision pass on the top-(k · rerank_factor) PQ entries.
 pub trait RerankStage: Send + Sync {
+    /// Scoring representation, checked once before query sessions are opened.
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision>;
     /// Logical dimension and row count, for checking recipe/base compatibility.
     fn shape(&self) -> Option<(usize, usize)> {
         None

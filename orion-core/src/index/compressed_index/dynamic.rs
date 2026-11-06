@@ -13,11 +13,8 @@ use rayon::prelude::*;
 
 use super::{CompressedIndex, IndexData};
 use crate::algorithm::search::calibrate::CalibrationMetric;
-use crate::algorithm::search::{
-    diagnostics::{NeighborMode, NoopObserver, SearchObserver},
-    stage::AdmissionSession,
-};
-use crate::model::Neighbor;
+use crate::algorithm::search::diagnostics::{NeighborMode, NoopObserver, SearchObserver};
+use crate::model::dataset::quantized_dataset::exact::ExactSession;
 
 mod sealed {
     pub trait Sealed {}
@@ -100,12 +97,6 @@ fn error(message: impl Into<String>) -> Error {
     Error::invalid_argument(message)
 }
 
-struct ExactSession<'a, T: DynamicElement> {
-    base: &'a PaddedDataset<T>,
-    queries: &'a PaddedDataset<T>,
-    query_id: usize,
-}
-
 impl CompressedIndex<PaddedDataset<u8>> {
     /// Accept byte-valued f32 queries from the shared CLI/Python interface.
     /// Prepare each query on its search worker, directly in its final padded
@@ -141,39 +132,6 @@ impl CompressedIndex<PaddedDataset<u8>> {
             .and_then(|rows| crate::SearchResult::from_rows(rows, config.k, self.num_nodes))
     }
 }
-// SAFETY: streams retain input IDs, write only within the input-sized output
-// region, and return the initialized compacted prefix length.
-unsafe impl<T: DynamicElement> AdmissionSession for ExactSession<'_, T> {
-    fn entry_distance(&self, id: u32) -> f32 {
-        self.base
-            .distance::<T::Kernel>(id, self.queries, self.query_id)
-            .expect("validated dynamic entry and layout")
-    }
-
-    unsafe fn admit_stream(
-        &self,
-        ids: &[u32],
-        out: *mut Neighbor,
-        cutoff: f32,
-        near: usize,
-    ) -> usize {
-        let mut count = 0;
-        // Search preparation checks the kernel/layout once; the graph loop
-        // supplies valid row IDs under AdmissionSession's safety contract.
-        unsafe {
-            self.base
-                .stream_unchecked::<T::Kernel>(self.queries, self.query_id, ids, near)
-        }
-        .run(|id, distance| {
-            unsafe {
-                out.add(count).write(Neighbor::new(id, distance));
-            }
-            count += (distance < cutoff) as usize;
-        });
-        count
-    }
-}
-
 impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
     pub(super) fn validate_search(&self, config: DynamicSearchConfig) -> Result<()> {
         self.validate_dataset_graph()?;
@@ -277,11 +235,7 @@ impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
         started: crate::algorithm::search::metrics::SetupTimer,
         observer: &mut O,
     ) -> Result<Vec<u32>> {
-        let session = ExactSession {
-            base: &self.dataset,
-            queries,
-            query_id,
-        };
+        let session = ExactSession::<T, T::Kernel>::new(&self.dataset, queries, query_id);
         let mode = NeighborMode::default();
         self.search_sessions(
             config.k,

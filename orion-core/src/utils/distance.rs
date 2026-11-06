@@ -3,37 +3,18 @@
  * Licensed under the MIT License.
  */
 
-use ndarray::ArrayView1;
-
-/// L2 distance between two ndarray row views.
-/// Converts to contiguous slices and dispatches to the SIMD path.
-#[inline]
-pub fn l2_distance(a: ArrayView1<f32>, b: ArrayView1<f32>) -> f32 {
-    debug_assert_eq!(a.len(), b.len());
-    match (a.as_slice(), b.as_slice()) {
-        (Some(a_s), Some(b_s)) => l2_distance_slice(a_s, b_s),
-        // Non-contiguous fallback (rare for row-major ArcArray2)
-        _ => a
-            .iter()
-            .zip(b.iter())
-            .map(|(x, y)| (x - y) * (x - y))
-            .sum::<f32>()
-            .sqrt(),
-    }
-}
-
 /// L2 distance between two f32 slices.
 /// Dispatches to SIMD (NEON on aarch64, AVX2 on x86_64) or scalar fallback.
 #[inline]
 pub fn l2_distance_slice(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len());
+    assert_eq!(a.len(), b.len(), "distance dimensions must match");
     l2_sq_slice(a, b).sqrt()
 }
 
 // ─── Internal: squared L2 dispatcher ────────────────────────────────────────
 
 #[inline]
-fn l2_sq_slice(a: &[f32], b: &[f32]) -> f32 {
+pub(crate) fn l2_sq_slice(a: &[f32], b: &[f32]) -> f32 {
     #[cfg(target_arch = "aarch64")]
     {
         // NEON is always available on aarch64 (Apple Silicon, AWS Graviton, etc.)

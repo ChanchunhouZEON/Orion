@@ -46,12 +46,55 @@ pub trait SearchBackend: sealed::BuiltIn {
         data: &mut LoadedBase<Self::Element>,
     ) -> Result<orion_ann_core::Orion<Self::Element>>;
 
-    /// Pins backend-specific search storage before measured execution.
-    ///
-    /// This hook may be a no-op when all required storage is already covered
-    /// by the common driver.
-    #[cfg(any(feature = "cli", feature = "benchmark"))]
-    fn pin_search_storage(index: &orion_ann_core::Orion<Self::Element>, config: &ResolvedRunConfig);
+    /// Lock already-prepared requirements. The guard must outlive measured work.
+    fn pin_search_storage<'a>(
+        index: &'a orion_ann_core::Orion<Self::Element>,
+        config: &ResolvedRunConfig,
+        options: &crate::PinOptions,
+    ) -> Result<crate::PinnedDatasets<'a>> {
+        crate::residency::pin(
+            index,
+            bytemuck::cast_slice(index.dataset().as_slice()),
+            orion_ann_core::QuantizedDatasetShape {
+                rows: index.len(),
+                dimension: index.dataset().layout().logical_dim(),
+            },
+            &config.cascade().dataset_requirements(),
+            options,
+        )
+    }
+
+    /// Recheck the configured memory budget, then attempt to lock prepared
+    /// search datasets for the driver's entire search phase. A passing estimate
+    /// does not grant OS locking permission; refusals are reported and pageable
+    /// search remains available. No sidecars are built by this operation.
+    #[cfg(feature = "cli")]
+    fn auto_pin_search_storage<'a>(
+        index: &'a orion_ann_core::Orion<Self::Element>,
+        config: &ResolvedRunConfig,
+    ) -> Result<crate::PinnedDatasets<'a>> {
+        crate::preflight::check_memory_budget(config, index.len())?;
+        Self::pin_search_storage(
+            index,
+            config,
+            &crate::residency::automatic_options(config.memory_budget_gib)?,
+        )
+    }
+
+    fn pin_hints(
+        index: &orion_ann_core::Orion<Self::Element>,
+        config: &ResolvedRunConfig,
+    ) -> Result<Vec<crate::PinHint>> {
+        crate::residency::hints(
+            index,
+            bytemuck::cast_slice(index.dataset().as_slice()),
+            orion_ann_core::QuantizedDatasetShape {
+                rows: index.len(),
+                dimension: index.dataset().layout().logical_dim(),
+            },
+            &config.cascade().dataset_requirements(),
+        )
+    }
 
     /// Materialize the recipe before publishing a calibrated, shareable index.
     fn prepare_search(
@@ -122,21 +165,6 @@ impl SearchBackend for F32CascadeBackend {
         data: &mut LoadedBase<Self::Element>,
     ) -> Result<orion_ann_core::Orion<Self::Element>> {
         crate::graph::load_index(config, data)
-    }
-
-    #[cfg(any(feature = "cli", feature = "benchmark"))]
-    fn pin_search_storage(
-        index: &orion_ann_core::Orion<Self::Element>,
-        config: &ResolvedRunConfig,
-    ) {
-        let cascade = config.cascade();
-
-        crate::driver::pinning::pin_cascade(
-            index,
-            cascade.prefilter,
-            cascade.admission,
-            cascade.rerank,
-        );
     }
 
     fn search_batch(
@@ -228,15 +256,6 @@ impl SearchBackend for NativeU8L2Backend {
         data: &mut LoadedBase<Self::Element>,
     ) -> Result<orion_ann_core::Orion<Self::Element>> {
         crate::graph::load_u8_index(config, data)
-    }
-
-    #[cfg(any(feature = "cli", feature = "benchmark"))]
-    fn pin_search_storage(
-        _index: &orion_ann_core::Orion<Self::Element>,
-        _config: &ResolvedRunConfig,
-    ) {
-        // No backend-specific sidecar. The resident byte base is pinned by the
-        // common driver.
     }
 
     fn search_batch(

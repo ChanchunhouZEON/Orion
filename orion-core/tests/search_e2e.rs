@@ -111,8 +111,6 @@ fn build_orion_fixture(flat: &[f32]) -> StaticOrion<DIM> {
         result.entry_point,
         GRAPH_DEGREE,
         MAX_EXTRA,
-        None, // pq
-        None, // pq_codes
     );
 
     orion
@@ -685,6 +683,8 @@ fn search_pipeline_e2e() {
         let jl_mips_ds = orion.ensure_quantized_dataset_jl_mips();
         let pf = JlMipsPrefilter::new(jl_mips_ds);
         let pf_opt: Option<&Prefilter<'_>> = Some(&pf);
+        let admission_mips = MipsI8Admission::new(orion.ensure_quantized_dataset_mips());
+        let rerank_ip = IpF32Rerank::new(orion.dataset());
         let r = orion
             .search_cascade(
                 &q,
@@ -697,8 +697,8 @@ fn search_pipeline_e2e() {
                 },
                 DynamicCascade {
                     prefilter: pf_opt,
-                    admission: &admission,
-                    rerank: &rerank,
+                    admission: &admission_mips,
+                    rerank: &rerank_ip,
                 },
             )
             .expect("JL-MIPS prefilter cascade");

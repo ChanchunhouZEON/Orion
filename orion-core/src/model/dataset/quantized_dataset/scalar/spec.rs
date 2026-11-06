@@ -21,7 +21,7 @@ mod sealed {
 // ─── Trait: per-storage / per-metric specification ────────────────────────
 
 /// Bundle of per-storage + per-metric constants and operations that
-/// drive the generic [`super::scalar_dataset::ScalarQuantizedDataset`]. See module docs.
+/// drive the generic [`crate::model::dataset::scalar_dataset::ScalarQuantizedDataset`]. See module docs.
 pub trait QuantSpec: sealed::Sealed + 'static {
     /// Underlying storage element (`u8` / `u16` / `i8` / `i16`).
     type Storage: bytemuck::Pod + Copy + Default + Send + Sync + 'static;

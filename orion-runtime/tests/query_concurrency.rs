@@ -163,6 +163,19 @@ fn borrowed_queries_and_mixed_requests_share_one_index() {
                 .unwrap();
             assert_eq!(core_result, expected[1]);
         }
+        // Residency is orthogonal to search and persisted calibration. A zero
+        // budget exercises the best-effort path without relying on OS privilege.
+        let hints = index.pinning_hints().unwrap();
+        assert!(!hints.is_empty());
+        let residency = index
+            .pin(&orion_ann::PinOptions {
+                budget_bytes: 0,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(residency.report().requested_datasets, hints.len());
+        assert_eq!(residency.report().skipped.len(), hints.len());
+        assert_eq!(residency.pinned_bytes(), 0);
         // More callers than workers, mixed k/beam, and two query representations.
         // An immutable reference makes accidental request mutation a compile error.
         let shared: &Index = &index;
@@ -259,4 +272,78 @@ fn query_views_validate_shape_without_reading_or_owning_coordinates() {
     assert!(!format!("{batch:?}").contains("12345"));
     let _: QueryBatch<'_> = batch; // Copyable views do not consume caller storage.
     assert_eq!(values, [12345.; 6]);
+}
+
+#[test]
+fn pq_snapshot_and_code_placement_preserve_both_metric_searches() {
+    use orion_ann::{CascadeConfig, PqCodeStorage};
+    const DIM: usize = 17;
+    let values: Vec<f32> = (0..96 * DIM)
+        .map(|i| ((i * 17 + i / DIM * 9) % 103) as f32 / 32.0)
+        .collect();
+    for (admission, metric, rerank) in [
+        ("pq-l2", SearchMetric::L2, "f32"),
+        ("pq-ip", SearchMetric::InnerProduct, "ip-f32"),
+    ] {
+        let fixture = Fixture::new(admission);
+        let base = || BaseInput::from_f32(&values, DIM).unwrap();
+        let mut index = Index::new(
+            base(),
+            IndexOptions {
+                threads: 2,
+                metric,
+                cache_dir: fixture.0.join("cache"),
+                graph: GraphConfig {
+                    source: GraphSourcePolicy::Parlayann,
+                    staged_file: Some(fixture.staged(96)),
+                    degree: 12,
+                    max_extra: 4,
+                    build_l: 24,
+                    ..Default::default()
+                },
+                cascade: CascadeConfig {
+                    prefilter: Some("none".into()),
+                    admission: Some(admission.into()),
+                    rerank: Some(rerank.into()),
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            index
+                .set_pq_code_storage(PqCodeStorage::OnDemand)
+                .unwrap_err()
+                .code(),
+            ErrorCode::InvalidState
+        );
+        index
+            .calibrate(values[..DIM * 12].to_vec(), 3, Some(24))
+            .unwrap();
+        let queries = QueryBatch::from_f32(&values[DIM * 12..DIM * 24], DIM).unwrap();
+        let options = SearchOptions::new(3, 32);
+        let expected = index.search(queries, &options).unwrap();
+        index.set_pq_code_storage(PqCodeStorage::OnDemand).unwrap();
+        assert_eq!(index.search(queries, &options).unwrap(), expected);
+        let snapshot = fixture.0.join("snapshot");
+        index.save(&snapshot).unwrap();
+        drop(index);
+        let mut restored = Index::open(&snapshot, base()).unwrap();
+        assert_eq!(restored.search(queries, &options).unwrap(), expected);
+        restored
+            .set_pq_code_storage(PqCodeStorage::OnDemand)
+            .unwrap();
+        std::thread::scope(|scope| {
+            let jobs: Vec<_> = (0..4)
+                .map(|_| scope.spawn(|| restored.search(queries, &options).unwrap()))
+                .collect();
+            for job in jobs {
+                assert_eq!(job.join().unwrap(), expected);
+            }
+        });
+        restored
+            .set_pq_code_storage(PqCodeStorage::Resident)
+            .unwrap();
+        assert_eq!(restored.search(queries, &options).unwrap(), expected);
+    }
 }

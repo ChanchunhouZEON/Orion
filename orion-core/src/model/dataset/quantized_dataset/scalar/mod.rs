@@ -5,13 +5,16 @@
 
 //! Padded scalar-quantized storage. Codec rules live in `quantized_spec`;
 //! the common dataset contract includes projection and kernel-trick stores too.
-use super::quantized_dataset::{QuantizedDataset, QuantizedDatasetShape, ResidentMemory};
-use super::quantized_spec::*;
-use super::rows::F32Rows;
-use super::validation::{self, CheckedRows};
+use crate::model::dataset::quantized_dataset::{
+    QuantizedDataset, QuantizedDatasetShape, ResidentMemory,
+};
+pub mod spec;
 use crate::Result;
+use crate::model::dataset::rows::F32Rows;
+use crate::model::dataset::validation::{self, CheckedRows};
 use orion_ann_diskann::common::AlignedBoxWithSlice;
 use orion_ann_vector::DistanceKernelBackend;
+use spec::*;
 
 // ─── Generic dataset ──────────────────────────────────────────────────────
 
@@ -328,7 +331,7 @@ impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
         }
         let params: Q::Params = bytemuck::pod_read_unaligned(&hdr[16..16 + param_bytes]);
         Q::validate_params(&params)?;
-        let data = super::rows::read_rows::<Q::Storage>(r, n, stride, dim)?;
+        let data = crate::model::dataset::rows::read_rows::<Q::Storage>(r, n, stride, dim)?;
         Ok(Self {
             data,
             params,
@@ -518,7 +521,10 @@ impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
     }
 }
 
-impl<Q: QuantSpec> super::quantized_dataset::sealed::Sealed for ScalarQuantizedDataset<Q> {}
+impl<Q: QuantSpec> crate::model::dataset::quantized_dataset::sealed::Sealed
+    for ScalarQuantizedDataset<Q>
+{
+}
 impl<Q: QuantSpec> QuantizedDataset for ScalarQuantizedDataset<Q> {
     type BuildOptions = ();
     fn default_build_options() -> Self::BuildOptions {

@@ -28,10 +28,10 @@ pub struct DynamicSidecars {
     /// lazily on first `ensure_quantized_dataset`. Sidecar `.qds`.
     q_dataset: SidecarCell<ScalarQuantizedDataset<L2U8>>,
 
-    /// U16-quantized base — precise PQ-admission tier of the L2
-    /// cascade. 256× finer per-dim resolution than u8 at 2× storage,
-    /// pairs with the u8 sidecar via the PA `quantize_bits 16` recipe
-    /// (u8 = cheap filter, u16 = PQ admission distance). Built lazily
+    /// U16 scalar-quantized base for more precise L2 distances.
+    /// Roughly 256× finer per-dimension resolution than u8 at 2× storage;
+    /// usable after a lower-precision filter or for reranking.
+    /// Built lazily
     /// on first `ensure_quantized_dataset_l2_u16`. Sidecar `.qds6`.
     q_dataset_l2_u16: SidecarCell<ScalarQuantizedDataset<L2U16>>,
 
@@ -49,8 +49,7 @@ pub struct DynamicSidecars {
     /// RaBitQ 1-bit-per-dim quantized base for the high-dim
     /// bandwidth-bound L2 path (Gao & Long, SIGMOD 2024). Built lazily
     /// on first `ensure_quantized_dataset_rabitq`. Sidecar `.qrbq`.
-    /// Targets GIST-class datasets where the entire quantized base
-    /// fits into L1 cache.
+    /// Reduces the resident payload and bytes read per candidate.
     q_dataset_rabitq: SidecarCell<RabitQDataset>,
 
     /// Extended RaBitQ at B=4 bits/dim (Gao & Long, SIGMOD 2025).
@@ -86,6 +85,16 @@ pub struct DynamicSidecars {
     /// kernel speed but L2-rank-exact (modulo the same per-dim
     /// quantization noise as the u8 sidecar). Sidecar `.qdsl2kt`.
     q_dataset_l2_kt: SidecarCell<L2KTDataset>,
+
+    /// Product quantization trained from a deterministic, bounded sample of the
+    /// logical f32 rows. L2 and inner-product ADC share this codebook and the
+    /// same packed u8 codes; only the per-query lookup table changes.
+    ///
+    /// Initialized lazily from the authenticated `pq-adc` sidecar or built on
+    /// demand. The small codebook is best-effort pinned in RAM. Codes use owned
+    /// memory by default; the standalone dataset also supports private-file
+    /// paging and explicit pinning independently of the cascade position.
+    q_dataset_pq: SidecarCell<crate::model::dataset::quantized_dataset::pq::PqDataset>,
 }
 
 // Quantized sidecars belong only to the f32 storage path. Native-byte indexes
@@ -113,8 +122,8 @@ impl<D: F32Rows> CompressedIndex<D, DynamicSidecars> {
             .ensure(&self.dataset, self.sidecars.cache.as_deref())
     }
 
-    /// Lazily obtain the **u16** quantized dataset (precise
-    /// PQ-admission tier of the L2 cascade). Sidecar `.qds6`. Goes
+    /// Lazily obtain the **u16** scalar-quantized dataset for L2.
+    /// Sidecar `.qds6`. Goes
     /// through the same `build_quant` plumbing as the u8 path; the
     /// only differences are storage type + quantization scale (see
     /// the `L2U16` spec).
@@ -321,6 +330,16 @@ impl<D: F32Rows> CompressedIndex<D, DynamicSidecars> {
             .q_dataset_l2_kt
             .ensure(&self.dataset, self.sidecars.cache.as_deref())
     }
+    /// Prepare the canonical independent PQ dataset, shared by L2 and IP ADC.
+    /// # Errors
+    /// Propagates invalid base coordinates, training and cache decoding errors.
+    pub fn try_ensure_quantized_dataset_pq(
+        &self,
+    ) -> Result<&crate::model::dataset::quantized_dataset::pq::PqDataset> {
+        self.sidecars
+            .q_dataset_pq
+            .ensure(&self.dataset, self.sidecars.cache.as_deref())
+    }
 }
 
 /// Initialization is serialized only on a cache miss. Searches borrow the
@@ -362,7 +381,10 @@ impl<T> SidecarCell<T> {
     }
 }
 
-trait SidecarCodec: crate::model::dataset::QuantizedDataset {
+trait SidecarCodec:
+    crate::model::dataset::QuantizedDataset
+    + crate::model::dataset::quantized_dataset::residency::ResidentRegions
+{
     const EXTENSION: &'static str;
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self>;
     fn encode(&self, writer: &mut dyn Write) -> Result<()>;
@@ -405,6 +427,7 @@ impl std::fmt::Debug for DynamicSidecars {
                 &self.q_dataset_jl_hadamard.get().is_some(),
             )
             .field("q_dataset_l2_kt", &self.q_dataset_l2_kt.get().is_some())
+            .field("q_dataset_pq", &self.q_dataset_pq.get().is_some())
             .finish_non_exhaustive()
     }
 }
@@ -529,5 +552,109 @@ mod tests {
             }
         });
         assert_eq!(builds.load(Ordering::Relaxed), 1);
+    }
+}
+
+impl<D> CompressedIndex<D, DynamicSidecars> {
+    /// Change placement of prepared PQ codes without changing the fitted model.
+    /// Exclusively borrows the index so no search or pin guard can retain old codes.
+    /// # Errors
+    /// Returns InvalidState if PQ is unprepared; propagates temporary-file I/O.
+    #[doc(hidden)]
+    pub fn set_pq_code_storage(
+        &mut self,
+        policy: crate::model::dataset::quantized_dataset::pq::PqCodeStorage,
+    ) -> Result<()> {
+        self.sidecars
+            .q_dataset_pq
+            .value
+            .get_mut()
+            .ok_or_else(|| Error::invalid_state("PQ dataset is not prepared"))?
+            .set_code_storage(policy)
+    }
+
+    /// Runtime adapter boundary: borrow initialized storage without fitting or I/O.
+    /// The returned slices keep their owner alive while OS residency is requested.
+    /// # Errors
+    /// Returns InvalidState when the requested representation is not prepared.
+    #[doc(hidden)]
+    pub fn resident_sidecar_regions(
+        &self,
+        kind: crate::model::dataset::quantized_dataset::QuantizedKind,
+    ) -> Result<Vec<&[u8]>> {
+        use crate::model::dataset::quantized_dataset::{
+            QuantizedKind as K, residency::ResidentRegions,
+        };
+        let regions = match kind {
+            K::Pq => self
+                .sidecars
+                .q_dataset_pq
+                .get()
+                .map(ResidentRegions::resident_regions),
+            K::L2U8 => self
+                .sidecars
+                .q_dataset
+                .get()
+                .map(ResidentRegions::resident_regions),
+            K::L2U16 => self
+                .sidecars
+                .q_dataset_l2_u16
+                .get()
+                .map(ResidentRegions::resident_regions),
+            K::MipsI8 => self
+                .sidecars
+                .q_dataset_mips
+                .get()
+                .map(ResidentRegions::resident_regions),
+            K::MipsI16 => self
+                .sidecars
+                .q_dataset_mips_i16
+                .get()
+                .map(ResidentRegions::resident_regions),
+            K::L2Kt => self
+                .sidecars
+                .q_dataset_l2_kt
+                .get()
+                .map(ResidentRegions::resident_regions),
+            K::JlSparse => self
+                .sidecars
+                .q_dataset_jl
+                .get()
+                .map(ResidentRegions::resident_regions),
+            K::JlSparseMips => self
+                .sidecars
+                .q_dataset_jl_mips
+                .get()
+                .map(ResidentRegions::resident_regions),
+            K::JlHadamard => self
+                .sidecars
+                .q_dataset_jl_hadamard
+                .get()
+                .map(ResidentRegions::resident_regions),
+            K::Rabitq => self
+                .sidecars
+                .q_dataset_rabitq
+                .get()
+                .map(ResidentRegions::resident_regions),
+            K::Rabitq4 => self
+                .sidecars
+                .q_dataset_rabitq_b4
+                .get()
+                .map(ResidentRegions::resident_regions),
+        };
+        regions.ok_or_else(|| Error::invalid_state(format!("dataset {kind:?} is not prepared")))
+    }
+}
+
+impl SidecarCodec for crate::model::dataset::quantized_dataset::pq::PqDataset {
+    const EXTENSION: &'static str = "pq-adc";
+    fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
+        Self::decode(reader, bytes)
+    }
+    fn encode(&self, writer: &mut dyn Write) -> Result<()> {
+        self.encode(writer)
+    }
+    fn shape(&self) -> (usize, usize) {
+        (self.dimension(), self.len())
     }
 }

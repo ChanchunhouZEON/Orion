@@ -19,6 +19,7 @@ pub mod graph_mmap;
 pub mod io_context;
 pub mod memory;
 pub mod mmap_search;
+pub mod residency;
 
 pub use aligned_io::AlignedRead;
 pub use aligned_reader::UnixAlignedFileReader;

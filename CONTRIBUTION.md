@@ -143,31 +143,26 @@ Preserve existing copyright and license notices, including upstream notices in
 vendored or inherited code. Contributions are distributed under the project's
 [MIT license](LICENSE).
 
-## Planned follow-up: optional product quantization
+## Product quantization
 
-This is a design plan for the next change, **not an available feature yet**.
-The current default cascade does not require product quantization (PQ), but PQ
-code and types are still compiled through several core and DiskANN modules.
+PQ is a regular quantization implementation, available in default and
+`--no-default-features` builds without a separate Cargo feature. Its public
+module is `quantized_dataset::pq`. Orion owns its slice-based training, packed
+u8 codes, checked codec and ADC kernel. It does not use DiskANN's PQ implementation
+or ndarray. ADC shares `DistanceStream` scheduling with the other kernels.
 
-The intended boundary is a **default-off `pq` feature**. The implementation should:
+Compilation does not trigger training or allocate PQ buffers. Builders train
+PQ only when requested, and the existing scalar/JL/RaBitQ/native-u8 search
+recipes retain their defaults. Research-only async search and measurements
+still require `benchmark`; ordinary PQ APIs do not.
 
-1. Gate product-quantizer training, codebooks, encoded data, ADC computation and
-   PQ-only serialization in `orion-core` and `orion-diskann`.
-2. Gate their associated builder options/results, index fields, exports and
-   `PQScratch` storage together; do not leave the default build allocating or
-   training PQ data. Audit the benchmark-only async path separately.
-3. Forward the feature only through crates that actually need it. `benchmark`
-   and `pq` serve different purposes; enabling general experiment controls must
-   not automatically enable PQ. Only PQ-specific targets require both.
-4. Keep scalar quantization, JL, kernel-trick, RaBitQ, native-u8 search and normal
-   graph construction independent of this feature. Variables named `pq` that
-   refer to a **priority queue** are unrelated and must remain available.
-5. Test default, no-default and PQ-enabled builds, plus benchmark combinations.
-   Retain PQ training/round-trip tests in an explicitly enabled CI job and give
-   each test invocation unique temporary output paths. Keep all-features
-   coverage exercising PQ rather than excluding it to improve a badge.
+New quantized representations belong under
+`orion-core/src/model/dataset/quantized_dataset/`. Official sidecar implementations
+use the sealed build, computation, resident-memory and residency-region contracts.
+Representation requirements drive preparation, budgeting and optional pinning;
+these operations must not build data during a pin request.
 
-Acceptance requires unchanged default search results, no PQ-only public types
-or storage in the default path, and successful PQ-enabled construction,
-encoding and persistence tests. Record measured build/test-time and dependency
-changes rather than assuming that all numeric dependencies are PQ-specific.
+Check default, no-default and benchmark builds when changing these boundaries.
+Native CI tests PQ training, encoded-data attachment and persistence in ordinary
+builds. Keep all-features coverage exercising those paths. Variables called
+`pq` can also refer to a **priority queue**, independently of product quantization.

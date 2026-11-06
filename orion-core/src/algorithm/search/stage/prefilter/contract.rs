@@ -23,6 +23,10 @@
 /// handle arbitrary IDs without unchecked access to a finite base allocation.
 ///
 pub unsafe trait PrefilterStage: Send + Sync {
+    /// Scoring representation, checked once before query sessions are opened.
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision>;
     /// Logical dimension and row count, for checking recipe/base compatibility.
     fn shape(&self) -> Option<(usize, usize)> {
         None

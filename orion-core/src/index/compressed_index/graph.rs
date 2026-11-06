@@ -146,7 +146,7 @@ impl<D: IndexData, S: Default> CompressedIndex<D, S> {
     ) -> Result<Self> {
         Self::validate_graph_shape(&dataset, partitions.len(), entry)?;
         let graph = PhasedGraph::try_from_partitions(partitions, max_degree, max_extra)?;
-        Ok(Self::from_phased_graph(dataset, graph, entry, None, None))
+        Ok(Self::from_phased_graph(dataset, graph, entry))
     }
 
     /// Stream a ParlayANN STAG v3 graph into an index without an intermediate graph.
@@ -168,7 +168,7 @@ impl<D: IndexData, S: Default> CompressedIndex<D, S> {
         let nodes = dataset.point_count();
         Self::validate_graph_shape(&dataset, nodes, entry)?;
         let graph = PhasedGraph::decode_staged(reader, byte_len, nodes, max_degree)?;
-        Ok(Self::from_phased_graph(dataset, graph, entry, None, None))
+        Ok(Self::from_phased_graph(dataset, graph, entry))
     }
 
     pub(super) fn validate_graph_shape(dataset: &D, nodes: usize, entry: u32) -> Result<()> {

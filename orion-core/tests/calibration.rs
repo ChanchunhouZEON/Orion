@@ -53,7 +53,7 @@ fn fixture() -> (StaticOrion<DIM>, [[f32; DIM]; 1]) {
             (local, vec![], vec![])
         })
         .collect();
-    let index = StaticOrion::new(dataset, &partitions, 0, 1, 0, None, None);
+    let index = StaticOrion::new(dataset, &partitions, 0, 1, 0);
     let mut query = [0.0; DIM];
     query[0] = 1.0;
     (index, [query])

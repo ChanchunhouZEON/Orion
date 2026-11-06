@@ -58,16 +58,18 @@ orion-core/
       phased_graph.rs               # PhasedGraph: AlignedBoxWithSlice slab + 60%-by-distance
                                     #   (origin + extras) partition + write queue
       dataset/
-        quantized_dataset.rs        # Sealed sidecar contract: shape, build, compute and memory
-        quantized_spec.rs           # Official quantization specifications
-        scalar_dataset.rs           # Padded L2U8 / L2U16 / MipsI8 / MipsI16 storage
-        l2_kt_dataset.rs            # L2 kernel-trick: i8 base + per-vert ‖x_i8‖² for
-                                    #   `‖q−x‖² = ‖q‖² + ‖x‖² − 2·⟨q,x⟩` (sdot-friendly)
-        jl_sparse_dataset.rs        # JL Sparse 1024-bit signature — NZ=9 sparse projection
-                                    #   with balanced per-dim coverage (Fisher-Yates over multiset)
-        jl_hadamard_dataset.rs      # JL Hadamard 1024-bit — HDHDHD sign-pack, dense per-bit
-        rabitq_dataset.rs           # RaBitQ B=1 sign-bit base (rotation + signs)
-        rabitq_b4_dataset.rs        # RaBitQ B=4 with per-vertex correction
+        quantized_dataset/
+          mod.rs                    # Sealed sidecar contract: shape, build, compute and memory
+          capabilities.rs           # Representation identities and cascade precision ordering
+          residency.rs              # Borrowed resident buffers, independent of cascade position
+          scalar/                   # Padded L2U8 / L2U16 / MipsI8 / MipsI16 and their specs
+          kernel_trick.rs           # i8 base + per-vector norms for squared-L2 via sdot
+          jl/sparse.rs              # Sparse JL binary signatures (L2 and MIPS)
+          jl/hadamard.rs            # HDHDHD sign-packed JL signatures
+          rabitq/binary.rs          # RaBitQ B=1 rotation/sign codes
+          rabitq/multibit.rs        # RaBitQ B=4 with per-vector correction
+          pq/                       # Independent slice-based PQ, ADC stream, code residency and codec
+          exact/                    # Borrowed exact-distance sessions; no sidecar allocation
       neighbor/neighbor_priority_queue.rs  # NeighborPriorityQueue + pad16 buffer alignment +
                                            #   batch_merge / batch_merge_gallop
       scratch.rs                    # InMemSearchScratch: HashsetSeen (linear-probe, exact)

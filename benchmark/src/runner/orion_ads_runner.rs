@@ -67,8 +67,6 @@ macro_rules! build_orion_ads {
             $result.entry_point,
             $self.graph_degree as u32,
             $self.max_extra,
-            None,
-            None,
         );
         if let Some(path) = &$self.cache_path {
             orion_ann::benchmark::graph::save_working(&mut orion, path)

@@ -9,7 +9,7 @@
 //! Each output bit is the sign of a sum-of-all-D-coordinates with
 //! pseudorandom `±1` weights, computed via three rounds of
 //! `random-sign-flip + FWHT (HDHDHDx)`. Same on-disk + in-RAM layout
-//! as [`super::jl_sparse_dataset::JLSparseDataset`] (bit-packed sign
+//! as [`crate::model::dataset::jl_sparse_dataset::JLSparseDataset`] (bit-packed sign
 //! codes, LSB-first per byte) so the search-time hot path reuses
 //! `JLHammingDistance` unchanged.
 //!
@@ -34,10 +34,12 @@
 //! JL Sparse: ~6k FLOPs / ~7µs setup. Hadamard pays 2-3× the setup
 //! for dense-per-bit signal — still <1% of total wall-time at L=192.
 
-use super::quantized_dataset::{QuantizedDataset, QuantizedDatasetShape, ResidentMemory};
-use super::rows::F32Rows;
-use super::validation::{self, CheckedRows};
 use crate::Result;
+use crate::model::dataset::quantized_dataset::{
+    QuantizedDataset, QuantizedDatasetShape, ResidentMemory,
+};
+use crate::model::dataset::rows::F32Rows;
+use crate::model::dataset::validation::{self, CheckedRows};
 use orion_ann_diskann::common::AlignedBoxWithSlice;
 use rayon::prelude::*;
 
@@ -215,7 +217,7 @@ impl JlHadamardDataset {
     pub fn hamming(&self, q_sig: &[u8], vid: u32) -> u32 {
         let off = (vid as usize) * self.stride;
         let v_sig = &self.codes.as_slice()[off..off + self.stride];
-        super::jl_sparse_dataset::hamming_dispatch(q_sig, v_sig)
+        crate::model::dataset::jl_sparse_dataset::hamming_dispatch(q_sig, v_sig)
     }
 
     /// Sidecar header (32 B):
@@ -243,7 +245,7 @@ impl JlHadamardDataset {
         for signs in [&self.signs1, &self.signs2, &self.signs3] {
             w.write_all(bytemuck::cast_slice(signs))?;
         }
-        super::rows::write_rows(
+        crate::model::dataset::rows::write_rows(
             w,
             self.codes.as_slice(),
             self.stride,
@@ -329,7 +331,8 @@ impl JlHadamardDataset {
         }
         let disk_stride = stride;
         let stride = jl_hadamard_stride(d_pad);
-        let codes = super::rows::read_rows::<u8>(r, num_vertices, stride, disk_stride)?;
+        let codes =
+            crate::model::dataset::rows::read_rows::<u8>(r, num_vertices, stride, disk_stride)?;
 
         Ok(Self {
             dimension: dim,
@@ -532,11 +535,11 @@ impl JlHadamardDataset {
     }
 }
 
-impl super::quantized_dataset::sealed::Sealed for JlHadamardDataset {}
+impl crate::model::dataset::quantized_dataset::sealed::Sealed for JlHadamardDataset {}
 impl QuantizedDataset for JlHadamardDataset {
-    type BuildOptions = super::quantized_dataset::HadamardOptions;
+    type BuildOptions = crate::model::dataset::quantized_dataset::HadamardOptions;
     fn default_build_options() -> Self::BuildOptions {
-        super::quantized_dataset::HadamardOptions {
+        crate::model::dataset::quantized_dataset::HadamardOptions {
             seed: JL_HADAMARD_MAGIC as u64,
             padded_dimension: None,
         }

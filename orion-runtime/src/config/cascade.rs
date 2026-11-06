@@ -4,6 +4,7 @@
  */
 
 //! Validated choices and defaults for the search cascade.
+use crate::sidecars::requirements::SidecarRecipe;
 use crate::{Error, Result};
 use std::str::FromStr;
 /// Distance / similarity objective used by the search pipeline.
@@ -67,6 +68,25 @@ pub struct Cascade {
 }
 
 impl Cascade {
+    pub(crate) fn dataset_requirements(
+        self,
+    ) -> Vec<crate::sidecars::requirements::DatasetRequirement> {
+        use crate::sidecars::requirements::DatasetRequirement as R;
+        let mut result: Vec<_> = self
+            .sidecar_requirements()
+            .into_iter()
+            .map(R::Sidecar)
+            .collect();
+        if matches!(
+            self.admission,
+            AdmissionChoice::NativeL2U8 | AdmissionChoice::AdsF32
+        ) || matches!(self.rerank, RerankChoice::F32 | RerankChoice::IpF32)
+        {
+            result.push(R::Base);
+        }
+        result
+    }
+
     /// Resolve storage dependencies independently of the search-stage execution.
     /// Duplicate consumers intentionally name the same requirement; the dataset
     /// budget/initializer deduplicates by representation and build options.
@@ -77,7 +97,7 @@ impl Cascade {
         let mut kinds = Vec::new();
         let mips = matches!(
             self.admission,
-            AdmissionChoice::MipsI8 | AdmissionChoice::MipsI16
+            AdmissionChoice::MipsI8 | AdmissionChoice::MipsI16 | AdmissionChoice::PqIp
         );
         match self.prefilter {
             PrefilterChoice::None => {}
@@ -86,6 +106,7 @@ impl Cascade {
             PrefilterChoice::Rabitq => kinds.push(K::Rabitq),
         }
         match self.admission {
+            AdmissionChoice::PqL2 | AdmissionChoice::PqIp => kinds.push(K::Pq),
             AdmissionChoice::L2U8 => kinds.push(K::L2U8),
             AdmissionChoice::L2U16 => kinds.push(K::L2U16),
             AdmissionChoice::MipsI8 => kinds.push(K::MipsI8),
@@ -165,7 +186,7 @@ impl Cascade {
         // calibrated thresholds semantically invalid.
         if matches!(
             self.admission,
-            AdmissionChoice::MipsI8 | AdmissionChoice::MipsI16
+            AdmissionChoice::MipsI8 | AdmissionChoice::MipsI16 | AdmissionChoice::PqIp
         ) != ip
         {
             return Err("admission does not match --metric; override --admission or choose the correct metric".into());
@@ -182,8 +203,38 @@ impl Cascade {
         if !rerank_matches {
             return Err("rerank does not match --metric; override --rerank".into());
         }
-
-        Ok(())
+        use orion_ann_core::model::dataset::quantized_dataset::{
+            capabilities::{validate_precision, Precision as P},
+            QuantizedKind as K,
+        };
+        let prefilter = match self.prefilter {
+            PrefilterChoice::None => None,
+            PrefilterChoice::Jl => {
+                Some(P::Quantized(if ip { K::JlSparseMips } else { K::JlSparse }))
+            }
+            PrefilterChoice::JlHadamard => Some(P::Quantized(K::JlHadamard)),
+            PrefilterChoice::Rabitq => Some(P::Quantized(K::Rabitq)),
+        };
+        let admission = match self.admission {
+            AdmissionChoice::PqL2 => P::ProductQuantized {
+                inner_product: false,
+            },
+            AdmissionChoice::PqIp => P::ProductQuantized {
+                inner_product: true,
+            },
+            AdmissionChoice::L2U8 => P::Quantized(K::L2U8),
+            AdmissionChoice::L2U16 => P::Quantized(K::L2U16),
+            AdmissionChoice::L2Kt => P::Quantized(K::L2Kt),
+            AdmissionChoice::MipsI8 => P::Quantized(K::MipsI8),
+            AdmissionChoice::MipsI16 => P::Quantized(K::MipsI16),
+            AdmissionChoice::NativeL2U8 | AdmissionChoice::AdsF32 => P::Exact,
+        };
+        let rerank = match self.rerank {
+            RerankChoice::None => None,
+            RerankChoice::F32 | RerankChoice::IpF32 => Some(P::Exact),
+            RerankChoice::U16 => Some(P::Quantized(K::L2U16)),
+        };
+        validate_precision(prefilter, admission, rerank)
     }
 
     #[cfg(any(feature = "cli", feature = "benchmark"))]
@@ -198,6 +249,30 @@ impl Cascade {
 #[cfg(test)]
 mod selector_tests {
     use super::*;
+
+    #[test]
+    fn exact_storage_cannot_be_followed_by_quantized_reranking() {
+        for admission in [AdmissionChoice::AdsF32, AdmissionChoice::NativeL2U8] {
+            let cascade = Cascade {
+                prefilter: PrefilterChoice::None,
+                admission,
+                rerank: RerankChoice::U16,
+            };
+            assert!(cascade
+                .validate_cascade_options(SearchMetric::L2)
+                .unwrap_err()
+                .to_string()
+                .contains("precision"));
+        }
+        let shared = Cascade {
+            prefilter: PrefilterChoice::None,
+            admission: AdmissionChoice::L2U16,
+            rerank: RerankChoice::U16,
+        };
+        shared.validate_cascade_options(SearchMetric::L2).unwrap();
+        let requirements = shared.dataset_requirements();
+        assert_eq!(requirements[0], requirements[1]);
+    }
 
     #[test]
     fn dimension_and_metric_select_independent_defaults() {
@@ -252,6 +327,10 @@ pub enum PrefilterChoice {
 /// have distinct variants so logs and experiments preserve their semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum AdmissionChoice {
+    /// Independent product quantization with squared-L2 ADC.
+    PqL2,
+    /// Same codes with negative-inner-product ADC (also normalized cosine).
+    PqIp,
     /// Affine-quantized sidecar derived from the f32 base.
     L2U8,
     /// Exact squared L2 over the original u8 base; no sidecar.
@@ -274,7 +353,9 @@ impl AdmissionChoice {
     #[cfg(any(feature = "cli", feature = "benchmark"))]
     pub fn calibration_metric(self) -> orion_ann_core::CalibrationMetric {
         match self {
-            Self::MipsI8 | Self::MipsI16 => orion_ann_core::CalibrationMetric::InnerProduct,
+            Self::MipsI8 | Self::MipsI16 | Self::PqIp => {
+                orion_ann_core::CalibrationMetric::InnerProduct
+            }
             _ => orion_ann_core::CalibrationMetric::L2,
         }
     }
@@ -337,6 +418,8 @@ impl FromStr for AdmissionChoice {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
+            "pq-l2" | "pq" => Ok(Self::PqL2),
+            "pq-ip" => Ok(Self::PqIp),
             "l2-u8" | "l2u8" => Ok(Self::L2U8),
             "native-l2-u8" => Ok(Self::NativeL2U8),
             "l2-u16" | "l2u16" => Ok(Self::L2U16),
@@ -346,7 +429,7 @@ impl FromStr for AdmissionChoice {
             "ads-f32" | "adsf32" | "ads" => Ok(Self::AdsF32),
             other => Err(Error::from(format!(
                 "unknown admission '{other}' \
-                 (expected native-l2-u8|l2-u8|l2-u16|l2-kt|mips-i8|mips-i16|ads-f32)"
+                 (expected pq-l2|pq-ip|native-l2-u8|l2-u8|l2-u16|l2-kt|mips-i8|mips-i16|ads-f32)"
             ))),
         }
     }

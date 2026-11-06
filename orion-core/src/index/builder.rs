@@ -3,10 +3,11 @@
  * Licensed under the MIT License.
  */
 
+use crate::model::dataset::quantized_dataset::pq::FixedChunkPQTable;
 use crate::{Error, Result};
 use orion_ann_diskann::index::{ANNInmemIndex, create_inmem_index};
+use orion_ann_diskann::model::IndexConfiguration;
 use orion_ann_diskann::model::configuration::index_write_parameters::IndexWriteParametersBuilder;
-use orion_ann_diskann::model::{FixedChunkPQTable, IndexConfiguration};
 use orion_ann_vector::Metric;
 use std::sync::Arc;
 #[cfg(feature = "benchmark")]
@@ -147,8 +148,8 @@ pub fn build_diskann_index(
     let pq_start = Instant::now();
     let (pq, pq_codes) = if build_pq {
         let n_chunks = n_subquantizers.unwrap_or(8);
-        let pq_table = FixedChunkPQTable::train(flat_data, num_points, dimension, n_chunks);
-        let codes = pq_table.encode(flat_data, num_points);
+        let pq_table = FixedChunkPQTable::train(flat_data, num_points, dimension, n_chunks)?;
+        let codes = pq_table.encode(flat_data, num_points)?;
         (Some(Arc::new(pq_table)), Some(codes))
     } else {
         (None, None)
@@ -172,11 +173,13 @@ pub fn build_diskann_index(
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl std::fmt::Debug for DiskANNBuildResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DiskANNBuildResult")
+        let mut debug = f.debug_struct("DiskANNBuildResult");
+        debug
             .field("partition_count", &self.partitions.len())
-            .field("entry_point", &self.entry_point)
+            .field("entry_point", &self.entry_point);
+        debug
             .field("has_pq", &self.pq.is_some())
-            .field("pq_code_bytes", &self.pq_codes.as_ref().map(Vec::len))
-            .finish_non_exhaustive()
+            .field("pq_code_bytes", &self.pq_codes.as_ref().map(Vec::len));
+        debug.finish_non_exhaustive()
     }
 }

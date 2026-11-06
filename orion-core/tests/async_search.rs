@@ -18,13 +18,16 @@ fn async_mmap_search_matches_exact_topk_before_and_after_convergence() {
     let rows: Vec<[f32; 32]> = (0..12).map(|i| [i as f32; 32]).collect();
     // An exact, one-chunk codebook removes quantization error from this test,
     // allowing traversal/cache behavior to be checked against exhaustive L2.
-    let pq = Arc::new(FixedChunkPQTable::new(
-        32,
-        1,
-        (0..256).flat_map(|i| [i as f32; 32]).collect(),
-        vec![0.; 32],
-        vec![0, 32],
-    ));
+    let pq = Arc::new(
+        FixedChunkPQTable::new(
+            32,
+            1,
+            (0..256).flat_map(|i| [i as f32; 32]).collect(),
+            vec![0.; 32],
+            vec![0, 32],
+        )
+        .unwrap(),
+    );
     let codes: Vec<_> = (0..12).collect();
     let layout = SectorLayout::new(12, 32, 12, 12, 12);
     let builder = MmapStorage::new(layout.clone());

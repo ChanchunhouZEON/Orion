@@ -42,7 +42,8 @@ use crate::model::PhasedGraph;
 use crate::model::scratch::InMemScratchPool;
 use orion_ann_diskann::model::InmemDataset;
 use orion_ann_vector::FullPrecisionDistance;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 mod access;
@@ -108,8 +109,6 @@ where
         entry: u32,
         max_degree: u32,
         max_extra: usize,
-        pq: Option<Arc<FixedChunkPQTable>>,
-        pq_codes: Option<Vec<u8>>,
     ) -> Self {
         let num_nodes = partitions.len();
         Self::validate_graph_shape(&dataset, num_nodes, entry)
@@ -124,29 +123,22 @@ where
         );
         graph.print_stats();
 
-        Self::from_phased_graph(dataset, graph, entry, pq, pq_codes)
+        Self::from_phased_graph(dataset, graph, entry)
     }
 }
 
 impl<D, S: Default> CompressedIndex<D, S> {
     /// Build from a pre-built PhasedGraph (e.g. cloned from another instance).
-    pub(crate) fn from_phased_graph(
-        dataset: D,
-        graph: PhasedGraph,
-        entry: u32,
-        pq: Option<Arc<FixedChunkPQTable>>,
-        pq_codes: Option<Vec<u8>>,
-    ) -> Self {
+    pub(crate) fn from_phased_graph(dataset: D, graph: PhasedGraph, entry: u32) -> Self {
         let num_nodes = graph.num_nodes();
-        let num_pq_chunks = pq.as_ref().map(|p| p.get_num_chunks());
         Self {
             dataset,
             graph,
             entry,
             num_nodes,
-            pq,
-            pq_codes,
-            num_pq_chunks,
+            pq: None,
+            pq_codes: None,
+            num_pq_chunks: None,
             inmem_scratch_pool: OnceLock::new(),
             sidecars: S::default(),
         }
@@ -166,5 +158,31 @@ impl<D, S> std::fmt::Debug for CompressedIndex<D, S> {
                 &self.inmem_scratch_pool.get().is_some(),
             )
             .finish_non_exhaustive()
+    }
+}
+
+impl<D: IndexData, S> CompressedIndex<D, S> {
+    /// Attach fitted product-quantization data to an owned index.
+    /// # Errors
+    /// Rejects incompatible dimensions or packed code lengths. This is an
+    /// experimental PQ search facility, separate from scalar-quantized cascades.
+    pub fn with_product_quantization(
+        mut self,
+        table: Arc<FixedChunkPQTable>,
+        codes: Vec<u8>,
+    ) -> crate::Result<Self> {
+        let chunks = table.get_num_chunks();
+        if table.dim() != self.dataset.dimension()
+            || chunks == 0
+            || self.num_nodes.checked_mul(chunks) != Some(codes.len())
+        {
+            return Err(crate::Error::invalid_argument(
+                "PQ table/codes do not match the base shape",
+            ));
+        }
+        self.num_pq_chunks = Some(chunks);
+        self.pq = Some(table);
+        self.pq_codes = Some(codes);
+        Ok(self)
     }
 }

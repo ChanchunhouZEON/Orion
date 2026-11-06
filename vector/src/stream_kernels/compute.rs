@@ -36,7 +36,9 @@ unsafe fn step<K: DistanceKernelBackend, P: LinePrefetch, const LINE: usize, con
     K::step(
         accumulator,
         base.add(offset).cast(),
-        query.add(offset).cast(),
+        query
+            .add((group_start + SLOT) * K::QUERY_CHUNK_BYTES)
+            .cast(),
     );
 
     let start = if (4 * K::CHUNK_BYTES).is_multiple_of(LINE) {

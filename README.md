@@ -1,6 +1,6 @@
 <h1 align="center"><img src="orion-core/assets/orion-astraeus.png" alt="" width="64" align="center" /> Orion Astraeus: Admission-Aware Graph Search</h1>
 
-<p align="center"><strong>English</strong> · <a href="README.zh-CN.md" lang="zh-CN">简体中文</a></p>
+<p align="center"><strong>English</strong> · <a href="README.zh-CN.md" lang="zh-CN">简体中文</a> · <a href="README.yue.md" lang="yue">粵語</a></p>
 
 <p align="center">
   <a href=".github/workflows/ci.yml"><img alt="Safety tests: Miri and adversarial inputs" src="https://img.shields.io/badge/safety-Miri_%2B_adversarial_tests-377EAD?style=flat&amp;labelColor=17263D" /></a>
@@ -53,17 +53,18 @@ These datasets span image descriptors, learned visual features, word embeddings
 and passage embeddings, covering low- and high-dimensional search as well as
 million- to billion-vector scale. All columns use **8 threads, k=10, and
 Recall@10 ≥ 0.95**; we select the fastest measured median QPS meeting the
-target, without interpolation.
+target, without interpolation. The Wiki-Ada-1M cells also show the actual
+Recall@10 in parentheses; the selected points do not have identical recall.
 
-| Engine · QPS | SIFT1M | GloVe-25 | GloVe-100 | GIST | Deep10M | MS-MARCO | SIFT1B | Wiki-Ada-1M |
+| Engine · QPS | SIFT1M | GloVe-25 | GloVe-100 | GIST | Deep10M | MS-MARCO | SIFT1B | Wiki-Ada-1M<br>QPS (Recall@10) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Orion** | **341K** | **383K** | **47K** | **48K** | **170K** | **52K** | **34K** | **144K** |
-| ParlayANN | 257K | 247K | 37K | 29K | 143K | 38K | 33K | 151K |
-| Microsoft Vamana (DiskANN) | 91K | 151K | 12K | 7K | 39K | — | 10K | 40K |
+| **Orion** | **341K** | **383K** | **47K** | **48K** | **170K** | **52K** | **34K** | **144K** (0.98587) |
+| ParlayANN | 257K | 247K | 37K | 29K | 143K | 38K | 33K | 151K (0.95378) |
+| Microsoft Vamana (DiskANN) | 91K | 151K | 12K | 7K | 39K | — | 10K | 40K (0.98470) |
 | USearch HNSW | 59K | 102K | — | — | 21K | 8K | Not tested | Not tested |
 | LanceDB HNSW (native) | 1K | 1K | — | — | — | — | Not tested | Not tested |
 | HNSW (hnswlib) | 51K | 139K | — | — | 21K | 6K | Not tested | Not tested |
-| FAISS HNSW+SQ | 54K | — | — | — | 15K | 5K | Not tested | 18K |
+| FAISS HNSW+SQ | 54K | — | — | — | 15K | 5K | Not tested | 18K (0.95508) |
 | FAISS IVF-Flat | 9K | 33K | 3K | — | 2K | — | Not tested | Not tested |
 | Annoy | 1K | 3K | — | — | — | — | Not tested | Not tested |
 

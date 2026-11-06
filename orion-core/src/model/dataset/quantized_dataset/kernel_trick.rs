@@ -62,14 +62,16 @@
 //! [num_vertices × 4 bytes — i32 norms_sq]
 //! ```
 
-use super::quantized_dataset::{QuantizedDataset, QuantizedDatasetShape, ResidentMemory};
-use super::rows::F32Rows;
-use super::validation::{self, CheckedRows};
+use crate::model::dataset::quantized_dataset::{
+    QuantizedDataset, QuantizedDatasetShape, ResidentMemory,
+};
+use crate::model::dataset::rows::F32Rows;
+use crate::model::dataset::validation::{self, CheckedRows};
 use orion_ann_diskann::common::AlignedBoxWithSlice;
 use rayon::prelude::*;
 
-use super::quantized_spec::QuantParamsL2;
 use crate::Result;
+use crate::model::dataset::quantized_spec::QuantParamsL2;
 
 /// Disk-format magic for the L2-kernel-trick sidecar (`.qdsl2kt`).
 pub const L2_KT_MAGIC: u32 = 0x5144_4B54; // "QDKT"
@@ -244,7 +246,12 @@ impl L2KTDataset {
         w.write_all(&hdr)?;
 
         // i8 base — reinterpret as u8 bytes for the byte writer.
-        super::rows::write_rows(w, self.data.as_slice(), self.stride, l2_kt_stride_disk(dim))?;
+        crate::model::dataset::rows::write_rows(
+            w,
+            self.data.as_slice(),
+            self.stride,
+            l2_kt_stride_disk(dim),
+        )?;
 
         // i32 norms_sq.
         let norms_bytes = bytemuck::cast_slice(self.norms_sq.as_slice());
@@ -308,7 +315,8 @@ impl L2KTDataset {
         // i8 base.
         let disk_stride = stride;
         let stride = l2_kt_stride(dim);
-        let data = super::rows::read_rows::<i8>(r, num_vertices, stride, disk_stride)?;
+        let data =
+            crate::model::dataset::rows::read_rows::<i8>(r, num_vertices, stride, disk_stride)?;
 
         // i32 norms_sq.
         let mut norms_sq = AlignedBoxWithSlice::<i32>::new(num_vertices, 32)
@@ -483,7 +491,7 @@ impl L2KTDataset {
     }
 }
 
-impl super::quantized_dataset::sealed::Sealed for L2KTDataset {}
+impl crate::model::dataset::quantized_dataset::sealed::Sealed for L2KTDataset {}
 impl QuantizedDataset for L2KTDataset {
     type BuildOptions = ();
     fn default_build_options() -> Self::BuildOptions {

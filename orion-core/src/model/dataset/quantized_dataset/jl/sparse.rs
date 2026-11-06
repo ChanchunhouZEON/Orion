@@ -49,10 +49,12 @@
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 use std::arch::aarch64::*;
 
-use super::quantized_dataset::{QuantizedDataset, QuantizedDatasetShape, ResidentMemory};
-use super::rows::F32Rows;
-use super::validation::{self, CheckedRows};
 use crate::Result;
+use crate::model::dataset::quantized_dataset::{
+    QuantizedDataset, QuantizedDatasetShape, ResidentMemory,
+};
+use crate::model::dataset::rows::F32Rows;
+use crate::model::dataset::validation::{self, CheckedRows};
 use orion_ann_diskann::common::AlignedBoxWithSlice;
 use rayon::prelude::*;
 
@@ -285,7 +287,7 @@ impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
         w.write_all(idx_bytes)?;
 
         // Codes.
-        super::rows::write_rows(
+        crate::model::dataset::rows::write_rows(
             w,
             self.codes.as_slice(),
             self.stride,
@@ -376,7 +378,8 @@ impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
         // Codes.
         let disk_stride = stride;
         let stride = jl_sparse_stride(BITS);
-        let codes = super::rows::read_rows::<u8>(r, num_vertices, stride, disk_stride)?;
+        let codes =
+            crate::model::dataset::rows::read_rows::<u8>(r, num_vertices, stride, disk_stride)?;
 
         Ok(Self {
             dimension: dim,
@@ -586,7 +589,7 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
 
         let idx_bytes = bytemuck::cast_slice(&self.indices);
         w.write_all(idx_bytes)?;
-        super::rows::write_rows(
+        crate::model::dataset::rows::write_rows(
             w,
             self.codes.as_slice(),
             self.stride,
@@ -681,7 +684,8 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
 
         let disk_stride = stride;
         let stride = jl_sparse_stride(BITS);
-        let codes = super::rows::read_rows::<u8>(r, num_vertices, stride, disk_stride)?;
+        let codes =
+            crate::model::dataset::rows::read_rows::<u8>(r, num_vertices, stride, disk_stride)?;
 
         let mut norms = AlignedBoxWithSlice::<f32>::new(num_vertices, 32)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
@@ -1131,7 +1135,7 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
     }
 }
 
-impl<const BITS: usize, const NZ: usize> super::quantized_dataset::sealed::Sealed
+impl<const BITS: usize, const NZ: usize> crate::model::dataset::quantized_dataset::sealed::Sealed
     for JLSparseDataset<BITS, NZ>
 {
 }
@@ -1177,7 +1181,7 @@ impl<const BITS: usize, const NZ: usize> QuantizedDataset for JLSparseDataset<BI
     }
 }
 
-impl<const BITS: usize, const NZ: usize> super::quantized_dataset::sealed::Sealed
+impl<const BITS: usize, const NZ: usize> crate::model::dataset::quantized_dataset::sealed::Sealed
     for JLSparseDatasetMips<BITS, NZ>
 {
 }

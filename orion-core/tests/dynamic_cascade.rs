@@ -561,3 +561,39 @@ fn sidecar_stream_rejects_bad_headers() {
     assert!(sidecar_file::decode(&jpath, JLSparseDataset::<1024>::decode).is_err());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn invalid_precision_is_rejected_by_the_core_search_boundary() {
+    let index = dynamic(32);
+    let exact = ads_f32::DynamicAdsF32Admission::new(index.dataset(), 2.1);
+    let low = L2U8Admission::new(index.ensure_quantized_dataset());
+    let high_rerank = U16Rerank::new(index.ensure_quantized_dataset_l2_u16());
+    let mixed = JlMipsPrefilter::new(index.ensure_quantized_dataset_jl_mips());
+    let no_rerank = NoRerank;
+    for cascade in [
+        DynamicCascade {
+            prefilter: None,
+            admission: &exact,
+            rerank: &high_rerank,
+        },
+        DynamicCascade {
+            prefilter: Some(&mixed),
+            admission: &low,
+            rerank: &no_rerank,
+        },
+    ] {
+        let error = index
+            .search_cascade(
+                &values(32)[..32],
+                DynamicSearchConfig {
+                    k: 3,
+                    search_list_size: 8,
+                    ..Default::default()
+                },
+                cascade,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), orion_ann_core::ErrorCode::InvalidArgument);
+        assert!(error.to_string().contains("precision"));
+    }
+}

@@ -3,4 +3,6 @@
  * Licensed under the MIT License.
  */
 
-pub mod pq;
+//! Binary projection sketches.
+pub mod hadamard;
+pub mod sparse;

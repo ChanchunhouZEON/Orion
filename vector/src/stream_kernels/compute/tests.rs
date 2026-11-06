@@ -120,3 +120,25 @@ fn partial_line_is_flushed_after_each_random_vector() {
         vec![Computed(32), Computed(64), Computed(96), Line]
     );
 }
+
+#[test]
+fn adc_query_stride_does_not_change_code_line_prefetch_cadence() {
+    use crate::PqAdcDistance;
+    for bytes in [1, 2, 3, 4, 7, 63, 64, 65, 127, 128, 129] {
+        let codes = vec![3u8; bytes];
+        let table: Vec<f32> = (0..bytes)
+            .flat_map(|i| std::iter::repeat_n(i as f32, 256))
+            .collect();
+        let mut calls = 0;
+        let score = unsafe {
+            compute_vertex::<PqAdcDistance, _, 64>(
+                codes.as_ptr(),
+                table.as_ptr().cast(),
+                bytes,
+                || calls += 1,
+            )
+        };
+        assert_eq!(calls, bytes.div_ceil(64));
+        assert_eq!(score, (0..bytes).map(|i| i as f32).sum::<f32>());
+    }
+}

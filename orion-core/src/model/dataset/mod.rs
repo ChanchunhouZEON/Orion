@@ -4,15 +4,18 @@
  */
 
 //! Immutable scalar, projection and rotation sidecars with a common build and memory contract.
-pub mod jl_hadamard_dataset;
-pub mod jl_sparse_dataset;
-pub mod l2_kt_dataset;
+
 pub mod quantized_dataset;
-pub mod quantized_spec;
-pub mod rabitq_b4_dataset;
-pub mod rabitq_dataset;
+// Stable import paths; each implementation lives under its representation family.
+pub use quantized_dataset::{
+    jl::hadamard as jl_hadamard_dataset, jl::sparse as jl_sparse_dataset,
+    kernel_trick as l2_kt_dataset, rabitq::binary as rabitq_dataset,
+    rabitq::multibit as rabitq_b4_dataset, scalar as scalar_dataset,
+    scalar::spec as quantized_spec,
+};
+
 pub mod rows;
-pub mod scalar_dataset;
+
 mod validation;
 
 pub use jl_hadamard_dataset::{JL_HADAMARD_MAGIC, JlHadamardDataset, jl_hadamard_stride};

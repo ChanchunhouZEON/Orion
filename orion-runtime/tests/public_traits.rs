@@ -20,6 +20,11 @@ fn public_service_types_are_inspectable_and_movable() {
     debug::<Calibration>();
     debug::<SearchResult>();
     debug::<Index>();
+    debug::<orion_ann::PinOptions>();
+    debug::<orion_ann::PinHint>();
+    debug::<orion_ann::PinReport>();
+    debug::<orion_ann::PinnedDatasets<'_>>();
+    shareable::<orion_ann::PinnedDatasets<'_>>();
     debug::<orion_ann::QueryBatch<'_>>();
     debug::<orion_ann::SearchOptions>();
     shareable::<orion_ann::QueryBatch<'_>>();

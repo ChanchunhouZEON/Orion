@@ -15,9 +15,20 @@ unreleased development baseline, not a dated release announcement.
 
 ### Added
 
+- Production prefetch defaults now match the validated benchmark schedule:
+  32-cache-line near windows and bursts, with an 8-line group trigger.
+  Rust, Python and CLI consumers use it without benchmark environment overrides.
+
+- Independent slice-based PQ training, encoding and L2/IP ADC admission using
+  `DistanceStream`; no ndarray dependency in Orion core and no DiskANN PQ reuse.
+- Default best-effort PQ codebook pinning, optional private-file code paging,
+  explicit code pinning and authenticated PQ sidecar/snapshot round trips.
+- Requirements-driven, scoped RAM pinning with per-dataset selection, a bounded
+  best-effort default, required/off modes and shared page-lock lifetimes.
+- Cascade precision validation rejects quantized reranking after exact/native-u8
+  admission and prevents binary sketches from acting as final rerankers.
 - Native API CI matrix entries for Linux ARM64 and macOS x86-64 alongside the
   existing Linux x86-64 and macOS ARM64 checks; OS and CPU badges are separate.
-
 - A shared Rust `Index` API for file and in-memory inputs, graph construction,
   calibration, batch search and persistence, with Python/NumPy and CLI adapters.
 - Dynamic vector dimensions with row padding, f32 cascades, native-u8 L2 search
@@ -39,6 +50,9 @@ unreleased development baseline, not a dated release announcement.
 
 ### Changed
 
+- Quantized datasets are grouped by representation family; exact sessions share
+  that organization. Product quantization is available without a separate
+  Cargo feature; training and buffer allocation remain on demand.
 - Public search uses adaptive traversal and requires calibration for the
   requested `k`; missing calibration reports `InvalidState`.
 - Shared configuration and persistence orchestration live in the runtime facade;
@@ -73,9 +87,3 @@ The 2026-11-05 local Rust 1.92/AArch64 snapshot reports **504 passing Rust tests
 Four ordinary tests and one doctest are explicitly ignored. These are dated
 measurements, not a claim of runtime coverage on every supported architecture.
 See [the validation scope and evidence](docs/testing.md#readme-validation-snapshot).
-
-Future PQ feature isolation is tracked in the
-[contribution guide](CONTRIBUTION.md#planned-follow-up-optional-product-quantization)
-and is not implemented by this change record. When creating a release, move the
-applicable entries under its version and actual release date, and leave a new
-`Unreleased` section for subsequent work.

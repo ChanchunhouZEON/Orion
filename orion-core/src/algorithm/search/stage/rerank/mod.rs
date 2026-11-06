@@ -60,6 +60,12 @@ pub type Rerank<'a> = dyn RerankStage + 'a;
 pub struct NoRerank;
 
 impl RerankStage for NoRerank {
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
+        None
+    }
+
     fn rerank(
         &self,
         _query: &[f32],

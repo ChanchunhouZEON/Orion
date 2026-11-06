@@ -41,6 +41,14 @@ impl<'a> RabitqPrefilter<'a> {
 // SAFETY: shape describes the borrowed base; sessions own checked query storage
 // and cannot outlive that base.
 unsafe impl<'a> PrefilterStage for RabitqPrefilter<'a> {
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
+        use crate::model::dataset::quantized_dataset::QuantizedKind as K;
+        use crate::model::dataset::quantized_dataset::capabilities::Precision as P;
+        Some(P::Quantized(K::Rabitq))
+    }
+
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.dataset.dimension, self.dataset.num_vertices))
     }

@@ -38,6 +38,13 @@ impl<'a, const N: usize> NativeU8Admission<'a, N> {
 // SAFETY: shape describes the borrowed base; sessions own checked query storage
 // and cannot outlive that base.
 unsafe impl<const N: usize> AdmissionStage for NativeU8Admission<'_, N> {
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
+        use crate::model::dataset::quantized_dataset::capabilities::Precision as P;
+        Some(P::Exact)
+    }
+
     fn shape(&self) -> Option<(usize, usize)> {
         Some((N, self.dataset.num_active_pts))
     }

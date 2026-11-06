@@ -19,6 +19,10 @@ use super::Neighbor;
 /// Sessions must remain valid for the lifetime of the stage borrow.
 ///
 pub unsafe trait AdmissionStage: Send + Sync {
+    /// Scoring representation, checked once before query sessions are opened.
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision>;
     /// Logical dimension and row count, for checking recipe/base compatibility.
     fn shape(&self) -> Option<(usize, usize)> {
         None

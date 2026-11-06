@@ -24,6 +24,15 @@ pub struct DynamicCascade<'a> {
 }
 impl DynamicCascade<'_> {
     fn validate(&self, dimension: usize, points: usize) -> Result<()> {
+        use crate::model::dataset::quantized_dataset::capabilities::validate_precision;
+        let admission = self.admission.precision().ok_or_else(|| {
+            Error::invalid_argument("admission requires a scoring representation")
+        })?;
+        validate_precision(
+            self.prefilter.and_then(|p| p.precision()),
+            admission,
+            self.rerank.precision(),
+        )?;
         let shapes = [
             self.prefilter.and_then(|p| p.shape()),
             self.admission.shape(),

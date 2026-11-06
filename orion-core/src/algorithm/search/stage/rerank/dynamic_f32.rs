@@ -30,6 +30,13 @@ impl<'a, K: DistanceKernelBackend<Storage = f32>> DynamicF32Rerank<'a, K> {
 impl<K: DistanceKernelBackend<Storage = f32> + Send + Sync> RerankStage
     for DynamicF32Rerank<'_, K>
 {
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
+        use crate::model::dataset::quantized_dataset::capabilities::Precision as P;
+        Some(P::Exact)
+    }
+
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.dataset.layout().logical_dim(), self.dataset.len()))
     }

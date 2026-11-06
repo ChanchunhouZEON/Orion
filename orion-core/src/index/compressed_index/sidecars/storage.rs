@@ -113,7 +113,7 @@ impl<T: SidecarCodec> Slot for SidecarCell<T> {
 }
 
 impl DynamicSidecars {
-    fn slots(&self) -> [&dyn Slot; 10] {
+    fn slots(&self) -> [&dyn Slot; 11] {
         [
             &self.q_dataset,
             &self.q_dataset_l2_u16,
@@ -125,6 +125,7 @@ impl DynamicSidecars {
             &self.q_dataset_jl_mips,
             &self.q_dataset_jl_hadamard,
             &self.q_dataset_l2_kt,
+            &self.q_dataset_pq,
         ]
     }
 }

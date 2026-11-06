@@ -59,6 +59,12 @@ struct NoPrefilterSession;
 // SAFETY: shape describes the borrowed base; sessions own checked query storage
 // and cannot outlive that base.
 unsafe impl PrefilterStage for NoPrefilter {
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
+        None
+    }
+
     #[inline(always)]
     fn open<'a>(&'a self, _q: &[f32]) -> Box<dyn PrefilterSession + 'a> {
         Box::new(NoPrefilterSession)

@@ -36,6 +36,14 @@ impl<'a> U16Rerank<'a> {
 }
 
 impl<'a> RerankStage for U16Rerank<'a> {
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
+        use crate::model::dataset::quantized_dataset::QuantizedKind as K;
+        use crate::model::dataset::quantized_dataset::capabilities::Precision as P;
+        Some(P::Quantized(K::L2U16))
+    }
+
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.dataset.dimension, self.dataset.n))
     }

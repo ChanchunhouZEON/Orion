@@ -53,6 +53,13 @@ impl<'a, const N: usize> IpF32Rerank<'a, N> {
 }
 
 impl<'a, const N: usize> RerankStage for IpF32Rerank<'a, N> {
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
+        use crate::model::dataset::quantized_dataset::capabilities::Precision as P;
+        Some(P::Exact)
+    }
+
     fn shape(&self) -> Option<(usize, usize)> {
         Some((N, self.dataset.num_active_pts))
     }

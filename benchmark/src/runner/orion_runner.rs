@@ -76,8 +76,6 @@ macro_rules! build_orion {
             $result.entry_point,
             $self.graph_degree as u32,
             $self.max_extra,
-            None,
-            None,
         );
         log::info!("Orion overhead: {:.2}s", t1.elapsed().as_secs_f32());
 
@@ -172,23 +170,25 @@ macro_rules! search_batch_orion {
     }};
 }
 
-/// Pin the dataset, cascade-tier sidecars, and `PhasedGraph` slab
-/// into RAM via `mlock(2)`. Best-effort: pin failures are logged
-/// inside `utils::mlock_bytes`, no abort. Routes the per-tier pin
-/// through `cascade::pin_cascade` so the cascade builders and the
-/// pin policy stay in lockstep.
+/// Prepare requirements, then hold their RAM residency across the sweep.
 macro_rules! pin_orion_hot {
     ($idx:ident, $self:ident) => {{
-        // f32 base dataset is always hot regardless of cascade choice.
-        let ds_ptr = $idx.dataset().data.as_ptr() as *const u8;
-        let ds_len = $idx.dataset().data.len() * std::mem::size_of::<f32>();
-        crate::utils::mlock_bytes("orion dataset (f32)", ds_ptr, ds_len);
-
-        crate::runner::cascade::pin_cascade($idx, $self.prefilter, $self.admission, $self.rerank);
-
-        // PhasedGraph slot slab.
+        use orion_ann::benchmark::residency::{pin, prepare, DatasetRequirements};
+        let requirements =
+            DatasetRequirements::from_cascade($self.prefilter, $self.admission, $self.rerank)
+                .expect("dataset requirements");
+        prepare($idx, &requirements).expect("prepare search datasets");
         let pg = $idx.graph().buffer_bytes();
         crate::utils::mlock_bytes("orion pgraph slab", pg.as_ptr(), pg.len());
+        pin(
+            $idx,
+            &requirements,
+            &orion_ann::PinOptions {
+                budget_bytes: usize::MAX,
+                ..Default::default()
+            },
+        )
+        .expect("pin prepared datasets")
     }};
 }
 
@@ -202,7 +202,7 @@ impl OrionRunner {
     /// resident pages. Mirrors the timed-region setup in
     /// `orion.rs`. Call once after `build()` and before the
     /// timing loop.
-    pub fn pin_hot_regions(&self) {
+    pub fn pin_hot_regions(&self) -> orion_ann::PinnedDatasets<'_> {
         match self.inner.as_ref().expect("Index not built") {
             OrionInner::Dim32 { idx } => pin_orion_hot!(idx, self),
             OrionInner::Dim100 { idx } => pin_orion_hot!(idx, self),

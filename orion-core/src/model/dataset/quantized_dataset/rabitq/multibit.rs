@@ -46,10 +46,12 @@
 //! `1/49` of the 1-bit version's variance — the recall ceiling on
 //! SIFT/GIST that 1-bit hit at ~0.74/0.94 should clear comfortably.
 
-use super::quantized_dataset::{QuantizedDataset, QuantizedDatasetShape, ResidentMemory};
-use super::rows::F32Rows;
-use super::validation::{self, CheckedRows};
 use crate::Result;
+use crate::model::dataset::quantized_dataset::{
+    QuantizedDataset, QuantizedDatasetShape, ResidentMemory,
+};
+use crate::model::dataset::rows::F32Rows;
+use crate::model::dataset::validation::{self, CheckedRows};
 use orion_ann_diskann::common::AlignedBoxWithSlice;
 
 /// Disk-format magic for the B=4 RaBitQ sidecar (`.qrb4`).
@@ -118,7 +120,8 @@ impl RabitQ4Dataset {
         assert!(dim > 0);
         let num_vertices = dataset.len();
         let stride = rabitq_b4_code_stride(dim);
-        let rotation = super::rabitq_dataset::try_build_orthogonal_rotation(seed, dim)?;
+        let rotation =
+            crate::model::dataset::rabitq_dataset::try_build_orthogonal_rotation(seed, dim)?;
 
         let mut codes =
             AlignedBoxWithSlice::<u8>::new(validation::product(num_vertices, stride)?, 16)?;
@@ -130,7 +133,11 @@ impl RabitQ4Dataset {
             let x = dataset.row(vid);
 
             // P @ x and per-vertex L2 norm.
-            super::rabitq_dataset::apply_rotation_pub(rotation.as_slice(), x, &mut rotated);
+            crate::model::dataset::rabitq_dataset::apply_rotation_pub(
+                rotation.as_slice(),
+                x,
+                &mut rotated,
+            );
             let l2: f32 = rotated.iter().map(|v| v * v).sum::<f32>().sqrt();
             norms.push(l2);
 
@@ -188,7 +195,7 @@ impl RabitQ4Dataset {
     pub fn rotate_query(&self, q: &[f32], out: &mut [f32]) {
         assert_eq!(q.len(), self.dimension);
         assert_eq!(out.len(), self.dimension);
-        super::rabitq_dataset::apply_rotation_pub(self.rotation.as_slice(), q, out);
+        crate::model::dataset::rabitq_dataset::apply_rotation_pub(self.rotation.as_slice(), q, out);
     }
 
     /// Reference scalar L2² estimator. Decodes 4-bit signed values one
@@ -745,7 +752,7 @@ impl RabitQ4Dataset {
     }
 }
 
-impl super::quantized_dataset::sealed::Sealed for RabitQ4Dataset {}
+impl crate::model::dataset::quantized_dataset::sealed::Sealed for RabitQ4Dataset {}
 impl QuantizedDataset for RabitQ4Dataset {
     type BuildOptions = u64;
     fn default_build_options() -> Self::BuildOptions {

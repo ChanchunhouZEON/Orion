@@ -115,3 +115,87 @@ as required; borrowing the input does not promise allocation-free search.
 The batch core methods return the same type. `rows()` iterates valid IDs without
 padding. Requesting scores is reserved for a later API addition; no extra exact
 scoring pass is performed in this interface.
+
+## Optional RAM residency
+
+Calibration prepares the search requirements. `pinning_hints()` reports each
+prepared dataset's total payload; `pin()` only locks existing allocations and
+never builds or reloads a sidecar. It pins RAM, not the CPU's L1/L2 caches.
+The default policy attempts smaller datasets first with a 64 MiB page-rounded
+budget. OS limits can still deny a request; inspect the report.
+
+Ordinary builds use the measured prefetch schedule: 32-cache-line near windows
+for both quantized scoring and reranking, a maximum 32-line far burst, and an
+8-line compute-group trigger. These defaults also apply to Python and CLI
+searches; benchmark-only environment overrides are not needed to enable them.
+Prefetch scheduling and OS RAM pinning are independent mechanisms.
+
+The CLI (including snapshot search) and `orion-sweep` automatically attempt to pin prepared
+base/sidecar requirements after resource preflight and preparation, before
+search starts. Their scoped locks last through the search phase. An explicit
+memory budget also bounds the page-rounded pin request; without one, the OS
+lock allowance is the limit. Logs report successful bytes and each skipped
+dataset. Passing preflight does not guarantee available RAM or permission to
+lock it: denial leaves storage pageable and search continues. Embedded Rust
+sessions retain the explicit guard API below so the caller controls residency.
+
+```no_run
+# fn pin_example(index: &orion_ann::Index) -> orion_ann::Result<()> {
+use orion_ann::{DatasetPin, PinMode, PinOptions, QuantizedKind};
+let hints = index.pinning_hints()?;
+println!("{hints:?}");
+// For a calibrated L2-u8 cascade, pin only its quantized representation.
+let residency = index.pin(&PinOptions {
+    mode: PinMode::BestEffort,
+    budget_bytes: 128 * 1024 * 1024,
+    datasets: Some(vec![DatasetPin::Quantized(QuantizedKind::L2U8)]),
+})?;
+println!("{:?}", residency.report());
+// Keep `residency` alive across searches. Overlapping Orion guards share locks.
+# Ok(()) }
+```
+
+`PinMode::Required` returns an error and rolls back the request if the budget or
+OS prevents locking. `Off` performs no locking. A selection must belong to this
+index's search requirements; selecting an unprepared representation returns
+`InvalidState` instead of allocating it. An empty selection locks nothing.
+The guard borrows storage, so Rust prevents dropping or mutably recalibrating
+the index while it is held. Pinning does not invalidate calibration or affect
+cache identities, snapshot manifests or search results. Apply the desired
+residency policy again after opening a snapshot on another machine.
+
+Cascade precision is validated before sidecar preparation. A binary sketch is
+not a final reranker, and exact f32/native-u8 admission cannot be followed by
+quantized reranking. Increasing scalar precision (u8 to u16, i8 to i16) and
+refinement to exact scoring are supported; unrelated quantizers are not ordered
+by their storage width. The existing dimension/metric defaults are unchanged.
+
+## Product quantization
+
+The `pq-l2` and `pq-ip` admission choices use the same fitted PQ dataset with
+squared-L2 and negative-inner-product lookup tables respectively. Query coordinates
+remain f32. PQ is trained only when requested; existing default recipes are unchanged.
+PQ admissions can use exact reranking. Compression ratio alone does not establish
+an ordering against scalar quantizers, so PQ followed by u16 reranking is rejected.
+
+The canonical recipe trains 256 centroids per subspace with a deterministic sample
+of at most 4,096 rows and 12 Lloyd iterations. It uses `ceil(dimension / 8)` subspaces,
+capped at 64. Standalone `PqBuildOptions` allow explicit budgets and chunk counts.
+Training, code generation and page placement belong outside search timing.
+
+Codebooks are best-effort pinned in RAM when prepared. This is not an L1/L2 residency
+guarantee; `PqDataset::codebook_pin_error()` reports an OS lock refusal. Codes are
+owned and pageable by default. `Index::set_pq_code_storage(PqCodeStorage::OnDemand)`
+can move prepared codes into a private temporary-file mapping; the OS then faults
+code pages as needed. This needs temporary disk space equal to the code payload,
+and transition may temporarily retain both representations. It does not map a mutable
+cache path. `Resident` switches back to owned memory; use the ordinary scoped pin API
+with an explicit PQ selection if codes must remain in RAM. Placement does not change
+scores, calibration or snapshot identity.
+
+```no_run
+# fn placement(index: &mut orion_ann::Index) -> orion_ann::Result<()> {
+// Prepare a PQ recipe by calibration, or open an existing PQ snapshot first.
+index.set_pq_code_storage(orion_ann::PqCodeStorage::OnDemand)?;
+# Ok(()) }
+```

@@ -3,7 +3,8 @@
  * Licensed under the MIT License.
  */
 
-use super::{AdmissionSession, AdmissionStage, Neighbor};
+use crate::algorithm::search::stage::{AdmissionSession, AdmissionStage};
+use crate::model::Neighbor;
 use orion_ann_diskann::model::PaddedDataset;
 
 /// Reference f32 admission used by matched-state experiments.
@@ -15,6 +16,13 @@ struct ExactSession<'a> {
 }
 // SAFETY: the borrowed padded dataset supplies checked rows of the declared shape.
 unsafe impl AdmissionStage for ExactAdmission<'_> {
+    fn precision(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
+        use crate::model::dataset::quantized_dataset::capabilities::Precision as P;
+        Some(P::Exact)
+    }
+
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.0.layout().logical_dim(), self.0.len()))
     }

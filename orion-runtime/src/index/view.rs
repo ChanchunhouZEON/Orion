@@ -22,6 +22,14 @@ pub(super) struct ReadView {
 }
 
 pub(super) trait Engine: Send + Sync {
+    fn set_pq_code_storage(&mut self, policy: crate::PqCodeStorage) -> Result<()>;
+    fn pin<'a>(
+        &'a self,
+        config: &ResolvedRunConfig,
+        options: &crate::PinOptions,
+    ) -> Result<crate::PinnedDatasets<'a>>;
+    fn pin_hints(&self, config: &ResolvedRunConfig) -> Result<Vec<crate::PinHint>>;
+
     fn prepare_search(&self, config: &ResolvedRunConfig) -> Result<()>;
     fn calibrate(
         &self,
@@ -55,6 +63,20 @@ pub(super) struct DynamicEngine<B: SearchBackend> {
 }
 
 impl<B: SearchBackend> Engine for DynamicEngine<B> {
+    fn set_pq_code_storage(&mut self, policy: crate::PqCodeStorage) -> Result<()> {
+        self.index.set_pq_code_storage(policy)
+    }
+    fn pin<'a>(
+        &'a self,
+        config: &ResolvedRunConfig,
+        options: &crate::PinOptions,
+    ) -> Result<crate::PinnedDatasets<'a>> {
+        B::pin_search_storage(&self.index, config, options)
+    }
+    fn pin_hints(&self, config: &ResolvedRunConfig) -> Result<Vec<crate::PinHint>> {
+        B::pin_hints(&self.index, config)
+    }
+
     fn prepare_search(&self, config: &ResolvedRunConfig) -> Result<()> {
         B::prepare_search(&self.index, config)
     }

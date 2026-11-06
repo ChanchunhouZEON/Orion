@@ -74,6 +74,10 @@ pub trait DistanceKernelBackend {
     /// loops `compute_bytes / CHUNK_BYTES` times per vertex.
     const CHUNK_BYTES: usize = 32;
 
+    /// Query bytes consumed per base chunk. Ordinary metrics advance both
+    /// pointers equally; ADC consumes one 256-entry f32 table per code byte.
+    const QUERY_CHUNK_BYTES: usize = Self::CHUNK_BYTES;
+
     /// Conservative coordinate limit for exact integer accumulation. Runtime
     /// padded APIs reject larger dimensions instead of silently wrapping.
     const MAX_COORDINATES: usize = usize::MAX;
@@ -85,9 +89,11 @@ pub trait DistanceKernelBackend {
     /// window into `acc`.
     ///
     /// # Safety
-    /// `base_chunk` and `query_chunk` must each point to `CHUNK_BYTES`
-    /// readable bytes aligned for `Storage`. Built-in kernels accept natural
-    /// element alignment; SIMD alignment is not required. Padding participates
+    /// `base_chunk` must contain `CHUNK_BYTES` readable bytes; `query_chunk`
+    /// must contain `QUERY_CHUNK_BYTES` readable bytes. Both must satisfy the
+    /// implementation's alignment requirements (natural `Storage` alignment
+    /// for ordinary metrics; f32 alignment for the ADC query table). SIMD
+    /// alignment is not required. Padding participates
     /// in the computation and must be zero when representing shorter vectors.
     /// Accumulated integer coordinates must not exceed `MAX_COORDINATES`.
     unsafe fn step(
@@ -306,3 +312,34 @@ public_kernel!(
 public_kernel!(IpI16Distance, run_ipi16distance);
 public_kernel!(IpF32Distance, run_ipf32distance);
 public_kernel!(L2F32Distance, run_l2f32distance);
+
+/// Asymmetric product-quantization distance: one u8 code selects one f32
+/// lookup-table entry. The table already encodes either squared L2 or negative
+/// inner product. Uses the ordinary stream's unroll, near prefetch and burst.
+#[derive(Debug)]
+pub struct PqAdcDistance;
+impl DistanceKernelBackend for PqAdcDistance {
+    type Storage = u8;
+    type Acc = f32;
+    const CHUNK_BYTES: usize = 1;
+    const QUERY_CHUNK_BYTES: usize = 256 * size_of::<f32>();
+    #[inline(always)]
+    fn init() -> f32 {
+        0.0
+    }
+    #[inline(always)]
+    unsafe fn step(acc: &mut f32, base: *const u8, query: *const u8) {
+        // SAFETY: caller supplies one code and its complete f32-aligned table.
+        unsafe {
+            *acc += query.cast::<f32>().add(base.read() as usize).read();
+        }
+    }
+    #[inline(always)]
+    fn reduce(acc: f32) -> f32 {
+        acc
+    }
+    #[inline(always)]
+    fn merge(into: &mut f32, src: f32) {
+        *into += src;
+    }
+}

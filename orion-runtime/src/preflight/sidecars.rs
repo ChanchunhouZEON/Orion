@@ -84,7 +84,7 @@ fn stacked_requirements_and_phase_selection() {
         cascade::{AdmissionChoice, Cascade, PrefilterChoice, RerankChoice},
         plan::IndexPlan,
     };
-    use crate::sidecars::requirements::{estimate_sidecars, SidecarKind};
+    use crate::sidecars::requirements::{estimate_sidecars, SidecarKind, SidecarRecipe};
     let input_shape = QuantizedDatasetShape {
         rows: 101,
         dimension: 33,
