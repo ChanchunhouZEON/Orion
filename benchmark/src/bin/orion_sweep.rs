@@ -249,8 +249,8 @@ fn run_sweep<B: SearchBackend>(
         config.cascade().label()
     );
 
-    let _residency = B::auto_pin_search_storage(&idx, config)
-    .expect("pin prepared search datasets");
+    let _residency =
+        B::auto_pin_search_storage(&idx, config).expect("pin prepared search datasets");
     // Required base/sidecar buffers are covered by the guard above. Graph and
     // query allocations remain separate benchmark resources.
     {
