@@ -92,7 +92,15 @@ fn point_limit_and_budget_are_independent_of_declared_source_size() {
     ]);
     assert_eq!(report["num_points"], 1_000_000);
     assert_eq!(report["budget_exceeded"], false);
-    let output = fixture.run(&["--preflight", "--memory-budget-gib", "128"]);
+    // A resident-only plan must reject an oversized payload. Auto may instead
+    // place the graph in a mapping, so it has a different budget contract.
+    let output = fixture.run(&[
+        "--preflight",
+        "--memory-budget-gib",
+        "128",
+        "--storage-mode",
+        "resident",
+    ]);
     assert!(!output.status.success());
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["budget_exceeded"], true);
@@ -198,7 +206,78 @@ fn table_and_json_formats_report_the_same_budget_result() {
         "table",
         "--memory-budget-gib",
         "128",
+        "--storage-mode",
+        "resident",
     ]);
     assert!(!exceeded.status.success());
     assert!(String::from_utf8_lossy(&exceeded.stdout).contains("EXCEEDED"));
+}
+
+#[test]
+fn default_auto_maps_the_graph_to_fit_an_offline_budget() {
+    let fixture = Fixture::new();
+    let args = ["--preflight", "--memory-budget-gib", "128"];
+    let report = fixture.report(&args);
+    assert_eq!(report["budget_exceeded"], false);
+    assert_eq!(report["resident_lower_bound_bytes"], 128_000_000_000u64);
+    assert_eq!(report["mapping_reserve_bytes"], 64 * 1024 * 1024);
+    let graph = report["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|component| component["name"] == "graph slab")
+        .unwrap();
+    assert_eq!(graph["phase"], "mapped");
+    assert_eq!(graph["bytes"], 384_000_000_000u64);
+    let table = fixture.run(&[
+        "--preflight",
+        "--memory-budget-gib",
+        "128",
+        "--preflight-format",
+        "table",
+    ]);
+    assert!(table.status.success());
+    let text = String::from_utf8(table.stdout).unwrap();
+    assert!(text.contains("mapped"));
+    assert!(text.contains("known components within budget"));
+    // Offline planning must not allocate a mapping or require the source files.
+    assert!(!fixture.0.join("cache").exists());
+}
+
+#[test]
+fn mapped_mode_accounts_for_reserve_and_rejects_insufficient_budgets() {
+    let fixture = Fixture::new();
+    let report = fixture.report(&[
+        "--preflight",
+        "--storage-mode",
+        "mapped",
+        "--memory-budget-gib",
+        "1",
+    ]);
+    assert_eq!(report["resident_lower_bound_bytes"], 0);
+    assert!(report["accounted_lower_bound_bytes"].as_u64().unwrap() >= 64 * 1024 * 1024);
+    for mode in ["auto", "mapped"] {
+        for format in ["json", "table"] {
+            // Even mapping every payload cannot fit the 64 MiB reserve plus
+            // query buffers into this budget. Mappings are not free memory.
+            let output = fixture.run(&[
+                "--preflight",
+                "--storage-mode",
+                mode,
+                "--memory-budget-gib",
+                "0.01",
+                "--preflight-format",
+                format,
+            ]);
+            assert!(!output.status.success(), "{mode}/{format}");
+            assert!(String::from_utf8_lossy(&output.stderr).contains("memory budget exceeded"));
+            if format == "json" {
+                let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(report["budget_exceeded"], true);
+                assert_eq!(report["resident_lower_bound_bytes"], 0);
+            } else {
+                assert!(String::from_utf8_lossy(&output.stdout).contains("EXCEEDED"));
+            }
+        }
+    }
 }

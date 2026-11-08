@@ -7,48 +7,8 @@ name: Orion CI
 
 on:
   push:
-    branches: [main, master]
-    paths:
-      - '**/Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - 'orion-vector/**'
-      - 'orion-diskann/**'
-      - 'orion-core/**'
-      - 'orion-cli/**'
-      - 'orion-runtime/**'
-      - 'orion-diagnostics/**'
-      - 'orion-error/**'
-      - 'orion-wasm/**'
-      - 'orion-parlay/**'
-      - 'orion-py/**'
-      - 'orion-platform/**'
-      - 'adsampling/**'
-      - 'orion-logger/**'
-      - 'benchmark/**'
-      - '.cargo/**'
-      - '.github/**'
+    branches: [main, master, 'feature/**']
   pull_request:
-    paths:
-      - '**/Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - 'orion-vector/**'
-      - 'orion-diskann/**'
-      - 'orion-core/**'
-      - 'orion-cli/**'
-      - 'orion-runtime/**'
-      - 'orion-diagnostics/**'
-      - 'orion-error/**'
-      - 'orion-wasm/**'
-      - 'orion-parlay/**'
-      - 'orion-py/**'
-      - 'orion-platform/**'
-      - 'adsampling/**'
-      - 'orion-logger/**'
-      - 'benchmark/**'
-      - '.cargo/**'
-      - '.github/**'
   workflow_dispatch:
     inputs:
       require_avx512_runtime:
