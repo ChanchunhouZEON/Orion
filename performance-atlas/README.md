@@ -9,7 +9,7 @@ without an arrow. Ablations call the complete configuration **Default**;
 multiple Orion curves use their recipe or variant names in the legend.
 
 ```sh
-cd historical
+cd performance-atlas
 npm ci
 npm test
 npm run build

@@ -27,14 +27,14 @@ jobs:
       pages: read
     defaults:
       run:
-        working-directory: historical
+        working-directory: performance-atlas
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: historical/package-lock.json
+          cache-dependency-path: performance-atlas/package-lock.json
       - name: Install locked dependencies
         run: npm ci
       - name: Test catalog data, selections and components
@@ -48,7 +48,7 @@ jobs:
         run: npm run build -- --base "${PAGES_BASE_PATH}/"
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: historical/dist/
+          path: performance-atlas/dist/
 
   deploy:
     if: github.ref == 'refs/heads/pages' && github.event_name != 'pull_request'

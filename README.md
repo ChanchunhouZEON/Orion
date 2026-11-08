@@ -2,7 +2,7 @@
 
 [Open the homepage](https://chanchunhouzeon.github.io/Orion/) · [Orion library](https://github.com/ChanchunhouZEON/Orion/tree/main)
 
-This independent `pages` branch owns the historical website and its curated
+This independent `pages` branch owns the performance website and its curated
 measurement archive. It has no Rust source checkout. Website updates stay on
 this branch; do not merge it into `main`.
 
@@ -20,6 +20,6 @@ the artifact. Pull requests targeting `pages` validate without deploying.
 For a manual deployment, select `pages` in the Performance Atlas Pages workflow.
 The deployment environment only permits the `pages` branch.
 
-See [historical/README.md](historical/README.md) for the UI, data protocol and
+See [performance-atlas/README.md](performance-atlas/README.md) for the UI, data protocol and
 source layout. Keep the Pages workflow definition synchronized with the copy
 on `main`, which makes manual runs discoverable from the default branch.
