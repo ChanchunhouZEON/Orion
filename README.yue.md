@@ -42,7 +42,7 @@
 
 | 引擎 · QPS | SIFT1M | GloVe-25 | GloVe-100 | GIST | Deep10M | MS-MARCO | SIFT1B | Wiki-Ada-1M<br>QPS (Recall@10) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Orion** | **341K** | **383K** | **47K** | **48K** | **170K** | **52K** | **34K** | **144K** (0.98587) |
+| **Orion** | **349K** | **360K** | **48K** | **52K** | **175K** | **59K** | **34K** | **136K** (0.98433) |
 | ParlayANN | 257K | 247K | 37K | 29K | 143K | 38K | 33K | 151K (0.95378) |
 | Microsoft Vamana (DiskANN) | 91K | 151K | 12K | 7K | 39K | — | 10K | 40K (0.98470) |
 | USearch HNSW | 59K | 102K | — | — | 21K | 8K | 未測試 | 未測試 |
@@ -55,7 +55,7 @@
 SIFT1B 喺 Intel Xeon Platinum 8358P（Linux/AVX-512）上執行；其餘七個數據集就喺 Apple M4 Max（macOS/NEON）上執行。
 
 「未測試」表示冇保留對應嘅測量結果；「—」表示實測曲線未達到目標召回率，或者結果唔可以直接比較。Microsoft Vamana 指 DiskANN 嘅記憶體實作；佢嘅 MS-MARCO 結果因為距離度量唔一致，所以冇納入比較。FAISS IVF-PQ 喺前六個數據集上嘅 recall 都低過 0.62，所以冇列出。**粗體用嚟突出 Orion 嘅結果。**
-[精確 QPS、實際召回率同執行資料](docs/results/2026-11-05/readme-performance.json) · [實驗方法](docs/benchmarks.md) · [SIFT1B 資源規劃](docs/large-datasets.md)。
+[實驗方法](docs/benchmarks.md) · [SIFT1B 資源規劃](docs/large-datasets.md)。
 
 ## 使用例子
 

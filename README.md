@@ -58,7 +58,7 @@ Recall@10 in parentheses; the selected points do not have identical recall.
 
 | Engine · QPS | SIFT1M | GloVe-25 | GloVe-100 | GIST | Deep10M | MS-MARCO | SIFT1B | Wiki-Ada-1M<br>QPS (Recall@10) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Orion** | **341K** | **383K** | **47K** | **48K** | **170K** | **52K** | **34K** | **144K** (0.98587) |
+| **Orion** | **349K** | **360K** | **48K** | **52K** | **175K** | **59K** | **34K** | **136K** (0.98433) |
 | ParlayANN | 257K | 247K | 37K | 29K | 143K | 38K | 33K | 151K (0.95378) |
 | Microsoft Vamana (DiskANN) | 91K | 151K | 12K | 7K | 39K | — | 10K | 40K (0.98470) |
 | USearch HNSW | 59K | 102K | — | — | 21K | 8K | Not tested | Not tested |
@@ -75,8 +75,7 @@ datasets run on Apple M4 Max (macOS/NEON).
 measured curves below the target or a non-comparable result. Microsoft Vamana
 is the DiskANN in-memory implementation; its MS-MARCO result is excluded for
 metric mismatch. FAISS IVF-PQ stays below 0.62 recall on the six-dataset panel
-and is omitted. **Bold highlights Orion.** [Exact QPS, actual recalls and run metadata](docs/results/2026-11-05/readme-performance.json) ·
-[Experiment protocols](docs/benchmarks.md) · [SIFT1B resource planning](docs/large-datasets.md).
+and is omitted. **Bold highlights Orion.** [Experiment protocols](docs/benchmarks.md) · [SIFT1B resource planning](docs/large-datasets.md).
 
 ## Examples
 
