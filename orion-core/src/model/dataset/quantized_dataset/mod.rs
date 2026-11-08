@@ -5,7 +5,7 @@
 
 //! Common contract for immutable quantized and projected datasets.
 //!
-//! Estimates count owned heap payloads (including row padding, transform tables
+//! Estimates count payload spans (including row padding, transform tables
 //! and norms). Allocator metadata, inline fields and build/query scratch are not
 //! resident dataset payloads. Computation reuses the existing kernels; no trait
 //! object is introduced into streaming search.
@@ -59,7 +59,7 @@ impl QuantizedDatasetShape {
 }
 
 /// Total dataset payload in bytes, including padding and transform storage.
-/// For mapped PQ codes this counts the mapped span, not instantaneous RSS.
+/// For mapped payloads this counts the mapped span, not instantaneous RSS.
 ///
 /// Allocator metadata, inline fields and build/query scratch are excluded.
 /// Storage components are implementation details and are not part of this API.

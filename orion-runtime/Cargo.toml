@@ -39,6 +39,7 @@ sha2 = "0.10"
 bytemuck.workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 orion-ann-parlay = { version = "0.1.0", path = "../orion-parlay", features = ["reference-tests"] }
 
 # On AArch64 sha2 0.10 enables runtime SHA instruction dispatch via this feature.

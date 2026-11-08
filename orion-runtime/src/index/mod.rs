@@ -85,6 +85,10 @@ impl Index {
         "graph_source": self.config.graph_source, "graph_selection_reason": self.config.graph_selection_reason,
         "cascade": self.config.cascade(), "threads": self.options.threads,
         "cache_namespace": self.config.cache_namespace, "calibrations": self.calibrations,
+        "mapped_sidecar_bytes": self.view.engine.mapped_sidecar_bytes(),
+        "mapped_base_bytes": self.view.engine.mapped_base_bytes(),
+        "mapped_graph_bytes": self.view.engine.mapped_graph_bytes(),
+        "storage_options": self.options.storage_options,
         "residency": self.view.engine.pin_report()})
     }
 }

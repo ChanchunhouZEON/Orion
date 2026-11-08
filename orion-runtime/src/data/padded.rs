@@ -6,7 +6,7 @@
 //! Input preparation for runtime-dimensional distance evaluation.
 //!
 //! File and NumPy inputs share the same layout. File formats stay packed;
-//! only the final resident allocation has row padding.
+//! only the final allocation has row padding.
 
 use crate::integrity::HashedFile;
 use crate::{Error, Result};
@@ -39,7 +39,7 @@ pub fn from_packed<T: BaseElement + Pod>(
 /// Bounded-buffer loading directly into the final padded allocation. Budget
 /// includes resident storage and the bounded I/O scratch (not other index
 /// components). Callers can use `layout.allocation_bytes` in full preflight.
-#[cfg(any(test, feature = "cli", feature = "benchmark"))]
+#[cfg(test)]
 pub fn load<T: BaseElement + Pod>(
     path: &Path,
     format: VectorFormat,
@@ -47,6 +47,28 @@ pub fn load<T: BaseElement + Pod>(
     max_points: usize,
     metric: SearchMetric,
     memory_budget_bytes: Option<usize>,
+) -> Result<PaddedDataset<T>> {
+    load_with_storage(
+        path,
+        format,
+        layout,
+        max_points,
+        metric,
+        memory_budget_bytes,
+        &Default::default(),
+    )
+}
+
+#[cfg(any(test, feature = "cli", feature = "benchmark"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn load_with_storage<T: BaseElement + Pod>(
+    path: &Path,
+    format: VectorFormat,
+    layout: PaddedLayout,
+    max_points: usize,
+    metric: SearchMetric,
+    memory_budget_bytes: Option<usize>,
+    storage: &orion_ann_platform::region::RegionOptions,
 ) -> Result<PaddedDataset<T>> {
     let mut file = std::fs::File::open(path)?;
     load_inner(
@@ -58,6 +80,7 @@ pub fn load<T: BaseElement + Pod>(
         memory_budget_bytes,
         &mut file,
         false,
+        storage,
     )
 }
 
@@ -67,6 +90,7 @@ pub(crate) fn load_hashed<T: BaseElement + Pod>(
     layout: PaddedLayout,
     max_points: usize,
     metric: SearchMetric,
+    storage: &orion_ann_platform::region::RegionOptions,
 ) -> Result<(PaddedDataset<T>, String)> {
     let mut source = HashedFile::new(std::fs::File::open(path)?);
     let dataset = load_inner(
@@ -78,6 +102,7 @@ pub(crate) fn load_hashed<T: BaseElement + Pod>(
         None,
         &mut source,
         true,
+        storage,
     )?;
     Ok((dataset, source.finish().1))
 }
@@ -92,6 +117,7 @@ fn load_inner<T: BaseElement + Pod>(
     memory_budget_bytes: Option<usize>,
     mut source: impl Read,
     hash_entire_file: bool,
+    storage: &orion_ann_platform::region::RegionOptions,
 ) -> Result<PaddedDataset<T>> {
     let header = inspect_vector_file(path, format)?;
     if header.dimension != layout.logical_dim() {
@@ -120,7 +146,7 @@ fn load_inner<T: BaseElement + Pod>(
             memory_budget_bytes.unwrap()
         )));
     }
-    let mut data = PaddedDataset::new(rows, layout)?;
+    let mut data = PaddedDataset::new_with_storage(rows, layout, storage)?;
 
     if format.has_file_header() {
         let mut bytes = [0; 8];

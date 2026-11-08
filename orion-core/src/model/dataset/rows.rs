@@ -68,11 +68,12 @@ pub(crate) fn write_rows<T: bytemuck::Pod>(
     }
     Ok(())
 }
-pub(crate) fn read_rows<T: bytemuck::Pod>(
+pub(crate) fn read_rows_with_storage<T: bytemuck::Pod>(
     reader: &mut dyn std::io::Read,
     rows: usize,
     memory_stride: usize,
     disk_stride: usize,
+    storage: &orion_ann_platform::region::RegionOptions,
 ) -> orion_ann_diskann::common::ANNResult<orion_ann_diskann::common::AlignedBoxWithSlice<T>> {
     use std::io::{Error, ErrorKind};
     let count = rows
@@ -81,7 +82,8 @@ pub(crate) fn read_rows<T: bytemuck::Pod>(
     if rows == 0 || disk_stride == 0 || disk_stride > memory_stride {
         return Err(Error::new(ErrorKind::InvalidData, "invalid sidecar row layout").into());
     }
-    let mut data = orion_ann_diskann::common::AlignedBoxWithSlice::<T>::new(count, 64)?;
+    let mut data =
+        orion_ann_diskann::common::AlignedBoxWithSlice::<T>::new_with_storage(count, 64, storage)?;
     if memory_stride == disk_stride {
         reader.read_exact(bytemuck::cast_slice_mut(data.as_mut_slice()))?;
         return Ok(data);

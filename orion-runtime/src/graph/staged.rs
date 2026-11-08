@@ -169,11 +169,23 @@ pub(super) fn import_staged_graph<T: BaseElement>(
         orion_ann_platform::buffered_io::FILE_WRITE_BYTES,
         &mut source,
     );
-    let index = Orion::from_staged_graph(dataset, reader, bytes, config.graph_degree, entry)
-        .map_err(|e| {
-            let message = format!("ParlayANN import failed: {}", e.message());
-            Error::from(e).with_message(message)
-        })?;
+    let storage = crate::placement::graph_options(
+        config,
+        &dataset,
+        crate::preflight::graph_bytes(config, num_points)?,
+    )?;
+    let index = Orion::from_staged_graph_with_storage(
+        dataset,
+        reader,
+        bytes,
+        config.graph_degree,
+        entry,
+        &storage,
+    )
+    .map_err(|e| {
+        let message = format!("ParlayANN import failed: {}", e.message());
+        Error::from(e).with_message(message)
+    })?;
     Ok((
         index,
         SourceFileIdentity::from_stream(staged_path, bytes, source.finish().1)?,

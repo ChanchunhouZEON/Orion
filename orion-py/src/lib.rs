@@ -263,7 +263,7 @@ impl PyIndex {
     }
 
     #[staticmethod]
-    #[pyo3(signature = (reference, base, threads=None, memory_budget_gib=None, auto_pin=None))]
+    #[pyo3(signature = (reference, base, threads=None, memory_budget_gib=None, auto_pin=None, storage_options=None))]
     fn open(
         py: Python<'_>,
         reference: String,
@@ -271,6 +271,7 @@ impl PyIndex {
         threads: Option<usize>,
         memory_budget_gib: Option<f64>,
         auto_pin: Option<bool>,
+        storage_options: Option<String>,
     ) -> PyResult<Self> {
         boundary(py, "open", || {
             let input = match base.extract::<String>() {
@@ -283,6 +284,9 @@ impl PyIndex {
                     threads,
                     memory_budget_gib,
                     auto_pin,
+                    storage_options: storage_options
+                        .map(|v| serde_json::from_str(&v))
+                        .transpose()?,
                 }
                 .open(source, input)
             })

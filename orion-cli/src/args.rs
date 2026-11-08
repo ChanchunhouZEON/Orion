@@ -50,6 +50,12 @@ pub struct Args {
     /// Disable automatic resource-bounded RAM locking.
     #[arg(long)]
     pub no_auto_pin: bool,
+    /// Physical placement for base, graph and all sidecar payloads.
+    #[arg(long = "storage-mode", value_enum)]
+    pub storage_options: Option<orion_ann::StorageMode>,
+    /// Existing disk-backed directory for private mapped payloads.
+    #[arg(long)]
+    pub mmap_dir: Option<PathBuf>,
     /// Build/import and save graph cache, then exit before calibration/search.
     #[arg(long)]
     pub prepare_only: bool,

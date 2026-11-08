@@ -19,6 +19,7 @@ pub mod graph_mmap;
 pub mod io_context;
 pub mod memory;
 pub mod mmap_search;
+pub mod region;
 pub mod residency;
 pub mod resources;
 

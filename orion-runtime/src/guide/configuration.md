@@ -67,8 +67,7 @@ OS refusals leave storage pageable and searches usable. This is not a reservatio
 or an allocator cap, and it does not choose a different cascade.
 
 The plan covers required base/sidecar buffers and the graph slab, attempting
-smaller allocations first. It never builds a sidecar just to pin it. Explicit
-on-demand PQ codes remain pageable; the small PQ codebook retains its separate
+smaller allocations first. It never builds a sidecar just to pin it. Mapped payloads remain pageable. Owned PQ codebooks retain their separate
 bounded best-effort policy. RAM locks do not guarantee CPU-cache residency or THP.
 
 `IndexOptions { auto_pin: false, ..Default::default() }` disables automatic search
@@ -97,3 +96,65 @@ OS lock refusal falls back to pageable memory. The index owns the lock lifetime:
 recalibration or PQ storage replacement releases old locks before preparing the
 new generation, and dropping the index releases its remaining locks. Inspect
 `Index::info()["residency"]` to see the effective policy and outcome.
+
+## Storage placement before allocation
+
+`IndexOptions::storage_options` controls physical storage independently of the
+cascade. `Auto` (default) keeps payloads owned when budget/headroom permits,
+otherwise maps the largest arrays before allocation. `Resident` disables this
+fallback; `Mapped` maps base vectors, graph adjacency and extras, and all
+quantized payloads (including norms, projection parameters and PQ codebooks).
+File loading, normalization, STAG import and ParlayANN slab construction write
+directly into the selected backing. Array/NumPy inputs retain their input copy
+contract; selecting mapped storage relocates that existing copy during preparation.
+Automatic pinning skips mapped payloads; an explicit manual pin can still lock them.
+PQ codebooks keep their independent best-effort pin policy only when resident.
+
+```no_run
+use orion_ann::{BaseInput, Index, IndexOptions, StorageOptions, StorageMode};
+let mut index = Index::new(BaseInput::from_file("base.fbin"), IndexOptions {
+    memory_budget_gib: Some(16.0),
+    storage_options: StorageOptions {
+        mode: StorageMode::Auto,
+        directory: Some("/local-ssd/orion-tmp".into()),
+    },
+    ..Default::default()
+})?;
+// Calibration prepares sidecars using the plan; ordinary search reuses them.
+# Ok::<(), orion_ann::Error>(())
+```
+
+The directory must already exist. It should be backed by disk, not tmpfs.
+Private files require the mapped payload's disk space for the index lifetime;
+failures remove partial files and return structured I/O errors. Mapping reduces
+owned allocations, not the logical payload or a guaranteed RSS ceiling: touched
+file pages consume page cache. A 64 MiB reserve covers bounded copy blocks and
+some page-cache working space; growing query scratch, PQ training samples and
+other process overhead are additional. The planner rejects a budget that cannot
+fit the fixed base/graph plus remaining owned payloads and this reserve.
+Offline preflight uses the supplied budget, so it can describe a different
+machine. Live preparation also considers currently available memory. Placement
+is fixed before the first sidecar allocation and reused during recalibration.
+
+Decoding verifies the original stream's SHA-256 and validates layout before
+publishing a sidecar. Packed rows are padded while streaming to the private file;
+no full heap copy is required. Changing or removing the original cache after open
+cannot invalidate that mapping. Existing cache encodings and object digests do
+not change. Snapshot open can override placement using
+`OpenOptions { storage_options: Some(...), ..Default::default() }` and uses the
+same planner before restoring sidecars. Snapshot metadata may retain deployment
+settings, but placement does not affect execution signatures or calibration.
+
+Python accepts `storage_options=StorageOptions(mode="auto", directory=...)`
+in constructors and `Index.open`. CLI equivalents are `--storage-mode auto`
+and `--mmap-dir /local-ssd/orion-tmp`. Inspect `Index::info()` (Python: `index.info`)
+for `mapped_base_bytes`, `mapped_graph_bytes` and `mapped_sidecar_bytes`;
+this is not an RSS measurement. Explicit mapped storage is unsupported on WASM.
+
+The placement budget is not an RSS cap. Mapped pages still occupy physical RAM
+while accessed. For controlled Linux measurements, use a cgroup v2 memory limit
+that includes anonymous memory and page cache, disable swap, and record page
+faults and memory events alongside QPS. Do not use an address-space limit:
+virtual mappings must remain large enough to cover the index. Construction and
+query scratch remain ordinary bounded or workload-dependent allocations;
+this storage policy does not turn the graph builder into an external-memory algorithm.

@@ -5,8 +5,6 @@
 
 use crate::Result;
 use std::io::Read;
-#[cfg(not(target_arch = "wasm32"))]
-use std::io::Write;
 
 /// Code placement, independent of the codebook and cascade stage.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -20,62 +18,45 @@ pub enum PqCodeStorage {
     OnDemand,
 }
 
-pub(super) enum Codes {
-    Resident(Box<[u8]>),
-    #[cfg(not(target_arch = "wasm32"))]
-    Mapped(memmap2::Mmap),
-}
+pub(super) struct Codes(pub(super) orion_ann_platform::region::ArrayView<u8>);
 impl Codes {
     pub(super) fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Resident(x) => x,
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Mapped(x) => x,
-        }
+        self.0.as_slice()
     }
     pub(super) fn from_reader(
         reader: &mut dyn Read,
         len: usize,
         policy: PqCodeStorage,
     ) -> Result<Self> {
-        match policy {
-            PqCodeStorage::Resident => {
-                let mut v = vec![0; len];
-                reader.read_exact(&mut v)?;
-                Ok(Self::Resident(v.into_boxed_slice()))
-            }
-            #[cfg(target_arch = "wasm32")]
-            PqCodeStorage::OnDemand => Err(crate::Error::unsupported(
-                "on-demand PQ code storage requires a native filesystem",
-            )),
-            #[cfg(not(target_arch = "wasm32"))]
-            PqCodeStorage::OnDemand => {
-                let mut file = tempfile::tempfile()?;
-                let mut writer = std::io::BufWriter::with_capacity(
-                    orion_ann_platform::buffered_io::FILE_WRITE_BYTES,
-                    &mut file,
-                );
-                let copied = std::io::copy(&mut reader.take(len as u64), &mut writer)?;
-                writer.flush()?;
-                drop(writer);
-                if copied != len as u64 {
-                    return Err(crate::Error::cache("truncated PQ codes"));
-                }
-                file.flush()?;
-                // SAFETY: unnamed file is private, no writable handle escapes;
-                // closing our last handle leaves only this immutable mapping.
-                let map = unsafe { memmap2::Mmap::map(&file)? };
-                #[cfg(unix)]
-                map.advise(memmap2::Advice::Random)?;
-                Ok(Self::Mapped(map))
-            }
-        }
+        Self::read_with_options(reader, len, &policy.options())
+    }
+    pub(super) fn read_with_options(
+        reader: &mut dyn Read,
+        len: usize,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Ok(Self(orion_ann_platform::region::ArrayView::build_rows::<
+            crate::Error,
+        >(len, 1, 64, options, |_, out| {
+            reader.read_exact(out)?;
+            Ok(())
+        })?))
     }
     pub(super) fn policy(&self) -> PqCodeStorage {
-        match self {
-            Self::Resident(_) => PqCodeStorage::Resident,
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Mapped(_) => PqCodeStorage::OnDemand,
+        match self.0.placement() {
+            orion_ann_platform::region::Placement::Resident => PqCodeStorage::Resident,
+            orion_ann_platform::region::Placement::Mapped => PqCodeStorage::OnDemand,
+        }
+    }
+}
+impl PqCodeStorage {
+    pub(super) fn options(self) -> orion_ann_platform::region::RegionOptions {
+        orion_ann_platform::region::RegionOptions {
+            placement: match self {
+                Self::Resident => orion_ann_platform::region::Placement::Resident,
+                Self::OnDemand => orion_ann_platform::region::Placement::Mapped,
+            },
+            directory: None,
         }
     }
 }

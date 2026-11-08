@@ -896,6 +896,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]
@@ -979,6 +980,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
 ]
@@ -1014,6 +1016,7 @@ name = "orion-ann-platform"
 version = "0.1.0"
 dependencies = [
  "approx",
+ "bytemuck",
  "crossbeam",
  "hashbrown 0.15.5",
  "libc",
@@ -1021,6 +1024,7 @@ dependencies = [
  "memmap2",
  "once_cell",
  "orion-ann-vector",
+ "tempfile",
  "thiserror",
 ]
 

@@ -81,11 +81,11 @@ pub struct RabitQ4Dataset {
     pub(crate) codes: AlignedBoxWithSlice<u8>,
     /// Per-vertex `||x||` (= `||rotated_x||` since rotation is
     /// orthogonal). Length = `num_vertices`.
-    pub(crate) norms: Vec<f32>,
+    pub(crate) norms: AlignedBoxWithSlice<f32>,
     /// Per-vertex `tau_x = max_d |rotated_x[d]|` — the quantization
     /// peak used to scale code values back to f32. Length =
     /// `num_vertices`.
-    pub(crate) taus: Vec<f32>,
+    pub(crate) taus: AlignedBoxWithSlice<f32>,
     /// Row-major `N × N` orthogonal rotation. Independent of the 1-bit
     /// path's rotation (each codec owns its own seed → matrix) so the
     /// two sidecars can be loaded side-by-side without interfering.
@@ -114,6 +114,15 @@ impl RabitQ4Dataset {
     /// Returns an error for invalid rows, unsupported dimensions, invalid fitted
     /// parameters, or allocation failure. Logical rows exclude SIMD padding.
     pub fn try_build_from(dataset: &impl F32Rows, seed: u64) -> Result<Self> {
+        Self::try_build_from_with_storage(dataset, seed, &Default::default())
+    }
+
+    /// Build/load into the selected private storage; layout and arithmetic are unchanged.
+    pub fn try_build_from_with_storage(
+        dataset: &impl F32Rows,
+        seed: u64,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let checked = CheckedRows::new(dataset, u32::MAX as usize)?;
         let dataset = &checked;
         let dim = dataset.dimension();
@@ -121,12 +130,17 @@ impl RabitQ4Dataset {
         let num_vertices = dataset.len();
         let stride = rabitq_b4_code_stride(dim);
         let rotation =
-            crate::model::dataset::rabitq_dataset::try_build_orthogonal_rotation(seed, dim)?;
+            crate::model::dataset::rabitq_dataset::try_build_orthogonal_rotation_with_storage(
+                seed, dim, storage,
+            )?;
 
-        let mut codes =
-            AlignedBoxWithSlice::<u8>::new(validation::product(num_vertices, stride)?, 16)?;
-        let mut norms = Vec::with_capacity(num_vertices);
-        let mut taus = Vec::with_capacity(num_vertices);
+        let mut codes = AlignedBoxWithSlice::<u8>::new_with_storage(
+            validation::product(num_vertices, stride)?,
+            16,
+            storage,
+        )?;
+        let mut norms = AlignedBoxWithSlice::<f32>::new_with_storage(num_vertices, 64, storage)?;
+        let mut taus = AlignedBoxWithSlice::<f32>::new_with_storage(num_vertices, 64, storage)?;
         let mut rotated = vec![0.0f32; dim];
 
         for vid in 0..num_vertices {
@@ -139,7 +153,7 @@ impl RabitQ4Dataset {
                 &mut rotated,
             );
             let l2: f32 = rotated.iter().map(|v| v * v).sum::<f32>().sqrt();
-            norms.push(l2);
+            norms[vid] = l2;
 
             // tau = max |rotated_x[d]|. Use `max(tau, eps)` so the
             // divide below stays well-defined on (rare) zero vectors.
@@ -151,7 +165,7 @@ impl RabitQ4Dataset {
                 }
             }
             let tau_eff = tau.max(1e-12);
-            taus.push(tau_eff);
+            taus[vid] = tau_eff;
 
             // Quantize and pack two nibbles per byte. Use round-to-
             // nearest with a clamp to [-QMAX, +QMAX] (asymmetric vs
@@ -251,6 +265,15 @@ impl RabitQ4Dataset {
     }
 
     pub fn decode(r: &mut dyn std::io::Read, byte_len: u64) -> Result<Self> {
+        Self::decode_with_storage(r, byte_len, &Default::default())
+    }
+
+    /// Build/load into the selected private storage; layout and arithmetic are unchanged.
+    pub fn decode_with_storage(
+        r: &mut dyn std::io::Read,
+        byte_len: u64,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let mut hdr = [0u8; 32];
         r.read_exact(&mut hdr)?;
         if u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != 1 {
@@ -299,22 +322,25 @@ impl RabitQ4Dataset {
             32,
             &[(matrix_len, 4), (num_vertices, 8), (num_vertices, stride)],
         )?;
-        let mut rotation = AlignedBoxWithSlice::<f32>::new(matrix_len, 16)
+        let mut rotation = AlignedBoxWithSlice::<f32>::new_with_storage(matrix_len, 16, storage)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
         let rot_bytes = bytemuck::cast_slice_mut(rotation.as_mut_slice());
         r.read_exact(rot_bytes)?;
 
-        let mut norms = vec![0.0f32; num_vertices];
+        let mut norms = AlignedBoxWithSlice::<f32>::new_with_storage(num_vertices, 64, storage)?;
         let norm_bytes = bytemuck::cast_slice_mut(&mut norms);
         r.read_exact(norm_bytes)?;
 
-        let mut taus = vec![0.0f32; num_vertices];
+        let mut taus = AlignedBoxWithSlice::<f32>::new_with_storage(num_vertices, 64, storage)?;
         let tau_bytes = bytemuck::cast_slice_mut(&mut taus);
         r.read_exact(tau_bytes)?;
 
-        let mut codes =
-            AlignedBoxWithSlice::<u8>::new(validation::product(num_vertices, stride)?, 16)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
+        let mut codes = AlignedBoxWithSlice::<u8>::new_with_storage(
+            validation::product(num_vertices, stride)?,
+            16,
+            storage,
+        )
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
         r.read_exact(codes.as_mut_slice())?;
 
         validation::finite(rotation.as_slice(), false)?;
@@ -709,8 +735,8 @@ mod tests {
         assert_eq!(a.num_vertices, b.num_vertices);
         assert_eq!(a.stride, b.stride);
         assert_eq!(a.codes.as_slice(), b.codes.as_slice());
-        assert_eq!(a.norms, b.norms);
-        assert_eq!(a.taus, b.taus);
+        assert_eq!(a.norms.as_slice(), b.norms.as_slice());
+        assert_eq!(a.taus.as_slice(), b.taus.as_slice());
     }
 }
 
@@ -788,7 +814,7 @@ impl QuantizedDataset for RabitQ4Dataset {
     fn resident_memory(&self) -> ResidentMemory {
         ResidentMemory::new(
             self.codes.len(),
-            (self.norms.capacity() + self.taus.capacity()) * 4,
+            (self.norms.len() + self.taus.len()) * 4,
             std::mem::size_of_val(self.rotation.as_slice()),
         )
         .expect("validated resident allocation sizes")

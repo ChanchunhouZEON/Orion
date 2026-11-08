@@ -306,6 +306,12 @@ fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
         threads: args.threads,
         memory_budget_gib: args.memory_budget_gib,
         auto_pin: args.no_auto_pin.then_some(false),
+        storage_options: (args.storage_options.is_some() || args.mmap_dir.is_some()).then(|| {
+            orion_ann::StorageOptions {
+                mode: args.storage_options.unwrap_or_default(),
+                directory: args.mmap_dir.clone(),
+            }
+        }),
     }
     .open(directory, orion_ann::BaseInput::from_file(base))?;
     let calibration = index.calibration(k).ok_or_else(|| {

@@ -35,7 +35,7 @@ fn compute_slot_bytes(max_pairs: usize) -> usize {
 pub struct MmapAnchorSlab {
     mmap: memmap2::MmapMut,
     _file: File,
-    path: PathBuf,
+    path: Option<PathBuf>,
     num_anchors: usize,
     max_pairs: usize,
     slot_bytes: usize,
@@ -70,12 +70,42 @@ impl MmapAnchorSlab {
         Ok(Self {
             mmap,
             _file: file,
-            path: path.to_path_buf(),
+            path: Some(path.to_path_buf()),
             num_anchors,
             max_pairs,
             slot_bytes,
             total_overflow: AtomicU32::new(0),
         })
+    }
+
+    /// Private build scratch; concurrent index builders never share an inode.
+    pub(crate) fn temporary(num_anchors: usize, max_pairs: usize) -> ANNResult<Self> {
+        #[cfg(target_arch = "wasm32")]
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "mapped build scratch requires native files",
+        )
+        .into());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let slot_bytes = compute_slot_bytes(max_pairs);
+            let bytes = num_anchors
+                .checked_mul(slot_bytes)
+                .ok_or_else(|| std::io::Error::other("anchor slab overflow"))?;
+            let file = tempfile::tempfile()?;
+            file.set_len(bytes as u64)?;
+            // SAFETY: private file, no external handle or name, exact slab length.
+            let mmap = unsafe { memmap2::MmapMut::map_mut(&file)? };
+            Ok(Self {
+                mmap,
+                _file: file,
+                path: None,
+                num_anchors,
+                max_pairs,
+                slot_bytes,
+                total_overflow: AtomicU32::new(0),
+            })
+        }
     }
 
     #[inline]
@@ -248,7 +278,9 @@ impl Drop for MmapAnchorSlab {
     fn drop(&mut self) {
         // mmap is unmapped by memmap2::MmapMut::drop.
         // Remove the temp file.
-        std::fs::remove_file(&self.path).ok();
+        if let Some(path) = &self.path {
+            std::fs::remove_file(path).ok();
+        }
     }
 }
 
@@ -269,6 +301,24 @@ impl std::fmt::Debug for MmapAnchorSlab {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn private_build_slabs_do_not_alias_or_truncate_each_other() {
+        let large = super::MmapAnchorSlab::temporary(1024, 8).unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let small = super::MmapAnchorSlab::temporary(1, 2).unwrap();
+                small.atomic_append_pairs(0, &[(1, 2)]);
+                assert_eq!(small.count(0), 1);
+            });
+            scope.spawn(|| {
+                for id in 0..1024 {
+                    large.atomic_append_pairs(id, &[(7, 9)]);
+                }
+            });
+        });
+        assert_eq!(large.count(1023), 1);
+        assert_eq!(large.pairs(1023), &[(7, 9)]);
+    }
     use super::*;
 
     #[test]

@@ -70,9 +70,25 @@ impl<D: IndexData, S: Default> CompressedIndex<D, S> {
     /// Validates shape, byte length and edges. The caller verifies content identity.
     pub fn decode_native_graph(
         dataset: D,
+        reader: impl Read,
+        graph: impl Read,
+        graph_bytes: u64,
+    ) -> Result<Self> {
+        Self::decode_native_graph_with_storage(
+            dataset,
+            reader,
+            graph,
+            graph_bytes,
+            &Default::default(),
+        )
+    }
+
+    pub fn decode_native_graph_with_storage(
+        dataset: D,
         mut reader: impl Read,
         graph: impl Read,
         graph_bytes: u64,
+        storage: &orion_ann_platform::region::RegionOptions,
     ) -> Result<Self> {
         let config = bincode::config::standard()
             .with_fixed_int_encoding()
@@ -106,7 +122,7 @@ impl<D: IndexData, S: Default> CompressedIndex<D, S> {
                 )));
             }
         }
-        let graph = PhasedGraph::decode(graph, graph_bytes)?;
+        let graph = PhasedGraph::decode_with_storage(graph, graph_bytes, storage)?;
         let idx = Self::from_phased_graph(dataset, graph, meta.entry);
         idx.validate_dataset_graph()?;
         Ok(idx)

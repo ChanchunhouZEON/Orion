@@ -6,7 +6,9 @@
 //! Stream boundary for the runtime's lazy working cache and immutable snapshots.
 use super::{CompressedIndex, DynamicSidecars, Error, F32Rows, Result, SidecarCell, SidecarCodec};
 use crate::index::compressed_index::IndexData;
+use orion_ann_platform::region::RegionOptions;
 use std::io::{Read, Write};
+type PlacementPlan = std::collections::BTreeMap<String, RegionOptions>;
 
 pub type DecodeSidecar<'a> = dyn FnMut(&mut dyn Read, u64) -> Result<()> + 'a;
 pub type EncodeSidecar<'a> = dyn Fn(&mut dyn Write) -> Result<()> + 'a;
@@ -33,18 +35,25 @@ impl<T: SidecarCodec> SidecarCell<T> {
         &self,
         dataset: &impl F32Rows,
         cache: Option<&dyn SidecarCache>,
+        plan: Option<&PlacementPlan>,
     ) -> Result<&T> {
+        let options = plan
+            .and_then(|p| p.get(T::EXTENSION))
+            .cloned()
+            .unwrap_or_default();
         self.get_or_try_init(|| {
             let Some(cache) = cache else {
-                return T::build(dataset, &T::default_build_options());
+                return T::build_placed(dataset, &options);
             };
             let shape = (dataset.dimension(), dataset.len());
-            match decode_checked::<T>(shape, |decode| cache.load(dataset, T::EXTENSION, decode)) {
+            match decode_checked::<T>(shape, &options, |decode| {
+                cache.load(dataset, T::EXTENSION, decode)
+            }) {
                 Ok(Some(value)) => return Ok(value),
                 Ok(None) => {}
                 Err(error) => log::warn!("rebuilding {} sidecar: {error}", T::EXTENSION),
             }
-            let value = T::build(dataset, &T::default_build_options())?;
+            let value = T::build_placed(dataset, &options)?;
             if let Err(error) = cache.store(dataset, T::EXTENSION, &|writer| value.encode(writer)) {
                 log::warn!(
                     "could not persist optional {} sidecar: {error}",
@@ -59,11 +68,12 @@ impl<T: SidecarCodec> SidecarCell<T> {
 // Keep the candidate private until the caller finishes verifying its input.
 fn decode_checked<T: SidecarCodec>(
     shape: (usize, usize),
+    options: &RegionOptions,
     load: impl FnOnce(&mut DecodeSidecar<'_>) -> Result<()>,
 ) -> Result<Option<T>> {
     let mut candidate = None;
     load(&mut |reader, bytes| {
-        let value = T::decode(reader, bytes)?;
+        let value = T::decode_placed(reader, bytes, options)?;
         if value.shape() != shape {
             return Err(Error::cache("sidecar shape mismatch").with_detail("codec", T::EXTENSION));
         }
@@ -75,6 +85,7 @@ fn decode_checked<T: SidecarCodec>(
 
 trait Slot {
     fn codec(&self) -> &'static str;
+    fn initialized(&self) -> bool;
     fn visit(
         &self,
         visit: &mut dyn FnMut(&'static str, &EncodeSidecar<'_>) -> Result<()>,
@@ -82,11 +93,15 @@ trait Slot {
     fn restore(
         &self,
         shape: (usize, usize),
+        options: &RegionOptions,
         load: &mut dyn FnMut(&mut DecodeSidecar<'_>) -> Result<()>,
     ) -> Result<()>;
 }
 
 impl<T: SidecarCodec> Slot for SidecarCell<T> {
+    fn initialized(&self) -> bool {
+        self.get().is_some()
+    }
     fn codec(&self) -> &'static str {
         T::EXTENSION
     }
@@ -102,9 +117,10 @@ impl<T: SidecarCodec> Slot for SidecarCell<T> {
     fn restore(
         &self,
         shape: (usize, usize),
+        options: &RegionOptions,
         load: &mut dyn FnMut(&mut DecodeSidecar<'_>) -> Result<()>,
     ) -> Result<()> {
-        let value = decode_checked::<T>(shape, load)?
+        let value = decode_checked::<T>(shape, options, load)?
             .ok_or_else(|| Error::cache("missing snapshot sidecar"))?;
         self.value
             .set(value)
@@ -131,6 +147,34 @@ impl DynamicSidecars {
 }
 
 impl<D: IndexData> CompressedIndex<D, DynamicSidecars> {
+    /// Install a deployment plan before any sidecar allocation. It is immutable
+    /// for this generation, so concurrent searches never mutate backing storage.
+    #[doc(hidden)]
+    pub fn configure_sidecar_storage(&self, plan: PlacementPlan) -> Result<()> {
+        if let Some(current) = self.sidecars.placement.get() {
+            return if current == &plan {
+                Ok(())
+            } else {
+                Err(Error::invalid_state(
+                    "sidecar placement is already fixed for this generation",
+                ))
+            };
+        }
+        if self.sidecars.slots().iter().any(|s| s.initialized()) {
+            return Err(Error::invalid_state(
+                "configure storage before materializing sidecars",
+            ));
+        }
+        self.sidecars
+            .placement
+            .set(plan)
+            .map_err(|_| Error::invalid_state("concurrent storage configuration"))
+    }
+    #[doc(hidden)]
+    pub fn sidecar_storage_plan(&self) -> Option<&PlacementPlan> {
+        self.sidecars.placement.get()
+    }
+
     /// Associate a working cache for future lazy initializations.
     #[doc(hidden)]
     pub fn set_sidecar_cache(&mut self, cache: Box<dyn SidecarCache>) {
@@ -167,6 +211,13 @@ impl<D: IndexData> CompressedIndex<D, DynamicSidecars> {
             })?;
         slot.restore(
             (self.dataset.dimension(), self.dataset.point_count()),
+            &self
+                .sidecars
+                .placement
+                .get()
+                .and_then(|p| p.get(codec))
+                .cloned()
+                .unwrap_or_default(),
             &mut load,
         )
     }

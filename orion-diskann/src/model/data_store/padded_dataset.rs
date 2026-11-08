@@ -20,12 +20,24 @@ pub struct PaddedDataset<T: Pod> {
 
 impl<T: Pod> PaddedDataset<T> {
     pub fn new(rows: usize, layout: PaddedLayout) -> Result<Self, String> {
+        Self::new_with_storage(rows, layout, &Default::default())
+    }
+
+    pub fn new_with_storage(
+        rows: usize,
+        layout: PaddedLayout,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self, String> {
         if rows == 0 || layout.element_bytes() != std::mem::size_of::<T>() {
             return Err("invalid padded dataset shape or element type".into());
         }
         let bytes = layout.allocation_bytes(rows)?;
-        let data = AlignedBoxWithSlice::new(bytes / std::mem::size_of::<T>(), layout.alignment())
-            .map_err(|e| e.to_string())?;
+        let data = AlignedBoxWithSlice::new_with_storage(
+            bytes / std::mem::size_of::<T>(),
+            layout.alignment(),
+            storage,
+        )
+        .map_err(|e| e.to_string())?;
         Ok(Self { data, layout, rows })
     }
 
@@ -73,6 +85,10 @@ impl<T: Pod> PaddedDataset<T> {
     }
     pub fn into_allocation(self) -> AlignedBoxWithSlice<T> {
         self.data
+    }
+
+    pub fn placement(&self) -> orion_ann_platform::region::Placement {
+        self.data.placement()
     }
 
     pub fn layout(&self) -> PaddedLayout {

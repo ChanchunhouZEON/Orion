@@ -48,14 +48,25 @@ pub(crate) fn save_graph<D: IndexData, S: Default>(
     Ok(graph.digest)
 }
 
+#[cfg(test)]
 pub(crate) fn load_verified<D: IndexData, S: Default>(
     path: &Path,
     dataset: D,
     metadata: &[u8],
     expected: &str,
 ) -> Result<crate::integrity::Verified<CompressedIndex<D, S>>> {
+    load_verified_with_storage(path, dataset, metadata, expected, &Default::default())
+}
+
+pub(crate) fn load_verified_with_storage<D: IndexData, S: Default>(
+    path: &Path,
+    dataset: D,
+    metadata: &[u8],
+    expected: &str,
+    storage: &orion_ann_platform::region::RegionOptions,
+) -> Result<crate::integrity::Verified<CompressedIndex<D, S>>> {
     read_verified(path, "graph", expected, None, |reader, bytes| {
-        CompressedIndex::decode_native_graph(dataset, metadata, reader, bytes)
+        CompressedIndex::decode_native_graph_with_storage(dataset, metadata, reader, bytes, storage)
     })
 }
 

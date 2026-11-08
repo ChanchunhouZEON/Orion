@@ -90,9 +90,9 @@ pub struct JlHadamardDataset {
     pub(crate) codes: AlignedBoxWithSlice<u8>,
     /// First `±1` sign-flip diagonal, length `d_pad`. Stored as `i8`
     /// for cache compactness (3 × d_pad bytes for all three signs).
-    pub(crate) signs1: Vec<i8>,
-    pub(crate) signs2: Vec<i8>,
-    pub(crate) signs3: Vec<i8>,
+    pub(crate) signs1: AlignedBoxWithSlice<i8>,
+    pub(crate) signs2: AlignedBoxWithSlice<i8>,
+    pub(crate) signs3: AlignedBoxWithSlice<i8>,
     pub(crate) num_vertices: usize,
     /// Cached per-vertex stride in bytes.
     pub(crate) stride: usize,
@@ -118,12 +118,21 @@ impl JlHadamardDataset {
     /// Returns an error for invalid rows, unsupported dimensions, invalid fitted
     /// parameters, or allocation failure. Logical rows exclude SIMD padding.
     pub fn try_build_from(dataset: &impl F32Rows, seed: u64) -> Result<Self> {
+        Self::try_build_from_with_storage(dataset, seed, &Default::default())
+    }
+
+    /// Build/load into the selected private storage; layout and arithmetic are unchanged.
+    pub fn try_build_from_with_storage(
+        dataset: &impl F32Rows,
+        seed: u64,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let d_pad = dataset
             .dimension()
             .checked_next_power_of_two()
             .ok_or_else(|| crate::Error::invalid_argument("Hadamard dimension overflow"))?
             .max(1024);
-        Self::try_build_with_padding(dataset, seed, d_pad)
+        Self::try_build_with_padding_with_storage(dataset, seed, d_pad, storage)
     }
     /// Convenience constructor for already validated data.
     ///
@@ -140,6 +149,16 @@ impl JlHadamardDataset {
     /// Returns an error for invalid rows, unsupported dimensions, invalid fitted
     /// parameters, or allocation failure. Logical rows exclude SIMD padding.
     pub fn try_build_with_padding(dataset: &impl F32Rows, seed: u64, d_pad: usize) -> Result<Self> {
+        Self::try_build_with_padding_with_storage(dataset, seed, d_pad, &Default::default())
+    }
+
+    /// Build/load into the selected private storage; layout and arithmetic are unchanged.
+    pub fn try_build_with_padding_with_storage(
+        dataset: &impl F32Rows,
+        seed: u64,
+        d_pad: usize,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let checked = CheckedRows::new(dataset, u32::MAX as usize)?;
         let dataset = &checked;
         let dim = dataset.dimension();
@@ -156,9 +175,9 @@ impl JlHadamardDataset {
         // Derive three sign-flip diagonals from the seed. xorshift64
         // for determinism; offsets pull non-overlapping streams.
         let mut rng = XorShift64(seed.wrapping_add(0x8B9C_4D7E_25F1_A302));
-        let mut signs1 = vec![0i8; d_pad];
-        let mut signs2 = vec![0i8; d_pad];
-        let mut signs3 = vec![0i8; d_pad];
+        let mut signs1 = AlignedBoxWithSlice::<i8>::new_with_storage(d_pad, 64, storage)?;
+        let mut signs2 = AlignedBoxWithSlice::<i8>::new_with_storage(d_pad, 64, storage)?;
+        let mut signs3 = AlignedBoxWithSlice::<i8>::new_with_storage(d_pad, 64, storage)?;
         for s in [&mut signs1, &mut signs2, &mut signs3] {
             for v in s.iter_mut() {
                 *v = if (rng.next_u64() & 1) == 0 { 1 } else { -1 };
@@ -166,8 +185,11 @@ impl JlHadamardDataset {
         }
 
         // Allocate the code slab and encode each vertex in parallel.
-        let mut codes =
-            AlignedBoxWithSlice::<u8>::new(validation::product(num_vertices, stride)?, 16)?;
+        let mut codes = AlignedBoxWithSlice::<u8>::new_with_storage(
+            validation::product(num_vertices, stride)?,
+            16,
+            storage,
+        )?;
 
         let codes_slice = codes.as_mut_slice();
 
@@ -255,6 +277,15 @@ impl JlHadamardDataset {
     }
 
     pub fn decode(r: &mut dyn std::io::Read, byte_len: u64) -> Result<Self> {
+        Self::decode_with_storage(r, byte_len, &Default::default())
+    }
+
+    /// Build/load into the selected private storage; layout and arithmetic are unchanged.
+    pub fn decode_with_storage(
+        r: &mut dyn std::io::Read,
+        byte_len: u64,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let mut hdr = [0u8; 32];
         r.read_exact(&mut hdr)?;
         if u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != 1 {
@@ -308,9 +339,9 @@ impl JlHadamardDataset {
         validation::shape(num_vertices, dim, u32::MAX as usize)?;
         validation::file_length(byte_len, 32, &[(d_pad, 3), (num_vertices, stride)])?;
 
-        let mut signs1 = vec![0i8; d_pad];
-        let mut signs2 = vec![0i8; d_pad];
-        let mut signs3 = vec![0i8; d_pad];
+        let mut signs1 = AlignedBoxWithSlice::<i8>::new_with_storage(d_pad, 64, storage)?;
+        let mut signs2 = AlignedBoxWithSlice::<i8>::new_with_storage(d_pad, 64, storage)?;
+        let mut signs3 = AlignedBoxWithSlice::<i8>::new_with_storage(d_pad, 64, storage)?;
         let read_signs = |r: &mut dyn std::io::Read, s: &mut [i8]| -> Result<()> {
             r.read_exact(bytemuck::cast_slice_mut(s))?;
             Ok(())
@@ -321,8 +352,8 @@ impl JlHadamardDataset {
 
         if signs1
             .iter()
-            .chain(&signs2)
-            .chain(&signs3)
+            .chain(signs2.iter())
+            .chain(signs3.iter())
             .any(|&s| s != -1 && s != 1)
         {
             return Err(crate::Error::invalid_data(
@@ -331,8 +362,13 @@ impl JlHadamardDataset {
         }
         let disk_stride = stride;
         let stride = jl_hadamard_stride(d_pad);
-        let codes =
-            crate::model::dataset::rows::read_rows::<u8>(r, num_vertices, stride, disk_stride)?;
+        let codes = crate::model::dataset::rows::read_rows_with_storage::<u8>(
+            r,
+            num_vertices,
+            stride,
+            disk_stride,
+            storage,
+        )?;
 
         Ok(Self {
             dimension: dim,
@@ -574,7 +610,7 @@ impl QuantizedDataset for JlHadamardDataset {
         ResidentMemory::new(
             self.codes.len(),
             0,
-            self.signs1.capacity() + self.signs2.capacity() + self.signs3.capacity(),
+            self.signs1.len() + self.signs2.len() + self.signs3.len(),
         )
         .expect("validated resident allocation sizes")
     }

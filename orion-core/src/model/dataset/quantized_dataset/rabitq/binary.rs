@@ -82,7 +82,7 @@ pub struct RabitQDataset {
     /// Packed sign codes, `num_vertices * STRIDE` bytes, 16-byte aligned.
     pub(crate) codes: AlignedBoxWithSlice<u8>,
     /// Per-vertex `||x||` in f32. Length = `num_vertices`.
-    pub(crate) norms: Vec<f32>,
+    pub(crate) norms: AlignedBoxWithSlice<f32>,
     /// **Per-vertex correction** `s_x = ||x'||₁ / ||x'||₂` (= `<unit_x',
     /// sign(x')>` from the paper's Lemma). This is the exact value the
     /// asymptotic `scale = sqrt(2N/π)` approximates — replacing the
@@ -91,7 +91,7 @@ pub struct RabitQDataset {
     /// benchmarks. Length = `num_vertices`.
     ///
     /// Adds one f32 per vertex (4 B); negligible vs the codes slab.
-    pub(crate) s_values: Vec<f32>,
+    pub(crate) s_values: AlignedBoxWithSlice<f32>,
     /// Row-major `N × N` orthogonal rotation. `P @ x` is `for r in 0..N:
     /// out[r] = dot(P[r*N..(r+1)*N], x)`.
     pub(crate) rotation: AlignedBoxWithSlice<f32>,
@@ -131,6 +131,15 @@ impl RabitQDataset {
     /// Returns an error for invalid rows, unsupported dimensions, invalid fitted
     /// parameters, or allocation failure. Logical rows exclude SIMD padding.
     pub fn try_build_from(dataset: &impl F32Rows, seed: u64) -> Result<Self> {
+        Self::try_build_from_with_storage(dataset, seed, &Default::default())
+    }
+
+    /// Build/load into the selected private storage; layout and arithmetic are unchanged.
+    pub fn try_build_from_with_storage(
+        dataset: &impl F32Rows,
+        seed: u64,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let checked = CheckedRows::new(dataset, u32::MAX as usize)?;
         let dataset = &checked;
         let dim = dataset.dimension();
@@ -140,13 +149,16 @@ impl RabitQDataset {
         let scale = ((2.0 * dim as f64) / std::f64::consts::PI).sqrt() as f32;
 
         // 1. Build the rotation matrix P (dim×dim, row-major).
-        let rotation = try_build_orthogonal_rotation(seed, dim)?;
+        let rotation = try_build_orthogonal_rotation_with_storage(seed, dim, storage)?;
 
         // 2. Encode each base vector: rotate, sign-pack, store norm + s.
-        let mut codes =
-            AlignedBoxWithSlice::<u8>::new(validation::product(num_vertices, stride)?, 16)?;
-        let mut norms = Vec::with_capacity(num_vertices);
-        let mut s_values = Vec::with_capacity(num_vertices);
+        let mut codes = AlignedBoxWithSlice::<u8>::new_with_storage(
+            validation::product(num_vertices, stride)?,
+            16,
+            storage,
+        )?;
+        let mut norms = AlignedBoxWithSlice::<f32>::new_with_storage(num_vertices, 64, storage)?;
+        let mut s_values = AlignedBoxWithSlice::<f32>::new_with_storage(num_vertices, 64, storage)?;
         let mut rotated = vec![0.0f32; dim];
 
         // Floor on per-vertex `s_x` to avoid divide-by-near-zero in the
@@ -173,7 +185,7 @@ impl RabitQDataset {
                 l1 += v.abs();
             }
             let l2 = l2_sq.sqrt();
-            norms.push(l2);
+            norms[vid] = l2;
 
             // s_x = ||rotated_x||_1 / ||rotated_x||_2 — the paper's
             // per-vertex correction. Equals <unit_rotated_x, sign(x')>.
@@ -185,7 +197,7 @@ impl RabitQDataset {
             } else {
                 scale
             };
-            s_values.push(s_x);
+            s_values[vid] = s_x;
 
             // sign(rotated) → bit-packed code, LSB-first within byte.
             let code_off = vid * stride;
@@ -328,6 +340,15 @@ impl RabitQDataset {
     }
 
     pub fn decode(r: &mut dyn std::io::Read, byte_len: u64) -> Result<Self> {
+        Self::decode_with_storage(r, byte_len, &Default::default())
+    }
+
+    /// Build/load into the selected private storage; layout and arithmetic are unchanged.
+    pub fn decode_with_storage(
+        r: &mut dyn std::io::Read,
+        byte_len: u64,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let mut hdr = [0u8; 32];
         r.read_exact(&mut hdr)?;
         let magic = u32::from_le_bytes(hdr[0..4].try_into().unwrap());
@@ -381,23 +402,28 @@ impl RabitQDataset {
         )?;
         validation::positive_scale(scale)?;
 
-        let mut rotation = AlignedBoxWithSlice::<f32>::new(matrix_len, 16)
+        let mut rotation = AlignedBoxWithSlice::<f32>::new_with_storage(matrix_len, 16, storage)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
         let rot_bytes = bytemuck::cast_slice_mut(rotation.as_mut_slice());
         r.read_exact(rot_bytes)?;
 
-        let mut norms = vec![0.0f32; num_vertices];
+        let mut norms = AlignedBoxWithSlice::<f32>::new_with_storage(num_vertices, 64, storage)?;
         let norm_bytes = bytemuck::cast_slice_mut(&mut norms);
         r.read_exact(norm_bytes)?;
 
-        let mut s_values = vec![0.0f32; num_vertices];
+        let mut s_values = AlignedBoxWithSlice::<f32>::new_with_storage(num_vertices, 64, storage)?;
         let s_bytes = bytemuck::cast_slice_mut(&mut s_values);
         r.read_exact(s_bytes)?;
 
         let disk_stride = stride;
         let stride = rabitq_code_stride(dim);
-        let codes =
-            crate::model::dataset::rows::read_rows::<u8>(r, num_vertices, stride, disk_stride)?;
+        let codes = crate::model::dataset::rows::read_rows_with_storage::<u8>(
+            r,
+            num_vertices,
+            stride,
+            disk_stride,
+            storage,
+        )?;
 
         validation::finite(rotation.as_slice(), false)?;
         validation::finite(&norms, true)?;
@@ -685,8 +711,17 @@ pub(super) fn try_build_orthogonal_rotation(
     seed: u64,
     dim: usize,
 ) -> Result<AlignedBoxWithSlice<f32>> {
+    try_build_orthogonal_rotation_with_storage(seed, dim, &Default::default())
+}
+
+pub(super) fn try_build_orthogonal_rotation_with_storage(
+    seed: u64,
+    dim: usize,
+    storage: &orion_ann_platform::region::RegionOptions,
+) -> Result<AlignedBoxWithSlice<f32>> {
     validation::shape(1, dim, u32::MAX as usize)?;
-    let mut mat = AlignedBoxWithSlice::<f32>::new(validation::product(dim, dim)?, 16)?;
+    let mut mat =
+        AlignedBoxWithSlice::<f32>::new_with_storage(validation::product(dim, dim)?, 16, storage)?;
     let mut rng = XorShift64(seed.wrapping_add(0x9E37_79B9_7F4A_7C15));
 
     // Fill with standard normal samples (row-major).
@@ -1121,8 +1156,8 @@ mod tests {
         assert_eq!(a.stride, b.stride);
         assert!((a.scale - b.scale).abs() < 1e-6);
         assert_eq!(a.codes.as_slice(), b.codes.as_slice());
-        assert_eq!(a.norms, b.norms);
-        assert_eq!(a.s_values, b.s_values);
+        assert_eq!(a.norms.as_slice(), b.norms.as_slice());
+        assert_eq!(a.s_values.as_slice(), b.s_values.as_slice());
         for i in 0..(N * N) {
             assert!((a.rotation.as_slice()[i] - b.rotation.as_slice()[i]).abs() < 1e-6);
         }
@@ -1205,7 +1240,7 @@ impl QuantizedDataset for RabitQDataset {
     fn resident_memory(&self) -> ResidentMemory {
         ResidentMemory::new(
             self.codes.len(),
-            (self.norms.capacity() + self.s_values.capacity()) * 4,
+            (self.norms.len() + self.s_values.len()) * 4,
             std::mem::size_of_val(self.rotation.as_slice()),
         )
         .expect("validated resident allocation sizes")

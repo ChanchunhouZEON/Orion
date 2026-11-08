@@ -269,7 +269,7 @@ fn pin_with<'a, D>(
 }
 
 /// Add graph storage to the same requirement-driven residency transaction.
-pub(crate) fn automatic_pin<'a, D>(
+pub(crate) fn automatic_pin<'a, D: orion_ann_core::index::compressed_index::IndexData>(
     index: &'a CompressedIndex<D>,
     base: &'a [u8],
     shape: QuantizedDatasetShape,
@@ -278,14 +278,15 @@ pub(crate) fn automatic_pin<'a, D>(
     budget: Option<f64>,
 ) -> Result<PinnedDatasets<'a>> {
     // Explicit on-demand placement takes precedence over automatic code locks.
-    // The small PQ codebook retains its independent bounded core policy.
-    let on_demand = index.prepared_pq_code_storage() == Some(crate::PqCodeStorage::OnDemand);
+    // Owned PQ codebooks retain their independent bounded core policy.
     let requirements: Vec<_> = requirements
         .iter()
         .copied()
-        .filter(|r| {
-            !(on_demand
-                && matches!(r, DatasetRequirement::Sidecar(s) if s.kind() == QuantizedKind::Pq))
+        .filter(|r| match r {
+            DatasetRequirement::Base => {
+                index.dataset().placement() == orion_ann_platform::region::Placement::Resident
+            }
+            DatasetRequirement::Sidecar(s) => !index.sidecar_is_mapped(s.kind()),
         })
         .collect();
     let mut plan = AutomaticPlan::detect(enabled, budget)?;
@@ -296,7 +297,10 @@ pub(crate) fn automatic_pin<'a, D>(
                 DatasetRequirement::Base => DatasetPin::Base,
                 DatasetRequirement::Sidecar(s) => DatasetPin::Quantized(s.kind()),
             })
-            .chain(std::iter::once(DatasetPin::Graph))
+            .chain(
+                (index.graph().placement() == orion_ann_platform::region::Placement::Resident)
+                    .then_some(DatasetPin::Graph),
+            )
             .collect(),
     );
     let mut result = pin(index, base, shape, &requirements, &plan.options)?;

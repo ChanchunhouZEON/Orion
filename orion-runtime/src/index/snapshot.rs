@@ -55,12 +55,13 @@ impl From<&SnapshotRef> for SnapshotSource {
 }
 
 /// Resource overrides for reopening a snapshot. Defaults use the saved settings.
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Default, Clone, Debug)]
 pub struct OpenOptions {
     pub threads: Option<usize>,
     pub memory_budget_gib: Option<f64>,
     /// Override the saved deployment policy; resources are always probed afresh.
     pub auto_pin: Option<bool>,
+    pub storage_options: Option<crate::StorageOptions>,
 }
 
 impl OpenOptions {
@@ -100,6 +101,9 @@ impl OpenOptions {
         }
         if let Some(auto_pin) = self.auto_pin {
             options.auto_pin = auto_pin;
+        }
+        if let Some(storage) = self.storage_options {
+            options.storage_options = storage;
         }
         Index::load(input, options, Some(snapshot))
     }

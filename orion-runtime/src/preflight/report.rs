@@ -105,6 +105,9 @@ pub fn format_report(report: &serde_json::Value) -> String {
     text.push_str(&format!(
         "\n\nAccounted search lower bound: {known:.3} GiB\n"
     ));
+    if let Some(mapped) = report["mapped_bytes"].as_u64().filter(|&n| n != 0) {
+        text.push_str(&format!("Mapped payload: {:.3} GiB (private backing files; pageable, not zero RSS)\nMapping working-set reserve: {:.3} GiB\n", mapped as f64 / BYTES_PER_GIB, report["mapping_reserve_bytes"].as_u64().unwrap_or(0) as f64 / BYTES_PER_GIB));
+    }
     let required =
         report["required_lower_bound_bytes"].as_u64().unwrap_or(0) as f64 / BYTES_PER_GIB;
     let build = report["build_lower_bound_bytes"].as_u64().unwrap_or(0) as f64 / BYTES_PER_GIB;

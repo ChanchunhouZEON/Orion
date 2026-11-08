@@ -20,8 +20,8 @@ pub enum PqMetric {
 }
 
 /// PQ codes and a small, immutable codebook. Codebook pages are best-effort
-/// pinned by default; codes are independently pageable, mapped or explicitly
-/// pinned with `pin_codes`. Lock denial is observable via `codebook_pin_error`.
+/// pinned by default when owned; mapped codebooks stay pageable. Codes can be
+/// explicitly pinned with `pin_codes`. Lock denial is observable via `codebook_pin_error`.
 /// Pinning keeps RAM resident, not CPU-cache lines resident.
 pub struct PqDataset {
     // Drop the lock before its backing allocations. The codebook cannot be
@@ -44,6 +44,33 @@ impl std::fmt::Debug for PqDataset {
     }
 }
 impl PqDataset {
+    /// Fit the codebook, then encode directly into owned or mapped code storage.
+    /// Training retains its bounded sample; only encoding is block-streamed.
+    /// # Errors
+    /// Rejects invalid recipes/input and reports allocation or file I/O failures.
+    pub fn build_with_storage(
+        base: &impl F32Rows,
+        options: &PqBuildOptions,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::estimate_resident_memory(
+            QuantizedDatasetShape {
+                rows: base.len(),
+                dimension: base.dimension(),
+            },
+            options,
+        )?;
+        let table = FixedChunkPQTable::train_rows(base, *options)?.with_storage(storage)?;
+        let codes = orion_ann_platform::region::ArrayView::build_rows::<Error>(
+            base.len(),
+            table.get_num_chunks(),
+            64,
+            storage,
+            |start, out| table.encode_into(base, start, out),
+        )?;
+        Self::from_parts(table, Codes(codes), base.len())
+    }
+
     pub(super) fn from_parts(table: FixedChunkPQTable, codes: Codes, rows: usize) -> Result<Self> {
         if rows == 0 || rows.checked_mul(table.get_num_chunks()) != Some(codes.as_slice().len()) {
             return Err(Error::invalid_argument(
@@ -51,8 +78,13 @@ impl PqDataset {
             ));
         }
         let mut pin = PinGuard::default();
-        let regions = table.regions();
-        // SAFETY: only Box payload addresses are borrowed. Moving `table` moves
+        let regions = if table.centers.placement() == orion_ann_platform::region::Placement::Mapped
+        {
+            Vec::new()
+        } else {
+            table.regions()
+        };
+        // SAFETY: only immutable payload addresses are borrowed. Moving `table` moves
         // handles, not payloads. They remain private and immutable until drop,
         // where `codebook_pin` is dropped first. No 'static slice is exposed.
         let regions: Vec<&'static [u8]> = regions
@@ -82,6 +114,21 @@ impl PqDataset {
     }
     pub fn dimension(&self) -> usize {
         self.table.dim()
+    }
+    /// Mapped payload span; not instantaneous resident memory.
+    pub fn mapped_bytes(&self) -> usize {
+        let table =
+            if self.table.centers.placement() == orion_ann_platform::region::Placement::Mapped {
+                self.table.bytes()
+            } else {
+                0
+            };
+        table
+            + if self.code_storage() == PqCodeStorage::OnDemand {
+                self.codes().len()
+            } else {
+                0
+            }
     }
     pub fn codebook(&self) -> &FixedChunkPQTable {
         &self.table
@@ -156,16 +203,11 @@ impl QuantizedDataset for PqDataset {
         Default::default()
     }
     fn build(base: &impl F32Rows, options: &PqBuildOptions) -> Result<Self> {
-        Self::estimate_resident_memory(
-            QuantizedDatasetShape {
-                rows: base.len(),
-                dimension: base.dimension(),
-            },
+        Self::build_with_storage(
+            base,
             options,
-        )?;
-        let table = FixedChunkPQTable::train_rows(base, *options)?;
-        let codes = table.encode_rows(base)?.into_boxed_slice();
-        Self::from_parts(table, Codes::Resident(codes), base.len())
+            &orion_ann_platform::region::RegionOptions::default(),
+        )
     }
     fn estimate_resident_memory(
         shape: QuantizedDatasetShape,

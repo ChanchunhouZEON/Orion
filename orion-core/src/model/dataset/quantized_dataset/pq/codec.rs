@@ -37,6 +37,16 @@ impl PqDataset {
         bytes: u64,
         storage: PqCodeStorage,
     ) -> Result<Self> {
+        Self::decode_with_options(r, bytes, &storage.options())
+    }
+    /// Decode with a selected private mapping directory.
+    /// # Errors
+    /// Same checked wire-format contract as `decode_with_storage`.
+    pub fn decode_with_options(
+        r: &mut dyn Read,
+        bytes: u64,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let bad = || Error::cache("invalid PQ payload");
         let mut magic = [0; 8];
         r.read_exact(&mut magic)?;
@@ -71,30 +81,41 @@ impl PqDataset {
         if offsets[0] != 0 || offsets[m] != dim || offsets.windows(2).any(|v| v[0] >= v[1]) {
             return Err(bad());
         }
-        let mean = read_floats(r, dim)?;
-        let centers = read_floats(r, dim * 256)?;
+        let mean = read_floats(r, dim, storage)?;
+        let centers = read_floats(r, dim * 256, storage)?;
         let table = FixedChunkPQTable {
-            centers: centers.into_boxed_slice(),
-            mean: mean.into_boxed_slice(),
-            offsets: offsets.into_boxed_slice(),
+            centers,
+            mean,
+            offsets: orion_ann_platform::region::ArrayView::copy_from(&offsets, storage)?,
         };
-        Self::from_parts(table, Codes::from_reader(r, rows * m, storage)?, rows)
+        Self::from_parts(table, Codes::read_with_options(r, rows * m, storage)?, rows)
     }
 }
 
 // Large reads keep both the runtime SHA-256 stream and the filesystem writer
 // efficient; never funnel the codebook through one read/write call per scalar.
-fn read_floats(reader: &mut dyn Read, count: usize) -> Result<Vec<f32>> {
-    let mut values = vec![0.0f32; count];
-    reader.read_exact(bytemuck::cast_slice_mut(&mut values))?;
-    #[cfg(target_endian = "big")]
-    for value in &mut values {
-        *value = f32::from_bits(u32::from_le(value.to_bits()));
-    }
-    if values.iter().any(|value| !value.is_finite()) {
-        return Err(Error::cache("PQ codebook contains non-finite coordinates"));
-    }
-    Ok(values)
+fn read_floats(
+    reader: &mut dyn Read,
+    count: usize,
+    storage: &orion_ann_platform::region::RegionOptions,
+) -> Result<orion_ann_platform::region::ArrayView<f32>> {
+    orion_ann_platform::region::ArrayView::<f32>::build_rows::<Error>(
+        count,
+        1,
+        64,
+        storage,
+        |_, values| {
+            reader.read_exact(bytemuck::cast_slice_mut(values))?;
+            #[cfg(target_endian = "big")]
+            for value in values.iter_mut() {
+                *value = f32::from_bits(u32::from_le(value.to_bits()));
+            }
+            if values.iter().any(|value| !value.is_finite()) {
+                return Err(Error::cache("PQ codebook contains non-finite coordinates"));
+            }
+            Ok(())
+        },
+    )
 }
 fn write_floats(writer: &mut dyn Write, values: &[f32]) -> Result<()> {
     #[cfg(target_endian = "little")]

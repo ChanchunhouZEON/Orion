@@ -133,6 +133,14 @@ impl L2KTDataset {
     /// Returns an error for invalid rows, unsupported dimensions, invalid fitted
     /// parameters, or allocation failure. Logical rows exclude SIMD padding.
     pub fn try_build_from(dataset: &impl F32Rows) -> Result<Self> {
+        Self::try_build_from_with_storage(dataset, &Default::default())
+    }
+
+    /// Build/load into the selected private storage; layout and arithmetic are unchanged.
+    pub fn try_build_from_with_storage(
+        dataset: &impl F32Rows,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let checked = CheckedRows::new(dataset, i32::MAX as usize / (128 * 128))?;
         let dataset = &checked;
         let dim = dataset.dimension();
@@ -154,9 +162,12 @@ impl L2KTDataset {
         validation::positive_scale(params.slope)?;
 
         // 2. Allocate the i8 base slab + norms_sq companion.
-        let mut data =
-            AlignedBoxWithSlice::<i8>::new(validation::product(num_vertices, stride)?, 32)?;
-        let mut norms_sq = AlignedBoxWithSlice::<i32>::new(num_vertices, 32)?;
+        let mut data = AlignedBoxWithSlice::<i8>::new_with_storage(
+            validation::product(num_vertices, stride)?,
+            32,
+            storage,
+        )?;
+        let mut norms_sq = AlignedBoxWithSlice::<i32>::new_with_storage(num_vertices, 32, storage)?;
 
         // 3. Parallel quantize + per-vertex norm in a single pass.
         let data_slice = data.as_mut_slice();
@@ -260,6 +271,15 @@ impl L2KTDataset {
     }
 
     pub fn decode(r: &mut dyn std::io::Read, byte_len: u64) -> Result<Self> {
+        Self::decode_with_storage(r, byte_len, &Default::default())
+    }
+
+    /// Build/load into the selected private storage; layout and arithmetic are unchanged.
+    pub fn decode_with_storage(
+        r: &mut dyn std::io::Read,
+        byte_len: u64,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let mut hdr = [0u8; 40];
         r.read_exact(&mut hdr)?;
         if u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != 1 {
@@ -315,11 +335,16 @@ impl L2KTDataset {
         // i8 base.
         let disk_stride = stride;
         let stride = l2_kt_stride(dim);
-        let data =
-            crate::model::dataset::rows::read_rows::<i8>(r, num_vertices, stride, disk_stride)?;
+        let data = crate::model::dataset::rows::read_rows_with_storage::<i8>(
+            r,
+            num_vertices,
+            stride,
+            disk_stride,
+            storage,
+        )?;
 
         // i32 norms_sq.
-        let mut norms_sq = AlignedBoxWithSlice::<i32>::new(num_vertices, 32)
+        let mut norms_sq = AlignedBoxWithSlice::<i32>::new_with_storage(num_vertices, 32, storage)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
         let norms_bytes = bytemuck::cast_slice_mut(norms_sq.as_mut_slice());
         r.read_exact(norms_bytes)?;

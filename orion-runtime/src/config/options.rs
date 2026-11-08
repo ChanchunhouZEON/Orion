@@ -46,6 +46,9 @@ pub struct IndexOptions {
     /// Calibration and calibrated snapshot open perform this automatically;
     /// ordinary searches reuse the retained locks. No CLI feature is required.
     pub auto_pin: bool,
+    /// Placement selected before base, graph and sidecar payload allocation.
+    #[serde(skip_serializing_if = "crate::StorageOptions::is_default")]
+    pub storage_options: crate::StorageOptions,
     /// Optional nonzero prefix length; None uses every input row.
     pub max_points: Option<usize>,
 }
@@ -63,6 +66,7 @@ impl Default for IndexOptions {
             window_size: 5,
             memory_budget_gib: None,
             auto_pin: true,
+            storage_options: Default::default(),
             max_points: None,
         }
     }
@@ -129,6 +133,7 @@ impl IndexOptions {
             index_plan,
             memory_budget_gib: self.memory_budget_gib,
             auto_pin: self.auto_pin,
+            storage_options: self.storage_options.clone(),
             prepare_only: true,
             dimension,
             metric: self.metric,

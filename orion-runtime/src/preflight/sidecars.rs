@@ -36,6 +36,10 @@ fn mips_buffers_contribute_to_report_and_budget_rejection() {
         ),
     ] {
         let options = IndexOptions {
+            storage_options: crate::StorageOptions {
+                mode: crate::StorageMode::Resident,
+                ..Default::default()
+            },
             metric: SearchMetric::InnerProduct,
             graph: GraphConfig {
                 source: GraphSourcePolicy::Rust,

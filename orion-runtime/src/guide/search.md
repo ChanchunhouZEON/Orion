@@ -185,7 +185,8 @@ Training, code generation and page placement belong outside search timing.
 
 Codebooks are best-effort pinned in RAM when prepared. This is not an L1/L2 residency
 guarantee; `PqDataset::codebook_pin_error()` reports an OS lock refusal. Codes are
-owned and pageable by default. `Index::set_pq_code_storage(PqCodeStorage::OnDemand)`
+owned or mapped according to the allocation-time `storage_options` plan.
+`Index::set_pq_code_storage(PqCodeStorage::OnDemand)`
 can move prepared codes into a private temporary-file mapping; the OS then faults
 code pages as needed. This needs temporary disk space equal to the code payload,
 and transition may temporarily retain both representations. It does not map a mutable
