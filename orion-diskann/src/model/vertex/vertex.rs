@@ -42,6 +42,7 @@ where
     /// vector) have been pre-rotated by a random orthogonal matrix. Abandons
     /// when the scaled partial sum exceeds `upper_bound × (1 + ε/√d')`.
     #[inline(always)]
+    #[cfg(feature = "benchmark")]
     pub fn compare_adsampling(
         &self,
         other: &Vertex<'a, T, N>,

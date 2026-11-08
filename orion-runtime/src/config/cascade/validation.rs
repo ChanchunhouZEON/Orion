@@ -82,7 +82,9 @@ impl Cascade {
             AdmissionChoice::L2Kt => P::Quantized(K::L2Kt),
             AdmissionChoice::MipsI8 => P::Quantized(K::MipsI8),
             AdmissionChoice::MipsI16 => P::Quantized(K::MipsI16),
-            AdmissionChoice::NativeL2U8 | AdmissionChoice::AdsF32 => P::Exact,
+            AdmissionChoice::NativeL2U8 => P::Exact,
+            #[cfg(feature = "benchmark")]
+            AdmissionChoice::AdsF32 => P::Exact,
         };
         let rerank = match self.rerank {
             RerankChoice::None => None,

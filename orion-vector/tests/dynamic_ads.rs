@@ -3,6 +3,8 @@
  * Licensed under the MIT License.
  */
 
+#![cfg(feature = "benchmark")]
+
 use orion_ann_vector::{distance_l2_adsampling_slice_f32, FullPrecisionDistance};
 
 fn compare<const N: usize>() {

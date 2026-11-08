@@ -247,6 +247,9 @@ jobs:
           cargo check --locked --manifest-path benchmark/Cargo.toml --all-targets
           cargo test --locked --manifest-path benchmark/Cargo.toml --lib
           cargo test --locked -p orion-ann --features benchmark --lib
+          cargo test --locked -p orion-ann --lib
+          cargo test --locked -p orion-ann-vector --features benchmark --test dynamic_ads
+          cargo test --locked -p adsampling --features benchmark
           cargo test --locked -p orion-ann-core --features benchmark --tests
       - name: Native ParlayANN FFI and service regressions
         run: cargo test --locked -p orion-ann-parlay -p orion-ann -p orion-ann-cli

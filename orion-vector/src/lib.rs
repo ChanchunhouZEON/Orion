@@ -168,6 +168,7 @@ mod distance_test {
     }
 
     #[test]
+    #[cfg(feature = "benchmark")]
     fn test_adsampling_matches_full_when_under_bound() {
         let a: [f32; 128] = std::array::from_fn(|i| (i as f32).sin());
         let b: [f32; 128] = std::array::from_fn(|i| (i as f32).cos());
@@ -184,6 +185,7 @@ mod distance_test {
     }
 
     #[test]
+    #[cfg(feature = "benchmark")]
     fn test_adsampling_abandons_when_distant() {
         let a: [f32; 128] = std::array::from_fn(|i| i as f32);
         let b: [f32; 128] = std::array::from_fn(|i| -(i as f32));
@@ -425,6 +427,7 @@ mod padded_layout;
 pub use padded_layout::PaddedLayout;
 
 /// Runtime-dimensional ADS with the same checkpoint cadence as the typed API.
+#[cfg(feature = "benchmark")]
 pub fn distance_l2_adsampling_slice_f32(a: &[f32], b: &[f32], bound: f32, epsilon: f32) -> f32 {
     assert_eq!(a.len(), b.len());
     #[cfg(target_arch = "aarch64")]

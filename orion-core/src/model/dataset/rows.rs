@@ -96,6 +96,7 @@ pub(crate) fn read_rows<T: bytemuck::Pod>(
 /// code is generic over storage; all new frontends instantiate padded rows.
 pub trait CascadeData: F32Rows + crate::index::compressed_index::IndexData + Send {
     fn allocation(&self) -> &[f32];
+    #[cfg(feature = "benchmark")]
     fn ads(&self, epsilon: f32) -> Box<dyn crate::algorithm::search::stage::AdmissionStage + '_>;
     fn truth(
         &self,
@@ -106,6 +107,7 @@ impl CascadeData for PaddedDataset<f32> {
     fn allocation(&self) -> &[f32] {
         self.as_slice()
     }
+    #[cfg(feature = "benchmark")]
     fn ads(&self, epsilon: f32) -> Box<dyn crate::algorithm::search::stage::AdmissionStage + '_> {
         Box::new(
             crate::algorithm::search::stage::admission::ads_f32::DynamicAdsF32Admission::new(
@@ -130,6 +132,7 @@ impl<const N: usize> CascadeData for InmemDataset<f32, N> {
     fn allocation(&self) -> &[f32] {
         self.data.as_slice()
     }
+    #[cfg(feature = "benchmark")]
     fn ads(&self, epsilon: f32) -> Box<dyn crate::algorithm::search::stage::AdmissionStage + '_> {
         Box::new(crate::algorithm::search::stage::admission::AdsF32Admission::new(self, epsilon))
     }

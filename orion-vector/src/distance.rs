@@ -48,6 +48,7 @@ pub trait FullPrecisionDistance<T, const N: usize> {
     ///
     /// Default impl falls back to the rotation-free bounded compare — only
     /// the `[f32; N]` specialization actually does scaled early abort.
+    #[cfg(feature = "benchmark")]
     fn distance_compare_adsampling(a: &[T; N], b: &[T; N], upper_bound: f32, _epsilon: f32) -> f32 {
         Self::distance_compare_with_bound(a, b, upper_bound)
     }
@@ -88,6 +89,7 @@ impl<const N: usize> FullPrecisionDistance<f32, N> for [f32; N] {
     }
 
     #[inline(always)]
+    #[cfg(feature = "benchmark")]
     fn distance_compare_adsampling(
         a: &[f32; N],
         b: &[f32; N],
@@ -205,6 +207,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "benchmark")]
     fn distance_compare_adsampling_full_value_when_unbound() {
         let a: [f32; 64] = std::array::from_fn(|i| i as f32 * 0.1);
         let b: [f32; 64] = std::array::from_fn(|i| (i as f32 * 0.1) + 0.5);
@@ -301,6 +304,7 @@ mod tests {
         assert_eq!(Distance::distance_compare_with_bound(&a, &b, 129.0), 128.0);
         assert_eq!(Distance::distance_compare_with_bound(&a, &b, 128.0), -1.0);
         assert_eq!(Distance::distance_compare_with_bound(&a, &b, 1.0), -1.0);
+        #[cfg(feature = "benchmark")]
         assert_eq!(
             Distance::distance_compare_adsampling(&a, &b, 129.0, 2.1),
             128.0

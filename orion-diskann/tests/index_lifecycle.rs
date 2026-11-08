@@ -105,9 +105,12 @@ fn memory_build_matches_file_build_and_mmap_export() {
     assert_eq!(mapped.header.num_nodes, 24);
     assert_eq!(mapped.header.dimension, 32);
     assert_eq!(search(&original, &data[..32])[0], 0);
-    let mut sampled = [u32::MAX; 4];
-    ANNInmemIndex::search_adsampling(&original, &data[..32], 4, 64, 0.0, &mut sampled).unwrap();
-    assert_eq!(sampled.as_slice(), search(&original, &data[..32]));
+    #[cfg(feature = "benchmark")]
+    {
+        let mut sampled = [u32::MAX; 4];
+        ANNInmemIndex::search_adsampling(&original, &data[..32], 4, 64, 0.0, &mut sampled).unwrap();
+        assert_eq!(sampled.as_slice(), search(&original, &data[..32]));
+    }
     original
         .save_graph_mmap(&dir.file("adjacency.mmap"))
         .unwrap();
@@ -132,6 +135,7 @@ fn build_rejects_invalid_metadata_and_short_inputs() {
     assert!(index.build_from_data(&[], 0).is_err());
     assert!(ANNInmemIndex::search(&index, &[0.; 31], 1, 2, &mut [0]).is_err());
     assert!(ANNInmemIndex::search(&index, &[0.; 32], 2, 1, &mut [0; 2]).is_err());
+    #[cfg(feature = "benchmark")]
     assert!(ANNInmemIndex::search_adsampling(&index, &[0.; 32], 2, 1, 0., &mut [0; 2]).is_err());
 }
 

@@ -107,6 +107,7 @@ pub fn build_admission<'a, D: CascadeData>(
         AdmissionChoice::MipsI16 => Box::new(MipsI16Admission::new(
             orion.try_ensure_quantized_dataset_mips_i16()?,
         )),
+        #[cfg(feature = "benchmark")]
         AdmissionChoice::AdsF32 => orion.dataset().ads(ads_epsilon()),
     })
 }

@@ -50,6 +50,7 @@ where
     /// ADSampling-enabled search. Caller must have rotated `query` with the
     /// same orthogonal matrix used to rotate this index's stored vectors.
     /// Default impl returns an error — override for concrete index types.
+    #[cfg(feature = "benchmark")]
     fn search_adsampling(
         &self,
         _query: &[T],

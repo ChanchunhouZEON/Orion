@@ -8,9 +8,9 @@
 mod graph_fixture;
 use graph_fixture::{GraphFixture, from_fixture_graph};
 use orion_ann_core::algorithm::search::diagnostics::{NeighborMode, SearchObserver};
+use orion_ann_core::algorithm::search::stage::Admission;
 use orion_ann_core::algorithm::search::stage::admission::NativeU8Admission;
 use orion_ann_core::algorithm::search::stage::rerank::F32Rerank;
-use orion_ann_core::algorithm::search::stage::{Admission, admission::AdsF32Admission};
 use orion_ann_core::model::Neighbor;
 use orion_ann_core::{
     CalibrationConfig, CalibrationMetric, DynamicCascade, DynamicSearchConfig, PaddedDataset,
@@ -91,9 +91,9 @@ fn native_admission_scores_and_cutoffs_equal_full_precision_without_rescaling() 
 
 #[test]
 fn native_storage_preserves_calibration_search_and_local_extra_expansion() {
-    let (bytes, floats) = datasets();
+    let (reference_bytes, floats) = datasets();
     let bytes = PaddedDataset::from_packed(
-        &bytes.data[..COUNT * DIM],
+        &reference_bytes.data[..COUNT * DIM],
         PaddedLayout::for_kernel::<orion_ann_vector::L2U8Distance>(DIM).unwrap(),
     )
     .unwrap();
@@ -141,7 +141,8 @@ fn native_storage_preserves_calibration_search_and_local_extra_expansion() {
                 controls,
                 DynamicCascade {
                     prefilter: None,
-                    admission: &AdsF32Admission::new(reference.dataset(), f32::MAX),
+                    // Byte scores are exact; the separate scalar test checks their values.
+                    admission: &NativeU8Admission::new(&reference_bytes),
                     rerank: &F32Rerank::new(reference.dataset()),
                 },
                 NeighborMode::LocalExtra,

@@ -49,6 +49,7 @@ pub enum AdmissionChoice {
     /// dataset and queries to be pre-rotated by the ADSampling
     /// rotator; L2 is rotation-invariant so the graph topology is
     /// unaffected.
+    #[cfg(feature = "benchmark")]
     AdsF32,
 }
 
@@ -69,6 +70,7 @@ impl AdmissionChoice {
 /// band ⇒ fewer early-aborts but safer admits. Default `2.1` matches
 /// the `--algorithms ads-comparison` reference run in
 /// `benchmark/src/main.rs::run_ads_comparison`.
+#[cfg(feature = "benchmark")]
 pub const DEFAULT_ADS_EPSILON: f32 = 2.1;
 
 /// Read `ORION_ADS_EPSILON` once per process (OnceLock-cached).
@@ -82,11 +84,6 @@ pub fn ads_epsilon() -> f32 {
             .and_then(|s| s.parse::<f32>().ok())
             .unwrap_or(DEFAULT_ADS_EPSILON)
     })
-}
-
-#[cfg(not(feature = "benchmark"))]
-pub fn ads_epsilon() -> f32 {
-    DEFAULT_ADS_EPSILON
 }
 
 /// Final-precision rerank tier choice.
@@ -130,10 +127,15 @@ impl FromStr for AdmissionChoice {
             "l2-kt" | "l2kt" | "kt" => Ok(Self::L2Kt),
             "mips-i8" | "mipsi8" => Ok(Self::MipsI8),
             "mips-i16" | "mipsi16" => Ok(Self::MipsI16),
+            #[cfg(feature = "benchmark")]
             "ads-f32" | "adsf32" | "ads" => Ok(Self::AdsF32),
+            #[cfg(not(feature = "benchmark"))]
+            "ads-f32" | "adsf32" | "ads" => Err(Error::unsupported(
+                "ADSampling is available only with the benchmark feature",
+            )),
             other => Err(Error::from(format!(
                 "unknown admission '{other}' \
-                 (expected pq-l2|pq-ip|native-l2-u8|l2-u8|l2-u16|l2-kt|mips-i8|mips-i16|ads-f32)"
+                 (expected pq-l2|pq-ip|native-l2-u8|l2-u8|l2-u16|l2-kt|mips-i8|mips-i16)"
             ))),
         }
     }
@@ -150,6 +152,26 @@ impl FromStr for RerankChoice {
             other => Err(Error::from(format!(
                 "unknown rerank '{other}' (expected f32|ip-f32|u16|none)"
             ))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ads_aliases_follow_the_benchmark_feature() {
+        for name in ["ads-f32", "adsf32", "ads"] {
+            let parsed = name.parse::<AdmissionChoice>();
+            #[cfg(feature = "benchmark")]
+            assert_eq!(parsed.unwrap(), AdmissionChoice::AdsF32);
+            #[cfg(not(feature = "benchmark"))]
+            {
+                let error = parsed.unwrap_err();
+                assert_eq!(error.code(), crate::ErrorCode::UnsupportedConfiguration);
+                assert!(error.to_string().contains("benchmark feature"));
+            }
         }
     }
 }

@@ -97,7 +97,11 @@ mod selector_tests {
 
     #[test]
     fn exact_storage_cannot_be_followed_by_quantized_reranking() {
-        for admission in [AdmissionChoice::AdsF32, AdmissionChoice::NativeL2U8] {
+        for admission in [
+            #[cfg(feature = "benchmark")]
+            AdmissionChoice::AdsF32,
+            AdmissionChoice::NativeL2U8,
+        ] {
             let cascade = Cascade {
                 prefilter: PrefilterChoice::None,
                 admission,

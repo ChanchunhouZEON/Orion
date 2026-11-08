@@ -648,6 +648,7 @@ fn search_pipeline_e2e() {
     //   `stage/admission/ads_f32.rs` (the only 0%-coverage admission
     //   left) plus the ADSampling path inside
     //   `FullPrecisionDistance::distance_compare_adsampling` for f32.
+    #[cfg(feature = "benchmark")]
     {
         use orion_ann_core::algorithm::search::stage::admission::ads_f32::AdsF32Admission;
 

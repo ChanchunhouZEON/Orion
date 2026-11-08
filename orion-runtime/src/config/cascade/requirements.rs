@@ -17,11 +17,13 @@ impl Cascade {
             .into_iter()
             .map(R::Sidecar)
             .collect();
-        if matches!(
-            self.admission,
-            AdmissionChoice::NativeL2U8 | AdmissionChoice::AdsF32
-        ) || matches!(self.rerank, RerankChoice::F32 | RerankChoice::IpF32)
-        {
+        let uses_base = match self.admission {
+            AdmissionChoice::NativeL2U8 => true,
+            #[cfg(feature = "benchmark")]
+            AdmissionChoice::AdsF32 => true,
+            _ => false,
+        };
+        if uses_base || matches!(self.rerank, RerankChoice::F32 | RerankChoice::IpF32) {
             result.push(R::Base);
         }
         result
@@ -52,7 +54,9 @@ impl Cascade {
             AdmissionChoice::MipsI8 => kinds.push(K::MipsI8),
             AdmissionChoice::MipsI16 => kinds.push(K::MipsI16),
             AdmissionChoice::L2Kt => kinds.push(K::L2Kt),
-            AdmissionChoice::NativeL2U8 | AdmissionChoice::AdsF32 => {}
+            AdmissionChoice::NativeL2U8 => {}
+            #[cfg(feature = "benchmark")]
+            AdmissionChoice::AdsF32 => {}
         }
         if self.rerank == RerankChoice::U16 {
             kinds.push(K::L2U16);

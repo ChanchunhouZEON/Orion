@@ -15,7 +15,7 @@ include = ["assets/**", "src/**", "tests/**", "configs/**", "Cargo.toml", "READM
 edition = "2024"
 
 [features]
-benchmark = ["search-stats", "orion-ann-vector/benchmark"]
+benchmark = ["search-stats", "orion-ann-vector/benchmark", "orion-ann-diskann/benchmark"]
 search-stats = []
 default = ["parlay"]
 parlay = ["dep:orion-ann-parlay"]

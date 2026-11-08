@@ -39,6 +39,7 @@
 //!   it directly use original dataset in referenced form without introducing
 //!   quantized dataset sidecar. The rest is all the same.
 
+#[cfg(feature = "benchmark")]
 pub mod ads_f32;
 pub mod l2kt;
 pub mod l2u16;
@@ -47,6 +48,7 @@ pub mod mips_i16;
 pub mod mips_i8;
 mod native_u8;
 
+#[cfg(feature = "benchmark")]
 pub use ads_f32::AdsF32Admission;
 pub use l2kt::L2KTAdmission;
 pub use l2u8::L2U8Admission;

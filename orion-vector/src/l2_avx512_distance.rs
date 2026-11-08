@@ -142,6 +142,7 @@ pub fn distance_l2_slice_f32(a: &[f32], b: &[f32]) -> f32 {
 /// Check interval is 1 outer iter (= 64 dims), matching NEON's
 /// 4-outer-iter cadence of 64 dims.
 #[inline(never)]
+#[cfg(feature = "benchmark")]
 pub fn distance_l2_adsampling_f32<const N: usize>(
     a: &[f32; N],
     b: &[f32; N],
@@ -151,6 +152,7 @@ pub fn distance_l2_adsampling_f32<const N: usize>(
     distance_l2_adsampling_slice_f32(a, b, upper_bound, epsilon)
 }
 #[inline(always)]
+#[cfg(feature = "benchmark")]
 pub fn distance_l2_adsampling_slice_f32(
     a: &[f32],
     b: &[f32],

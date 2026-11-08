@@ -161,6 +161,7 @@ pub fn distance_l2_slice_f32(a: &[f32], b: &[f32]) -> f32 {
 /// aggressive cutoff than `distance_l2_early_abandon_f32`.
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
+#[cfg(feature = "benchmark")]
 pub fn distance_l2_adsampling_f32<const N: usize>(
     a: &[f32; N],
     b: &[f32; N],
@@ -171,6 +172,7 @@ pub fn distance_l2_adsampling_f32<const N: usize>(
 }
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
+#[cfg(feature = "benchmark")]
 pub fn distance_l2_adsampling_slice_f32(
     a: &[f32],
     b: &[f32],

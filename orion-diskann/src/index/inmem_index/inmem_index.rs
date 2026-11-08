@@ -336,6 +336,7 @@ where
 
     /// ADSampling variant of `Self::search`. See
     /// [`Self::search_with_l_override_adsampling`] for preconditions.
+    #[cfg(feature = "benchmark")]
     pub fn search_adsampling(
         &self,
         query: &Vertex<T, N>,
@@ -1189,6 +1190,7 @@ where
         InmemIndex::search(self, &query_vector, k_value, l_value, indices)
     }
 
+    #[cfg(feature = "benchmark")]
     fn search_adsampling(
         &self,
         query: &[T],

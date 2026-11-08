@@ -15,6 +15,10 @@ unreleased development baseline, not a dated release announcement.
 
 ### Added
 
+- ADSampling rotation, admission and distance kernels are available only through
+  the opt-in `benchmark` feature; production Rust, CLI and Python configurations
+  reject ADS aliases with an explicit unsupported-feature error.
+
 - Resource-aware automatic RAM pinning, enabled by default in Rust, Python and
   CLI. Search preparation detects available memory, cgroup limits and OS lock
   allowances, reserves headroom, and applies one bounded budget to the graph,

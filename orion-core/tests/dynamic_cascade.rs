@@ -565,12 +565,15 @@ fn sidecar_stream_rejects_bad_headers() {
 #[test]
 fn invalid_precision_is_rejected_by_the_core_search_boundary() {
     let index = dynamic(32);
+    #[cfg(feature = "benchmark")]
     let exact = ads_f32::DynamicAdsF32Admission::new(index.dataset(), 2.1);
     let low = L2U8Admission::new(index.ensure_quantized_dataset());
+    #[cfg(feature = "benchmark")]
     let high_rerank = U16Rerank::new(index.ensure_quantized_dataset_l2_u16());
     let mixed = JlMipsPrefilter::new(index.ensure_quantized_dataset_jl_mips());
     let no_rerank = NoRerank;
     for cascade in [
+        #[cfg(feature = "benchmark")]
         DynamicCascade {
             prefilter: None,
             admission: &exact,

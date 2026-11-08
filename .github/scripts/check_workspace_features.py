@@ -14,7 +14,7 @@ for manifest, experimental in [("Cargo.toml", False), ("benchmark/Cargo.toml", T
     members = {names[member] for member in metadata["workspace_members"]}
     assert ("benchmark" in members) == experimental, (manifest, members)
     features = {names[node["id"]]: node["features"] for node in metadata["resolve"]["nodes"]}
-    for name in ("orion-ann", "orion-ann-core", "orion-ann-vector"):
+    for name in ("orion-ann", "orion-ann-core", "orion-ann-vector", "orion-ann-diskann", "adsampling"):
         assert ("benchmark" in features[name]) == experimental, (manifest, name, features[name])
     # PQ is ordinary code, not an independent Cargo feature in either workspace.
     packages = {p["name"]: p for p in metadata["packages"]}

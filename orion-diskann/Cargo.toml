@@ -15,6 +15,7 @@ include = ["src/**", "tests/**", "configs/**", "Cargo.toml", "README.md", "LICEN
 edition = "2024"
 
 [features]
+benchmark = ["orion-ann-vector/benchmark"]
 default = []
 orion = ["dep:orion-ann-error", "dep:serde_json"]
 indificatif = ["dep:indicatif"]

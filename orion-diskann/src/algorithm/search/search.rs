@@ -38,6 +38,7 @@ where
     /// Under rotation, the graph is unchanged (L2 is rotation-invariant) but
     /// the per-dimension variance becomes approximately uniform, which is the
     /// precondition for the scaled partial-sum early abort.
+    #[cfg(feature = "benchmark")]
     pub fn search_with_l_override_adsampling(
         &self,
         query: &Vertex<T, N>,
@@ -133,6 +134,7 @@ where
     /// uses `compare_adsampling` against the current priority-queue worst as
     /// the upper bound — so most far-away candidates are abandoned after
     /// processing only a fraction of dimensions. Assumes pre-rotated data.
+    #[cfg(feature = "benchmark")]
     fn greedy_search_adsampling(
         &self,
         query: &Vertex<T, N>,
