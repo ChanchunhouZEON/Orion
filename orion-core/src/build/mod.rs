@@ -233,6 +233,15 @@ macro_rules! build_api {
             /// by the FFI bridge; Rust allocation/invariant panics follow the host
             /// panic policy rather than being converted into recoverable errors.
             pub fn build(dataset: PaddedDataset<$ty>, config: BuildConfig) -> Result<Self> {
+                Self::build_with_storage(dataset, config, &Default::default())
+            }
+
+            /// Construct the final graph directly in the selected private backing.
+            pub fn build_with_storage(
+                dataset: PaddedDataset<$ty>,
+                config: BuildConfig,
+                storage: &orion_ann_platform::region::RegionOptions,
+            ) -> Result<Self> {
                 let backend =
                     config.backend(dataset.len(), dataset.layout().logical_dim(), $native)?;
                 // Inspect only logical coordinates; SIMD padding is not input data.
@@ -250,8 +259,8 @@ macro_rules! build_api {
                 }
                 config.install(|| match backend {
                     #[cfg(feature = "parlay")]
-                    BuildBackend::ParlayAnn => parlay::$pa(dataset, &config),
-                    BuildBackend::DiskAnn => ($rust)(dataset, &config),
+                    BuildBackend::ParlayAnn => parlay::$pa(dataset, &config, storage),
+                    BuildBackend::DiskAnn => ($rust)(dataset, &config, storage),
                     _ => Err(
                         Error::unsupported("ParlayANN builder requires the parlay feature")
                             .at("build_graph"),
@@ -342,7 +351,7 @@ build_api!(
     true,
     orion_ann_vector::L2U8Distance,
     u8,
-    |_: PaddedDataset<u8>, _: &BuildConfig| Err(Error::unsupported(
-        "native u8 construction requires ParlayANN"
-    ))
+    |_: PaddedDataset<u8>, _: &BuildConfig, _: &orion_ann_platform::region::RegionOptions| Err(
+        Error::unsupported("native u8 construction requires ParlayANN")
+    )
 );

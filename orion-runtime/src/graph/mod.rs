@@ -25,7 +25,7 @@ use orion_ann_core::Orion;
 use orion_ann_diskann::model::PaddedDataset;
 use std::time::Instant;
 
-/// Resident graph and the persisted generation from which a session is assembled.
+/// Graph storage and the persisted generation from which a session is assembled.
 pub(crate) struct LoadedGraph<T: BaseElement> {
     pub index: Orion<T>,
     pub generation: cache::Generation,
@@ -43,7 +43,7 @@ pub fn load_index(config: &ResolvedRunConfig, data: &mut LoadedBase) -> Result<O
     let cache = CachePlan::resolve(config, data.num_points)?;
     #[cfg(feature = "benchmark")]
     if config.benchmark_trust_cache && cache.is_hit() {
-        return trusted::load(data.take_index_dataset()?, cache);
+        return trusted::load(data.take_index_dataset()?, cache, config);
     }
     attach_working(prepare_f32(config, data, cache)?, config)
 }
@@ -53,7 +53,7 @@ pub fn load_u8_index(config: &ResolvedRunConfig, data: &mut LoadedBase<u8>) -> R
     let cache = CachePlan::resolve(config, data.num_points)?;
     #[cfg(feature = "benchmark")]
     if config.benchmark_trust_cache && cache.is_hit() {
-        return trusted::load(data.take_index_dataset()?, cache);
+        return trusted::load(data.take_index_dataset()?, cache, config);
     }
     attach_working(prepare_u8(config, data, cache)?, config)
 }
@@ -64,7 +64,9 @@ pub(crate) fn prepare_f32(
     cache: CachePlan,
 ) -> Result<LoadedGraph<f32>> {
     load_index_impl(config, data, cache, |config, dataset| {
-        Orion::<f32>::build(dataset, config.build_config())
+        let bytes = crate::preflight::graph_bytes(config, dataset.len())?;
+        let storage = crate::placement::graph_options(config, &dataset, bytes)?;
+        Orion::<f32>::build_with_storage(dataset, config.build_config(), &storage)
     })
 }
 
@@ -74,7 +76,9 @@ pub(crate) fn prepare_u8(
     cache: CachePlan,
 ) -> Result<LoadedGraph<u8>> {
     load_index_impl(config, data, cache, |config, dataset| {
-        Orion::<u8>::build(dataset, config.build_config())
+        let bytes = crate::preflight::graph_bytes(config, dataset.len())?;
+        let storage = crate::placement::graph_options(config, &dataset, bytes)?;
+        Orion::<u8>::build_with_storage(dataset, config.build_config(), &storage)
     })
 }
 
@@ -126,7 +130,18 @@ fn load_index_impl<T: BaseElement>(
         log::info!("Loading cached PhasedGraph from {}", path.display());
         let metadata =
             crate::storage::read_record(&store, &record.metadata_sha256, "bin", 4096, "metadata")?;
-        let verified = persistence::load_verified(&path, dataset, &metadata, &record.graph_sha256)?;
+        let storage = crate::placement::graph_options(
+            config,
+            &dataset,
+            std::fs::metadata(&path)?.len().saturating_sub(16),
+        )?;
+        let verified = persistence::load_verified_with_storage(
+            &path,
+            dataset,
+            &metadata,
+            &record.graph_sha256,
+            &storage,
+        )?;
         (
             verified.value,
             generation,

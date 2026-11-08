@@ -37,6 +37,8 @@ pub struct ResolvedRunConfig {
     pub(crate) index_plan: crate::config::plan::IndexPlan,
     pub memory_budget_gib: Option<f64>,
     pub auto_pin: bool,
+    #[serde(skip_serializing_if = "crate::StorageOptions::is_default")]
+    pub storage_options: crate::StorageOptions,
     pub prepare_only: bool,
     pub dimension: usize,
     pub metric: SearchMetric,

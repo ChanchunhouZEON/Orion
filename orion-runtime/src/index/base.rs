@@ -115,8 +115,28 @@ impl PreparedBase {
                 f32::normalize(&mut row[..dim], dim, config.metric)?;
             }
         }
+        if self.file.is_none() {
+            let storage = crate::placement::base_options(config, self.rows.len(), true)?;
+            if storage.placement == orion_ann_platform::region::Placement::Mapped {
+                match &mut self.rows {
+                    Rows::F32(data) => relocate(data, &storage)?,
+                    Rows::U8(data) => relocate(data, &storage)?,
+                }
+            }
+        }
         Ok(())
     }
+}
+
+fn relocate<T: BaseElement>(
+    data: &mut LoadedBase<T>,
+    storage: &orion_ann_platform::region::RegionOptions,
+) -> Result<()> {
+    let source = data.base.as_ref().ok_or("missing base")?;
+    data.base = Some(
+        orion_ann_diskann::common::AlignedBoxWithSlice::from_slice_with_storage(source, storage)?,
+    );
+    Ok(())
 }
 
 impl Rows {
@@ -213,6 +233,14 @@ fn read_file_base<T: BaseElement>(config: &ResolvedRunConfig) -> Result<(LoadedB
         layout,
         config.max_points,
         config.metric,
+        &crate::placement::base_options(
+            config,
+            config
+                .num_points
+                .unwrap_or(config.max_points)
+                .min(config.max_points),
+            false,
+        )?,
     )?;
     let num_points = dataset.len();
     if config.num_points.map(|n| n.min(config.max_points)) != Some(num_points) {

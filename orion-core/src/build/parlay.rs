@@ -38,9 +38,10 @@ macro_rules! build {
         pub(super) fn $name(
             dataset: PaddedDataset<$ty>,
             config: &BuildConfig,
+            storage: &orion_ann_platform::region::RegionOptions,
         ) -> Result<Orion<$ty>> {
             let recipe = options(config);
-            let graph = PhasedGraph::try_build_with(
+            let graph = PhasedGraph::try_build_with_storage(
                 dataset.len(),
                 config.degree,
                 config.max_extra,
@@ -56,6 +57,7 @@ macro_rules! build {
                     )
                     .map_err(convert_error)
                 },
+                storage,
             )?;
             let entry = sampled_medoid_rows(dataset.len(), |id| dataset.row(id).unwrap());
             Ok(Orion::from_phased_graph(dataset, graph, entry))

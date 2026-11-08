@@ -3,7 +3,7 @@
  * Licensed under the MIT License.
  */
 
-//! Resident search backend and immutable identities selected for this session.
+//! Search backend and immutable identities selected for this session.
 //! ReadView owns the engine; Engine defines its operations; DynamicEngine
 //! connects those operations to the selected core search backend.
 use super::query::{QueryBatch, QueryValues, SearchOptions};
@@ -23,6 +23,9 @@ pub(super) struct ReadView {
 
 pub(super) trait Engine: Send + Sync {
     fn release_auto_pin(&mut self);
+    fn mapped_sidecar_bytes(&self) -> usize;
+    fn mapped_base_bytes(&self) -> usize;
+    fn mapped_graph_bytes(&self) -> usize;
     fn pin_report(&self) -> &crate::PinReport;
     fn set_pq_code_storage(&mut self, policy: crate::PqCodeStorage) -> Result<()>;
     fn pin<'a>(
@@ -69,6 +72,48 @@ pub(super) struct DynamicEngine<B: SearchBackend> {
 }
 
 impl<B: SearchBackend> Engine for DynamicEngine<B> {
+    fn mapped_base_bytes(&self) -> usize {
+        if self.index.dataset().placement() == orion_ann_platform::region::Placement::Mapped {
+            std::mem::size_of_val(self.index.dataset().as_slice())
+        } else {
+            0
+        }
+    }
+    fn mapped_graph_bytes(&self) -> usize {
+        if self.index.graph().placement() == orion_ann_platform::region::Placement::Mapped {
+            self.index.graph().buffer_bytes().len()
+        } else {
+            0
+        }
+    }
+    fn mapped_sidecar_bytes(&self) -> usize {
+        use crate::QuantizedKind::*;
+        [
+            L2U8,
+            L2U16,
+            MipsI8,
+            MipsI16,
+            Pq,
+            L2Kt,
+            JlSparse,
+            JlSparseMips,
+            JlHadamard,
+            Rabitq,
+            Rabitq4,
+        ]
+        .into_iter()
+        .filter(|&k| self.index.sidecar_is_mapped(k))
+        .map(|k| {
+            let regions = self.index.resident_sidecar_regions(k).unwrap_or_default();
+            if k == Pq {
+                self.index.mapped_pq_bytes()
+            } else {
+                regions.iter().map(|r| r.len()).sum::<usize>()
+            }
+        })
+        .sum()
+    }
+
     fn release_auto_pin(&mut self) {
         self.auto_pin = Default::default();
         self.pin_report = Default::default();

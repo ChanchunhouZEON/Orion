@@ -7,7 +7,11 @@
 use super::*;
 use crate::build_diskann_index;
 
-pub(super) fn build(dataset: PaddedDataset<f32>, config: &BuildConfig) -> Result<Orion> {
+pub(super) fn build(
+    dataset: PaddedDataset<f32>,
+    config: &BuildConfig,
+    storage: &orion_ann_platform::region::RegionOptions,
+) -> Result<Orion> {
     let num_points = dataset.len();
     // DiskANN's builder still owns typed storage. Pack only when SIMD row
     // padding differs from its input; cached/STAG paths never make this copy.
@@ -51,7 +55,11 @@ pub(super) fn build(dataset: PaddedDataset<f32>, config: &BuildConfig) -> Result
     drop(build.index);
 
     // Saving and sidecar calibration are separate operations.
-    let graph =
-        PhasedGraph::try_from_partitions(&build.partitions, config.degree, config.max_extra)?;
+    let graph = PhasedGraph::try_from_partitions_with_storage(
+        &build.partitions,
+        config.degree,
+        config.max_extra,
+        storage,
+    )?;
     Ok(Orion::from_phased_graph(dataset, graph, entry))
 }

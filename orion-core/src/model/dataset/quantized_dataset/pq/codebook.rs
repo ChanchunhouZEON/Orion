@@ -5,6 +5,7 @@
 
 use crate::model::dataset::rows::F32Rows;
 use crate::{Error, Result};
+use orion_ann_platform::region::{ArrayView, RegionOptions};
 use rand::{SeedableRng, seq::SliceRandom};
 use rayon::prelude::*;
 
@@ -62,9 +63,9 @@ impl PqBuildOptions {
 /// Centers are chunk-major, then centroid-major; each subvector is contiguous.
 #[derive(Clone)]
 pub struct FixedChunkPQTable {
-    pub(super) centers: Box<[f32]>,
-    pub(super) offsets: Box<[usize]>,
-    pub(super) mean: Box<[f32]>,
+    pub(super) centers: ArrayView<f32>,
+    pub(super) offsets: ArrayView<usize>,
+    pub(super) mean: ArrayView<f32>,
 }
 impl std::fmt::Debug for FixedChunkPQTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -104,6 +105,15 @@ pub(super) fn check_rows(data: &[f32], rows: usize, dim: usize) -> Result<()> {
 }
 
 impl FixedChunkPQTable {
+    pub(super) fn with_storage(mut self, storage: &RegionOptions) -> Result<Self> {
+        if self.centers.placement() != storage.placement {
+            self.centers = ArrayView::copy_from(&self.centers, storage)?;
+            self.mean = ArrayView::copy_from(&self.mean, storage)?;
+            self.offsets = ArrayView::copy_from(&self.offsets, storage)?;
+        }
+        Ok(self)
+    }
+
     /// Import centroid-major centers and a per-coordinate mean translation.
     /// Supply an all-zero mean to disable translation.
     /// # Errors
@@ -137,9 +147,9 @@ impl FixedChunkPQTable {
             }
         }
         Ok(Self {
-            centers: reordered.into_boxed_slice(),
-            mean: mean.into_boxed_slice(),
-            offsets: offsets.into_boxed_slice(),
+            centers: ArrayView::copy_from(&reordered, &Default::default())?,
+            mean: ArrayView::copy_from(&mean, &Default::default())?,
+            offsets: ArrayView::copy_from(&offsets, &Default::default())?,
         })
     }
 
@@ -223,13 +233,12 @@ impl FixedChunkPQTable {
             })
             .collect();
         Ok(Self {
-            centers: chunks
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-            offsets: offsets.into_boxed_slice(),
-            mean: vec![0.0; dim].into_boxed_slice(),
+            centers: ArrayView::copy_from(
+                &chunks.into_iter().flatten().collect::<Vec<_>>(),
+                &Default::default(),
+            )?,
+            offsets: ArrayView::copy_from(&offsets, &Default::default())?,
+            mean: ArrayView::copy_from(&vec![0.0; dim], &Default::default())?,
         })
     }
 
@@ -271,10 +280,20 @@ impl FixedChunkPQTable {
                 .checked_mul(m)
                 .ok_or_else(|| Error::invalid_argument("PQ codes size overflow"))?
         ];
+        self.encode_into(base, 0, &mut codes)?;
+        Ok(codes)
+    }
+    pub(super) fn encode_into(
+        &self,
+        base: &impl F32Rows,
+        start: usize,
+        codes: &mut [u8],
+    ) -> Result<()> {
+        let m = self.get_num_chunks();
         codes.par_chunks_mut(m).enumerate().try_for_each_init(
             || vec![0.0; self.dim()],
             |centered, (id, out)| -> Result<()> {
-                let row = base.row(id);
+                let row = base.row(start + id);
                 if row.len() != self.dim() || row.iter().any(|x| !x.is_finite()) {
                     return Err(Error::invalid_argument("invalid PQ encoding row"));
                 }
@@ -292,7 +311,7 @@ impl FixedChunkPQTable {
                 Ok(())
             },
         )?;
-        Ok(codes)
+        Ok(())
     }
     /// Translate the query for the legacy ADC adapter.
     /// # Panics

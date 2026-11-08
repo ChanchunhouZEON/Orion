@@ -945,6 +945,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
 ]
@@ -979,6 +980,7 @@ dependencies = [
 name = "orion-ann-platform"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "crossbeam",
  "hashbrown 0.15.5",
  "libc",
@@ -986,6 +988,7 @@ dependencies = [
  "memmap2",
  "once_cell",
  "orion-ann-vector",
+ "tempfile",
  "thiserror",
 ]
 

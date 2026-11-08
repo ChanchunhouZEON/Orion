@@ -21,7 +21,7 @@ use super::{ANNError, ANNResult};
 /// let _ = AlignedBoxWithSlice::<std::num::NonZeroU32>::new(1, 64);
 /// ```
 pub struct AlignedBoxWithSlice<T> {
-    layout: Layout,
+    region: orion_ann_platform::region::MutableRegion,
     ptr: NonNull<T>,
     len: usize,
 }
@@ -33,7 +33,7 @@ unsafe impl<T: Sync> Sync for AlignedBoxWithSlice<T> {}
 
 impl<T> AlignedBoxWithSlice<T> {
     /// Allocate zeroed POD elements. A smaller requested alignment is raised to
-    /// the element alignment. Empty and zero-sized slices do not allocate.
+    /// the element alignment. Empty and zero-sized slices contain no payload bytes.
     ///
     /// # Errors
     /// Rejects non-power-of-two/zero alignment, layout overflow and allocation failure.
@@ -41,82 +41,56 @@ impl<T> AlignedBoxWithSlice<T> {
     where
         T: bytemuck::Pod,
     {
-        // Validate the caller's request before raising it to T's alignment.
+        Self::new_with_storage(capacity, alignment, &Default::default())
+    }
+
+    /// Allocate directly in the chosen private backing. No full heap copy is made.
+    pub fn new_with_storage(
+        capacity: usize,
+        alignment: usize,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> ANNResult<Self>
+    where
+        T: bytemuck::Pod,
+    {
         Layout::from_size_align(0, alignment).map_err(ANNError::log_mem_alloc_layout_error)?;
         let alignment = alignment.max(std::mem::align_of::<T>());
-        let allocsize = capacity
+        let bytes = capacity
             .checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| ANNError::log_index_error("capacity overflow".to_string()))?;
-        let layout = Layout::from_size_align(allocsize, alignment)
-            .map_err(ANNError::log_mem_alloc_layout_error)?;
-
-        #[cfg(target_os = "linux")]
-        let layout = if allocsize >= orion_ann_platform::memory::HUGE_PAGE_ALIGNMENT {
-            // Keep the requested length, but make large allocations eligible
-            // for THP from their first page. Drop uses this same Layout.
-            Layout::from_size_align(
-                allocsize,
-                alignment.max(orion_ann_platform::memory::HUGE_PAGE_ALIGNMENT),
-            )
-            .map_err(ANNError::log_mem_alloc_layout_error)?
-        } else {
-            layout
-        };
-
-        if layout.size() == 0 {
-            // A slice needs an aligned, non-null pointer even when it has no bytes.
-            let ptr = NonNull::new(std::ptr::without_provenance_mut::<T>(layout.align())).unwrap();
-            return Ok(Self {
-                layout,
-                ptr,
-                len: capacity,
-            });
-        }
-
-        // SAFETY: the nonzero Layout covers every element and its alignment.
-        // Pod permits zeroed values; allocation failure is checked before access.
-        let ptr = unsafe {
-            #[cfg(target_os = "linux")]
-            let use_huge_pages = allocsize >= orion_ann_platform::memory::HUGE_PAGE_ALIGNMENT;
-            #[cfg(not(target_os = "linux"))]
-            let use_huge_pages = false;
-
-            // For large Linux buffers, advise before zeroing. alloc_zeroed
-            // could otherwise fault in ordinary pages before the hint arrives.
-            let mem = if use_huge_pages {
-                std::alloc::alloc(layout)
-            } else {
-                std::alloc::alloc_zeroed(layout)
-            };
-            if mem.is_null() {
-                return Err(ANNError::log_index_error(format!(
-                    "allocation failed: {allocsize} bytes"
-                )));
-            }
-            if use_huge_pages {
-                #[cfg(target_os = "linux")]
-                if let Err(error) = orion_ann_platform::memory::advise_huge_pages(mem, allocsize) {
-                    log::warn!(
-                        "THP advice failed for {allocsize} bytes: {error}; using ordinary pages"
-                    );
-                }
-                std::ptr::write_bytes(mem, 0, allocsize);
-            }
-            NonNull::new_unchecked(mem.cast::<T>())
-        };
-
+            .ok_or_else(|| ANNError::log_index_error("capacity overflow".into()))?;
+        let mut region = orion_ann_platform::region::MutableRegion::new(bytes, alignment, storage)?;
+        let ptr =
+            NonNull::new(region.as_bytes_mut().as_mut_ptr().cast()).expect("allocated region");
         Ok(Self {
-            layout,
+            region,
             ptr,
             len: capacity,
         })
     }
 
+    pub fn placement(&self) -> orion_ann_platform::region::Placement {
+        self.region.placement()
+    }
+
+    pub fn from_slice_with_storage(
+        values: &[T],
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> ANNResult<Self>
+    where
+        T: bytemuck::Pod,
+    {
+        let mut result = Self::new_with_storage(values.len(), 64, storage)?;
+        result.as_mut_slice().copy_from_slice(values);
+        Ok(result)
+    }
+
+    #[inline(always)]
     pub fn as_slice(&self) -> &[T] {
         // SAFETY: all len elements are initialized and live for this borrow.
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 
+    #[inline(always)]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         // SAFETY: &mut self excludes all other access to the owned allocation.
         unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
@@ -169,9 +143,6 @@ impl<T> Drop for AlignedBoxWithSlice<T> {
                 self.ptr.as_ptr(),
                 self.len,
             ));
-            if self.layout.size() != 0 {
-                std::alloc::dealloc(self.ptr.as_ptr().cast::<u8>(), self.layout);
-            }
         }
     }
 }
@@ -196,7 +167,7 @@ impl<T> std::fmt::Debug for AlignedBoxWithSlice<T> {
         f.debug_struct("AlignedBoxWithSlice")
             .field("element_type", &std::any::type_name::<T>())
             .field("len", &self.len)
-            .field("layout", &self.layout)
+            .field("storage", &self.region)
             .finish_non_exhaustive()
     }
 }

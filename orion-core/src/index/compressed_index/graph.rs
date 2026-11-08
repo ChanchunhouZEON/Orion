@@ -34,6 +34,10 @@ pub struct GraphView<'a> {
 }
 
 impl<'a> GraphView<'a> {
+    pub fn placement(&self) -> orion_ann_platform::region::Placement {
+        self.graph.placement()
+    }
+
     fn check_node(&self, node: usize) {
         assert!(node < self.graph.num_nodes(), "graph node ID out of range");
     }
@@ -165,9 +169,28 @@ impl<D: IndexData, S: Default> CompressedIndex<D, S> {
         max_degree: u32,
         entry: u32,
     ) -> Result<Self> {
+        Self::from_staged_graph_with_storage(
+            dataset,
+            reader,
+            byte_len,
+            max_degree,
+            entry,
+            &Default::default(),
+        )
+    }
+
+    pub fn from_staged_graph_with_storage(
+        dataset: D,
+        reader: impl Read,
+        byte_len: u64,
+        max_degree: u32,
+        entry: u32,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let nodes = dataset.point_count();
         Self::validate_graph_shape(&dataset, nodes, entry)?;
-        let graph = PhasedGraph::decode_staged(reader, byte_len, nodes, max_degree)?;
+        let graph =
+            PhasedGraph::decode_staged_with_storage(reader, byte_len, nodes, max_degree, storage)?;
         Ok(Self::from_phased_graph(dataset, graph, entry))
     }
 

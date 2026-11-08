@@ -11,7 +11,7 @@ import tempfile
 import unittest
 
 import numpy as np
-from orion_ann import Index, SnapshotRef, GraphConfig, CascadeConfig, OrionError
+from orion_ann import Index, SnapshotRef, GraphConfig, CascadeConfig, OrionError, StorageOptions
 
 
 def write_vectors(path, values):
@@ -73,6 +73,28 @@ class IndexTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         records = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
         return [v["ids"] for v in records if v.get("type") == "result"], next(v for v in records if v.get("type") == "summary")
+
+    def test_mapped_scalar_snapshot_matches_cli_and_owned(self):
+        base, queries = self.arrays(dimension=25)
+        bp, qp = self.root / "mapped-base.fbin", self.root / "mapped-query.fbin"
+        write_vectors(bp, base); write_vectors(qp, queries)
+        owned = Index.from_file(bp, graph=self.graph, cache_dir=self.root / "mapped-cache", threads=2, auto_pin=False)
+        owned.calibrate(queries, k=3, search_list_size=24)
+        expected = owned.search(queries, k=3, search_list_size=24)
+        ref = owned.save(self.root / "mapped-snapshot")
+        mapped = Index.open(ref, base=bp, auto_pin=False,
+            storage_options=StorageOptions("mapped", self.root))
+        self.assertEqual(mapped.info["mapped_sidecar_bytes"], 64 * 32)
+        self.assertGreater(mapped.info["mapped_base_bytes"], 0)
+        self.assertGreater(mapped.info["mapped_graph_bytes"], 0)
+        self.assert_results(expected, mapped.search(queries, k=3, search_list_size=24))
+        run = subprocess.run([os.environ["ORION_TEST_CLI"], "--snapshot", ref.path,
+            "--base", str(bp), "--query", str(qp), "--no-groundtruth", "--k", "3",
+            "--search-l", "24", "--storage-mode", "mapped", "--mmap-dir", str(self.root),
+            "--no-auto-pin"], text=True, capture_output=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        rows = [json.loads(line) for line in run.stdout.splitlines() if line.startswith("{")]
+        self.assertEqual([r["ids"] for r in rows if r["type"] == "result"], expected.ids.tolist())
 
     def test_automatic_residency_policy_and_snapshot_cli_parity(self):
         base, queries = self.arrays()

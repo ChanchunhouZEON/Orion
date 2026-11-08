@@ -36,7 +36,7 @@ use report::format_report;
 #[cfg(feature = "cli")]
 pub use report::print_report;
 
-use crate::config::resources::{gib_to_bytes, BYTES_PER_GIB};
+use crate::config::resources::BYTES_PER_GIB;
 
 // Number of `u32` words stored before adjacency entries in each graph record.
 const GRAPH_HEADER_WORDS: u64 = 4;
@@ -124,6 +124,11 @@ pub fn estimate_resident_memory(
     calculate_memory(config, input)
 }
 
+pub(crate) fn graph_bytes(config: &ResolvedRunConfig, points: usize) -> Result<u64> {
+    let input = resolve_memory_inputs(config, points, true, "configuration")?;
+    checked_mul_bytes(points as u64, input.stride_bytes)
+}
+
 /// Reject a known over-budget allocation before the base is loaded. Passing
 /// this check is not a promise that builder scratch and sidecars will also fit.
 pub(crate) fn check_index_budget(
@@ -170,35 +175,6 @@ pub(crate) fn check_selected_budget(
 ) -> Result<()> {
     let input = inputs_with_plan(config, points, false, "input", cache)?;
     enforce_budget(&calculate_memory(config, input)?)
-}
-
-/// Recheck a resident search generation without reopening its source/cache files.
-/// Graph loading already checked input metadata. Preparation only needs the live
-/// slab stride and the sidecar requirements it is about to materialize.
-pub(crate) fn check_search_budget(
-    config: &ResolvedRunConfig,
-    points: usize,
-    stride_bytes: u64,
-) -> Result<()> {
-    if config.memory_budget_gib.is_none() {
-        return Ok(());
-    }
-    let input = MemoryInputs {
-        num_points: points,
-        base_source: "resident",
-        query_count: Some(0),
-        query_source: "not used",
-        stride_bytes,
-        graph_source: "resident slab",
-        staged_source: None,
-        cache_hit: true,
-        cache_key: PathBuf::new(),
-    };
-    // Index construction resolves a prepare-only configuration. The resident
-    // generation is now entering search, so include all selected sidecars.
-    let mut search = config.clone();
-    search.prepare_only = false;
-    enforce_budget(&calculate_memory(&search, input)?)
 }
 
 pub fn check_memory_budget(config: &ResolvedRunConfig, num_points: usize) -> Result<()> {
@@ -477,12 +453,6 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
         &requirements,
     )?;
 
-    let resident_lower_bound = base_bytes
-        .checked_add(sidecars.total_bytes() as u64)
-        .and_then(|bytes| bytes.checked_add(graph_bytes))
-        .and_then(|bytes| bytes.checked_add(node_reader_bytes))
-        .ok_or("memory estimate overflow")?;
-
     // Report known working buffers separately from resident index storage.
     // Unknown lifetimes/implementations remain explicit rather than counted as zero.
     let unknown_replay_buffers =
@@ -533,8 +503,31 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
     } else {
         0
     };
+    // Include known query buffers before selecting mappings: an owned sidecar
+    // may fit by itself while leaving no room for the requested query batch.
+    let fixed_bytes = base_bytes
+        .checked_add(graph_bytes)
+        .and_then(|v| v.checked_add(query_bytes))
+        .and_then(|v| v.checked_add(result_bytes))
+        .and_then(|v| v.checked_add(gt_bytes))
+        .ok_or("memory estimate overflow: fixed buffers")?;
+    // Offline reports describe the supplied budget, which may target another
+    // machine. Live preparation separately probes current memory headroom.
+    let placement = crate::placement::complete_plan(
+        config,
+        orion_ann_core::QuantizedDatasetShape {
+            rows: num_points,
+            dimension: config.dimension,
+        },
+        base_bytes,
+        graph_bytes,
+        fixed_bytes - base_bytes - graph_bytes,
+        orion_ann_platform::resources::MemoryResources::default(),
+    )?;
+    let resident_lower_bound = placement.resident_bytes;
     let accounted = resident_lower_bound
-        .checked_add(query_bytes)
+        .checked_add(placement.reserve_bytes)
+        .and_then(|v| v.checked_add(query_bytes))
         .and_then(|v| v.checked_add(result_bytes))
         .and_then(|v| v.checked_add(gt_bytes))
         .ok_or("memory estimate overflow: query/result/GT buffers")?;
@@ -542,18 +535,28 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
     // no independent N-sized graph/extras allocation in the production path.
     // Sidecars are prepared later; candidate/statistics scratch is listed below.
     let working_bytes = 0u64;
-    let build_lower_bound = base_bytes
-        .checked_add(graph_bytes)
+    let owned_base = if placement.options.contains_key("base") {
+        0
+    } else {
+        base_bytes
+    };
+    let owned_graph = if placement.options.contains_key("graph") {
+        0
+    } else {
+        graph_bytes
+    };
+    let build_lower_bound = owned_base
+        .checked_add(owned_graph)
         .and_then(|v| v.checked_add(node_reader_bytes))
         .and_then(|v| v.checked_add(working_bytes))
         .ok_or("memory estimate overflow: ParlayANN build")?;
     let required = accounted.max(build_lower_bound);
-    let exceeded = config
-        .memory_budget_gib
-        .is_some_and(|budget| required as f64 > gib_to_bytes(budget));
+    let exceeded = placement
+        .limit_bytes
+        .is_some_and(|budget| required > budget);
     let mut components = serde_json::json!([
-        {"name":"base vectors", "bytes":base_bytes, "basis":format!("{num_points} × {} bytes/row ({} logical coordinates × {} bytes, SIMD-padded)", layout.stride_bytes(), config.dimension, base_representation.element_bytes()), "phase":"resident"},
-        {"name":"graph slab", "bytes":graph_bytes, "basis":format!("{num_points} × {stride_bytes} bytes/node"), "phase":"resident"},
+        {"name":"base vectors", "bytes":base_bytes, "basis":format!("{num_points} × {} bytes/row ({} logical coordinates × {} bytes, SIMD-padded)", layout.stride_bytes(), config.dimension, base_representation.element_bytes()), "phase": if owned_base == 0 { "mapped" } else { "resident" }},
+        {"name":"graph slab", "bytes":graph_bytes, "basis":format!("{num_points} × {stride_bytes} bytes/node"), "phase": if owned_graph == 0 { "mapped" } else { "resident" }},
         {"name":"node reader counters", "bytes":node_reader_bytes, "basis":"no per-node counters; exclusive graph mutation", "phase":"resident"},
         {"name":"query buffers", "bytes":if unknown_replay_buffers { None } else { Some(query_bytes) }, "basis":if unknown_replay_buffers { "query count unknown; full replay payload cannot be estimated".to_string() } else { format!("up to {buffered} rows × dimension × f32 × 2; decoding/search arrays{}", if storage == VectorStorageKind::U8 { "; plus one SIMD-padded byte query per active worker" } else { "" }) }, "phase":"search"},
         {"name":"result IDs", "bytes":if unknown_replay_buffers { None } else { Some(result_bytes) }, "basis":"buffered queries × k × u32", "phase":"search"},
@@ -584,8 +587,9 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
         components.as_array_mut().unwrap().push(serde_json::json!({
             "name": format!("{:?} sidecar", allocation.requirement.kind()),
             "bytes": memory.total_bytes(),
-            "basis": "total owned payload, including row padding and auxiliary/transform storage; shared datasets counted once",
-            "phase": "resident", "source": base_source,
+            "placement": if placement.options.contains_key(crate::placement::codec(allocation.requirement.kind())) { "mapped payload" } else { "owned" },
+            "basis": "logical payload including padding/auxiliary storage; see placement for owned vs mapped backing; shared datasets counted once",
+            "phase": if placement.options.contains_key(crate::placement::codec(allocation.requirement.kind())) { "mapped" } else { "resident" }, "source": base_source,
         }));
     }
     let cache_path = config
@@ -598,7 +602,7 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
     } else {
         cache_path
     };
-    Ok(serde_json::json!({
+    let mut report = serde_json::json!({
         "dataset": config.dataset,
         "components": components,
         "query_count": query_count,
@@ -620,6 +624,13 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
         "base_u8_bytes": if storage == VectorStorageKind::U8 { base_bytes } else { 0 },
         "graph_slab_bytes": graph_bytes,
         "sidecar_bytes": sidecars.total_bytes(),
+        "sidecar_owned_bytes": placement.resident_bytes
+            - if placement.options.contains_key("base") { 0 } else { base_bytes }
+            - if placement.options.contains_key("graph") { 0 } else { graph_bytes },
+        "sidecar_mapped_bytes": placement.mapped_bytes - (base_bytes - owned_base) - (graph_bytes - owned_graph),
+        "mapping_reserve_bytes": placement.reserve_bytes,
+        "placement_limit_bytes": placement.limit_bytes,
+        "storage_options": config.storage_options,
         "node_reader_bytes": node_reader_bytes,
         "resident_lower_bound_bytes": resident_lower_bound,
         "resident_lower_bound_gib": resident_lower_bound as f64 / BYTES_PER_GIB,
@@ -642,7 +653,11 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
         "note": "Lower bound only. Budget check is not a peak-RSS guarantee. \
                  Measure a smaller run before a full build. \
                  A PA cache miss requires an existing staged export."
-    }))
+    });
+    report["mapped_bytes"] = placement.mapped_bytes.into();
+    report["base_mapped"] = (owned_base == 0 && base_bytes != 0).into();
+    report["graph_mapped"] = (owned_graph == 0 && graph_bytes != 0).into();
+    Ok(report)
 }
 
 #[cfg(all(test, feature = "cli"))]
@@ -770,6 +785,8 @@ mod tests {
         assert_eq!(report["graph_slab_bytes"], 384_000_000_000u64);
         assert_eq!(report["sidecar_bytes"], 128_000_000_000u64);
         config.memory_budget_gib = Some(128.);
+        // Owned-only remains a strict guard. Auto can now move base and graph.
+        config.storage_options.mode = crate::StorageMode::Resident;
         let report = estimate_resident_memory(&config, 1_000_000_000).unwrap();
         let error = enforce_budget(&report).unwrap_err();
         for component in [

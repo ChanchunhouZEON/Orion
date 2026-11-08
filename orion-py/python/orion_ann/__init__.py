@@ -12,7 +12,7 @@ from ._native import _Index, OrionError
 
 PathLike = Union[str, os.PathLike]
 Input = Union[PathLike, np.ndarray]
-__all__ = ["Index", "GraphConfig", "CascadeConfig", "Calibration", "SearchResult", "SnapshotRef", "OrionError"]
+__all__ = ["Index", "GraphConfig", "CascadeConfig", "StorageOptions", "Calibration", "SearchResult", "SnapshotRef", "OrionError"]
 
 
 @dataclass(frozen=True)
@@ -74,15 +74,33 @@ def _input(value: Input):
     return os.fspath(value) if isinstance(value, (str, os.PathLike)) else value
 
 
+@dataclass
+class StorageOptions:
+    """Base, graph and sidecar placement; directory should be disk-backed.
+
+    mode is auto, resident, or mapped. Placement does not
+    change scores or calibration and is not a hard RSS limit.
+    """
+    mode: str = "auto"
+    directory: Optional[PathLike] = None
+
+
+def _storage_options(value):
+    data = asdict(value or StorageOptions())
+    if data["directory"] is not None:
+        data["directory"] = os.fspath(data["directory"])
+    return data
+
+
 def _options(metric, storage, graph, cascade, cache_dir, threads, window_size,
-             memory_budget_gib, max_points, base_format, auto_pin):
+             memory_budget_gib, max_points, base_format, auto_pin, storage_options):
     graph = asdict(graph or GraphConfig())
     if graph["staged_file"] is not None:
         graph["staged_file"] = os.fspath(graph["staged_file"])
     return json.dumps(dict(metric=metric, storage=storage, graph=graph,
         cascade=asdict(cascade or CascadeConfig()), cache_dir=os.fspath(cache_dir),
         threads=threads, window_size=window_size, memory_budget_gib=memory_budget_gib,
-        max_points=max_points, base_format=base_format, auto_pin=auto_pin), allow_nan=False)
+        max_points=max_points, base_format=base_format, auto_pin=auto_pin, storage_options=_storage_options(storage_options)), allow_nan=False)
 
 
 class Index:
@@ -102,7 +120,7 @@ class Index:
     def from_file(cls, base: PathLike, *, metric="l2", storage=None,
                   graph: Optional[GraphConfig] = None, cascade: Optional[CascadeConfig] = None,
                   cache_dir: PathLike = "cache/orion-ann", threads=8, window_size=5,
-                  memory_budget_gib=None, max_points=None, base_format=None, auto_pin=True):
+                  memory_budget_gib=None, max_points=None, base_format=None, auto_pin=True, storage_options: Optional[StorageOptions] = None):
         """Load base into Rust; reuse, import or construct its graph.
 
         Dimension/count come from the file. memory_budget_gib is an estimate,
@@ -111,14 +129,14 @@ class Index:
         details and causes on input, configuration, cache, I/O or backend errors.
         """
         options = _options(metric, storage, graph, cascade, cache_dir, threads,
-                           window_size, memory_budget_gib, max_points, base_format, auto_pin)
+                           window_size, memory_budget_gib, max_points, base_format, auto_pin, storage_options)
         return cls(_Index.from_file(os.fspath(base), options))
 
     @classmethod
     def from_array(cls, base: np.ndarray, *, metric="l2", storage=None,
                    graph: Optional[GraphConfig] = None, cascade: Optional[CascadeConfig] = None,
                    cache_dir: PathLike = "cache/orion-ann", threads=8, window_size=5,
-                   memory_budget_gib=None, max_points=None, auto_pin=True):
+                   memory_budget_gib=None, max_points=None, auto_pin=True, storage_options: Optional[StorageOptions] = None):
         """Copy a nonempty 2-D C-contiguous float32/uint8 array into owned storage.
 
         The original array may be reused after return. Logical dimension is the
@@ -127,18 +145,19 @@ class Index:
         copy occurs before the estimated memory-budget check.
         """
         options = _options(metric, storage, graph, cascade, cache_dir, threads,
-                           window_size, memory_budget_gib, max_points, None, auto_pin)
+                           window_size, memory_budget_gib, max_points, None, auto_pin, storage_options)
         return cls(_Index.from_array(base, options))
 
     @classmethod
-    def open(cls, snapshot: Union[PathLike, SnapshotRef], *, base: Input, threads=None, memory_budget_gib=None, auto_pin=None):
+    def open(cls, snapshot: Union[PathLike, SnapshotRef], *, base: Input, threads=None, memory_budget_gib=None, auto_pin=None, storage_options: Optional[StorageOptions] = None):
         """Verify and reopen a snapshot directory or a saved SnapshotRef.
 
         With a reference, the manifest must also match the one issued by save().
         """
         source = (snapshot.to_json() if isinstance(snapshot, SnapshotRef)
                   else json.dumps(os.fspath(snapshot)))
-        return cls(_Index.open(source, _input(base), threads, memory_budget_gib, auto_pin))
+        return cls(_Index.open(source, _input(base), threads, memory_budget_gib, auto_pin,
+            None if storage_options is None else json.dumps(_storage_options(storage_options))))
 
     @property
     def info(self) -> dict:

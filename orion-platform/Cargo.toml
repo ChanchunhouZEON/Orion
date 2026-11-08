@@ -25,5 +25,10 @@ orion-ann-vector = { version = "0.1.0", path = "../orion-vector" }
 once_cell = { workspace = true }
 
 
+bytemuck.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tempfile = "3"
+
 [dev-dependencies]
 approx = "0.5"

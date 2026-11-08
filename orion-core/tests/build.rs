@@ -222,3 +222,33 @@ fn without_parlay_auto_is_f32_only_and_explicit_pa_errors() {
         ErrorCode::UnsupportedConfiguration
     );
 }
+
+#[cfg(feature = "parlay")]
+#[test]
+fn parlay_builds_f32_and_u8_directly_in_mapped_slab() {
+    use orion_ann_platform::region::{Placement, RegionOptions};
+    let storage = RegionOptions {
+        placement: Placement::Mapped,
+        ..Default::default()
+    };
+    let config = BuildConfig {
+        backend: BuildBackend::ParlayAnn,
+        threads: 1,
+        ..config()
+    };
+    macro_rules! check {
+        ($ty:ty, $kernel:ty) => {{
+            let values: Vec<$ty> = (0..48 * 25).map(|i| ((i * 13) % 251) as $ty).collect();
+            let layout = PaddedLayout::for_kernel::<$kernel>(25).unwrap();
+            let base = || PaddedDataset::from_packed(&values, layout).unwrap();
+            let owned = Orion::<$ty>::build(base(), config.clone()).unwrap();
+            let mapped =
+                Orion::<$ty>::build_with_storage(base(), config.clone(), &storage).unwrap();
+            assert_eq!(mapped.graph().placement(), Placement::Mapped);
+            assert_eq!(owned.graph().buffer_bytes(), mapped.graph().buffer_bytes());
+            assert_eq!(owned.entry_point(), mapped.entry_point());
+        }};
+    }
+    check!(f32, L2F32Distance);
+    check!(u8, L2U8Distance);
+}

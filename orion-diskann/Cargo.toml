@@ -51,3 +51,6 @@ tokio = { workspace = true }
 [dev-dependencies]
 approx = { workspace = true }
 
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tempfile = "3"

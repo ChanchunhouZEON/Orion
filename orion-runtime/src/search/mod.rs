@@ -86,11 +86,10 @@ pub trait SearchBackend: sealed::BuiltIn {
         index: &'a orion_ann_core::Orion<Self::Element>,
         config: &ResolvedRunConfig,
     ) -> Result<crate::PinnedDatasets<'a>> {
-        crate::preflight::check_search_budget(
-            config,
-            index.len(),
-            index.graph().stride() as u64 * 4,
-        )?;
+        crate::placement::configure(index, config, std::iter::empty())?;
+        // Placement validates the live generation before its first allocation.
+        // Replanning from current free memory after sidecars exist would count
+        // them twice and could report a placement different from their backing.
         Self::prepare_datasets(index, config)?;
         crate::residency::automatic_pin(
             index,
@@ -162,6 +161,7 @@ impl SearchBackend for F32CascadeBackend {
         index: &orion_ann_core::Orion<f32>,
         config: &ResolvedRunConfig,
     ) -> Result<()> {
+        crate::placement::configure(index, config, std::iter::empty())?;
         crate::sidecars::requirements::prepare(
             index,
             &config.index_plan().sidecar_requirements(false),
@@ -208,6 +208,7 @@ impl SearchBackend for F32CascadeBackend {
         calibration: orion_ann_core::CalibratedParams,
         observer: &mut O,
     ) -> Result<Vec<u32>> {
+        crate::placement::configure(index, config, std::iter::empty())?;
         crate::sidecars::requirements::prepare(
             index,
             &config.index_plan().sidecar_requirements(false),

@@ -129,7 +129,7 @@ pub struct JLSparseDataset<const BITS: usize = 1024, const NZ: usize = 9> {
     /// Random dim indices, `BITS × NZ` u32s. Bit `i` uses
     /// `indices[i * NZ + 0..NZ/2]` (positive) and `indices[i * NZ +
     /// NZ/2..NZ]` (negative).
-    pub(crate) indices: Vec<u32>,
+    pub(crate) indices: AlignedBoxWithSlice<u32>,
     /// Number of vertices encoded.
     pub(crate) num_vertices: usize,
     /// Cached per-vertex stride in bytes.
@@ -164,6 +164,15 @@ impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
     /// Returns an error for invalid rows, unsupported dimensions, invalid fitted
     /// parameters, or allocation failure. Logical rows exclude SIMD padding.
     pub fn try_build_from(dataset: &impl F32Rows, seed: u64) -> Result<Self> {
+        Self::try_build_from_with_storage(dataset, seed, &Default::default())
+    }
+
+    /// Build/load into the selected private storage; layout and arithmetic are unchanged.
+    pub fn try_build_from_with_storage(
+        dataset: &impl F32Rows,
+        seed: u64,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let checked = CheckedRows::new(dataset, u32::MAX as usize)?;
         let dataset = &checked;
         let dim = dataset.dimension();
@@ -197,11 +206,13 @@ impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
         }
         let base_hits = total_slots / dim;
         let extras = total_slots - base_hits * dim;
-        let mut indices = Vec::with_capacity(total_slots);
+        let mut indices = AlignedBoxWithSlice::<u32>::new_with_storage(total_slots, 64, storage)?;
+        let mut next_index = 0;
         for d in 0..dim {
             let hits = base_hits + if d < extras { 1 } else { 0 };
             for _ in 0..hits {
-                indices.push(d as u32);
+                indices[next_index] = d as u32;
+                next_index += 1;
             }
         }
         debug_assert_eq!(indices.len(), total_slots);
@@ -214,8 +225,11 @@ impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
         }
 
         // 2. Allocate the code slab and encode each vertex in parallel.
-        let mut codes =
-            AlignedBoxWithSlice::<u8>::new(validation::product(num_vertices, stride)?, 16)?;
+        let mut codes = AlignedBoxWithSlice::<u8>::new_with_storage(
+            validation::product(num_vertices, stride)?,
+            16,
+            storage,
+        )?;
 
         let codes_slice = codes.as_mut_slice();
 
@@ -297,6 +311,15 @@ impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
     }
 
     pub fn decode(r: &mut dyn std::io::Read, byte_len: u64) -> Result<Self> {
+        Self::decode_with_storage(r, byte_len, &Default::default())
+    }
+
+    /// Build/load into the selected private storage; layout and arithmetic are unchanged.
+    pub fn decode_with_storage(
+        r: &mut dyn std::io::Read,
+        byte_len: u64,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let mut hdr = [0u8; 40];
         r.read_exact(&mut hdr)?;
         if u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != 2 {
@@ -364,7 +387,7 @@ impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
             return Err(crate::Error::invalid_data("invalid JL projection shape"));
         }
         validation::file_length(byte_len, 40, &[(slots, 4), (num_vertices, stride)])?;
-        let mut indices = vec![0u32; slots];
+        let mut indices = AlignedBoxWithSlice::<u32>::new_with_storage(slots, 64, storage)?;
         let idx_bytes = bytemuck::cast_slice_mut(&mut indices);
         r.read_exact(idx_bytes)?;
         if indices.iter().any(|&index| index as usize >= dim) {
@@ -378,8 +401,13 @@ impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
         // Codes.
         let disk_stride = stride;
         let stride = jl_sparse_stride(BITS);
-        let codes =
-            crate::model::dataset::rows::read_rows::<u8>(r, num_vertices, stride, disk_stride)?;
+        let codes = crate::model::dataset::rows::read_rows_with_storage::<u8>(
+            r,
+            num_vertices,
+            stride,
+            disk_stride,
+            storage,
+        )?;
 
         Ok(Self {
             dimension: dim,
@@ -444,7 +472,7 @@ pub struct JLSparseDatasetMips<const BITS: usize = 1024, const NZ: usize = 9> {
     /// Same sign-bit code layout as [`JLSparseDataset::codes`].
     pub(crate) codes: AlignedBoxWithSlice<u8>,
     /// Same `BITS × NZ` index table as [`JLSparseDataset::indices`].
-    pub(crate) indices: Vec<u32>,
+    pub(crate) indices: AlignedBoxWithSlice<u32>,
     /// Per-vertex L2 norm `‖x‖` (f32). Cost 4 B/vertex (negligible
     /// vs the 128 B/vertex code slab at BITS=1024). PA reads this
     /// as `radius` and multiplies it into the per-candidate
@@ -474,6 +502,15 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
     /// Returns an error for invalid rows, unsupported dimensions, invalid fitted
     /// parameters, or allocation failure. Logical rows exclude SIMD padding.
     pub fn try_build_from(dataset: &impl F32Rows, seed: u64) -> Result<Self> {
+        Self::try_build_from_with_storage(dataset, seed, &Default::default())
+    }
+
+    /// Build/load into the selected private storage; layout and arithmetic are unchanged.
+    pub fn try_build_from_with_storage(
+        dataset: &impl F32Rows,
+        seed: u64,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let checked = CheckedRows::new(dataset, u32::MAX as usize)?;
         let dataset = &checked;
         let dim = dataset.dimension();
@@ -496,11 +533,13 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
         }
         let base_hits = total_slots / dim;
         let extras = total_slots - base_hits * dim;
-        let mut indices = Vec::with_capacity(total_slots);
+        let mut indices = AlignedBoxWithSlice::<u32>::new_with_storage(total_slots, 64, storage)?;
+        let mut next_index = 0;
         for d in 0..dim {
             let hits = base_hits + if d < extras { 1 } else { 0 };
             for _ in 0..hits {
-                indices.push(d as u32);
+                indices[next_index] = d as u32;
+                next_index += 1;
             }
         }
         debug_assert_eq!(indices.len(), total_slots);
@@ -512,9 +551,12 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
         }
 
         // Allocate codes + norms; encode in a single parallel sweep.
-        let mut codes =
-            AlignedBoxWithSlice::<u8>::new(validation::product(num_vertices, stride)?, 16)?;
-        let mut norms = AlignedBoxWithSlice::<f32>::new(num_vertices, 32)?;
+        let mut codes = AlignedBoxWithSlice::<u8>::new_with_storage(
+            validation::product(num_vertices, stride)?,
+            16,
+            storage,
+        )?;
+        let mut norms = AlignedBoxWithSlice::<f32>::new_with_storage(num_vertices, 32, storage)?;
 
         let codes_slice = codes.as_mut_slice();
         let norms_slice = norms.as_mut_slice();
@@ -601,6 +643,15 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
     }
 
     pub fn decode(r: &mut dyn std::io::Read, byte_len: u64) -> Result<Self> {
+        Self::decode_with_storage(r, byte_len, &Default::default())
+    }
+
+    /// Build/load into the selected private storage; layout and arithmetic are unchanged.
+    pub fn decode_with_storage(
+        r: &mut dyn std::io::Read,
+        byte_len: u64,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let mut hdr = [0u8; 40];
         r.read_exact(&mut hdr)?;
         if u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != 1 {
@@ -671,7 +722,7 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
             40,
             &[(slots, 4), (num_vertices, stride), (num_vertices, 4)],
         )?;
-        let mut indices = vec![0u32; slots];
+        let mut indices = AlignedBoxWithSlice::<u32>::new_with_storage(slots, 64, storage)?;
         let idx_bytes = bytemuck::cast_slice_mut(&mut indices);
         r.read_exact(idx_bytes)?;
         if indices.iter().any(|&index| index as usize >= dim) {
@@ -684,10 +735,15 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
 
         let disk_stride = stride;
         let stride = jl_sparse_stride(BITS);
-        let codes =
-            crate::model::dataset::rows::read_rows::<u8>(r, num_vertices, stride, disk_stride)?;
+        let codes = crate::model::dataset::rows::read_rows_with_storage::<u8>(
+            r,
+            num_vertices,
+            stride,
+            disk_stride,
+            storage,
+        )?;
 
-        let mut norms = AlignedBoxWithSlice::<f32>::new(num_vertices, 32)
+        let mut norms = AlignedBoxWithSlice::<f32>::new_with_storage(num_vertices, 32, storage)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
         let norm_bytes = bytemuck::cast_slice_mut(norms.as_mut_slice());
         r.read_exact(norm_bytes)?;
@@ -1046,7 +1102,7 @@ mod tests {
         assert_eq!(a.num_vertices, b.num_vertices);
         assert_eq!(a.stride, b.stride);
         assert_eq!(a.seed, b.seed);
-        assert_eq!(a.indices, b.indices);
+        assert_eq!(a.indices.as_slice(), b.indices.as_slice());
         assert_eq!(a.codes.as_slice(), b.codes.as_slice());
     }
 
@@ -1176,7 +1232,7 @@ impl<const BITS: usize, const NZ: usize> QuantizedDataset for JLSparseDataset<BI
         )
     }
     fn resident_memory(&self) -> ResidentMemory {
-        ResidentMemory::new(self.codes.len(), 0, self.indices.capacity() * 4)
+        ResidentMemory::new(self.codes.len(), 0, self.indices.len() * 4)
             .expect("validated resident allocation sizes")
     }
 }
@@ -1219,7 +1275,7 @@ impl<const BITS: usize, const NZ: usize> QuantizedDataset for JLSparseDatasetMip
         ResidentMemory::new(
             self.codes.len(),
             std::mem::size_of_val(self.norms.as_slice()),
-            self.indices.capacity() * 4,
+            self.indices.len() * 4,
         )
         .expect("validated resident allocation sizes")
     }

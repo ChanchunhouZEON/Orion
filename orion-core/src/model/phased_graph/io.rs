@@ -30,7 +30,16 @@ impl PhasedGraph {
     ///
     /// # Errors
     /// Rejects malformed/truncated records and allocation or filesystem failures.
-    pub(crate) fn decode(mut reader: impl Read, file_bytes: u64) -> Result<Self> {
+    #[cfg(test)]
+    pub(crate) fn decode(reader: impl Read, file_bytes: u64) -> Result<Self> {
+        Self::decode_with_storage(reader, file_bytes, &Default::default())
+    }
+
+    pub(crate) fn decode_with_storage(
+        mut reader: impl Read,
+        file_bytes: u64,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let mut header = [0u32; 4];
         reader.read_exact(bytemuck::cast_slice_mut(&mut header))?;
         let [nodes, max_degree, stride, base_local_count] = header;
@@ -58,12 +67,13 @@ impl PhasedGraph {
                     .with_detail("actual_bytes", file_bytes),
             );
         }
-        let mut graph = Self::allocate(
+        let mut graph = Self::allocate_with_storage(
             num_nodes,
             max_degree,
             stride - HEADER_U32 - max_degree as usize,
             stride,
             base_local_count,
+            storage,
         )?;
         reader.read_exact(bytemuck::cast_slice_mut(graph.buffer.as_mut_slice()))?;
         graph.validate_rows()?;
@@ -74,11 +84,28 @@ impl PhasedGraph {
     ///
     /// # Errors
     /// Rejects invalid headers, counts, IDs, truncated records or trailing bytes.
+    #[cfg(test)]
     pub(crate) fn decode_staged(
+        reader: impl Read,
+        file_bytes: u64,
+        expected_nodes: usize,
+        expected_degree: u32,
+    ) -> Result<Self> {
+        Self::decode_staged_with_storage(
+            reader,
+            file_bytes,
+            expected_nodes,
+            expected_degree,
+            &Default::default(),
+        )
+    }
+
+    pub(crate) fn decode_staged_with_storage(
         mut reader: impl Read,
         file_bytes: u64,
         expected_nodes: usize,
         expected_degree: u32,
+        storage: &orion_ann_platform::region::RegionOptions,
     ) -> Result<Self> {
         fn word(reader: &mut impl Read) -> Result<u32> {
             let mut bytes = [0; 4];
@@ -104,7 +131,7 @@ impl PhasedGraph {
                 "invalid staged header, shape mismatch or truncated records",
             ));
         }
-        let mut graph = Self::try_empty(n, degree, extra)?;
+        let mut graph = Self::try_empty_with_storage(n, degree, extra, storage)?;
         let mut ids = Vec::new();
         for node in 0..n {
             let lc = word(&mut reader)? as usize;

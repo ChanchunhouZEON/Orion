@@ -27,6 +27,10 @@ impl Args {
             cache_dir: self.cache_dir.clone().unwrap_or(defaults.cache_dir),
             memory_budget_gib: self.memory_budget_gib,
             auto_pin: !self.no_auto_pin,
+            storage_options: orion_ann::StorageOptions {
+                mode: self.storage_options.unwrap_or_default(),
+                directory: self.mmap_dir.clone(),
+            },
             max_points: self.max_points,
             ..defaults
         };

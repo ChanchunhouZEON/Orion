@@ -15,6 +15,20 @@ unreleased development baseline, not a dated release announcement.
 
 ### Added
 
+- Allocation-time `Auto` / `Resident` / `Mapped` placement for base vectors,
+  graph adjacency/extras and every sidecar payload, including norms, projections
+  and PQ codebooks. File loads, STAG import and ParlayANN slab construction use
+  the chosen backing directly, preserving SIMD padding and prefetch schedules.
+- Shared `StorageOptions` across Rust, Python and CLI (`--storage-mode`), with
+  actual mapped base/graph/sidecar bytes reported separately from owned payloads.
+- Immutable reference-counted storage regions and checked typed views, plus
+  bounded mapped construction, snapshot placement overrides and mapped-byte
+  reporting. Automatic pinning excludes mapped large payloads.
+- Lifecycle, padding, budget, concurrent-search and cross-interface tests for
+  mapped storage. Rust graph-build scratch now uses private files instead of
+  a PID-only filename, preventing concurrent builders from truncating each
+  other's mappings.
+
 - ADSampling rotation, admission and distance kernels are available only through
   the opt-in `benchmark` feature; production Rust, CLI and Python configurations
   reject ADS aliases with an explicit unsupported-feature error.

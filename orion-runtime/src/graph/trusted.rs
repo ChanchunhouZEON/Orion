@@ -15,7 +15,11 @@ use std::{
     path::Path,
 };
 
-pub(super) fn load<D: IndexData>(dataset: D, cache: CachePlan) -> Result<CompressedIndex<D>> {
+pub(super) fn load<D: IndexData>(
+    dataset: D,
+    cache: CachePlan,
+    config: &crate::config::ResolvedRunConfig,
+) -> Result<CompressedIndex<D>> {
     let graph = cache.graph_path()?;
     let metadata = match &cache.selected {
         Some(generation) => crate::storage::object(
@@ -29,7 +33,12 @@ pub(super) fn load<D: IndexData>(dataset: D, cache: CachePlan) -> Result<Compres
         "Benchmark trusted cache: {} (SHA-256 skipped; layout validated)",
         graph.display()
     );
-    let mut index = decode(&graph, &metadata, dataset, cache.legacy)?;
+    let storage = crate::placement::graph_options(
+        config,
+        &dataset,
+        std::fs::metadata(&graph)?.len().saturating_sub(16),
+    )?;
+    let mut index = decode_with_storage(&graph, &metadata, dataset, cache.legacy, &storage)?;
     crate::sidecars::trusted::attach(&mut index, &cache.metadata_path)?;
     Ok(index)
 }
@@ -39,6 +48,16 @@ pub(super) fn decode<D: IndexData>(
     metadata: &Path,
     dataset: D,
     legacy: bool,
+) -> Result<CompressedIndex<D>> {
+    decode_with_storage(graph, metadata, dataset, legacy, &Default::default())
+}
+
+fn decode_with_storage<D: IndexData>(
+    graph: &Path,
+    metadata: &Path,
+    dataset: D,
+    legacy: bool,
+    storage: &orion_ann_platform::region::RegionOptions,
 ) -> Result<CompressedIndex<D>> {
     let mut header = crate::storage::read_bounded_file(File::open(metadata)?, metadata, 4096)?;
     // V5 is precisely the version/entry prefix; its slab format is unchanged.
@@ -55,11 +74,12 @@ pub(super) fn decode<D: IndexData>(
     let mut metadata_reader = Cursor::new(&header);
     let file = File::open(graph)?;
     let bytes = file.metadata()?.len();
-    let index = CompressedIndex::decode_native_graph(
+    let index = CompressedIndex::decode_native_graph_with_storage(
         dataset,
         &mut metadata_reader,
         BufReader::with_capacity(FILE_WRITE_BYTES, file),
         bytes,
+        storage,
     )?;
     if metadata_reader.position() != header.len() as u64 {
         return Err(Error::cache("trailing graph metadata bytes"));

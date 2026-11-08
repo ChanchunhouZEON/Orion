@@ -13,6 +13,7 @@ use crate::model::dataset::rabitq_dataset::RabitQDataset;
 use crate::model::dataset::rows::F32Rows;
 use crate::model::{L2U8, L2U16, MipsI8, MipsI16, QuantSpec, ScalarQuantizedDataset};
 
+use crate::model::dataset::quantized_dataset::QuantizedDataset;
 use crate::{Error, Result};
 use std::{
     io::{Read, Write},
@@ -23,6 +24,8 @@ pub use storage::{DecodeSidecar, EncodeSidecar, SidecarCache};
 
 #[derive(Default)]
 pub struct DynamicSidecars {
+    pub(super) placement:
+        OnceLock<std::collections::BTreeMap<String, orion_ann_platform::region::RegionOptions>>,
     pub(super) cache: Option<Box<dyn SidecarCache>>,
     /// U8-quantized base for the L2 prefilter (ParlayANN-style). Built
     /// lazily on first `ensure_quantized_dataset`. Sidecar `.qds`.
@@ -117,9 +120,11 @@ impl<D: F32Rows> CompressedIndex<D, DynamicSidecars> {
     /// Returns invalid-input, allocation or initialization errors. An invalid
     /// cache is rebuilt; inability to persist an optional cache only logs a warning.
     pub fn try_ensure_quantized_dataset(&self) -> Result<&ScalarQuantizedDataset<L2U8>> {
-        self.sidecars
-            .q_dataset
-            .ensure(&self.dataset, self.sidecars.cache.as_deref())
+        self.sidecars.q_dataset.ensure(
+            &self.dataset,
+            self.sidecars.cache.as_deref(),
+            self.sidecars.placement.get(),
+        )
     }
 
     /// Lazily obtain the **u16** scalar-quantized dataset for L2.
@@ -141,9 +146,11 @@ impl<D: F32Rows> CompressedIndex<D, DynamicSidecars> {
     /// Returns invalid-input, allocation or initialization errors. An invalid
     /// cache is rebuilt; inability to persist an optional cache only logs a warning.
     pub fn try_ensure_quantized_dataset_l2_u16(&self) -> Result<&ScalarQuantizedDataset<L2U16>> {
-        self.sidecars
-            .q_dataset_l2_u16
-            .ensure(&self.dataset, self.sidecars.cache.as_deref())
+        self.sidecars.q_dataset_l2_u16.ensure(
+            &self.dataset,
+            self.sidecars.cache.as_deref(),
+            self.sidecars.placement.get(),
+        )
     }
 
     /// Lazily obtain the i8 MIPS quantized dataset. Sidecar `.qdm8`.
@@ -161,9 +168,11 @@ impl<D: F32Rows> CompressedIndex<D, DynamicSidecars> {
     /// Returns invalid-input, allocation or initialization errors. An invalid
     /// cache is rebuilt; inability to persist an optional cache only logs a warning.
     pub fn try_ensure_quantized_dataset_mips(&self) -> Result<&ScalarQuantizedDataset<MipsI8>> {
-        self.sidecars
-            .q_dataset_mips
-            .ensure(&self.dataset, self.sidecars.cache.as_deref())
+        self.sidecars.q_dataset_mips.ensure(
+            &self.dataset,
+            self.sidecars.cache.as_deref(),
+            self.sidecars.placement.get(),
+        )
     }
 
     /// Lazily obtain the i16 MIPS quantized dataset. Sidecar `.qdm16`.
@@ -183,9 +192,11 @@ impl<D: F32Rows> CompressedIndex<D, DynamicSidecars> {
     pub fn try_ensure_quantized_dataset_mips_i16(
         &self,
     ) -> Result<&ScalarQuantizedDataset<MipsI16>> {
-        self.sidecars
-            .q_dataset_mips_i16
-            .ensure(&self.dataset, self.sidecars.cache.as_deref())
+        self.sidecars.q_dataset_mips_i16.ensure(
+            &self.dataset,
+            self.sidecars.cache.as_deref(),
+            self.sidecars.placement.get(),
+        )
     }
 
     /// Lazily obtain the RaBitQ 1-bit quantized dataset. Sidecar
@@ -207,9 +218,11 @@ impl<D: F32Rows> CompressedIndex<D, DynamicSidecars> {
     /// Returns invalid-input, allocation or initialization errors. An invalid
     /// cache is rebuilt; inability to persist an optional cache only logs a warning.
     pub fn try_ensure_quantized_dataset_rabitq(&self) -> Result<&RabitQDataset> {
-        self.sidecars
-            .q_dataset_rabitq
-            .ensure(&self.dataset, self.sidecars.cache.as_deref())
+        self.sidecars.q_dataset_rabitq.ensure(
+            &self.dataset,
+            self.sidecars.cache.as_deref(),
+            self.sidecars.placement.get(),
+        )
     }
 
     /// Lazily obtain the **B=4** RaBitQ quantized dataset. Sidecar
@@ -229,9 +242,11 @@ impl<D: F32Rows> CompressedIndex<D, DynamicSidecars> {
     /// Returns invalid-input, allocation or initialization errors. An invalid
     /// cache is rebuilt; inability to persist an optional cache only logs a warning.
     pub fn try_ensure_quantized_dataset_rabitq_b4(&self) -> Result<&RabitQ4Dataset> {
-        self.sidecars
-            .q_dataset_rabitq_b4
-            .ensure(&self.dataset, self.sidecars.cache.as_deref())
+        self.sidecars.q_dataset_rabitq_b4.ensure(
+            &self.dataset,
+            self.sidecars.cache.as_deref(),
+            self.sidecars.placement.get(),
+        )
     }
 
     /// Lazily obtain the JL Sparse 1024-bit signature dataset.
@@ -253,9 +268,11 @@ impl<D: F32Rows> CompressedIndex<D, DynamicSidecars> {
     /// Returns invalid-input, allocation or initialization errors. An invalid
     /// cache is rebuilt; inability to persist an optional cache only logs a warning.
     pub fn try_ensure_quantized_dataset_jl(&self) -> Result<&JLSparseDataset<1024>> {
-        self.sidecars
-            .q_dataset_jl
-            .ensure(&self.dataset, self.sidecars.cache.as_deref())
+        self.sidecars.q_dataset_jl.ensure(
+            &self.dataset,
+            self.sidecars.cache.as_deref(),
+            self.sidecars.placement.get(),
+        )
     }
 
     /// MIPS twin of [`Self::ensure_quantized_dataset_jl`] — builds (or
@@ -278,9 +295,11 @@ impl<D: F32Rows> CompressedIndex<D, DynamicSidecars> {
     /// Returns invalid-input, allocation or initialization errors. An invalid
     /// cache is rebuilt; inability to persist an optional cache only logs a warning.
     pub fn try_ensure_quantized_dataset_jl_mips(&self) -> Result<&JLSparseDatasetMips<1024, 9>> {
-        self.sidecars
-            .q_dataset_jl_mips
-            .ensure(&self.dataset, self.sidecars.cache.as_deref())
+        self.sidecars.q_dataset_jl_mips.ensure(
+            &self.dataset,
+            self.sidecars.cache.as_deref(),
+            self.sidecars.placement.get(),
+        )
     }
 
     /// Lazily obtain the **JL Hadamard** 1024-bit signature dataset
@@ -303,9 +322,11 @@ impl<D: F32Rows> CompressedIndex<D, DynamicSidecars> {
     /// Returns invalid-input, allocation or initialization errors. An invalid
     /// cache is rebuilt; inability to persist an optional cache only logs a warning.
     pub fn try_ensure_quantized_dataset_jl_hadamard(&self) -> Result<&JlHadamardDataset> {
-        self.sidecars
-            .q_dataset_jl_hadamard
-            .ensure(&self.dataset, self.sidecars.cache.as_deref())
+        self.sidecars.q_dataset_jl_hadamard.ensure(
+            &self.dataset,
+            self.sidecars.cache.as_deref(),
+            self.sidecars.placement.get(),
+        )
     }
 
     /// Lazily obtain the **L2 kernel-trick** sidecar (i8 base +
@@ -326,9 +347,11 @@ impl<D: F32Rows> CompressedIndex<D, DynamicSidecars> {
     /// Returns invalid-input, allocation or initialization errors. An invalid
     /// cache is rebuilt; inability to persist an optional cache only logs a warning.
     pub fn try_ensure_quantized_dataset_l2_kt(&self) -> Result<&L2KTDataset> {
-        self.sidecars
-            .q_dataset_l2_kt
-            .ensure(&self.dataset, self.sidecars.cache.as_deref())
+        self.sidecars.q_dataset_l2_kt.ensure(
+            &self.dataset,
+            self.sidecars.cache.as_deref(),
+            self.sidecars.placement.get(),
+        )
     }
     /// Prepare the canonical independent PQ dataset, shared by L2 and IP ADC.
     /// # Errors
@@ -336,9 +359,11 @@ impl<D: F32Rows> CompressedIndex<D, DynamicSidecars> {
     pub fn try_ensure_quantized_dataset_pq(
         &self,
     ) -> Result<&crate::model::dataset::quantized_dataset::pq::PqDataset> {
-        self.sidecars
-            .q_dataset_pq
-            .ensure(&self.dataset, self.sidecars.cache.as_deref())
+        self.sidecars.q_dataset_pq.ensure(
+            &self.dataset,
+            self.sidecars.cache.as_deref(),
+            self.sidecars.placement.get(),
+        )
     }
 }
 
@@ -386,12 +411,49 @@ trait SidecarCodec:
     + crate::model::dataset::quantized_dataset::residency::ResidentRegions
 {
     const EXTENSION: &'static str;
+    fn decode_placed(
+        reader: &mut dyn Read,
+        bytes: u64,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        if options.placement == orion_ann_platform::region::Placement::Mapped {
+            return Err(Error::unsupported(
+                "this sidecar does not support mapped storage yet",
+            ));
+        }
+        Self::decode(reader, bytes)
+    }
+    fn build_placed(
+        base: &impl F32Rows,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        if options.placement == orion_ann_platform::region::Placement::Mapped {
+            return Err(Error::unsupported(
+                "this sidecar does not support mapped storage yet",
+            ));
+        }
+        Self::build(base, &Self::default_build_options())
+    }
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self>;
     fn encode(&self, writer: &mut dyn Write) -> Result<()>;
     fn shape(&self) -> (usize, usize);
 }
 
 impl<Q: QuantSpec> SidecarCodec for ScalarQuantizedDataset<Q> {
+    fn decode_placed(
+        reader: &mut dyn Read,
+        bytes: u64,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::decode_with_storage(reader, bytes, options)
+    }
+    fn build_placed(
+        base: &impl F32Rows,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::build_with_storage(base, options)
+    }
+
     const EXTENSION: &'static str = Q::FILE_EXT;
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)
@@ -433,6 +495,20 @@ impl std::fmt::Debug for DynamicSidecars {
 }
 
 impl SidecarCodec for RabitQDataset {
+    fn decode_placed(
+        reader: &mut dyn Read,
+        bytes: u64,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::decode_with_storage(reader, bytes, options)
+    }
+    fn build_placed(
+        base: &impl F32Rows,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::try_build_from_with_storage(base, Self::default_build_options(), options)
+    }
+
     const EXTENSION: &'static str = "qrbq";
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)
@@ -446,6 +522,20 @@ impl SidecarCodec for RabitQDataset {
 }
 
 impl SidecarCodec for RabitQ4Dataset {
+    fn decode_placed(
+        reader: &mut dyn Read,
+        bytes: u64,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::decode_with_storage(reader, bytes, options)
+    }
+    fn build_placed(
+        base: &impl F32Rows,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::try_build_from_with_storage(base, Self::default_build_options(), options)
+    }
+
     const EXTENSION: &'static str = "qrb4";
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)
@@ -459,6 +549,20 @@ impl SidecarCodec for RabitQ4Dataset {
 }
 
 impl SidecarCodec for JLSparseDataset<1024> {
+    fn decode_placed(
+        reader: &mut dyn Read,
+        bytes: u64,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::decode_with_storage(reader, bytes, options)
+    }
+    fn build_placed(
+        base: &impl F32Rows,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::try_build_from_with_storage(base, Self::default_build_options(), options)
+    }
+
     const EXTENSION: &'static str = "jls";
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)
@@ -472,6 +576,20 @@ impl SidecarCodec for JLSparseDataset<1024> {
 }
 
 impl SidecarCodec for JLSparseDatasetMips<1024, 9> {
+    fn decode_placed(
+        reader: &mut dyn Read,
+        bytes: u64,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::decode_with_storage(reader, bytes, options)
+    }
+    fn build_placed(
+        base: &impl F32Rows,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::try_build_from_with_storage(base, Self::default_build_options(), options)
+    }
+
     const EXTENSION: &'static str = "jls_mips";
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)
@@ -485,6 +603,20 @@ impl SidecarCodec for JLSparseDatasetMips<1024, 9> {
 }
 
 impl SidecarCodec for JlHadamardDataset {
+    fn decode_placed(
+        reader: &mut dyn Read,
+        bytes: u64,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::decode_with_storage(reader, bytes, options)
+    }
+    fn build_placed(
+        base: &impl F32Rows,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::try_build_from_with_storage(base, Self::default_build_options().seed, options)
+    }
+
     const EXTENSION: &'static str = "jlh";
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)
@@ -498,6 +630,20 @@ impl SidecarCodec for JlHadamardDataset {
 }
 
 impl SidecarCodec for L2KTDataset {
+    fn decode_placed(
+        reader: &mut dyn Read,
+        bytes: u64,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::decode_with_storage(reader, bytes, options)
+    }
+    fn build_placed(
+        base: &impl F32Rows,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::try_build_from_with_storage(base, options)
+    }
+
     const EXTENSION: &'static str = "qdsl2kt";
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)
@@ -556,6 +702,82 @@ mod tests {
 }
 
 impl<D> CompressedIndex<D, DynamicSidecars> {
+    /// Whether the prepared large payload is backed by an immutable file mapping.
+    #[doc(hidden)]
+    pub fn sidecar_is_mapped(
+        &self,
+        kind: crate::model::dataset::quantized_dataset::QuantizedKind,
+    ) -> bool {
+        use crate::model::dataset::quantized_dataset::QuantizedKind::*;
+        use orion_ann_platform::region::Placement;
+        match kind {
+            L2U8 => self
+                .sidecars
+                .q_dataset
+                .get()
+                .is_some_and(|d| d.placement() == Placement::Mapped),
+            L2U16 => self
+                .sidecars
+                .q_dataset_l2_u16
+                .get()
+                .is_some_and(|d| d.placement() == Placement::Mapped),
+            MipsI8 => self
+                .sidecars
+                .q_dataset_mips
+                .get()
+                .is_some_and(|d| d.placement() == Placement::Mapped),
+            MipsI16 => self
+                .sidecars
+                .q_dataset_mips_i16
+                .get()
+                .is_some_and(|d| d.placement() == Placement::Mapped),
+            Pq => self
+                .sidecars
+                .q_dataset_pq
+                .get()
+                .is_some_and(|d| d.mapped_bytes() != 0),
+            L2Kt => self
+                .sidecars
+                .q_dataset_l2_kt
+                .get()
+                .is_some_and(|d| d.data.placement() == Placement::Mapped),
+            JlSparse => self
+                .sidecars
+                .q_dataset_jl
+                .get()
+                .is_some_and(|d| d.codes.placement() == Placement::Mapped),
+            JlSparseMips => self
+                .sidecars
+                .q_dataset_jl_mips
+                .get()
+                .is_some_and(|d| d.codes.placement() == Placement::Mapped),
+            JlHadamard => self
+                .sidecars
+                .q_dataset_jl_hadamard
+                .get()
+                .is_some_and(|d| d.codes.placement() == Placement::Mapped),
+            Rabitq => self
+                .sidecars
+                .q_dataset_rabitq
+                .get()
+                .is_some_and(|d| d.codes.placement() == Placement::Mapped),
+            Rabitq4 => self
+                .sidecars
+                .q_dataset_rabitq_b4
+                .get()
+                .is_some_and(|d| d.codes.placement() == Placement::Mapped),
+        }
+    }
+
+    /// Exact mapped PQ bytes, including a mapped codebook when selected.
+    #[doc(hidden)]
+    pub fn mapped_pq_bytes(&self) -> usize {
+        self.sidecars
+            .q_dataset_pq
+            .get()
+            .map_or(0, |d| d.mapped_bytes())
+    }
+
     /// Runtime residency policy must respect explicit on-demand code placement.
     #[doc(hidden)]
     pub fn prepared_pq_code_storage(
@@ -655,6 +877,20 @@ impl<D> CompressedIndex<D, DynamicSidecars> {
 }
 
 impl SidecarCodec for crate::model::dataset::quantized_dataset::pq::PqDataset {
+    fn decode_placed(
+        reader: &mut dyn Read,
+        bytes: u64,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::decode_with_options(reader, bytes, options)
+    }
+    fn build_placed(
+        base: &impl F32Rows,
+        options: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        Self::build_with_storage(base, &Default::default(), options)
+    }
+
     const EXTENSION: &'static str = "pq-adc";
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)

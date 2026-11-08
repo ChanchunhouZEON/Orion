@@ -46,9 +46,23 @@ impl PhasedGraph {
     ///
     /// # Errors
     /// Rejects zero/overflowing shapes and reports allocation failure.
+    #[cfg(test)]
     pub(crate) fn try_empty(num_nodes: usize, max_degree: u32, max_extra: usize) -> Result<Self> {
+        Self::try_empty_with_storage(num_nodes, max_degree, max_extra, &Default::default())
+    }
+
+    pub(crate) fn try_empty_with_storage(
+        num_nodes: usize,
+        max_degree: u32,
+        max_extra: usize,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let stride = Self::checked_stride(num_nodes, max_degree, max_extra)?;
-        Self::allocate(num_nodes, max_degree, max_extra, stride, 0)
+        Self::allocate_with_storage(num_nodes, max_degree, max_extra, stride, 0, storage)
+    }
+
+    pub(crate) fn placement(&self) -> orion_ann_platform::region::Placement {
+        self.buffer.placement()
     }
 
     fn checked_stride(num_nodes: usize, max_degree: u32, max_extra: usize) -> Result<usize> {
@@ -79,11 +93,29 @@ impl PhasedGraph {
         stride: usize,
         base_local_count: u32,
     ) -> Result<Self> {
+        Self::allocate_with_storage(
+            num_nodes,
+            max_degree,
+            max_extra,
+            stride,
+            base_local_count,
+            &Default::default(),
+        )
+    }
+
+    fn allocate_with_storage(
+        num_nodes: usize,
+        max_degree: u32,
+        max_extra: usize,
+        stride: usize,
+        base_local_count: u32,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         let total = num_nodes
             .checked_mul(stride)
             .ok_or_else(|| Error::invalid_argument("graph allocation overflow"))?;
         Ok(Self {
-            buffer: AlignedBoxWithSlice::new(total, CACHE_LINE_BYTES)?,
+            buffer: AlignedBoxWithSlice::new_with_storage(total, CACHE_LINE_BYTES, storage)?,
             num_nodes,
             stride,
             max_degree,
@@ -97,14 +129,25 @@ impl PhasedGraph {
     ///
     /// # Errors
     /// Rejects invalid counts, reserved words and neighbor IDs after the callback.
-    #[cfg(any(feature = "parlay", test))]
+    #[cfg(test)]
     pub(crate) fn try_build_with(
         num_nodes: usize,
         max_degree: u32,
         max_extra: usize,
         build: impl FnOnce(&mut [u32], usize) -> Result<()>,
     ) -> Result<Self> {
-        let mut graph = Self::try_empty(num_nodes, max_degree, max_extra)?;
+        Self::try_build_with_storage(num_nodes, max_degree, max_extra, build, &Default::default())
+    }
+
+    #[cfg(any(feature = "parlay", test))]
+    pub(crate) fn try_build_with_storage(
+        num_nodes: usize,
+        max_degree: u32,
+        max_extra: usize,
+        build: impl FnOnce(&mut [u32], usize) -> Result<()>,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
+        let mut graph = Self::try_empty_with_storage(num_nodes, max_degree, max_extra, storage)?;
         build(graph.buffer.as_mut_slice(), graph.stride)?;
         graph.validate_rows()?;
         Ok(graph)
@@ -208,8 +251,23 @@ impl PhasedGraph {
         max_degree: u32,
         max_extra: usize,
     ) -> Result<Self> {
+        Self::try_from_partitions_with_storage(
+            partitions,
+            max_degree,
+            max_extra,
+            &Default::default(),
+        )
+    }
+
+    pub(crate) fn try_from_partitions_with_storage(
+        partitions: &[(Vec<u32>, Vec<u32>, Vec<u32>)],
+        max_degree: u32,
+        max_extra: usize,
+        storage: &orion_ann_platform::region::RegionOptions,
+    ) -> Result<Self> {
         use rayon::prelude::*;
-        let mut graph = Self::try_empty(partitions.len(), max_degree, max_extra)?;
+        let mut graph =
+            Self::try_empty_with_storage(partitions.len(), max_degree, max_extra, storage)?;
         for (node, (local, remote, extra)) in partitions.iter().enumerate() {
             graph.validate_partition(node, local, remote, extra)?;
         }

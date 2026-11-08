@@ -113,13 +113,21 @@ fn prepare<B: SearchBackend + 'static>(
         GraphInput::Snapshot(saved) => {
             let files = saved.payloads;
             let path = crate::storage::object(&saved.store, &files.graph_sha256, "pgraph")?;
-            let graph = crate::graph::persistence::load_verified(
+            let dataset = data.take_index_dataset()?;
+            let storage = crate::placement::graph_options(
+                config,
+                &dataset,
+                std::fs::metadata(&path)?.len().saturating_sub(16),
+            )?;
+            let graph = crate::graph::persistence::load_verified_with_storage(
                 &path,
-                data.take_index_dataset()?,
+                dataset,
                 &saved.metadata,
                 &files.graph_sha256,
+                &storage,
             )?;
             let mut index = graph.value;
+            crate::placement::configure(&index, config, files.sidecars.keys().cloned())?;
             crate::sidecars::restore_snapshot(&mut index, &saved.store, &files.sidecars)?;
             let receipts = crate::sidecars::track(
                 &mut index,

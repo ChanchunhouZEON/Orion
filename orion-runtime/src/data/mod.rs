@@ -476,13 +476,14 @@ impl<T: BaseElement> LoadedBase<T> {
         crate::preflight::check_memory_budget(config, num_points)?;
 
         let layout = orion_ann_vector::PaddedLayout::for_kernel::<T::Kernel>(dimension)?;
-        let dataset = padded::load::<T>(
+        let dataset = padded::load_with_storage::<T>(
             &config.base,
             config.base_format,
             layout,
             config.max_points,
             config.metric,
             None,
+            &crate::placement::base_options(config, num_points, false)?,
         )?;
         Ok(Self {
             base: Some(dataset.into_allocation()),

@@ -10,3 +10,5 @@ mod concurrency;
 mod parlay_memory;
 mod randomized;
 mod support;
+
+mod mapped;

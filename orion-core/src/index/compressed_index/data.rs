@@ -10,6 +10,9 @@ use orion_ann_diskann::model::{InmemDataset, PaddedDataset};
 use orion_ann_vector::FullPrecisionDistance;
 
 pub trait IndexData {
+    fn placement(&self) -> orion_ann_platform::region::Placement {
+        orion_ann_platform::region::Placement::Resident
+    }
     fn point_count(&self) -> usize;
     fn dimension(&self) -> usize;
     fn element_type(&self) -> &'static str;
@@ -31,6 +34,9 @@ where
 }
 
 impl<T: bytemuck::Pod> IndexData for PaddedDataset<T> {
+    fn placement(&self) -> orion_ann_platform::region::Placement {
+        self.placement()
+    }
     fn point_count(&self) -> usize {
         self.len()
     }

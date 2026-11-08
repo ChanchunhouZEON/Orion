@@ -12,7 +12,7 @@ pub mod spec;
 use crate::Result;
 use crate::model::dataset::rows::F32Rows;
 use crate::model::dataset::validation::{self, CheckedRows};
-use orion_ann_diskann::common::AlignedBoxWithSlice;
+use orion_ann_platform::region::{ArrayView, Placement, RegionOptions};
 use orion_ann_vector::DistanceKernelBackend;
 use spec::*;
 
@@ -35,7 +35,7 @@ use spec::*;
 /// }
 /// ```
 pub struct ScalarQuantizedDataset<Q: QuantSpec> {
-    pub(crate) data: AlignedBoxWithSlice<Q::Storage>,
+    pub(crate) data: ArrayView<Q::Storage>,
     pub(crate) params: Q::Params,
     pub(crate) n: usize,
     pub(crate) dimension: usize,
@@ -60,6 +60,13 @@ impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
     /// Returns an error for invalid rows, unsupported dimensions, invalid fitted
     /// parameters, or allocation failure. Logical rows exclude SIMD padding.
     pub fn try_from_f32_dataset(ds: &impl F32Rows) -> Result<Self> {
+        Self::build_with_storage(ds, &RegionOptions::default())
+    }
+
+    /// Build directly into the selected backing, without a full heap staging copy.
+    /// # Errors
+    /// Reports invalid input/layout, allocation and private-file I/O failures.
+    pub fn build_with_storage(ds: &impl F32Rows, storage: &RegionOptions) -> Result<Self> {
         let checked = CheckedRows::new(ds, Q::QuantKernel::MAX_COORDINATES)?;
         let ds = &checked;
         let dimension = ds.dimension();
@@ -73,19 +80,23 @@ impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
         let (min, max) = ds.range();
         let params = Q::build_params(&[min, max]);
         Q::validate_params(&params)?;
-        let mut data = AlignedBoxWithSlice::<Q::Storage>::new(
-            validation::product(n, stride)?,
-            layout.alignment(),
-        )?;
         use rayon::prelude::*;
-        data.as_mut_slice()
-            .par_chunks_mut(stride)
-            .enumerate()
-            .for_each(|(id, out)| {
-                for (dst, &value) in out.iter_mut().zip(ds.row(id)) {
-                    *dst = Q::quantize_scalar(&params, value);
-                }
-            });
+        let data = ArrayView::build_rows::<crate::Error>(
+            n,
+            stride,
+            layout.alignment(),
+            storage,
+            |start, rows| {
+                rows.par_chunks_mut(stride)
+                    .enumerate()
+                    .for_each(|(id, out)| {
+                        for (dst, &value) in out.iter_mut().zip(ds.row(start + id)) {
+                            *dst = Q::quantize_scalar(&params, value);
+                        }
+                    });
+                Ok(())
+            },
+        )?;
         Ok(Self {
             data,
             params,
@@ -277,6 +288,17 @@ impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
     }
 
     pub fn decode(r: &mut dyn std::io::Read, byte_len: u64) -> Result<Self> {
+        Self::decode_with_storage(r, byte_len, &RegionOptions::default())
+    }
+
+    /// Decode packed cache rows into aligned owned or private mapped storage.
+    /// # Errors
+    /// Validates shape, parameters and payload length before allocating.
+    pub fn decode_with_storage(
+        r: &mut dyn std::io::Read,
+        byte_len: u64,
+        storage: &RegionOptions,
+    ) -> Result<Self> {
         let mut hdr = [0u8; 24];
         r.read_exact(&mut hdr)?;
         if u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != 1 {
@@ -331,7 +353,22 @@ impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
         }
         let params: Q::Params = bytemuck::pod_read_unaligned(&hdr[16..16 + param_bytes]);
         Q::validate_params(&params)?;
-        let data = crate::model::dataset::rows::read_rows::<Q::Storage>(r, n, stride, dim)?;
+        let data = ArrayView::build_rows::<crate::Error>(
+            n,
+            stride,
+            layout.alignment(),
+            storage,
+            |_, out| {
+                if stride == dim {
+                    r.read_exact(bytemuck::cast_slice_mut(out))?;
+                } else {
+                    for row in out.chunks_exact_mut(stride) {
+                        r.read_exact(bytemuck::cast_slice_mut(&mut row[..dim]))?;
+                    }
+                }
+                Ok(())
+            },
+        )?;
         Ok(Self {
             data,
             params,
@@ -489,6 +526,12 @@ impl<Q: QuantSpec> std::fmt::Debug for ScalarQuantizedDataset<Q> {
 }
 
 impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
+    /// Placement of the immutable quantized payload.
+    #[inline]
+    pub fn placement(&self) -> Placement {
+        self.data.placement()
+    }
+
     /// Read-only access to the sidecar data.
     #[inline]
     pub fn data(&self) -> &[Q::Storage] {

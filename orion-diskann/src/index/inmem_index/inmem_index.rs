@@ -94,12 +94,10 @@ where
         #[cfg(feature = "orion")]
         let candidate_sets = if config.index_write_parameter.compute_candidate_sets {
             let max_pairs = config.index_write_parameter.max_degree as usize * 2;
-            let tmp_path =
-                std::env::temp_dir().join(format!("orion_mmap_{}.bin", std::process::id()));
-            Some(
-                crate::model::MmapAnchorSlab::new(&tmp_path, total_internal_points, max_pairs)
-                    .expect("MmapAnchorSlab creation failed"),
-            )
+            Some(crate::model::MmapAnchorSlab::temporary(
+                total_internal_points,
+                max_pairs,
+            )?)
         } else {
             None
         };

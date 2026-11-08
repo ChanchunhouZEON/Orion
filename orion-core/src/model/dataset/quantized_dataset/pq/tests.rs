@@ -86,7 +86,7 @@ fn training_is_deterministic_across_thread_counts_and_handles_degenerate_data() 
     let a = build(1);
     let b = build(4);
     assert_eq!(a.codes(), b.codes());
-    assert_eq!(a.table.centers, b.table.centers);
+    assert_eq!(a.table.centers.as_slice(), b.table.centers.as_slice());
     let flat = vec![1.0; 300 * 4];
     let table = FixedChunkPQTable::train(&flat, 300, 4, 2).unwrap();
     assert!(table.encode(&flat, 300).unwrap().iter().all(|&c| c == 0));
@@ -163,7 +163,12 @@ fn imported_centroid_layout_preserves_mean_translation_for_l2_and_ip() {
     let code = vec![0u8, 127, 255];
     let pq = PqDataset::from_parts(
         table,
-        super::storage::Codes::Resident(code.clone().into_boxed_slice()),
+        super::storage::Codes::from_reader(
+            &mut code.as_slice(),
+            code.len(),
+            super::storage::PqCodeStorage::Resident,
+        )
+        .unwrap(),
         1,
     )
     .unwrap();
