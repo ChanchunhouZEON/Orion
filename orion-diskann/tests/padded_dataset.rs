@@ -16,8 +16,8 @@ fn check<K: DistanceKernelBackend>(
     K::Storage: bytemuck::Pod + PartialEq + std::fmt::Debug,
 {
     for dim in [
-        1, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100, 127, 128, 129, 255, 256, 257, 767, 768, 769,
-        960, 1025,
+        1, 7, 15, 16, 17, 25, 31, 32, 33, 63, 64, 65, 100, 127, 128, 129, 255, 256, 257, 767, 768,
+        769, 960, 1025,
     ] {
         let layout = PaddedLayout::for_kernel::<K>(dim).unwrap();
         let packed: Vec<_> = (0..5 * dim).map(&make).collect();

@@ -180,7 +180,7 @@ pub struct DistanceStream<'a, K: DistanceKernelBackend> {
     base_ptr: *const u8,
     /// Per-vertex byte stride: `v_ptr = base_ptr + id × id_stride_bytes`.
     id_stride_bytes: usize,
-    /// Per-vertex compute span in bytes (multiple of `K::CHUNK_BYTES`).
+    /// Per-vertex compute span, padded for `K::stream_block_bytes`.
     compute_bytes: usize,
     /// Pointer to the (padded) query vector.
     query_ptr: *const u8,
@@ -204,11 +204,13 @@ impl<'a, K: DistanceKernelBackend> DistanceStream<'a, K> {
     ///
     /// # Safety
     /// - `base_ptr` valid for `(id_max + 1) × id_stride_bytes` bytes.
-    /// - `compute_bytes` must be a multiple of `K::CHUNK_BYTES`; zero-pad
-    ///   both base rows and query to that boundary for shorter dimensions.
+    /// - `compute_bytes` must be a multiple of
+    ///   `K::stream_block_bytes(compute_bytes)`; zero-pad both inputs to that
+    ///   boundary. Built-in x86 kernels also accept a single 32-byte row.
     /// - Each addressed base row must contain `compute_bytes` readable bytes.
-    /// - `query_ptr` valid for `(compute_bytes / K::CHUNK_BYTES) *
-    ///   K::QUERY_CHUNK_BYTES` bytes, aligned as required by `K::step`.
+    /// - `query_ptr` valid for `compute_bytes * K::QUERY_CHUNK_BYTES /
+    ///   K::CHUNK_BYTES` bytes (the ratio must be integral), aligned as
+    ///   required by `K::step`. Ordinary metrics use equal query/base spans.
     /// - `id_stride_bytes` should be a multiple of `CACHE_LINE_BYTES`
     ///   (128 B on M2) for clean prfm targeting; unaligned strides
     ///   work but waste one prfm per vert on the leading partial line.
@@ -221,7 +223,7 @@ impl<'a, K: DistanceKernelBackend> DistanceStream<'a, K> {
         ids: &'a [u32],
         lookahead_lines: usize,
     ) -> Self {
-        debug_assert!(compute_bytes.is_multiple_of(K::CHUNK_BYTES));
+        debug_assert!(compute_bytes.is_multiple_of(K::stream_block_bytes(compute_bytes)));
         Self {
             base_ptr,
             id_stride_bytes,
@@ -308,6 +310,7 @@ impl<'a, K: DistanceKernelBackend> DistanceStream<'a, K> {
     where
         Sink: FnMut(u32, f32),
     {
+        debug_assert!(self.compute_bytes.is_multiple_of(K::CHUNK_BYTES));
         let n_verts = self.ids.len();
         if n_verts == 0 {
             return;

@@ -19,7 +19,11 @@ pub struct DynamicF32Rerank<'a, K: DistanceKernelBackend<Storage = f32> = L2F32D
 }
 impl<'a, K: DistanceKernelBackend<Storage = f32>> DynamicF32Rerank<'a, K> {
     pub fn new(dataset: &'a PaddedDataset<f32>) -> Self {
-        assert_eq!(dataset.layout().stride_bytes() % K::CHUNK_BYTES, 0);
+        assert_eq!(
+            dataset.layout().stride_bytes()
+                % K::stream_block_bytes(dataset.layout().compute_bytes()),
+            0
+        );
         assert!(dataset.layout().logical_dim() <= K::MAX_COORDINATES);
         Self {
             dataset,

@@ -138,7 +138,8 @@ impl<T: Pod> PaddedDataset<T> {
         if self.layout.logical_dim() > K::MAX_COORDINATES {
             return Err("dimension exceeds the kernel's integer accumulator range".into());
         }
-        if K::CHUNK_BYTES == 0 || self.layout.compute_bytes() % K::CHUNK_BYTES != 0 {
+        let block = K::stream_block_bytes(self.layout.compute_bytes());
+        if block == 0 || self.layout.compute_bytes() % block != 0 {
             return Err("layout does not contain complete kernel blocks".into());
         }
         if ids.iter().any(|&id| id as usize >= self.rows) {

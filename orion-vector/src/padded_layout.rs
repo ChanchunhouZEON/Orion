@@ -22,14 +22,19 @@ pub struct PaddedLayout {
 }
 
 impl PaddedLayout {
-    /// Round rows to a whole number of kernel blocks. The block width is
+    /// Round rows to a whole number of stream blocks. The block width is
     /// independent of the machine's cache-line width. All current kernels
-    /// use power-of-two blocks of at least 16 bytes.
+    /// supported by this layout use power-of-two blocks of at least 16 bytes.
+    /// Built-in x86 kernels retain 32-byte short rows even in AVX-512 builds;
+    /// their primitive `step` contract remains unchanged.
     pub fn for_kernel<K: DistanceKernelBackend>(logical_dim: usize) -> Result<Self, String> {
         if logical_dim > K::MAX_COORDINATES {
             return Err("dimension exceeds kernel accumulator range".into());
         }
-        Self::new::<K::Storage>(logical_dim, K::CHUNK_BYTES)
+        let row_bytes = logical_dim
+            .checked_mul(size_of::<K::Storage>())
+            .ok_or("row size overflow")?;
+        Self::new::<K::Storage>(logical_dim, K::stream_block_bytes(row_bytes))
     }
 
     pub fn new<T>(logical_dim: usize, block_bytes: usize) -> Result<Self, String> {
@@ -90,5 +95,49 @@ impl PaddedLayout {
     pub fn padding_bytes(self, rows: usize) -> Result<usize, String> {
         self.allocation_bytes(rows)?;
         Ok((self.stride_bytes() - self.logical_dim * self.element_bytes) * rows)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{IpF32Distance, IpI16Distance, IpI8Distance, L2U8Distance};
+
+    #[test]
+    fn glove25_layout_depends_on_storage_bytes_not_cache_lines() {
+        for dim in [25, 32] {
+            assert_eq!(
+                PaddedLayout::for_kernel::<IpI8Distance>(dim)
+                    .unwrap()
+                    .stride_bytes(),
+                32
+            );
+            assert_eq!(
+                PaddedLayout::for_kernel::<IpI16Distance>(dim)
+                    .unwrap()
+                    .stride_bytes(),
+                64
+            );
+            assert_eq!(
+                PaddedLayout::for_kernel::<IpF32Distance>(dim)
+                    .unwrap()
+                    .stride_bytes(),
+                128
+            );
+        }
+    }
+
+    #[test]
+    fn longer_rows_keep_the_existing_compile_time_padding() {
+        fn check<K: DistanceKernelBackend>() {
+            for dim in [33, 63, 64, 65, 96, 100, 128, 960, 1536] {
+                let expected = PaddedLayout::new::<K::Storage>(dim, K::CHUNK_BYTES).unwrap();
+                assert_eq!(PaddedLayout::for_kernel::<K>(dim).unwrap(), expected);
+            }
+        }
+        check::<IpI8Distance>();
+        check::<IpI16Distance>();
+        check::<IpF32Distance>();
+        check::<L2U8Distance>();
     }
 }

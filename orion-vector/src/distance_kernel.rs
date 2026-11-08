@@ -74,6 +74,16 @@ pub trait DistanceKernelBackend {
     /// loops `compute_bytes / CHUNK_BYTES` times per vertex.
     const CHUNK_BYTES: usize = 32;
 
+    /// Block boundary used to pad a row for [`crate::DistanceStream`].
+    /// Built-in x86 kernels accept a single 32-byte row through AVX2 even
+    /// when their primitive `step` uses 64 bytes. Larger rows keep the
+    /// compile-time block width. Direct `step` callers must still provide
+    /// `CHUNK_BYTES` bytes; this hook only describes whole-stream dispatch.
+    #[inline(always)]
+    fn stream_block_bytes(_row_bytes: usize) -> usize {
+        Self::CHUNK_BYTES
+    }
+
     /// Query bytes consumed per base chunk. Ordinary metrics advance both
     /// pointers equally; ADC consumes one 256-entry f32 table per code byte.
     const QUERY_CHUNK_BYTES: usize = Self::CHUNK_BYTES;
@@ -242,6 +252,15 @@ macro_rules! public_kernel {
             const MAX_COORDINATES: usize =
                 <selected::$name as DistanceKernelBackend>::MAX_COORDINATES;
             #[inline(always)]
+            fn stream_block_bytes(row_bytes: usize) -> usize {
+                #[cfg(target_arch = "x86_64")]
+                if row_bytes <= 32 {
+                    return 32;
+                }
+                let _ = row_bytes;
+                Self::CHUNK_BYTES
+            }
+            #[inline(always)]
             fn init() -> Self::Acc {
                 selected::$name::init()
             }
@@ -280,6 +299,19 @@ macro_rules! public_kernel {
                     target_feature = "fma"
                 ))]
                 if $x86_ready {
+                    if stream.compute_bytes() == 32 {
+                        // These compile-time AVX-512 features also guarantee
+                        // AVX2 + FMA. Select once, before the streaming loop;
+                        // the wider static path below remains unchanged.
+                        unsafe {
+                            crate::stream_kernels::$dispatch(
+                                stream,
+                                sink,
+                                crate::stream_kernels::DistanceIsa::Avx2,
+                            );
+                        }
+                        return;
+                    }
                     stream.run_static(sink);
                     return;
                 }

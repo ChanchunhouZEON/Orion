@@ -91,7 +91,7 @@ macro_rules! agreement {
         fn $test() {
             eprintln!("{} backends: {:?}", stringify!($metric), backends());
             for dim in [
-                1, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 96, 127, 128, 129, 960, 1536,
+                1, 7, 15, 16, 17, 25, 31, 32, 33, 63, 64, 65, 96, 127, 128, 129, 960, 1536,
             ] {
                 // Scalar's 32-byte contract is also a valid input to dispatch.
                 // Do not use compile-time AVX512 padding to hide short tails.
@@ -120,7 +120,8 @@ macro_rules! agreement {
                 let base = Guarded::new(&base);
                 let query = Guarded::new(&query);
                 let aux = [0_u64; 8];
-                if (count * std::mem::size_of::<$t>()).is_multiple_of(crate::$metric::CHUNK_BYTES) {
+                let row_bytes = count * std::mem::size_of::<$t>();
+                if row_bytes.is_multiple_of(crate::$metric::stream_block_bytes(row_bytes)) {
                     let mut automatic = Vec::new();
                     unsafe {
                         DistanceStream::<crate::$metric>::new(
@@ -174,6 +175,23 @@ macro_rules! agreement {
             }
         }
     };
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn short_rows_use_avx2_without_changing_wide_stream_selection() {
+    for wide in [DistanceIsa::Avx512, DistanceIsa::Avx512Popcnt] {
+        assert_eq!(wide.for_compute_bytes(32), DistanceIsa::Avx2);
+        assert_eq!(wide.for_compute_bytes(96), DistanceIsa::Avx2);
+        for bytes in [64, 128, 256, 3840, 6144] {
+            assert_eq!(wide.for_compute_bytes(bytes), wide);
+        }
+    }
+    for narrow in [DistanceIsa::Scalar, DistanceIsa::Avx2] {
+        for bytes in [32, 64, 96, 128] {
+            assert_eq!(narrow.for_compute_bytes(bytes), narrow);
+        }
+    }
 }
 agreement!(
     u8_backends,

@@ -113,6 +113,7 @@ fn partial_line_is_flushed_after_each_random_vector() {
     use Event::*;
     // Two unrelated short rows each get a line credit, never one shared credit.
     for _ in 0..2 {
+        assert_eq!(record::<32, 64>(1), vec![Computed(32), Line]);
         assert_eq!(record::<32, 128>(1), vec![Computed(32), Line]);
     }
     assert_eq!(

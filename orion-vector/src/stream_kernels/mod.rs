@@ -38,6 +38,18 @@ pub(crate) enum DistanceIsa {
 }
 
 impl DistanceIsa {
+    /// A wide kernel may not read past a 32-byte padded row or tail.
+    /// Resolve the width once for the whole stream, without changing storage.
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    fn for_compute_bytes(self, bytes: usize) -> Self {
+        if matches!(self, Self::Avx512 | Self::Avx512Popcnt) && !bytes.is_multiple_of(64) {
+            Self::Avx2
+        } else {
+            self
+        }
+    }
+
     fn supported(self) -> bool {
         match self {
             Self::Scalar => true,
@@ -160,13 +172,7 @@ macro_rules! dispatch {
             // A 64-byte backend cannot read a 32-byte padded tail. Select the
             // narrower kernel for the entire stream; never pad/repack in search.
             #[cfg(target_arch = "x86_64")]
-            let backend = if matches!(backend, DistanceIsa::Avx512 | DistanceIsa::Avx512Popcnt)
-                && !stream.compute_bytes().is_multiple_of(64)
-            {
-                DistanceIsa::Avx2
-            } else {
-                backend
-            };
+            let backend = backend.for_compute_bytes(stream.compute_bytes());
             #[cfg(target_arch = "aarch64")]
             let backend = if !stream
                 .compute_bytes()

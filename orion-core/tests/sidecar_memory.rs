@@ -104,6 +104,47 @@ fn public_memory_debug_contains_only_the_total() {
 }
 
 #[test]
+fn glove25_i8_build_and_reload_keep_32_byte_rows() {
+    for dimension in [25, 32] {
+        let input_shape = QuantizedDatasetShape { rows: 7, dimension };
+        let dataset = ScalarQuantizedDataset::<MipsI8>::build(&base(7, dimension), &()).unwrap();
+        assert_eq!(dataset.stride(), 32);
+        assert_eq!(dataset.resident_memory().total_bytes(), 7 * 32);
+        assert_eq!(
+            ScalarQuantizedDataset::<MipsI8>::estimate_resident_memory(input_shape, &()).unwrap(),
+            dataset.resident_memory()
+        );
+
+        // Persistence stores logical coordinates, so changing the in-memory
+        // SIMD stride must not alter the on-disk format or decoded values.
+        let mut encoded = Vec::new();
+        dataset.encode(&mut encoded).unwrap();
+        assert_eq!(encoded.len(), 24 + 7 * dimension);
+        let restored =
+            ScalarQuantizedDataset::<MipsI8>::decode(&mut encoded.as_slice(), encoded.len() as u64)
+                .unwrap();
+        assert_eq!(restored.stride(), 32);
+        let query = vec![0.125; dimension];
+        let quantized_query = dataset.try_quantize_query(&query, true).unwrap();
+        assert_eq!(quantized_query.len(), 32);
+        let before = dataset.prepare_query(&query).unwrap();
+        let after = restored.prepare_query(&query).unwrap();
+        for id in [6, 0, 3, 6, 1] {
+            assert_eq!(dataset.row(id), restored.row(id));
+            let expected = -dataset
+                .row(id)
+                .unwrap()
+                .iter()
+                .zip(&quantized_query)
+                .map(|(&a, &b)| i32::from(a) * i32::from(b))
+                .sum::<i32>() as f32;
+            assert_eq!(dataset.distance(id, &quantized_query).unwrap(), expected);
+            assert_eq!(before.distance(id).unwrap(), after.distance(id).unwrap());
+        }
+    }
+}
+
+#[test]
 fn prepared_query_owns_its_encoding_and_borrows_only_the_dataset() {
     let dataset = ScalarQuantizedDataset::<L2U8>::build(&base(7, 33), &()).unwrap();
     let prepared = {

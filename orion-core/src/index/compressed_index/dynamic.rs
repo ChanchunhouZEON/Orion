@@ -148,7 +148,9 @@ impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
         }
         let layout = self.dataset.layout();
         if layout.logical_dim() > T::Kernel::MAX_COORDINATES
-            || layout.compute_bytes() % T::Kernel::CHUNK_BYTES != 0
+            || !layout
+                .compute_bytes()
+                .is_multiple_of(T::Kernel::stream_block_bytes(layout.compute_bytes()))
         {
             return Err(error(
                 "dataset layout is incompatible with the exact-L2 kernel",
