@@ -9,7 +9,7 @@ Orion Astraeus welcomes reproducible bug reports, tests, documentation and
 implementation improvements. Start with a small change whose behavior and
 validation a reviewer can assess independently.
 
-[README](README.md) · [简体中文](README.zh-CN.md) · [Changelog](CHANGLOG.md) ·
+[README](README.md) · [简体中文](README.zh-CN.md) · [Changelog](CHANGELOG.md) ·
 [Architecture](docs/architecture.md) · [Testing and CI](docs/testing.md)
 
 ## Set up a checkout
@@ -132,7 +132,7 @@ API or persistence-format changes and any migration steps. Keep commit subjects
 within 50 characters and use the body for module-specific details. Sign commits
 when your signing setup is available.
 
-Update the `Unreleased` section of [CHANGLOG.md](CHANGLOG.md) for user-visible
+Update the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md) for user-visible
 changes. Keep English and Chinese README examples, numeric badges and benchmark
 tables consistent. Do not present planned work as an implemented capability.
 

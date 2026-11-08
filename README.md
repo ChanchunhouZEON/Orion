@@ -214,7 +214,7 @@ cargo build --locked --release -p orion-ann-cli --bin orion
 ```
 
 The CLI builds or reuses a graph and calibrates from the query stream.
-Dataset presets and ground truth are optional. Add `--snapshot DIR` to restore
+CLI, Rust and Python share the same defaults; ground truth is optional. Add `--snapshot DIR` to restore
 calibration, `--groundtruth /data/gt.ivecs` to evaluate recall, or
 `--query - --query-format bvecs` to read stdin. `--prepare-only` builds the working
 graph cache; `--preflight` estimates memory. [CLI guide](docs/cli.md).
@@ -231,7 +231,7 @@ cargo build --locked --release --target-dir target \
   --k 10 --threads 8 --trials 3
 ```
 
-Configure dataset paths in [sweep.yaml](orion-runtime/configs/sweep.yaml).
+Configure dataset paths in [sweep.yaml](benchmark/configs/sweep.yaml).
 The sweep loads once and runs its L schedule and trials in one process.
 Record hardware, CPU placement, graph source, build flags and timing settings
 when reproducing a comparison. [Benchmark scripts](benchmark/scripts/README.md) ·
@@ -247,7 +247,7 @@ cargo doc --locked -p orion-ann --no-deps --open
 [Testing and CI](docs/testing.md) · [Code structure](docs/code-structure.md) ·
 [Ablation studies](docs/ablation-study.md) · [Historical figures](docs/historical-benchmarks.md).
 
-[Contributing](CONTRIBUTION.md) · [Changelog](CHANGLOG.md).
+[Contributing](CONTRIBUTION.md) · [Changelog](CHANGELOG.md).
 
 ## License
 

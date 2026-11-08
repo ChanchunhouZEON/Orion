@@ -20,21 +20,22 @@
 //!
 //! The resulting configuration also derives the graph-cache identity used to distinguish
 //! graphs built from different datasets or construction parameters.
-use crate::config::cascade::{
-    AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric,
-};
-use crate::data::VectorFormat;
-use crate::driver::presets::{
+use crate::config::presets::{
     try_load_root, try_resolve_placeholders, RawBaseGraph, RawOrionOverride, RawRoot,
     SweepOverrides,
 };
-use crate::{Error, Result};
 use clap::Parser;
+use orion_ann::benchmark::config::{
+    AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric,
+};
+use orion_ann::execution::VectorFormat;
+use orion_ann::{Error, Result};
 
+use orion_ann::benchmark::ResolvedRunConfig;
 use std::path::PathBuf;
 
-use crate::config::{
-    GraphSource, GraphSourcePolicy, PreflightFormat, ResolvedRunConfig, VectorStorageKind,
+use orion_ann::benchmark::config::{
+    GraphSource, GraphSourcePolicy, PreflightFormat, VectorStorageKind,
 };
 
 /// Command-line configuration accepted by the Orion benchmark executable.
@@ -48,8 +49,6 @@ use crate::config::{
 #[derive(Debug, Clone, Parser)]
 #[command(name = "orion", about = "Shared Orion input and search configuration")]
 pub struct Args {
-    #[arg(skip)]
-    single_search: bool,
     /// Optional dataset preset name defined in the sweep configuration.
     ///
     /// Omit the preset (or use `anonymous`) to resolve defaults from metric and dimension.
@@ -94,6 +93,9 @@ pub struct Args {
     /// construction allocations are not guaranteed to fit within this limit.
     #[arg(long)]
     pub memory_budget_gib: Option<f64>,
+    /// Disable automatic resource-bounded RAM locking.
+    #[arg(long)]
+    pub no_auto_pin: bool,
     /// Build/import and save graph cache, then exit before calibration/search.
     #[arg(long)]
     pub prepare_only: bool,
@@ -126,6 +128,10 @@ pub struct Args {
     /// Separate cache location for an alternate graph built from the same vectors.
     #[arg(long)]
     pub cache_dir: Option<PathBuf>,
+    /// Trust an existing .bin/.pgraph pair or .cache.json record (no SHA-256 scan).
+    /// The experiment owner must match the base and graph; layout checks remain.
+    #[arg(long)]
+    pub cache_file: Option<PathBuf>,
     #[arg(long, conflicts_with = "legacy_max_points")]
     pub max_points: Option<usize>,
     #[arg(long)]
@@ -146,7 +152,6 @@ struct LegacyEnvironment {
     staged_file: Option<PathBuf>,
     pa_root: Option<PathBuf>,
     local_pct: Option<usize>,
-    #[cfg(any(test, feature = "benchmark"))]
     profiling: bool,
 }
 
@@ -167,7 +172,6 @@ impl LegacyEnvironment {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .filter(|v| (1..=100).contains(v)),
-            #[cfg(any(test, feature = "benchmark"))]
             profiling: std::env::var_os("ORION_PROFILE_MARKER").is_some(),
         })
     }
@@ -222,12 +226,6 @@ impl Args {
             },
             &LegacyEnvironment::read()?,
         )
-    }
-
-    pub fn resolve_search(&self) -> Result<ResolvedRunConfig> {
-        let mut args = self.clone();
-        args.single_search = true;
-        args.resolve()
     }
 
     /// Experimental sweeps materialize queries so trials can replay identical inputs.
@@ -304,12 +302,7 @@ impl Args {
                 .map(VectorFormat::infer)
                 .unwrap_or(Ok(base_format))
         })?;
-        if self
-            .memory_budget_gib
-            .is_some_and(|x| !x.is_finite() || x <= 0.)
-        {
-            return Err("--memory-budget-gib must be finite and positive".into());
-        }
+        orion_ann::benchmark::config::validate_memory_budget(self.memory_budget_gib)?;
 
         if self.query_batch_size == 0 {
             return Err("--query-batch-size must be positive".into());
@@ -323,9 +316,8 @@ impl Args {
             )?;
         let dimension = match self.dimension.or_else(|| preset.map(|p| p.dimension)) {
             Some(d) => d,
-            None => crate::data::inspect_vector_file(&base, base_format)?.dimension,
+            None => orion_ann::execution::inspect_vector_file(&base, base_format)?.dimension,
         };
-        orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::L2F32Distance>(dimension)?;
 
         let defaults = &root.defaults.orion;
         let dataset_overrides = preset.and_then(|p| p.orion.as_ref());
@@ -382,8 +374,9 @@ impl Args {
                 "alpha, graph-degree and build-l must be positive and build-l must fit u32".into(),
             );
         }
-        if !(1..=64).contains(&window_size) || max_points == 0 {
-            return Err("window-size must be 1..=64 and max-points positive".into());
+        orion_ann::benchmark::config::validate_window(window_size)?;
+        if max_points == 0 {
+            return Err("max-points must be positive".into());
         }
 
         let (graph_source_policy, staged_file, staged_file_explicit) = self.resolve_graph_source(
@@ -394,11 +387,8 @@ impl Args {
 
         // Auto starts with a PA candidate. Resolve its cache identity before
         // probing availability; policy itself must never enter the cache key.
-        let graph_source = match graph_source_policy {
-            GraphSourcePolicy::Rust => GraphSource::Rust,
-            GraphSourcePolicy::Auto | GraphSourcePolicy::Parlayann => GraphSource::Parlayann,
-        };
-        let index_plan = crate::config::plan::IndexPlan::resolve(
+        let graph_source = graph_source_policy.candidate();
+        let index_plan = orion_ann::benchmark::config::IndexPlan::resolve(
             vector_storage,
             dimension,
             metric,
@@ -410,7 +400,6 @@ impl Args {
 
         // Profiling supplies a trial count only when the CLI did not specify one.
         let mut overrides = self.sweep.clone();
-        #[cfg(any(test, feature = "benchmark"))]
         if overrides.trials.is_none() && env.profiling {
             overrides.trials = root
                 .defaults
@@ -419,35 +408,13 @@ impl Args {
                 .get("profiling")
                 .and_then(|p| p.trials);
         }
-        let k = self.k.unwrap_or(root.defaults.sweep.k);
-        if self.single_search {
-            #[cfg(any(test, feature = "benchmark"))]
-            if overrides.trials.is_some_and(|trials| trials != 1) {
-                return Err(
-                    "ordinary search consumes queries once; use orion-sweep for multiple trials"
-                        .into(),
-                );
-            }
-            if overrides
-                .search_list_sizes
-                .as_ref()
-                .is_some_and(|ls| ls.len() != 1)
-            {
-                return Err("ordinary search consumes queries once; use orion-sweep for multiple L values or trials".into());
-            }
-            overrides
-                .search_list_sizes
-                .get_or_insert_with(|| vec![k.max(64)]);
-            #[cfg(any(test, feature = "benchmark"))]
-            {
-                overrides.trials = Some(1);
-            }
-        }
         let sweep = root.defaults.sweep.resolve(
             "sweep",
             self.k.unwrap_or(root.defaults.sweep.k),
             &overrides,
         )?;
+
+        orion_ann::benchmark::config::validate_threads(sweep.threads)?;
 
         let num_points = if self.base.is_none() {
             preset.and_then(|p| p.num_points)
@@ -464,6 +431,8 @@ impl Args {
         }
 
         let mut run = ResolvedRunConfig {
+            benchmark_trust_cache: true,
+            benchmark_cache_file: self.cache_file.clone(),
             base_content_id: None,
             dataset,
             base,
@@ -477,6 +446,7 @@ impl Args {
             query_format,
             index_plan,
             memory_budget_gib: self.memory_budget_gib,
+            auto_pin: !self.no_auto_pin,
             prepare_only: self.prepare_only,
             dimension,
             metric,
@@ -503,8 +473,9 @@ impl Args {
             local_pct: env.local_pct.unwrap_or(60),
         };
 
-        // Derive cache identities only after every effective setting is resolved.
-        {
+        // Default CAS lookup still needs the base content identity. Explicit cache
+        // selection bypasses that scan as well as payload authentication.
+        if self.cache_file.is_none() {
             use sha2::Digest;
             match std::fs::File::open(&run.base) {
                 Ok(mut file) => {
@@ -543,29 +514,14 @@ impl Args {
     ) -> Result<Cascade> {
         let mut cascade = Cascade::default_for_specified_dimension_and_metric(dimension, metric);
         if let Some(o) = dataset_overrides {
-            if let Some(v) = &o.prefilter {
-                cascade.prefilter = v.parse()?;
-            }
-            if let Some(v) = &o.admission {
-                cascade.admission = v.parse()?;
-            }
-            if let Some(v) = &o.rerank {
-                cascade.rerank = v.parse()?;
-            }
+            cascade = cascade.with_named_overrides(
+                o.prefilter.as_deref(),
+                o.admission.as_deref(),
+                o.rerank.as_deref(),
+            )?;
         }
-
-        // Explicit axes win over both the selector and the dataset preset.
-        if let Some(v) = self.prefilter {
-            cascade.prefilter = v;
-        }
-        if let Some(v) = self.admission {
-            cascade.admission = v;
-        }
-        if let Some(v) = self.rerank {
-            cascade.rerank = v;
-        }
-
-        cascade.validate_cascade_options(metric)?;
+        // Explicit axes win over the dataset preset; final validation is in IndexPlan.
+        let cascade = cascade.with_overrides(self.prefilter, self.admission, self.rerank);
 
         Ok(cascade)
     }
@@ -635,12 +591,44 @@ impl Args {
 mod tests {
     use super::*;
     fn root() -> RawRoot {
-        serde_yaml::from_str(crate::driver::presets::DEFAULT_CONFIG).unwrap()
+        serde_yaml::from_str(crate::config::presets::DEFAULT_CONFIG).unwrap()
     }
     fn resolve(args: &[&str]) -> Result<ResolvedRunConfig> {
         Args::try_parse_from(args)
             .map_err(|e| Error::invalid_argument(e.to_string()).with_source(e))?
             .resolve_with(&root(), &LegacyEnvironment::default())
+    }
+
+    #[test]
+    fn benchmark_cache_selection_and_auto_pin_are_independent() {
+        let selected = resolve(&[
+            "orion",
+            "sift",
+            "--graph-source",
+            "parlayann",
+            "--cache-file",
+            "old.bin",
+        ])
+        .unwrap();
+        assert!(selected.benchmark_trust_cache);
+        assert!(selected.auto_pin);
+        assert_eq!(
+            selected.benchmark_cache_file,
+            Some(PathBuf::from("old.bin"))
+        );
+        assert!(selected.base_content_id.is_none());
+        let disabled = resolve(&[
+            "orion",
+            "sift",
+            "--graph-source",
+            "parlayann",
+            "--no-auto-pin",
+            "--cache-file",
+            "old.bin",
+        ])
+        .unwrap();
+        assert!(!disabled.auto_pin);
+        assert!(disabled.benchmark_trust_cache);
     }
 
     #[test]
@@ -694,13 +682,8 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("--admission native-l2-u8"));
-        assert_eq!(native.base_representation().element_bytes(), 1);
-        assert!(native.index_plan().sidecar_requirements(false).is_empty());
-        assert_eq!(float.base_representation().element_bytes(), 4);
-        assert!(float
-            .index_plan()
-            .sidecar_requirements(false)
-            .contains(&crate::sidecars::requirements::SidecarRequirement::L2U8));
+        assert_eq!(native.storage(), VectorStorageKind::U8);
+        assert_eq!(float.storage(), VectorStorageKind::F32);
 
         assert!(resolve(&["orion", "sift10m", "--rerank", "f32"]).is_err());
         assert!(resolve(&["orion", "sift10m", "--admission", "l2-u16"]).is_err());
@@ -834,14 +817,7 @@ mod tests {
         assert_eq!(c.dataset, "anonymous");
         assert_eq!(c.cascade().admission, AdmissionChoice::L2Kt);
         assert_eq!(c.sweep.calibration_l, 200);
-        assert_eq!(
-            c.graph_source,
-            if cfg!(feature = "parlay") {
-                GraphSource::Parlayann
-            } else {
-                GraphSource::Rust
-            }
-        );
+        assert_eq!(c.graph_source, GraphSource::Parlayann);
     }
 
     #[test]

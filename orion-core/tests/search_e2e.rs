@@ -8,7 +8,7 @@
 //! retains static storage for the legacy profiling scenarios below.
 //!
 //! Exists to lift `algorithm/search/{in_mem_search, calibrate, utils}`,
-//! `index/compressed_index`, and `vector/distance_{fn,stream}` from
+//! `index/compressed_index`, and `orion-vector/distance_{fn,stream}` from
 //! 0% line coverage — those files only run when a real PhasedGraph +
 //! ScalarQuantizedDataset are wired together, which unit tests can't do in
 //! isolation.
@@ -350,7 +350,7 @@ fn search_pipeline_e2e() {
         // covers `jl_sparse_dataset::build_from`, the prefilter
         // session covers `prefilter/jl.rs::open`, and the streaming
         // distance covers the `JLHammingDistance` paths in
-        // `vector/distance_kernel.rs` + `distance_stream.rs`.
+        // `orion-vector/distance_kernel.rs` + `distance_stream.rs`.
         let q = query_at(&flat, 3);
         let jl_ds = orion.ensure_quantized_dataset_jl();
         let pf = JlPrefilter::new(jl_ds);

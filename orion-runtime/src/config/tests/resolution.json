@@ -1,0 +1,382 @@
+[
+  {
+    "execution_signature": "38ab16d529e7c2b292959cb6733952c8622c3db59538965dc0e348ad4eaa1bfe",
+    "options": {
+      "auto_pin": true,
+      "base_format": null,
+      "cache_dir": "cache/orion-ann",
+      "cascade": {
+        "admission": null,
+        "prefilter": null,
+        "rerank": null
+      },
+      "graph": {
+        "alpha": 1.2000000476837158,
+        "build_l": 100,
+        "degree": 64,
+        "max_extra": 16,
+        "source": "auto",
+        "staged_file": null
+      },
+      "max_points": null,
+      "memory_budget_gib": null,
+      "metric": "l2",
+      "storage": null,
+      "threads": 8,
+      "window_size": 5
+    },
+    "options_wire_sha256": "618317a7202a199527f3ad0e44f7992bba19904eec460618bdfe0e192ecc420e",
+    "resolved": {
+      "alpha": 1.2000000476837158,
+      "auto_pin": true,
+      "base": "fixture/base",
+      "base_content_id": "fixture-content",
+      "base_format": "fbin",
+      "build_l": 100,
+      "cache_dir": "cache/orion-ann",
+      "cache_namespace": "1ddfa85930cdcd024fef0dfb110dc63f35afc9d65617df19d065941b8798f5a0",
+      "cascade": {
+        "admission": "L2U8",
+        "prefilter": "None",
+        "rerank": "F32"
+      },
+      "dataset": "anonymous",
+      "dimension": 128,
+      "graph_degree": 64,
+      "graph_selection_reason": "explicit runtime configuration",
+      "graph_source": "parlayann",
+      "graph_source_policy": "auto",
+      "groundtruth": null,
+      "max_extra": 16,
+      "max_points": 1000,
+      "memory_budget_gib": null,
+      "metric": "l2",
+      "num_points": 1000,
+      "num_queries": null,
+      "prepare_only": true,
+      "query": null,
+      "query_batch_size": 1024,
+      "query_format": "fbin",
+      "replay_queries": false,
+      "staged_file": null,
+      "sweep": {
+        "calibration_l": 48,
+        "calibration_samples": 200,
+        "k": 1,
+        "profile": "runtime",
+        "search_list_sizes": [
+          64
+        ],
+        "threads": 8,
+        "trials": 1
+      },
+      "vector_storage": "f32",
+      "window_size": 5
+    },
+    "resolved_wire_sha256": "58430f2e1308a79f5391f0e3f9b21c43ccb434d7ca6cf3dc3a800c57ef216b19"
+  },
+  {
+    "execution_signature": "05e92f459c195448290f0f1424bdf2fa9e3b1ddd967ff95ed983f4bd22b67420",
+    "options": {
+      "auto_pin": true,
+      "base_format": null,
+      "cache_dir": "cache/orion-ann",
+      "cascade": {
+        "admission": null,
+        "prefilter": null,
+        "rerank": null
+      },
+      "graph": {
+        "alpha": 1.2000000476837158,
+        "build_l": 100,
+        "degree": 64,
+        "max_extra": 16,
+        "source": "auto",
+        "staged_file": null
+      },
+      "max_points": null,
+      "memory_budget_gib": null,
+      "metric": "l2",
+      "storage": null,
+      "threads": 8,
+      "window_size": 5
+    },
+    "options_wire_sha256": "618317a7202a199527f3ad0e44f7992bba19904eec460618bdfe0e192ecc420e",
+    "resolved": {
+      "alpha": 1.2000000476837158,
+      "auto_pin": true,
+      "base": "fixture/base",
+      "base_content_id": "fixture-content",
+      "base_format": "fbin",
+      "build_l": 100,
+      "cache_dir": "cache/orion-ann",
+      "cache_namespace": "e66b4d3c426a63e1b4a49e735d63e3a4611dac57b96e0565a57d46a54d9aec01",
+      "cascade": {
+        "admission": "L2Kt",
+        "prefilter": "Jl",
+        "rerank": "F32"
+      },
+      "dataset": "anonymous",
+      "dimension": 960,
+      "graph_degree": 64,
+      "graph_selection_reason": "explicit runtime configuration",
+      "graph_source": "parlayann",
+      "graph_source_policy": "auto",
+      "groundtruth": null,
+      "max_extra": 16,
+      "max_points": 1000,
+      "memory_budget_gib": null,
+      "metric": "l2",
+      "num_points": 1000,
+      "num_queries": null,
+      "prepare_only": true,
+      "query": null,
+      "query_batch_size": 1024,
+      "query_format": "fbin",
+      "replay_queries": false,
+      "staged_file": null,
+      "sweep": {
+        "calibration_l": 48,
+        "calibration_samples": 200,
+        "k": 1,
+        "profile": "runtime",
+        "search_list_sizes": [
+          64
+        ],
+        "threads": 8,
+        "trials": 1
+      },
+      "vector_storage": "f32",
+      "window_size": 5
+    },
+    "resolved_wire_sha256": "d7dde79b5ceaab0fd8765eec1d1e3861c704c79dd3216d8b9ecbde2f5818e7b1"
+  },
+  {
+    "execution_signature": "572d6783f2be17081fc6f6328d5e6ad5581eb0a475599af7f75ac15c1ab8935f",
+    "options": {
+      "auto_pin": true,
+      "base_format": null,
+      "cache_dir": "cache/orion-ann",
+      "cascade": {
+        "admission": null,
+        "prefilter": null,
+        "rerank": null
+      },
+      "graph": {
+        "alpha": 1.2000000476837158,
+        "build_l": 100,
+        "degree": 64,
+        "max_extra": 16,
+        "source": "auto",
+        "staged_file": null
+      },
+      "max_points": null,
+      "memory_budget_gib": null,
+      "metric": "l2",
+      "storage": "u8",
+      "threads": 8,
+      "window_size": 5
+    },
+    "options_wire_sha256": "124fa73de3b9814af9af0369b2f8f8ec9f2fe6c5de0d7cf23bab479f4fe0bc4a",
+    "resolved": {
+      "alpha": 1.2000000476837158,
+      "auto_pin": true,
+      "base": "fixture/base",
+      "base_content_id": "fixture-content",
+      "base_format": "u8bin",
+      "build_l": 100,
+      "cache_dir": "cache/orion-ann",
+      "cache_namespace": "704ec16ecc04655f20403250c6465412d0d7f9a332920ad76347a44227d170fc",
+      "cascade": {
+        "admission": "NativeL2U8",
+        "prefilter": "None",
+        "rerank": "None"
+      },
+      "dataset": "anonymous",
+      "dimension": 128,
+      "graph_degree": 64,
+      "graph_selection_reason": "explicit runtime configuration",
+      "graph_source": "parlayann",
+      "graph_source_policy": "auto",
+      "groundtruth": null,
+      "max_extra": 16,
+      "max_points": 1000,
+      "memory_budget_gib": null,
+      "metric": "l2",
+      "num_points": 1000,
+      "num_queries": null,
+      "prepare_only": true,
+      "query": null,
+      "query_batch_size": 1024,
+      "query_format": "u8bin",
+      "replay_queries": false,
+      "staged_file": null,
+      "sweep": {
+        "calibration_l": 48,
+        "calibration_samples": 200,
+        "k": 1,
+        "profile": "runtime",
+        "search_list_sizes": [
+          64
+        ],
+        "threads": 8,
+        "trials": 1
+      },
+      "vector_storage": "u8",
+      "window_size": 5
+    },
+    "resolved_wire_sha256": "ff6d502f9b78f503b1dda31f9f685edeb3e65f5360766016b5e12165eaa94ad2"
+  },
+  {
+    "execution_signature": "ce7f27638fd826ca04d838c95409e6bf76a16b18296b0364e13144625088d911",
+    "options": {
+      "auto_pin": true,
+      "base_format": null,
+      "cache_dir": "cache/orion-ann",
+      "cascade": {
+        "admission": null,
+        "prefilter": null,
+        "rerank": null
+      },
+      "graph": {
+        "alpha": 1.2000000476837158,
+        "build_l": 100,
+        "degree": 64,
+        "max_extra": 16,
+        "source": "auto",
+        "staged_file": null
+      },
+      "max_points": null,
+      "memory_budget_gib": null,
+      "metric": "inner-product",
+      "storage": null,
+      "threads": 8,
+      "window_size": 5
+    },
+    "options_wire_sha256": "45692fb85bf836bf521de820de3e4cc24e1348834bbe9d6a5afc0cc4b7a93381",
+    "resolved": {
+      "alpha": 1.2000000476837158,
+      "auto_pin": true,
+      "base": "fixture/base",
+      "base_content_id": "fixture-content",
+      "base_format": "fbin",
+      "build_l": 100,
+      "cache_dir": "cache/orion-ann",
+      "cache_namespace": "856f83d0867e95d979e54a9b63e6794e1187da15b4333534d7d0f49270832ed3",
+      "cascade": {
+        "admission": "MipsI8",
+        "prefilter": "None",
+        "rerank": "IpF32"
+      },
+      "dataset": "anonymous",
+      "dimension": 100,
+      "graph_degree": 64,
+      "graph_selection_reason": "explicit runtime configuration",
+      "graph_source": "parlayann",
+      "graph_source_policy": "auto",
+      "groundtruth": null,
+      "max_extra": 16,
+      "max_points": 1000,
+      "memory_budget_gib": null,
+      "metric": "inner-product",
+      "num_points": 1000,
+      "num_queries": null,
+      "prepare_only": true,
+      "query": null,
+      "query_batch_size": 1024,
+      "query_format": "fbin",
+      "replay_queries": false,
+      "staged_file": null,
+      "sweep": {
+        "calibration_l": 48,
+        "calibration_samples": 200,
+        "k": 1,
+        "profile": "runtime",
+        "search_list_sizes": [
+          64
+        ],
+        "threads": 8,
+        "trials": 1
+      },
+      "vector_storage": "f32",
+      "window_size": 5
+    },
+    "resolved_wire_sha256": "fddac77cd0eb2b2dbfc084ee5501c3211ae23fb53f6e0430d3e7e555102af493"
+  },
+  {
+    "execution_signature": "73c3d0bf5e29509827af7c1bdf351d7ad47a2d7f2efe1c54fabad41568d749f9",
+    "options": {
+      "auto_pin": true,
+      "base_format": null,
+      "cache_dir": "cache/orion-ann",
+      "cascade": {
+        "admission": null,
+        "prefilter": null,
+        "rerank": null
+      },
+      "graph": {
+        "alpha": 1.2000000476837158,
+        "build_l": 100,
+        "degree": 64,
+        "max_extra": 16,
+        "source": "auto",
+        "staged_file": null
+      },
+      "max_points": null,
+      "memory_budget_gib": null,
+      "metric": "cosine",
+      "storage": null,
+      "threads": 8,
+      "window_size": 5
+    },
+    "options_wire_sha256": "3a404ab1d6eeb138690d96c57e94f17c22d58191950a863dce13043abc0647bc",
+    "resolved": {
+      "alpha": 1.2000000476837158,
+      "auto_pin": true,
+      "base": "fixture/base",
+      "base_content_id": "fixture-content",
+      "base_format": "fbin",
+      "build_l": 100,
+      "cache_dir": "cache/orion-ann",
+      "cache_namespace": "e4fba3a2ae803a95dc63fe52c97748a508310cc2e3e942ae9f1e240da1f91d43",
+      "cascade": {
+        "admission": "MipsI8",
+        "prefilter": "None",
+        "rerank": "IpF32"
+      },
+      "dataset": "anonymous",
+      "dimension": 1536,
+      "graph_degree": 64,
+      "graph_selection_reason": "explicit runtime configuration",
+      "graph_source": "parlayann",
+      "graph_source_policy": "auto",
+      "groundtruth": null,
+      "max_extra": 16,
+      "max_points": 1000,
+      "memory_budget_gib": null,
+      "metric": "cosine",
+      "num_points": 1000,
+      "num_queries": null,
+      "prepare_only": true,
+      "query": null,
+      "query_batch_size": 1024,
+      "query_format": "fbin",
+      "replay_queries": false,
+      "staged_file": null,
+      "sweep": {
+        "calibration_l": 48,
+        "calibration_samples": 200,
+        "k": 1,
+        "profile": "runtime",
+        "search_list_sizes": [
+          64
+        ],
+        "threads": 8,
+        "trials": 1
+      },
+      "vector_storage": "f32",
+      "window_size": 5
+    },
+    "resolved_wire_sha256": "c6e32f382fb97d525d18ce2e4e56f800779b3b28e12c5db29e1ada6c56823f88"
+  }
+]

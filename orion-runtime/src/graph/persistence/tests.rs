@@ -112,3 +112,57 @@ fn failed_save_does_not_redirect_the_existing_cache_association() {
     assert!(attached.with_extension("qds.identity.json").exists());
     assert!(attached.with_extension("pgraph").exists());
 }
+
+#[cfg(feature = "benchmark")]
+#[test]
+fn benchmark_v5_cache_preserves_search_but_rejects_corrupt_layout() {
+    let temp = Temp::new();
+    let path = temp.0.join("old.bin");
+    let source = index();
+    save_graph(&source, &path).unwrap();
+    // Historical standalone metadata is just version and entry point.
+    std::fs::write(&path, [5u32.to_le_bytes(), 0u32.to_le_bytes()].concat()).unwrap();
+    let search = DynamicSearchConfig {
+        k: 2,
+        search_list_size: 3,
+        ..Default::default()
+    };
+    let expected = source.search_l2(&[0., 1.], search).unwrap();
+    let loaded = super::load_working(&path, source.into_dataset()).unwrap();
+    assert_eq!(loaded.search_l2(&[0., 1.], search).unwrap(), expected);
+
+    let graph = path.with_extension("pgraph");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&graph)
+        .unwrap();
+    file.set_len(file.metadata().unwrap().len() - 1).unwrap();
+    assert!(super::load_working(&path, index().into_dataset()).is_err());
+    std::fs::write(&path, [4u32.to_le_bytes(), 0u32.to_le_bytes()].concat()).unwrap();
+    assert!(super::load_working(&path, index().into_dataset()).is_err());
+}
+
+#[cfg(feature = "benchmark")]
+#[test]
+fn benchmark_load_does_not_disable_verified_reader() {
+    let temp = Temp::new();
+    let path = temp.0.join("current.bin");
+    save_graph(&index(), &path).unwrap();
+    // A well-formed graph loads for a trusted benchmark even without receipts.
+    assert!(super::load_working(&path, index().into_dataset()).is_ok());
+    let verified: crate::Result<crate::integrity::Verified<Orion>> = load_verified(
+        &path.with_extension("pgraph"),
+        index().into_dataset(),
+        &std::fs::read(&path).unwrap(),
+        &"0".repeat(64),
+    );
+    assert!(
+        verified.is_err(),
+        "benchmark feature must not disable SHA verification"
+    );
+    // New metadata includes shape; trusting contents must not skip that check.
+    let mut metadata = std::fs::read(&path).unwrap();
+    metadata[8..16].copy_from_slice(&3u64.to_le_bytes());
+    std::fs::write(&path, metadata).unwrap();
+    assert!(super::load_working(&path, index().into_dataset()).is_err());
+}

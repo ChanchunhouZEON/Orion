@@ -174,7 +174,7 @@ cargo build --locked --release -p orion-ann-cli --bin orion
   --k 10 --search-l 100 --output results.jsonl
 ```
 
-CLI 会构建或复用图，并使用查询流进行校准。数据集预设和 ground truth 均为可选项。使用 `--snapshot DIR` 恢复校准，使用 `--groundtruth /data/gt.ivecs` 评估召回率，或使用 `--query - --query-format bvecs` 从标准输入读取查询。`--prepare-only` 仅准备工作图缓存，`--preflight` 估算内存需求。详见 [CLI 指南](docs/cli.md)。
+CLI 会构建或复用图，并使用查询流进行校准。CLI、Rust 和 Python 共用默认配置，ground truth 为可选项。使用 `--snapshot DIR` 恢复校准，使用 `--groundtruth /data/gt.ivecs` 评估召回率，或使用 `--query - --query-format bvecs` 从标准输入读取查询。`--prepare-only` 仅准备工作图缓存，`--preflight` 估算内存需求。详见 [CLI 指南](docs/cli.md)。
 
 ## 基准测试与开发
 
@@ -187,7 +187,7 @@ cargo build --locked --release --target-dir target \
   --k 10 --threads 8 --trials 3
 ```
 
-在 [sweep.yaml](orion-runtime/configs/sweep.yaml) 中配置数据集路径。Sweep 在单个进程中仅加载一次索引，然后完成各个 L 值及重复轮次。复现实验时，请记录硬件、CPU 绑定、图来源、编译选项和计时设置。
+在 [sweep.yaml](benchmark/configs/sweep.yaml) 中配置数据集路径。Sweep 在单个进程中仅加载一次索引，然后完成各个 L 值及重复轮次。复现实验时，请记录硬件、CPU 绑定、图来源、编译选项和计时设置。
 [基准测试脚本](benchmark/scripts/README.md) · [测量方法](docs/benchmarks.md)。
 
 ```bash
@@ -198,7 +198,7 @@ cargo doc --locked -p orion-ann --no-deps --open
 
 [架构](docs/architecture.md) · [优化](docs/optimizations.md) · [测试与 CI](docs/testing.md) · [代码结构](docs/code-structure.md) · [消融实验](docs/ablation-study.md) · [历史图表](docs/historical-benchmarks.md)。
 
-[贡献指南](CONTRIBUTION.md) · [变更记录](CHANGLOG.md)。
+[贡献指南](CONTRIBUTION.md) · [变更记录](CHANGELOG.md)。
 
 ## 许可证
 

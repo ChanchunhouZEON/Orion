@@ -12,9 +12,9 @@ edition = "2021"
 orion-ann = { version = "0.1.0", path = "../orion-runtime", features = ["cli", "benchmark"] }
 adsampling = { path = "../adsampling" }
 orion-ann-diskann = { version = "0.1.0", path = "../orion-diskann" }
-orion-ann-platform = { version = "0.1.0", path = "../platform" }
+orion-ann-platform = { version = "0.1.0", path = "../orion-platform" }
 orion-ann-core = { version = "0.1.0", path = "../orion-core", default-features = false, features = ["benchmark"] }
-orion-ann-vector = { version = "0.1.0", path = "../vector" }
+orion-ann-vector = { version = "0.1.0", path = "../orion-vector" }
 anyhow = "1"
 rayon = "1"
 ndarray = { version = "0.16", features = ["rayon", "serde"] }
@@ -30,6 +30,7 @@ log = "0.4"
 env_logger = "0.11"
 comfy-table = "=7.1.4"
 serde_yaml = "0.9"
+sha2 = "0.10"
 
 [[bin]]
 name = "orion-sweep"

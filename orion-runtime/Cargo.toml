@@ -11,7 +11,7 @@ description = "Owned build, calibration, search and cache API for Orion ANN"
 readme = "README.md"
 keywords = ["ann", "vector-search", "similarity"]
 categories = ["algorithms"]
-include = ["src/**", "tests/**", "examples/**", "configs/**", "Cargo.toml", "README.md", "LICENSE"]
+include = ["src/**", "tests/**", "examples/**", "Cargo.toml", "README.md", "LICENSE"]
 edition = "2021"
 
 [features]
@@ -19,14 +19,14 @@ file-queries = []
 benchmark = ["cli", "orion-ann-core/benchmark"]
 default = ["parlay"]
 parlay = ["orion-ann-core/parlay"]
-cli = ["dep:clap", "dep:serde_yaml"]
+cli = ["dep:clap"]
 
 [dependencies]
-orion-ann-platform = { version = "0.1.0", path = "../platform" }
+orion-ann-platform = { version = "0.1.0", path = "../orion-platform" }
 orion-ann-diagnostics = { version = "0.1.0", path = "../orion-diagnostics" }
 orion-ann-core = { version = "0.1.0", path = "../orion-core", default-features = false }
 orion-ann-diskann = { version = "0.1.0", path = "../orion-diskann" }
-orion-ann-vector = { version = "0.1.0", path = "../vector" }
+orion-ann-vector = { version = "0.1.0", path = "../orion-vector" }
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -37,7 +37,6 @@ comfy-table.workspace = true
 clap = { workspace = true, optional = true }
 sha2 = "0.10"
 bytemuck.workspace = true
-serde_yaml = { version = "0.9", optional = true }
 
 [dev-dependencies]
 orion-ann-parlay = { version = "0.1.0", path = "../orion-parlay", features = ["reference-tests"] }

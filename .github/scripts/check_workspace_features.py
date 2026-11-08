@@ -3,6 +3,7 @@
 
 """Verify that opening the production workspace does not enable benchmark APIs."""
 import json
+from pathlib import Path
 import subprocess
 
 for manifest, experimental in [("Cargo.toml", False), ("benchmark/Cargo.toml", True)]:
@@ -23,3 +24,7 @@ for manifest, experimental in [("Cargo.toml", False), ("benchmark/Cargo.toml", T
     # The Orion PQ implementation uses slices; ndarray remains an independent
     # DiskANN/Python dependency and must not leak back into the core API.
     assert all(d["name"] != "ndarray" for d in packages["orion-ann-core"]["dependencies"]), manifest
+
+    # Production configuration must not acquire dataset shortcuts or YAML parsing.
+    assert all(d["name"] != "serde_yaml" for d in packages["orion-ann"]["dependencies"]), manifest
+    assert not Path("orion-runtime/configs/sweep.yaml").exists()

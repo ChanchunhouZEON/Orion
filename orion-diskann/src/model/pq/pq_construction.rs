@@ -385,7 +385,11 @@ mod pq_test {
         let data_file = "tests/data/siftsmall_learn.bin";
         let pq_pivots_path = "tests/data/siftsmall_learn.bin_pq_pivots.bin";
         let gound_truth_path = "tests/data/siftsmall_learn.bin_pq_compressed.bin";
-        let pq_compressed_vectors_path = "validation.bin";
+        // Coverage and ordinary test processes may run against the same checkout.
+        // Keep generated codes private to this invocation; fixtures stay read-only.
+        let directory = crate::test_support::TestDir::new();
+        let compressed_file = directory.file("validation.bin");
+        let pq_compressed_vectors_path = compressed_file.as_str();
         let mut pq_storage =
             PQStorage::new(pq_pivots_path, pq_compressed_vectors_path, data_file).unwrap();
         generate_quantized_data::<f32>(0.5, 1, pq_pivots_path, &mut pq_storage).unwrap();

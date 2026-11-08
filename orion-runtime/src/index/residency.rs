@@ -8,15 +8,6 @@ use super::Index;
 use crate::{PinHint, PinOptions, PinnedDatasets, Result};
 
 impl Index {
-    /// CLI-only scoped policy after `Index::load` has checked the budget and
-    /// restored prepared snapshot requirements. Embedded callers use `pin`.
-    #[cfg(feature = "cli")]
-    pub(crate) fn pin_for_driver(&self) -> Result<PinnedDatasets<'_>> {
-        self.pin(&crate::residency::automatic_options(
-            self.config.memory_budget_gib,
-        )?)
-    }
-
     /// Select owned-memory or on-demand private-file storage for prepared PQ codes.
     /// The fitted codebook remains best-effort pinned. This deployment setting does
     /// not change calibration, scores or snapshot contents. Call after calibration
@@ -26,7 +17,12 @@ impl Index {
     /// Returns InvalidState if the active index has no prepared PQ sidecar, or an
     /// I/O error if the private temporary code file cannot be created/written.
     pub fn set_pq_code_storage(&mut self, policy: crate::PqCodeStorage) -> Result<()> {
-        self.view.engine.set_pq_code_storage(policy)
+        let result = self.view.engine.set_pq_code_storage(policy);
+        if !self.calibrations.is_empty() {
+            self.pool
+                .install(|| self.view.engine.prepare_search(&self.config))?;
+        }
+        result
     }
 
     /// List the total payload for each prepared search requirement.

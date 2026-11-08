@@ -22,8 +22,8 @@ indificatif = ["dep:indicatif"]
 [dependencies]
 serde_json = { workspace = true, optional = true }
 orion-ann-error = { version = "0.1.0", path = "../orion-error", optional = true }
-orion-ann-vector = { version = "0.1.0", path = "../vector" }
-orion-ann-platform = { version = "0.1.0", path = "../platform" }
+orion-ann-vector = { version = "0.1.0", path = "../orion-vector" }
+orion-ann-platform = { version = "0.1.0", path = "../orion-platform" }
 orion-ann-logger = { version = "0.1.0", path = "../orion-logger" }
 rayon = { workspace = true }
 crossbeam = { workspace = true }

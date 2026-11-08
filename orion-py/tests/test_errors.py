@@ -30,12 +30,31 @@ class ErrorTests(unittest.TestCase):
         self.assertEqual(error.details['path'], str(missing))
         self.assertEqual(error.details['kind'], 'NotFound')
         env = {k: v for k, v in os.environ.items() if not k.startswith('ORION_')}
-        output = subprocess.run([os.environ['ORION_TEST_CLI'], 'anonymous', '--metric', 'l2', '--prepare-only',
+        output = subprocess.run([os.environ['ORION_TEST_CLI'], '--metric', 'l2', '--prepare-only',
             '--no-groundtruth', '--base', str(missing), '--error-format', 'json'],
             capture_output=True, text=True, env=env)
         self.assertEqual(output.returncode, 2, output.stderr)
         self.assertEqual(json.loads(output.stderr.splitlines()[-1]), error.report)
 
+
+    def test_configuration_errors_match_cli(self):
+        base, _ = self.arrays()
+        path = self.root / 'config-base.fbin'
+        write_vectors(path, base)
+        for kwargs, flags in [
+            ({'threads': 0}, ['--threads', '0']),
+            ({'threads': 1000000}, ['--threads', '1000000']),
+            ({'window_size': 65}, ['--window-size', '65']),
+            ({'memory_budget_gib': 0.0}, ['--memory-budget-gib', '0']),
+        ]:
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(OrionError) as raised:
+                    Index.from_file(path, **kwargs)
+                output = subprocess.run([os.environ['ORION_TEST_CLI'], '--base', str(path),
+                    '--prepare-only', '--error-format', 'json'] + flags,
+                    capture_output=True, text=True)
+                self.assertEqual(output.returncode, 2, output.stderr)
+                self.assertEqual(json.loads(output.stderr.splitlines()[-1]), raised.exception.report)
 
     def test_array_and_file_query_errors_match_and_index_stays_usable(self):
         base, queries = self.arrays()

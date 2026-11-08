@@ -54,3 +54,46 @@ invalid bounds; `UnsupportedConfiguration` covers unsupported execution recipes;
 `ResourceExhausted` describes an exceeded estimated budget. Match `ErrorCode`,
 not message text. Options are owned/cloned by the session; editing the caller's
 copy cannot change an existing index. No unsafe block is needed for this API.
+
+## Automatic RAM residency
+
+Rust, Python and the CLI apply the same best-effort policy after calibration,
+when opening a calibrated snapshot, and after changing PQ code placement.
+The planner observes host headroom, visible Linux cgroup limits and the process
+lock allowance. It leaves at least 256 MiB and 10% of deployment memory available,
+then bounds additional locks by that headroom, the remaining lock allowance and
+`memory_budget_gib` when supplied. Unknown headroom or lock allowance disables automatic locks;
+OS refusals leave storage pageable and searches usable. This is not a reservation
+or an allocator cap, and it does not choose a different cascade.
+
+The plan covers required base/sidecar buffers and the graph slab, attempting
+smaller allocations first. It never builds a sidecar just to pin it. Explicit
+on-demand PQ codes remain pageable; the small PQ codebook retains its separate
+bounded best-effort policy. RAM locks do not guarantee CPU-cache residency or THP.
+
+`IndexOptions { auto_pin: false, ..Default::default() }` disables automatic search
+locks. Python accepts `auto_pin=False` in constructors, and the CLI accepts
+`--no-auto-pin`. `OpenOptions::auto_pin` and Python `Index.open(auto_pin=...)`
+override the saved setting; resource observations are always refreshed on open.
+Manual `Index::pin` remains available for an explicit selection/required policy.
+
+Inspect `index.info()["residency"]` (Python: `index.info["residency"]`) or the CLI
+summary's `residency` field for the detected budget, actual locked bytes and
+skipped requests. Planning and lock calls happen outside search timing. The
+owning index releases automatic locks before replacing storage or being dropped;
+recalibration replaces the plan without changing immutable cache object identities.
+
+## Automatic RAM residency
+
+`IndexOptions::auto_pin` defaults to `true`. Search preparation first materializes
+the selected datasets, then attempts bounded RAM locks using detected available
+memory, the OS lock allowance and the configured budget. `Index::calibrate` and
+opening a calibrated snapshot invoke this preparation automatically; no CLI
+feature or explicit `pin` call is needed. An uncalibrated index defers it until
+calibration. Ordinary `search(&self, ...)` calls reuse the retained locks.
+
+Set `auto_pin: false` to prepare the same datasets without automatic locks.
+OS lock refusal falls back to pageable memory. The index owns the lock lifetime:
+recalibration or PQ storage replacement releases old locks before preparing the
+new generation, and dropping the index releases its remaining locks. Inspect
+`Index::info()["residency"]` to see the effective policy and outcome.

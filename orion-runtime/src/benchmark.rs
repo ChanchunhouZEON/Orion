@@ -5,8 +5,8 @@
 
 //! Explicit imports for research executables. Implementation modules stay private.
 pub use crate::data::{inspect_vector_file, query::VectorReader, LoadedDataset};
-pub use crate::driver::{
-    Args, F32CascadeBackend, GroundTruthReader, NativeU8L2Backend, QuerySource, ResolvedRunConfig,
+pub use crate::execution::{
+    F32CascadeBackend, GroundTruthReader, NativeU8L2Backend, QuerySource, ResolvedRunConfig,
     SearchBackend,
 };
 /// Run the same batch pipeline with convergence switching and early exit disabled.
@@ -25,10 +25,18 @@ pub fn search_non_adaptive(
 }
 
 pub mod config {
-    pub use crate::driver::presets::{
-        load_dataset_config, load_dataset_config_by_dim, load_sweep_config, ResolvedSweep,
-        SweepOverrides,
+    pub use crate::config::cascade::{
+        AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric,
     };
+    pub use crate::config::execution::{
+        validate_positive_threads, validate_threads, validate_window,
+    };
+    pub use crate::config::plan::IndexPlan;
+    pub use crate::config::resources::validate_memory_budget;
+    pub use crate::config::{
+        GraphSource, GraphSourcePolicy, PreflightFormat, ResolvedSweep, VectorStorageKind,
+    };
+    pub use crate::search::utils::validate_search_list_sizes;
 }
 pub mod cascade {
     pub use crate::search::cascade::{
@@ -44,7 +52,7 @@ pub mod parlayann {
     pub use crate::graph::parlayann::load_from_staged_file;
 }
 pub mod memory {
-    pub use crate::driver::resources::{enforce_budget, preflight_report, print_report};
+    pub use crate::execution::resources::{enforce_budget, preflight_report, print_report};
 }
 pub mod utils {
     pub use crate::search::utils::{
@@ -102,6 +110,26 @@ pub mod residency {
             .collect();
         crate::sidecars::requirements::prepare(index, &sidecars)
     }
+    /// Use the same resource detection, bounded budget and RAII locks as Index.
+    pub fn auto_pin<'a, D: CascadeData>(
+        index: &'a CompressedIndex<D>,
+        requirements: &DatasetRequirements,
+        enabled: bool,
+        budget_gib: Option<f64>,
+    ) -> crate::Result<crate::PinnedDatasets<'a>> {
+        crate::residency::automatic_pin(
+            index,
+            bytemuck::cast_slice(index.dataset().allocation()),
+            QuantizedDatasetShape {
+                rows: F32Rows::len(index.dataset()),
+                dimension: F32Rows::dimension(index.dataset()),
+            },
+            &requirements.0,
+            enabled,
+            budget_gib,
+        )
+    }
+
     pub fn pin<'a, D: CascadeData>(
         index: &'a CompressedIndex<D>,
         requirements: &DatasetRequirements,

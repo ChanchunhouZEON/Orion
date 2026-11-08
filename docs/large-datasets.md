@@ -278,7 +278,7 @@ do not infer the active kernel solely from the toolchain version.
 
 ## Storage and large pages
 
-The shared [platform block writer](../platform/src/buffered_io.rs) combines small
+The shared [platform block writer](../orion-platform/src/buffered_io.rs) combines small
 headers and payloads into 8 MiB writes. Orion graph caches and DiskANN save paths
 use this utility without making Orion's writer depend on DiskANN's writer.
 File formats remain unchanged. Large reads/writes describe request size, not

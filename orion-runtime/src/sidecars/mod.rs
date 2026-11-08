@@ -5,6 +5,8 @@
 
 //! A session retains receipts for persisted sidecars used by its resident graph.
 pub(crate) mod requirements;
+#[cfg(feature = "benchmark")]
+pub(crate) mod trusted;
 mod working;
 use crate::{integrity::read_verified, Error, Result};
 use orion_ann_core::{index::compressed_index::IndexData, CompressedIndex};

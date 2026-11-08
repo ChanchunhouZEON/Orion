@@ -17,7 +17,6 @@ fn rust_and_cli_preserve_the_same_missing_input_report() {
     assert_eq!(rust.code(), ErrorCode::Io);
     let output = Command::new(env!("CARGO_BIN_EXE_orion"))
         .args([
-            "anonymous",
             "--metric",
             "l2",
             "--prepare-only",

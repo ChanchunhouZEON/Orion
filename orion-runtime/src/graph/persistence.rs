@@ -11,13 +11,9 @@ use crate::storage::{encode_file, PendingFile};
 use crate::Error;
 use crate::Result;
 use orion_ann_core::{index::compressed_index::IndexData, CompressedIndex};
-#[cfg(feature = "benchmark")]
-use orion_ann_platform::buffered_io::FILE_WRITE_BYTES;
 use std::path::Path;
 #[cfg(any(test, feature = "benchmark"))]
 use std::{fs, io::Write};
-#[cfg(feature = "benchmark")]
-use std::{fs::File, io::BufReader};
 #[cfg(any(test, feature = "benchmark"))]
 pub(crate) fn save_graph<D: IndexData, S: Default>(
     index: &CompressedIndex<D, S>,
@@ -74,16 +70,8 @@ pub fn save_working<D: IndexData>(index: &mut CompressedIndex<D>, path: &Path) -
 /// Legacy standalone benchmark caches have no runtime manifest.
 #[cfg(feature = "benchmark")]
 pub fn load_working<D: IndexData>(path: &Path, dataset: D) -> Result<CompressedIndex<D>> {
-    let file = File::open(path.with_extension("pgraph"))?;
-    let bytes = file.metadata()?.len();
-    let graph = BufReader::with_capacity(FILE_WRITE_BYTES, file);
-    let mut index = CompressedIndex::decode_native_graph(
-        dataset,
-        BufReader::new(File::open(path)?),
-        graph,
-        bytes,
-    )?;
-    crate::sidecars::attach(&mut index, path)?;
+    let mut index = super::trusted::decode(&path.with_extension("pgraph"), path, dataset, true)?;
+    crate::sidecars::trusted::attach(&mut index, path)?;
     Ok(index)
 }
 

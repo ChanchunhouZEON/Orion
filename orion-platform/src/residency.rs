@@ -120,6 +120,24 @@ fn registry() -> &'static Mutex<Registry> {
     static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(Registry::default()))
 }
+
+/// Unique bytes currently locked through this module, across all live guards.
+pub fn registered_bytes() -> u64 {
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .spans
+        .iter()
+        .map(|s| (s.end - s.start) as u64)
+        .sum()
+}
+
+/// Lock ownership for allocations managed by an enclosing storage owner.
+/// Never exposes references or reads from the allocations.
+#[derive(Debug, Default)]
+pub struct OwnedPinGuard {
+    _locks: PinGuard<'static>,
+}
 fn pages(ptr: usize, len: usize, page: usize) -> io::Result<(usize, usize)> {
     let end = ptr
         .checked_add(len)
@@ -177,6 +195,24 @@ pub struct PinGuard<'a> {
     bytes: usize,
 }
 impl<'a> PinGuard<'a> {
+    /// Transfer page locks to an enclosing allocation owner.
+    ///
+    /// # Safety
+    /// Every locked allocation must remain at its current address until this
+    /// token is dropped. The owner must release it before freeing, reallocating,
+    /// unmapping or replacing any allocation, including during unwinding.
+    pub unsafe fn into_owned(mut self) -> OwnedPinGuard {
+        // Do not extend any Rust borrow. The token contains only OS addresses;
+        // the caller now enforces allocation lifetime instead of the borrow.
+        self.regions.clear();
+        OwnedPinGuard {
+            _locks: PinGuard {
+                regions: Vec::new(),
+                ranges: std::mem::take(&mut self.ranges),
+                bytes: std::mem::take(&mut self.bytes),
+            },
+        }
+    }
     /// Page-rounded bytes held by this guard (shared pages counted once).
     pub fn pinned_bytes(&self) -> usize {
         self.bytes

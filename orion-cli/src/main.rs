@@ -10,8 +10,12 @@
 //! machinery live in the benchmark binaries.
 
 use clap::Parser;
-use orion_ann::driver::{
-    open_queries, open_snapshot_queries, resources, Args, F32CascadeBackend, GroundTruthReader,
+mod args;
+mod resolve;
+use args::Args;
+
+use orion_ann::execution::{
+    open_queries, open_snapshot_queries, resources, F32CascadeBackend, GroundTruthReader,
     LoadedBase, NativeU8L2Backend, QuerySource, ResolvedRunConfig, SearchBackend,
 };
 use orion_ann::{Error, Result};
@@ -34,19 +38,18 @@ struct Command {
     #[arg(
         long, value_name = "DIR", requires_all = ["base", "query"],
         conflicts_with_all = [
-            "dataset", "legacy_max_points", "config", "cache_dir", "staged_file",
+            "cache_dir", "staged_file",
             "graph_source", "graph_degree", "build_l", "alpha", "max_extra",
             "max_points", "window_size", "base_format", "vector_storage", "dimension",
             "metric", "prefilter", "admission", "rerank", "print_config", "preflight",
             "prepare_only"
         ]
     )]
-    #[cfg_attr(feature = "benchmark", arg(conflicts_with = "trials"))]
     snapshot: Option<PathBuf>,
 
     /// Single beam width; defaults to max(k, 64).
     /// Sweeps use `orion-sweep`.
-    #[arg(long, conflicts_with = "search_list_sizes")]
+    #[arg(long, alias = "ls", alias = "search-list-sizes")]
     search_l: Option<usize>,
 
     /// Write result IDs as JSONL to a new file.
@@ -118,6 +121,10 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
         return Err("query source is empty".into());
     }
 
+    // Prepare sidecars and optional automatic residency before calibration.
+    // Keep the guard alive through every search batch, just like Index does.
+    let _residency = pool.install(|| B::prepare_search(&index, config))?;
+
     let calibration = pool
         .install(|| {
             index.calibrate(
@@ -132,16 +139,12 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
         })
         .map_err(Error::from)?;
 
-    // Prepare once, then retain optional RAM locks across the measured phase.
-    // Pinning itself never constructs sidecars or changes calibration.
-    pool.install(|| B::prepare_search(&index, config))?;
-    let _residency = B::auto_pin_search_storage(&index, config)?;
-
     let k = config.sweep.k;
     let summary = RunSummary {
         dataset: &config.dataset,
         k,
         batch_size: config.query_batch_size,
+        residency: serde_json::to_value(_residency.report())?,
         calibration: serde_json::json!({
             "threshold":calibration.threshold,"early_exit_limit":calibration.early_exit_limit,
             "search_list_size":config.sweep.calibration_l,
@@ -192,6 +195,7 @@ struct RunSummary<'a> {
     k: usize,
     batch_size: usize,
     calibration: serde_json::Value,
+    residency: serde_json::Value,
 }
 
 fn stream_results(
@@ -274,6 +278,7 @@ fn stream_results(
             "recall": recall,
             "k": summary.k,
             "calibration":summary.calibration,
+            "residency":summary.residency,
             "search_seconds": search_seconds,
             "qps": count as f64 / search_seconds,
             "stream_seconds": stream_started.elapsed().as_secs_f64(),
@@ -289,15 +294,7 @@ fn stream_results(
 fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
     let args = &command.run;
     let k = args.k.unwrap_or(10);
-    let beam = match args.sweep.search_list_sizes.as_deref() {
-        Some([beam]) => *beam,
-        Some(_) => {
-            return Err(Error::invalid_argument(
-                "snapshot search requires exactly one search-list size",
-            ))
-        }
-        None => command.search_l.unwrap_or(k.max(64)),
-    };
+    let beam = command.search_l.unwrap_or(k.max(64));
     if args.query_batch_size == 0 || k == 0 || beam < k {
         return Err(Error::invalid_argument(
             "require positive query batch size and 1 <= k <= search L",
@@ -306,19 +303,21 @@ fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
     let base = args.base.as_ref().ok_or("--base is required")?;
     let query = args.query.as_deref().ok_or("--query is required")?;
     let index = orion_ann::OpenOptions {
-        threads: args.sweep.threads,
+        threads: args.threads,
         memory_budget_gib: args.memory_budget_gib,
+        auto_pin: args.no_auto_pin.then_some(false),
     }
     .open(directory, orion_ann::BaseInput::from_file(base))?;
     let calibration = index.calibration(k).ok_or_else(|| {
         Error::invalid_state(format!("snapshot has no saved calibration for k={k}"))
     })?;
-    let _residency = resources::pin_snapshot_storage(&index)?;
+    // Snapshot open already applies the same automatic residency policy as Rust/Python.
     let summary = RunSummary {
         dataset: "snapshot",
         k,
         batch_size: args.query_batch_size,
         calibration: serde_json::to_value(calibration)?,
+        residency: index.info()["residency"].clone(),
     };
     let format = match args.query_format {
         Some(format) => format,
@@ -346,27 +345,11 @@ fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
     )
 }
 
-fn execute(mut command: Command) -> Result<()> {
+fn execute(command: Command) -> Result<()> {
     if let Some(directory) = &command.snapshot {
         return run_snapshot(&command, directory);
     }
-    // `--search-l` is the single-run shorthand for supplying exactly one search
-    // list size through the shared sweep configuration.
-    if let Some(search_l) = command.search_l {
-        command.run.sweep.search_list_sizes = Some(vec![search_l]);
-    }
-
-    let config = command.run.resolve_search()?;
-
-    // The search implementation uses a statically bounded worker structure,
-    // therefore reject unsupported thread counts before allocating resources.
-    if config.sweep.threads > orion_ann_core::algorithm::search::MAX_WORKERS {
-        return Err(format!(
-            "--threads exceeds MAX_WORKERS={}",
-            orion_ann_core::algorithm::search::MAX_WORKERS,
-        )
-        .into());
-    }
+    let config = command.run.resolve_search(command.search_l)?;
 
     let resolved = serde_json::to_string_pretty(&config).map_err(Error::from)?;
 

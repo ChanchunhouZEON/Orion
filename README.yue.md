@@ -174,7 +174,7 @@ cargo build --locked --release -p orion-ann-cli --bin orion
   --k 10 --search-l 100 --output results.jsonl
 ```
 
-CLI 會建立或者重用圖，再用查詢串流做校準。數據集預設同 ground truth 都係可選嘅。用 `--snapshot DIR` 可以恢復校準；用 `--groundtruth /data/gt.ivecs` 可以評估召回率；用 `--query - --query-format bvecs` 就可以由標準輸入讀取查詢。`--prepare-only` 只準備工作圖快取，`--preflight` 就估算記憶體需求。詳見 [CLI 指南](docs/cli.md)。
+CLI 會建立或者重用圖，再用查詢串流做校準。CLI、Rust 同 Python 共用預設配置，ground truth 係可選嘅。用 `--snapshot DIR` 可以恢復校準；用 `--groundtruth /data/gt.ivecs` 可以評估召回率；用 `--query - --query-format bvecs` 就可以由標準輸入讀取查詢。`--prepare-only` 只準備工作圖快取，`--preflight` 就估算記憶體需求。詳見 [CLI 指南](docs/cli.md)。
 
 ## 基準測試同開發
 
@@ -187,7 +187,7 @@ cargo build --locked --release --target-dir target \
   --k 10 --threads 8 --trials 3
 ```
 
-喺 [sweep.yaml](orion-runtime/configs/sweep.yaml) 設定數據集路徑。Sweep 會喺單一程序入面只載入一次索引，再完成各個 L 值同重複輪次。重現實驗時，請記錄硬件、CPU 綁定、圖來源、編譯選項同計時設定。
+喺 [sweep.yaml](benchmark/configs/sweep.yaml) 設定數據集路徑。Sweep 會喺單一程序入面只載入一次索引，再完成各個 L 值同重複輪次。重現實驗時，請記錄硬件、CPU 綁定、圖來源、編譯選項同計時設定。
 [基準測試腳本](benchmark/scripts/README.md) · [測量方法](docs/benchmarks.md)。
 
 ```bash
@@ -198,7 +198,7 @@ cargo doc --locked -p orion-ann --no-deps --open
 
 [架構](docs/architecture.md) · [優化](docs/optimizations.md) · [測試同 CI](docs/testing.md) · [程式碼結構](docs/code-structure.md) · [消融實驗](docs/ablation-study.md) · [歷史圖表](docs/historical-benchmarks.md)。
 
-[貢獻指南](CONTRIBUTION.md) · [變更記錄](CHANGLOG.md)。
+[貢獻指南](CONTRIBUTION.md) · [變更記錄](CHANGELOG.md)。
 
 ## 授權條款
 

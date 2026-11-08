@@ -26,12 +26,10 @@ benchmark = ["orion-ann/benchmark"]
 [dependencies]
 orion-ann = { version = "0.1.0", path = "../orion-runtime", default-features = false, features = ["cli"] }
 orion-ann-core = { version = "0.1.0", path = "../orion-core", default-features = false, features = ["search-stats"] }
-orion-ann-vector = { version = "0.1.0", path = "../vector" }
+orion-ann-vector = { version = "0.1.0", path = "../orion-vector" }
 rayon = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
+sha2 = "0.10"
 log = { workspace = true }
 env_logger = { workspace = true }
-
-[dev-dependencies]
-serde_yaml = "0.9"

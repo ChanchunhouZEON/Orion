@@ -8,8 +8,8 @@ Licensed under the MIT License.
 [Back to the README](../README.md#contents)
 
 `orion-cli` is the binary-only `orion` frontend. It uses the optional `cli`
-feature of `orion-runtime` for flags/presets and its shared modules for input
-readers, graph loading, preflight and backend adapters;
+feature of `orion-runtime` for input readers, graph loading, preflight and
+backend adapters. Flags and argument parsing live in `orion-cli`;
 Python uses the same runtime. Neither frontend depends on `benchmark`. The `orion-sweep`
 executable remains in `benchmark` for repeated experimental runs.
 
@@ -31,9 +31,10 @@ saved values. Use `--cache-dir` separately to build or reuse a working graph.
 
 ## Anonymous datasets and configuration
 
-A preset is optional. Without one, the resolved dataset name is `anonymous`.
-An explicit `anonymous` name has the same meaning. An unknown named preset is
-an error, so misspellings do not silently change the experimental configuration.
+The CLI accepts explicit file paths and uses the same `IndexOptions` defaults as
+Rust and Python. Dataset shortcuts, YAML and legacy experiment environment
+variables are exclusive to `benchmark`; the production CLI has no positional
+dataset argument or `--config` option.
 
 ```bash
 cargo build --release -p orion-ann-cli --bin orion
@@ -41,19 +42,16 @@ cargo build --release -p orion-ann-cli --bin orion
   --metric l2 --k 10 --search-l 100 --output results.jsonl
 ```
 
-Metric must be supplied for an anonymous dataset; dimension is read from the
-base header unless explicitly supplied. The metric/dimension selector supplies
-the default cascade. Build parameters use the shared global defaults. Explicit
-CLI values override preset values. Native-u8 currently requires 128-dimensional
-L2 byte inputs and a ParlayANN graph; it is selected explicitly by the large
-SIFT presets or by `--vector-storage u8 --admission native-l2-u8 --rerank none`.
-Other inputs retain f32 resident storage by default.
+Metric defaults to L2; dimension comes from the base header. A supplied dimension
+must agree with that header. Resident storage follows the input format: bvecs
+and u8bin retain native bytes, while fvecs and fbin use f32. Use
+`--vector-storage f32` to expand bytes explicitly. Native-u8 search requires L2
+and a ParlayANN graph, and automatically selects exact byte admission without
+reranking. The f32 cascade is selected from dimension and metric.
 
-Resolution produces one `SearchPlan`; serialized `vector_storage` and `cascade`
-fields are derived from that plan, not stored as independently mutable copies.
-The bundled YAML remains `benchmark/configs/sweep.yaml`, embedded into the CLI
-at compile time. `--config` selects a custom YAML file. Rebuild after changing
-bundled defaults, or pass the edited file with `--config`.
+Graph defaults come from `BuildConfig`, cache files default to `cache/orion-ann`,
+and explicit CLI options override the shared service defaults. Both cached and
+new construction recipes use the same validation rules.
 
 The default graph policy is `auto`: a compatible PA cache, then a PA STAG v3
 export, then an in-memory ParlayANN build. Disabling the default `parlay` feature
@@ -76,7 +74,7 @@ source. See [Graph sources](graph-sources.md) for precedence and provenance.
 Ground truth is optional. With `--groundtruth truth.ivecs`, the CLI computes
 recall alongside search timing and counters. Without it, the summary contains
 `"recall": null`; QPS, distance counts, and visited counts remain available.
-Use `--no-groundtruth` to disable a preset's GT path. An explicitly supplied but
+Omit `--groundtruth` to skip evaluation. An explicitly supplied but
 missing or malformed GT file is an error. GT rows must align with query order,
 contain at least k IDs, and match the loaded base prefix.
 
@@ -129,7 +127,7 @@ loading the base or graph. Redirected stdout remains JSON for scripts. Use
 `--preflight-format table` or `--preflight-format json` to choose explicitly. Exceeding `--memory-budget-gib` returns a nonzero exit
 status but preserves the complete report. It includes:
 
-- base, graph slab, reader counters, and the known L2U8 admission sidecar;
+- base, graph slab, and the deduplicated storage requirements of selected sidecars;
 - bounded query buffers (or replayed query payload), result IDs, and optional GT;
 - formulas, phase labels, configured budget, and excess over budget;
 - explicit unknown entries for worker scratch, unestimated sidecars, construction
@@ -168,3 +166,13 @@ Streaming search still estimates its bounded query batches.
 The report also shows `graph_source_policy`, concrete `graph_source`,
 `graph_selection_reason`, `graph_action`, and `cache_path`. Offline `PA input
 required` reports estimate memory but do not indicate that execution can start.
+
+Offline estimates need explicit shape information when the base is absent:
+
+```bash
+orion --base /data/base.u8bin --dimension 128 --max-points 1000000000 --preflight
+```
+
+This estimates a byte-backed L2 index without any dataset-specific shortcut.
+Readable headers take precedence over the offline point limit, which only caps
+how many rows execution uses.

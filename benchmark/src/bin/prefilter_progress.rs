@@ -4,8 +4,9 @@
  */
 
 //! Per-query prefilter trajectories. Instrumented diagnostics, never QPS timings.
+use benchmark::config::Args as RunArgs;
 use clap::Parser;
-use orion_ann::benchmark::{graph, memory, Args as RunArgs, LoadedDataset, ResolvedRunConfig};
+use orion_ann::benchmark::{graph, memory, LoadedDataset, ResolvedRunConfig};
 use orion_ann::{benchmark::cascade, with_supported_dimension};
 use orion_ann_core::algorithm::search::diagnostics::{NeighborMode, NoopObserver, SearchObserver};
 use orion_ann_core::{Error, Result};

@@ -130,7 +130,6 @@ fn borrowed_queries_and_mixed_requests_share_one_index() {
             .iter()
             .map(|options| index.search(batch, options).unwrap())
             .collect();
-        let before = index.info();
         let first = index.save(&fixture.0.join("before")).unwrap();
         // Native core and runtime share the actual result type and row semantics.
         if native {
@@ -163,6 +162,9 @@ fn borrowed_queries_and_mixed_requests_share_one_index() {
                 .unwrap();
             assert_eq!(core_result, expected[1]);
         }
+        // A native parity check above recalibrates and refreshes resource observations.
+        // Searches below must leave the entire new state unchanged.
+        let before = index.info();
         // Residency is orthogonal to search and persisted calibration. A zero
         // budget exercises the best-effort path without relying on OS privilege.
         let hints = index.pinning_hints().unwrap();

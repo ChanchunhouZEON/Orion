@@ -24,15 +24,19 @@ impl Fixture {
         Self(root)
     }
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_orion"))
-            .current_dir(&self.0)
-            .env_remove("ORION_SWEEP_CONFIG")
-            .env_remove("ORION_STAGED_FILE")
-            .env_remove("ORION_GRAPH")
-            .env("PA_ROOT", self.0.join("missing-parlay"))
-            .args(args)
-            .output()
-            .unwrap()
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_orion"));
+        cmd.current_dir(&self.0).args([
+            "--base",
+            "data/sift1b/bigann_base.bvecs",
+            "--dimension",
+            "128",
+            "--query",
+            "data/sift1b/bigann_query.bvecs",
+        ]);
+        if !args.contains(&"--max-points") {
+            cmd.args(["--max-points", "1000000000"]);
+        }
+        cmd.args(args).output().unwrap()
     }
     fn report(&self, args: &[&str]) -> Value {
         let output = self.run(args);
@@ -64,34 +68,22 @@ impl Drop for Fixture {
 }
 
 #[test]
-fn large_presets_need_no_files_or_additional_parameters() {
+fn explicit_metadata_supports_billion_scale_offline_planning() {
     let fixture = Fixture::new();
-    for (preset, count) in [
-        ("sift10m", 10_000_000u64),
-        ("sift100m", 100_000_000),
-        ("sift1b", 1_000_000_000),
-    ] {
-        let report = fixture.report(&[preset, "--preflight"]);
+    for count in [10_000_000u64, 100_000_000, 1_000_000_000] {
+        let report = fixture.report(&["--max-points", &count.to_string(), "--preflight"]);
         assert_eq!(report["num_points"], count);
-        assert_eq!(report["num_queries"], 10_000);
         assert_eq!(report["base_u8_bytes"], count * 128);
         assert_eq!(report["graph_slab_bytes"], count * 384);
         assert_eq!(report["sidecar_bytes"], 0);
-        assert_eq!(report["metadata_sources"]["base"], "configuration");
-        assert_eq!(report["metadata_sources"]["graph"], "configuration");
-        assert!(report["memory_budget_gib"].is_null());
     }
-    assert!(
-        !fixture.0.join("cache").exists(),
-        "planning must not create caches"
-    );
+    assert!(!fixture.0.join("cache").exists());
 }
 
 #[test]
 fn point_limit_and_budget_are_independent_of_declared_source_size() {
     let fixture = Fixture::new();
     let report = fixture.report(&[
-        "sift1b",
         "--preflight",
         "--max-points",
         "1000000",
@@ -100,7 +92,7 @@ fn point_limit_and_budget_are_independent_of_declared_source_size() {
     ]);
     assert_eq!(report["num_points"], 1_000_000);
     assert_eq!(report["budget_exceeded"], false);
-    let output = fixture.run(&["sift1b", "--preflight", "--memory-budget-gib", "128"]);
+    let output = fixture.run(&["--preflight", "--memory-budget-gib", "128"]);
     assert!(!output.status.success());
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["budget_exceeded"], true);
@@ -108,31 +100,14 @@ fn point_limit_and_budget_are_independent_of_declared_source_size() {
 }
 
 #[test]
-fn existing_files_must_agree_with_declarations() {
+fn readable_headers_override_offline_point_limit() {
     let fixture = Fixture::new();
     fixture.write_base(12);
-    let output = fixture.run(&["sift1b", "--preflight"]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr)
-        .contains("file count 12 != declared count 1000000000"));
-    // Explicitly selecting the file discards the preset's source-count claim.
-    let report = fixture.report(&[
-        "sift1b",
-        "--preflight",
-        "--base",
-        fixture.base_path().to_str().unwrap(),
-    ]);
+    let report = fixture.report(&["--preflight"]);
     assert_eq!(report["num_points"], 12);
     assert_eq!(report["metadata_sources"]["base"], "file");
-}
-
-#[test]
-fn missing_overrides_cannot_borrow_preset_point_counts() {
-    let fixture = Fixture::new();
-    let output = fixture.run(&["sift1b", "--preflight", "--base", "different.bvecs"]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr)
-        .contains("offline preflight needs preset num_points"));
+    let out = fixture.run(&["--dimension", "64", "--preflight"]);
+    assert!(!out.status.success());
 }
 
 #[test]
@@ -140,11 +115,11 @@ fn malformed_inputs_and_exports_do_not_fall_back_to_configuration() {
     let fixture = Fixture::new();
     fixture.write_base(12);
     std::fs::write(fixture.base_path(), [0, 1]).unwrap();
-    assert!(!fixture.run(&["sift1b", "--preflight"]).status.success());
+    assert!(!fixture.run(&["--preflight"]).status.success());
     std::fs::remove_file(fixture.base_path()).unwrap();
     std::fs::write(fixture.0.join("bad.staged"), [0, 1]).unwrap();
     assert!(!fixture
-        .run(&["sift1b", "--preflight", "--staged-file", "bad.staged"])
+        .run(&["--preflight", "--staged-file", "bad.staged"])
         .status
         .success());
 }
@@ -152,42 +127,29 @@ fn malformed_inputs_and_exports_do_not_fall_back_to_configuration() {
 #[test]
 fn ordinary_execution_still_requires_files() {
     let fixture = Fixture::new();
-    for args in [vec!["sift1b"], vec!["sift1b", "--prepare-only"]] {
+    for args in [vec![], vec!["--prepare-only"]] {
         assert!(!fixture.run(&args).status.success());
     }
 }
 
 #[test]
-fn custom_declarations_and_existing_graph_query_headers_are_checked() {
+fn readable_query_and_staged_headers_determine_budget() {
     let fixture = Fixture::new();
-    let yaml = include_str!("fixtures/search.yaml");
-    std::fs::write(fixture.0.join("small.yaml"), yaml).unwrap();
     fixture.write_base(100);
-    let query = fixture.0.join("data/sift1b/bigann_query.bvecs");
-    // A readable query file with the wrong count must not be hidden by YAML.
     let row = [128u32.to_le_bytes().as_slice(), &[0u8; 128]].concat();
-    std::fs::write(&query, &row).unwrap();
-    let output = fixture.run(&["sift1b", "--config", "small.yaml", "--preflight"]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("file count 1 != declared count 2"));
-    std::fs::write(&query, row.repeat(2)).unwrap();
+    std::fs::write(
+        fixture.0.join("data/sift1b/bigann_query.bvecs"),
+        row.repeat(2),
+    )
+    .unwrap();
     let staged: Vec<u8> = [0x53544147u32, 3, 100, 64, 8, 0]
         .into_iter()
         .flat_map(u32::to_le_bytes)
         .collect();
     std::fs::write(fixture.0.join("graph.staged"), staged).unwrap();
-    let report = fixture.report(&[
-        "sift1b",
-        "--config",
-        "small.yaml",
-        "--preflight",
-        "--staged-file",
-        "graph.staged",
-    ]);
-    assert_eq!(report["metadata_sources"]["base"], "file");
-    assert_eq!(report["metadata_sources"]["query"], "file");
+    let report = fixture.report(&["--preflight", "--staged-file", "graph.staged"]);
+    assert_eq!(report["num_queries"], 2);
     assert_eq!(report["metadata_sources"]["graph"], "staged header");
-    // The materialized graph's 8 extras override the configured 16 for accounting.
     assert_eq!(report["graph_slab_bytes"], 100 * 320);
 }
 
@@ -195,7 +157,6 @@ fn custom_declarations_and_existing_graph_query_headers_are_checked() {
 fn table_and_json_formats_report_the_same_budget_result() {
     let fixture = Fixture::new();
     let table = fixture.run(&[
-        "sift1b",
         "--preflight",
         "--preflight-format",
         "table",
@@ -205,7 +166,7 @@ fn table_and_json_formats_report_the_same_budget_result() {
     assert!(table.status.success());
     let text = String::from_utf8(table.stdout).unwrap();
     for label in [
-        "Memory preflight — sift1b",
+        "Memory preflight — anonymous",
         "Component / phase",
         "Source",
         "unknown",
@@ -221,7 +182,6 @@ fn table_and_json_formats_report_the_same_budget_result() {
         "preflight should not dump resolved config before the table"
     );
     let json = fixture.report(&[
-        "sift1b",
         "--preflight",
         "--preflight-format",
         "json",
@@ -233,7 +193,6 @@ fn table_and_json_formats_report_the_same_budget_result() {
     let resident = json["resident_lower_bound_gib"].as_f64().unwrap();
     assert!(text.contains(&format!("{resident:.3} GiB")));
     let exceeded = fixture.run(&[
-        "sift1b",
         "--preflight",
         "--preflight-format",
         "table",

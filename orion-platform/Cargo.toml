@@ -21,7 +21,7 @@ crossbeam = { workspace = true }
 hashbrown = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
-orion-ann-vector = { version = "0.1.0", path = "../vector" }
+orion-ann-vector = { version = "0.1.0", path = "../orion-vector" }
 once_cell = { workspace = true }
 
 

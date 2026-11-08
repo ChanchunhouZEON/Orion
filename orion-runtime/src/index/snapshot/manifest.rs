@@ -132,3 +132,56 @@ pub(super) fn execution_signature(config: &ResolvedRunConfig) -> Result<String> 
     .map_err(Error::from)?;
     Ok(crate::integrity::sha256(&bytes))
 }
+
+#[cfg(test)]
+mod config_contract_tests {
+    use super::*;
+    use crate::data::VectorFormat;
+    use crate::{SearchMetric, VectorStorageKind};
+
+    // Captured before reorganizing config. Fixed paths/content IDs make this
+    // independent of the host and test allocation order.
+    #[test]
+    fn resolved_config_and_snapshot_signatures_remain_stable() {
+        let mut records = Vec::new();
+        for (dimension, metric, storage, format) in [
+            (128, SearchMetric::L2, None, VectorFormat::Fbin),
+            (960, SearchMetric::L2, None, VectorFormat::Fbin),
+            (
+                128,
+                SearchMetric::L2,
+                Some(VectorStorageKind::U8),
+                VectorFormat::U8bin,
+            ),
+            (100, SearchMetric::InnerProduct, None, VectorFormat::Fbin),
+            (1536, SearchMetric::Cosine, None, VectorFormat::Fbin),
+        ] {
+            let options = IndexOptions {
+                metric,
+                storage,
+                threads: 8,
+                ..Default::default()
+            };
+            let config = options
+                .resolve(
+                    "fixture/base".into(),
+                    format,
+                    dimension,
+                    1000,
+                    Some("fixture-content".into()),
+                )
+                .unwrap();
+            records.push(serde_json::json!({
+                "options": options,
+                "resolved": config,
+                "execution_signature": execution_signature(&config).unwrap(),
+                "resolved_wire_sha256": crate::integrity::sha256(&serde_json::to_vec(&config).unwrap()),
+                "options_wire_sha256": crate::integrity::sha256(&serde_json::to_vec(&options).unwrap()),
+            }));
+        }
+        let actual = serde_json::Value::Array(records);
+        let expected: serde_json::Value =
+            serde_json::from_str(include_str!("../../config/tests/resolution.json")).unwrap();
+        assert_eq!(actual, expected);
+    }
+}

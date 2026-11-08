@@ -6,7 +6,7 @@
 # Dockerfile.ci). Validates that the workspace **cross-compiles
 # correctly to x86_64-unknown-linux-gnu** end-to-end:
 #
-#   1. `vector/` (NEON gated out, AVX2/scalar fallbacks active) compiles.
+#   1. `orion-vector/` (NEON gated out, AVX2/scalar fallbacks active) compiles.
 #   2. `orion-core/` (RaBitQ, JL, visited_set quantized codecs) compiles.
 #   3. The `benchmark` binary (the SIFT entry point) links cleanly.
 #

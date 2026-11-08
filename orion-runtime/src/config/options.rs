@@ -4,16 +4,18 @@
  */
 
 //! Programmatic configuration. These defaults do not read YAML or environment overrides.
-//! IndexOptions is the caller-facing aggregate. Its graph and cascade controls
-//! are declared alongside it, before defaults and validated run resolution.
-use crate::{
-    config::cascade::{AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric},
-    config::plan::IndexPlan,
-    config::ResolvedSweep,
-    config::*,
-    data::VectorFormat,
+//! IndexOptions aggregates property-specific controls and resolves service input.
+//! Graph and cascade definitions live beside their own defaults and rules.
+use super::{
+    cascade::{Cascade, SearchMetric},
+    plan::IndexPlan,
+    GraphSourcePolicy, ResolvedRunConfig, ResolvedSweep, VectorStorageKind,
 };
-use crate::{Error, Result};
+use crate::{data::VectorFormat, Result};
+
+// Preserve existing public paths while each property owns its implementation.
+pub use super::cascade::CascadeConfig;
+pub use super::graph::GraphConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -40,38 +42,12 @@ pub struct IndexOptions {
     pub window_size: usize,
     /// Optional finite positive estimate limit in GiB; not a hard allocator cap.
     pub memory_budget_gib: Option<f64>,
+    /// Apply bounded, best-effort RAM locking during search preparation.
+    /// Calibration and calibrated snapshot open perform this automatically;
+    /// ordinary searches reuse the retained locks. No CLI feature is required.
+    pub auto_pin: bool,
     /// Optional nonzero prefix length; None uses every input row.
     pub max_points: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
-/// Graph source and construction controls. See [configuration](crate::guide::configuration).
-pub struct GraphConfig {
-    /// Graph policy; auto prefers ParlayANN. Without the parlay feature only f32 can fall back to Rust.
-    pub source: GraphSourcePolicy,
-    /// Optional STAG v3 export; selects PA and conflicts with explicit Rust.
-    pub staged_file: Option<PathBuf>,
-    /// Maximum navigation degree, greater than zero.
-    pub degree: u32,
-    /// Construction candidate width, at least degree.
-    pub build_l: usize,
-    /// Finite Vamana pruning alpha, at least 1.0.
-    pub alpha: f32,
-    /// Maximum retained extra candidates per graph node.
-    pub max_extra: usize,
-}
-
-/// Overrides use the same vocabulary and validation as the CLI cascade.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct CascadeConfig {
-    /// Prefilter identifier in the shared CLI vocabulary.
-    pub prefilter: Option<String>,
-    /// Admission identifier compatible with metric and resident storage.
-    pub admission: Option<String>,
-    /// Reranking identifier; native u8 uses none.
-    pub rerank: Option<String>,
 }
 
 impl Default for IndexOptions {
@@ -86,21 +62,8 @@ impl Default for IndexOptions {
             threads: orion_ann_core::BuildConfig::default().threads,
             window_size: 5,
             memory_budget_gib: None,
+            auto_pin: true,
             max_points: None,
-        }
-    }
-}
-
-impl Default for GraphConfig {
-    fn default() -> Self {
-        let build = orion_ann_core::BuildConfig::default();
-        Self {
-            source: GraphSourcePolicy::Auto,
-            staged_file: None,
-            degree: build.degree,
-            build_l: build.build_l,
-            alpha: build.alpha,
-            max_extra: build.max_extra,
         }
     }
 }
@@ -114,34 +77,16 @@ impl IndexOptions {
         count: usize,
         content_id: Option<String>,
     ) -> Result<ResolvedRunConfig> {
-        orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::L2F32Distance>(dimension)?;
         if count == 0 || count >= u32::MAX as usize || self.max_points == Some(0) {
             return Err("base must contain 1..u32::MAX points (excluding the sentinel)".into());
         }
-        if self.threads > orion_ann_core::algorithm::search::MAX_WORKERS {
-            return Err(
-                Error::configuration("threads", "thread count exceeds MAX_WORKERS")
-                    .with_detail("maximum", orion_ann_core::algorithm::search::MAX_WORKERS)
-                    .with_detail("actual", self.threads),
-            );
-        }
-        if self.threads == 0 || !(1..=64).contains(&self.window_size) {
-            return Err("threads must be positive and window_size must be in 1..=64".into());
-        }
-        if self
-            .memory_budget_gib
-            .is_some_and(|v| !v.is_finite() || v <= 0.0)
-        {
-            return Err("memory_budget_gib must be finite and positive".into());
-        }
+        super::execution::validate_threads(self.threads)?;
+        super::execution::validate_window(self.window_size)?;
+        super::resources::validate_memory_budget(self.memory_budget_gib)?;
         let graph = &self.graph;
-        let storage = self.storage.unwrap_or(
-            if matches!(format, VectorFormat::Bvecs | VectorFormat::U8bin) {
-                VectorStorageKind::U8
-            } else {
-                VectorStorageKind::F32
-            },
-        );
+        let storage = self
+            .storage
+            .unwrap_or_else(|| VectorStorageKind::for_input(format));
         let mut policy = graph.source;
         if graph.staged_file.is_some() {
             if policy == GraphSourcePolicy::Rust {
@@ -149,30 +94,13 @@ impl IndexOptions {
             }
             policy = GraphSourcePolicy::Parlayann;
         }
-        let source = if policy == GraphSourcePolicy::Rust {
-            GraphSource::Rust
-        } else {
-            GraphSource::Parlayann
-        };
-        let mut cascade = if storage == VectorStorageKind::U8 {
-            Cascade {
-                prefilter: PrefilterChoice::None,
-                admission: AdmissionChoice::NativeL2U8,
-                rerank: RerankChoice::None,
-            }
+        let source = policy.candidate();
+        let defaults = if storage == VectorStorageKind::U8 {
+            Cascade::native_l2_u8()
         } else {
             Cascade::default_for_specified_dimension_and_metric(dimension, self.metric)
         };
-        if let Some(v) = &self.cascade.prefilter {
-            cascade.prefilter = v.parse()?;
-        }
-        if let Some(v) = &self.cascade.admission {
-            cascade.admission = v.parse()?;
-        }
-        if let Some(v) = &self.cascade.rerank {
-            cascade.rerank = v.parse()?;
-        }
-        cascade.validate_cascade_options(self.metric)?;
+        let cascade = self.cascade.apply(defaults)?;
         let index_plan = IndexPlan::resolve(
             storage,
             dimension,
@@ -183,6 +111,10 @@ impl IndexOptions {
             source,
         )?;
         let mut config = ResolvedRunConfig {
+            #[cfg(feature = "benchmark")]
+            benchmark_trust_cache: false,
+            #[cfg(feature = "benchmark")]
+            benchmark_cache_file: None,
             dataset: "anonymous".into(),
             base,
             base_content_id: content_id,
@@ -196,6 +128,7 @@ impl IndexOptions {
             query_format: format,
             index_plan,
             memory_budget_gib: self.memory_budget_gib,
+            auto_pin: self.auto_pin,
             prepare_only: true,
             dimension,
             metric: self.metric,

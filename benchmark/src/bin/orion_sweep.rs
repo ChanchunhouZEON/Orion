@@ -9,9 +9,10 @@
 use orion_ann_core::{Error, Result};
 use std::time::Instant;
 
+use benchmark::config::Args;
 use clap::Parser;
 use orion_ann::benchmark::{
-    memory, utils, Args, F32CascadeBackend, LoadedDataset, NativeU8L2Backend, ResolvedRunConfig,
+    memory, utils, F32CascadeBackend, LoadedDataset, NativeU8L2Backend, ResolvedRunConfig,
     SearchBackend,
 };
 
@@ -43,29 +44,6 @@ fn set_thread_qos_user_interactive() {
 }
 #[cfg(not(target_os = "macos"))]
 fn set_thread_qos_user_interactive() {}
-
-/// `mlock(2)` a byte range so its pages cannot be paged out. We pin
-/// dataset + quantized base + PhasedGraph slab right after construction
-/// so the warmup pass and the timed sweep both see exactly the same
-/// resident pages — no eviction in between, no page-in cost on the
-/// timed-side critical path. Best-effort: a non-zero return is logged
-/// but does not abort the sweep (e.g. `RLIMIT_MEMLOCK` exceeded just
-/// means we fall back to ordinary paging — same behavior as before).
-fn mlock_bytes(label: &str, ptr: *const u8, len: usize) {
-    if len == 0 {
-        return;
-    }
-    let rc = unsafe { libc::mlock(ptr as *const libc::c_void, len) };
-    if rc != 0 {
-        let err = std::io::Error::last_os_error();
-        log::error!(
-            "[mlock] {label}: failed to pin {} MiB ({err}) — falling back to pageable",
-            len / (1024 * 1024)
-        );
-    } else {
-        log::info!("[mlock] {label}: pinned {} MiB", len / (1024 * 1024));
-    }
-}
 
 macro_rules! log_search_metrics {
     // Terminal
@@ -165,8 +143,8 @@ fn run_sweep<B: SearchBackend>(
     let queries_arr: Vec<f32> = data.queries.iter().flatten().copied().collect();
     let query_count = data.queries.len();
 
-    // Resolve all dataset requirements before timing. Pinning never builds.
-    B::prepare_search(&idx, config).expect("prepare search datasets");
+    // Preparation applies the shared auto-pin policy; retain its guard through timing.
+    let _residency = B::prepare_search(&idx, config).expect("prepare search datasets");
     log::info!("Cascade: {}", config.cascade().label());
 
     // Calibrate on the full graph with the cascade's exact metric
@@ -248,18 +226,6 @@ fn run_sweep<B: SearchBackend>(
         config.window_size,
         config.cascade().label()
     );
-
-    let _residency =
-        B::auto_pin_search_storage(&idx, config).expect("pin prepared search datasets");
-    // Required base/sidecar buffers are covered by the guard above. Graph and
-    // query allocations remain separate benchmark resources.
-    {
-        let pg = idx.graph().buffer_bytes();
-        mlock_bytes("pgraph slab", pg.as_ptr(), pg.len());
-        let q_bytes_ptr = queries_arr.as_ptr() as *const u8;
-        let q_bytes_len = queries_arr.len() * std::mem::size_of::<f32>();
-        mlock_bytes("queries", q_bytes_ptr, q_bytes_len);
-    }
 
     // Warm up at the first measured L, which has already been checked >= k.
     let warmup_l = ls[0];

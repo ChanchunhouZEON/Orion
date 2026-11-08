@@ -89,7 +89,7 @@ AVX-512-compiled binary safe on an AVX2-only CPU.
 
 `AlignedBoxWithSlice` requests at least 2 MiB alignment for allocations of at
 least 2 MiB on Linux and advises complete pages with `MADV_HUGEPAGE` before
-initialization. The OS hook is in [platform/memory.rs](../platform/src/memory.rs).
+initialization. The OS hook is in [orion-platform/memory.rs](../orion-platform/src/memory.rs).
 This best-effort hint does not require the application to reserve hugetlb pages,
 and failure leaves ordinary pages usable. It neither guarantees THP coverage nor
 requests 1 GiB pages.

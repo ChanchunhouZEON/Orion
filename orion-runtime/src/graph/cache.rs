@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 pub struct CachePlan {
     pub metadata_path: PathBuf,
     pub(super) selected: Option<Generation>,
+    #[cfg(feature = "benchmark")]
+    pub(super) legacy: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -42,6 +44,10 @@ pub(crate) struct Generation {
 
 impl CachePlan {
     pub(crate) fn is_hit(&self) -> bool {
+        #[cfg(feature = "benchmark")]
+        if self.legacy {
+            return true;
+        }
         self.selected.is_some()
     }
 
@@ -55,6 +61,10 @@ impl CachePlan {
     }
 
     pub(crate) fn graph_path(&self) -> Result<PathBuf> {
+        #[cfg(feature = "benchmark")]
+        if self.legacy {
+            return Ok(self.metadata_path.with_extension("pgraph"));
+        }
         crate::storage::object(
             &self.objects()?,
             &self.generation()?.manifest.graph_sha256,
@@ -80,22 +90,67 @@ impl CachePlan {
 
     fn plan(config: &ResolvedRunConfig, num_points: usize, verify_source: bool) -> Result<Self> {
         let path = Self::lookup_key(config, num_points);
-        let key = manifest_path(&path);
-        let selected = match std::fs::File::open(&key) {
-            Ok(file) => {
-                let encoded = crate::storage::read_bounded_file(file, &key, 1024 * 1024)?;
-                Some(Generation {
-                    manifest: serde_json::from_slice(&encoded)?,
-                    encoded,
-                })
+        #[cfg(feature = "benchmark")]
+        let path = if config.benchmark_trust_cache {
+            match config.benchmark_cache_file.as_ref() {
+                Some(path) => {
+                    let name = path.file_name().and_then(|v| v.to_str()).unwrap_or("");
+                    if let Some(stem) = name.strip_suffix(".cache.json") {
+                        path.with_file_name(format!("{stem}.bin"))
+                    } else if path.extension().is_some_and(|ext| ext == "bin") {
+                        path.clone()
+                    } else {
+                        return Err(Error::invalid_argument(
+                            "--cache-file expects .bin or .cache.json",
+                        ));
+                    }
+                }
+                None => path,
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(Error::io("open cache record", &key, e)),
+        } else {
+            path
+        };
+        let key = manifest_path(&path);
+        // Historical flat pairs may have an obsolete provenance JSON next to
+        // them. In trusted benchmark mode the actual metadata file selects that
+        // layout; do not parse its old record as a current CAS manifest.
+        let legacy = benchmark_trusted(config) && path.is_file();
+        let selected = if legacy {
+            None
+        } else {
+            match std::fs::File::open(&key) {
+                Ok(file) => {
+                    let encoded = crate::storage::read_bounded_file(file, &key, 1024 * 1024)?;
+                    Some(Generation {
+                        manifest: serde_json::from_slice(&encoded)?,
+                        encoded,
+                    })
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(Error::io("open cache record", &key, e)),
+            }
         };
         let plan = Self {
+            #[cfg(feature = "benchmark")]
+            legacy,
             selected,
             metadata_path: path,
         };
+        #[cfg(feature = "benchmark")]
+        if plan.legacy {
+            validate_headers(
+                &plan.metadata_path,
+                &plan.graph_path()?,
+                num_points,
+                config.graph_degree,
+                true,
+            )?;
+            return Ok(plan);
+        }
+        #[cfg(feature = "benchmark")]
+        if config.benchmark_trust_cache && config.benchmark_cache_file.is_some() && !plan.is_hit() {
+            return Err(Error::cache("explicit benchmark cache does not exist"));
+        }
         if plan.metadata_path.try_exists()?
             || plan.metadata_path.with_extension("pgraph").try_exists()?
         {
@@ -110,7 +165,7 @@ impl CachePlan {
                 &plan.metadata_path,
                 config,
                 num_points,
-                verify_source,
+                verify_source && !benchmark_trusted(config),
             )?;
             let dir = plan.objects()?;
             validate_headers(
@@ -118,6 +173,7 @@ impl CachePlan {
                 &crate::storage::object(&dir, &record.graph_sha256, "pgraph")?,
                 num_points,
                 config.graph_degree,
+                false,
             )?;
         }
         Ok(plan)
@@ -170,11 +226,29 @@ impl CachePlan {
     }
 }
 
+fn benchmark_trusted(config: &ResolvedRunConfig) -> bool {
+    #[cfg(feature = "benchmark")]
+    {
+        config.benchmark_trust_cache
+    }
+    #[cfg(not(feature = "benchmark"))]
+    {
+        let _ = config;
+        false
+    }
+}
+
 fn manifest_path(path: &Path) -> PathBuf {
     path.with_extension("cache.json")
 }
 
-fn validate_headers(path: &Path, graph: &Path, num_points: usize, degree: u32) -> Result<()> {
+fn validate_headers(
+    path: &Path,
+    graph: &Path,
+    num_points: usize,
+    degree: u32,
+    legacy: bool,
+) -> Result<()> {
     let mut metadata_bytes = [0; 8];
     std::fs::File::open(path)
         .and_then(|mut f| f.read_exact(&mut metadata_bytes))
@@ -184,7 +258,7 @@ fn validate_headers(path: &Path, graph: &Path, num_points: usize, degree: u32) -
     // V6 adds logical dataset shape after the unchanged eight-byte prefix.
     // The index loader checks that shape before loading the graph payload;
     // this lightweight lookup also validates the existing provenance manifest.
-    if version != 6 || entry >= num_points {
+    if !(version == 6 || (legacy && version == 5)) || entry >= num_points {
         return Err(Error::from(format!(
             "invalid cache metadata: version={version}, entry={entry}, N={num_points}"
         )));
@@ -224,7 +298,11 @@ fn validate_manifest(
     num_points: usize,
     verify_source: bool,
 ) -> Result<()> {
-    if metadata.namespace != config.cache_namespace
+    #[cfg(feature = "benchmark")]
+    let explicit = config.benchmark_trust_cache && config.benchmark_cache_file.is_some();
+    #[cfg(not(feature = "benchmark"))]
+    let explicit = false;
+    if (!explicit && metadata.namespace != config.cache_namespace)
         || metadata.num_points != num_points
         || metadata.dimension != config.dimension
         || metadata.graph_source != config.graph_source
@@ -270,8 +348,6 @@ fn validate_manifest(
 mod tests {
     use super::*;
     use crate::config::{GraphSource, ResolvedRunConfig};
-    use crate::driver::Args;
-    use clap::Parser;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -294,25 +370,15 @@ mod tests {
         }
     }
     fn config(dir: &Path) -> ResolvedRunConfig {
-        let mut c = Args::try_parse_from([
-            "orion",
-            "--base",
-            "new.fvecs",
-            "--query",
-            "q.fvecs",
-            "--groundtruth",
-            "gt.ivecs",
-            "--dimension",
-            "32",
-            "--metric",
-            "l2",
-            "--graph-source",
-            "parlayann",
-            "--graph-degree",
-            "4",
-        ])
-        .unwrap()
-        .resolve()
+        let mut c = crate::IndexOptions {
+            graph: crate::GraphConfig {
+                source: crate::GraphSourcePolicy::Parlayann,
+                degree: 4,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .resolve("new.fvecs".into(), crate::VectorFormat::Fvecs, 32, 6, None)
         .unwrap();
         c.cache_dir = dir.to_owned();
         c.staged_file = None;
@@ -393,5 +459,27 @@ mod tests {
         assert!(!CachePlan::resolve(&c, 1).unwrap().is_hit());
         assert!(crate::graph::staged::resolve_staged_export(&c, 1).is_err());
         assert_eq!(c.graph_source, GraphSource::Parlayann);
+    }
+    #[cfg(feature = "benchmark")]
+    #[test]
+    fn explicit_legacy_cache_requires_per_run_benchmark_policy() {
+        let dir = Temp::new();
+        let mut c = config(&dir.0);
+        assert!(!c.benchmark_trust_cache);
+        let path = dir.0.join("old.bin");
+        write_cache(&path, 1, 4);
+        std::fs::write(
+            path.with_extension("cache.json"),
+            br#"{"version":1,"namespace":"old"}"#,
+        )
+        .unwrap();
+        c.benchmark_cache_file = Some(path.clone());
+        assert!(!CachePlan::resolve(&c, 1).unwrap().is_hit());
+        c.benchmark_trust_cache = true;
+        let plan = CachePlan::resolve(&c, 1).unwrap();
+        assert!(plan.is_hit());
+        assert_eq!(plan.graph_path().unwrap(), path.with_extension("pgraph"));
+        c.benchmark_cache_file = Some(dir.0.join("missing.bin"));
+        assert!(CachePlan::resolve(&c, 1).is_err());
     }
 }

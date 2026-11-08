@@ -10,6 +10,8 @@ pub mod parlayann;
 pub(crate) mod persistence;
 mod selection;
 pub(crate) mod staged;
+#[cfg(feature = "benchmark")]
+mod trusted;
 
 /// Fingerprint of the vendored builder and its fixed construction recipe.
 pub use orion_ann_core::build::PARLAY_RECIPE;
@@ -39,13 +41,21 @@ pub(crate) struct LoadedGraph<T: BaseElement> {
 #[cfg(feature = "cli")]
 pub fn load_index(config: &ResolvedRunConfig, data: &mut LoadedBase) -> Result<Orion> {
     let cache = CachePlan::resolve(config, data.num_points)?;
-    attach_working(prepare_f32(config, data, cache)?)
+    #[cfg(feature = "benchmark")]
+    if config.benchmark_trust_cache && cache.is_hit() {
+        return trusted::load(data.take_index_dataset()?, cache);
+    }
+    attach_working(prepare_f32(config, data, cache)?, config)
 }
 
 #[cfg(feature = "cli")]
 pub fn load_u8_index(config: &ResolvedRunConfig, data: &mut LoadedBase<u8>) -> Result<Orion<u8>> {
     let cache = CachePlan::resolve(config, data.num_points)?;
-    attach_working(prepare_u8(config, data, cache)?)
+    #[cfg(feature = "benchmark")]
+    if config.benchmark_trust_cache && cache.is_hit() {
+        return trusted::load(data.take_index_dataset()?, cache);
+    }
+    attach_working(prepare_u8(config, data, cache)?, config)
 }
 
 pub(crate) fn prepare_f32(
@@ -69,7 +79,15 @@ pub(crate) fn prepare_u8(
 }
 
 #[cfg(feature = "cli")]
-fn attach_working<T: BaseElement>(mut graph: LoadedGraph<T>) -> Result<Orion<T>> {
+fn attach_working<T: BaseElement>(
+    mut graph: LoadedGraph<T>,
+    _config: &ResolvedRunConfig,
+) -> Result<Orion<T>> {
+    #[cfg(feature = "benchmark")]
+    if _config.benchmark_trust_cache {
+        crate::sidecars::trusted::attach(&mut graph.index, &graph.working_key)?;
+        return Ok(graph.index);
+    }
     // Raw driver inputs may lack an authenticated content ID. Fingerprint the actual rows.
     crate::sidecars::track(
         &mut graph.index,
@@ -158,7 +176,6 @@ mod large_input_tests {
     use super::*;
 
     use crate::data::LoadedDataset;
-    use clap::Parser;
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -200,29 +217,21 @@ mod large_input_tests {
             }
         }
         drop(file);
-        let config = crate::driver::Args::try_parse_from([
-            "orion",
-            "sift10m",
-            "--base",
-            base.to_str().unwrap(),
-            "--query",
-            query.to_str().unwrap(),
-            "--groundtruth",
-            gt.to_str().unwrap(),
-            "--staged-file",
-            staged.to_str().unwrap(),
-            "--cache-dir",
-            directory.to_str().unwrap(),
-            "--graph-degree",
-            "2",
-            "--k",
-            "1",
-            "--search-list-sizes",
-            "4",
-        ])
-        .unwrap()
-        .resolve()
+        let mut config = crate::IndexOptions {
+            graph: crate::GraphConfig {
+                staged_file: Some(staged.clone()),
+                degree: 2,
+                ..Default::default()
+            },
+            cache_dir: directory.clone(),
+            ..Default::default()
+        }
+        .resolve(base.clone(), crate::VectorFormat::Bvecs, 128, 4, None)
         .unwrap();
+        config.query = Some(query);
+        config.groundtruth = Some(gt);
+        config.sweep.k = 1;
+        config.sweep.search_list_sizes = vec![4];
         // F32-only diagnostic executables must reject this config before loading a base.
         assert!(LoadedDataset::<f32>::load(&config).is_err());
         for reload in [false, true] {
@@ -297,32 +306,22 @@ mod large_input_tests {
             }
         }
         drop(f);
-        let config = crate::driver::Args::try_parse_from([
-            "orion",
-            "--base",
-            base.to_str().unwrap(),
-            "--query",
-            query.to_str().unwrap(),
-            "--groundtruth",
-            gt.to_str().unwrap(),
-            "--metric",
-            "l2",
-            "--graph-degree",
-            "2",
-            "--k",
-            "1",
-            "--search-list-sizes",
-            "4",
-            "--graph-source",
-            "parlayann",
-            "--staged-file",
-            staged.to_str().unwrap(),
-            "--cache-dir",
-            dir.join("cache").to_str().unwrap(),
-        ])
-        .unwrap()
-        .resolve()
+        let mut config = crate::IndexOptions {
+            storage: Some(crate::VectorStorageKind::F32),
+            graph: crate::GraphConfig {
+                staged_file: Some(staged.clone()),
+                degree: 2,
+                ..Default::default()
+            },
+            cache_dir: dir.join("cache"),
+            ..Default::default()
+        }
+        .resolve(base.clone(), crate::VectorFormat::Bvecs, 128, 4, None)
         .unwrap();
+        config.query = Some(query);
+        config.groundtruth = Some(gt);
+        config.sweep.k = 1;
+        config.sweep.search_list_sizes = vec![4];
         let mut data = LoadedDataset::load(&config).unwrap();
         let ptr = data.base.as_ref().unwrap().as_ptr();
         let old = crate::graph::parlayann::load_from_staged_file(

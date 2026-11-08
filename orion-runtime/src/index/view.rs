@@ -22,6 +22,8 @@ pub(super) struct ReadView {
 }
 
 pub(super) trait Engine: Send + Sync {
+    fn release_auto_pin(&mut self);
+    fn pin_report(&self) -> &crate::PinReport;
     fn set_pq_code_storage(&mut self, policy: crate::PqCodeStorage) -> Result<()>;
     fn pin<'a>(
         &'a self,
@@ -30,7 +32,7 @@ pub(super) trait Engine: Send + Sync {
     ) -> Result<crate::PinnedDatasets<'a>>;
     fn pin_hints(&self, config: &ResolvedRunConfig) -> Result<Vec<crate::PinHint>>;
 
-    fn prepare_search(&self, config: &ResolvedRunConfig) -> Result<()>;
+    fn prepare_search(&mut self, config: &ResolvedRunConfig) -> Result<()>;
     fn calibrate(
         &self,
         queries: &[f32],
@@ -58,12 +60,35 @@ pub(super) trait Engine: Send + Sync {
 }
 
 pub(super) struct DynamicEngine<B: SearchBackend> {
+    // Drop locks before the index's heap allocations, including on unwind.
+    // All allocation-replacing operations must release this token first.
+    pub(super) auto_pin: orion_ann_platform::residency::OwnedPinGuard,
+    pub(super) pin_report: crate::PinReport,
     pub(super) receipts: crate::sidecars::Receipts,
     pub(super) index: orion_ann_core::Orion<B::Element>,
 }
 
 impl<B: SearchBackend> Engine for DynamicEngine<B> {
+    fn release_auto_pin(&mut self) {
+        self.auto_pin = Default::default();
+        self.pin_report = Default::default();
+    }
+    fn pin_report(&self) -> &crate::PinReport {
+        &self.pin_report
+    }
+    fn prepare_search(&mut self, config: &ResolvedRunConfig) -> Result<()> {
+        self.release_auto_pin();
+        let guard = B::prepare_search(&self.index, config)?;
+        // SAFETY: base, graph and prepared sidecars own stable heap buffers.
+        // The token is dropped before index (field order). Calibration and PQ
+        // replacement release it first; shared searches never replace buffers.
+        let (locks, report) = unsafe { guard.into_owned() };
+        self.auto_pin = locks;
+        self.pin_report = report;
+        Ok(())
+    }
     fn set_pq_code_storage(&mut self, policy: crate::PqCodeStorage) -> Result<()> {
+        self.release_auto_pin();
         self.index.set_pq_code_storage(policy)
     }
     fn pin<'a>(
@@ -77,9 +102,6 @@ impl<B: SearchBackend> Engine for DynamicEngine<B> {
         B::pin_hints(&self.index, config)
     }
 
-    fn prepare_search(&self, config: &ResolvedRunConfig) -> Result<()> {
-        B::prepare_search(&self.index, config)
-    }
     fn calibrate(
         &self,
         q: &[f32],

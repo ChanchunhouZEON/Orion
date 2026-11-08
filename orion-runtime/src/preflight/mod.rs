@@ -5,7 +5,7 @@
 
 //! Resource preflight for estimating known resident-memory requirements.
 //!
-//! Offline planning uses preset counts and graph settings when files are absent.
+//! Offline planning uses declared counts and graph settings when files are absent.
 //! Available vector/cache/export headers are validated without loading payloads.
 //! Runtime budget checks still require the inputs needed for execution. It computes a
 //! lower bound for memory that is known to remain resident during index use.
@@ -36,7 +36,7 @@ use report::format_report;
 #[cfg(feature = "cli")]
 pub use report::print_report;
 
-const BYTES_PER_GIB: f64 = 1_073_741_824.0;
+use crate::config::resources::{gib_to_bytes, BYTES_PER_GIB};
 
 // Number of `u32` words stored before adjacency entries in each graph record.
 const GRAPH_HEADER_WORDS: u64 = 4;
@@ -170,6 +170,35 @@ pub(crate) fn check_selected_budget(
 ) -> Result<()> {
     let input = inputs_with_plan(config, points, false, "input", cache)?;
     enforce_budget(&calculate_memory(config, input)?)
+}
+
+/// Recheck a resident search generation without reopening its source/cache files.
+/// Graph loading already checked input metadata. Preparation only needs the live
+/// slab stride and the sidecar requirements it is about to materialize.
+pub(crate) fn check_search_budget(
+    config: &ResolvedRunConfig,
+    points: usize,
+    stride_bytes: u64,
+) -> Result<()> {
+    if config.memory_budget_gib.is_none() {
+        return Ok(());
+    }
+    let input = MemoryInputs {
+        num_points: points,
+        base_source: "resident",
+        query_count: Some(0),
+        query_source: "not used",
+        stride_bytes,
+        graph_source: "resident slab",
+        staged_source: None,
+        cache_hit: true,
+        cache_key: PathBuf::new(),
+    };
+    // Index construction resolves a prepare-only configuration. The resident
+    // generation is now entering search, so include all selected sidecars.
+    let mut search = config.clone();
+    search.prepare_only = false;
+    enforce_budget(&calculate_memory(&search, input)?)
 }
 
 pub fn check_memory_budget(config: &ResolvedRunConfig, num_points: usize) -> Result<()> {
@@ -521,7 +550,7 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
     let required = accounted.max(build_lower_bound);
     let exceeded = config
         .memory_budget_gib
-        .is_some_and(|budget| required as f64 > budget * BYTES_PER_GIB);
+        .is_some_and(|budget| required as f64 > gib_to_bytes(budget));
     let mut components = serde_json::json!([
         {"name":"base vectors", "bytes":base_bytes, "basis":format!("{num_points} × {} bytes/row ({} logical coordinates × {} bytes, SIMD-padded)", layout.stride_bytes(), config.dimension, base_representation.element_bytes()), "phase":"resident"},
         {"name":"graph slab", "bytes":graph_bytes, "basis":format!("{num_points} × {stride_bytes} bytes/node"), "phase":"resident"},
@@ -559,6 +588,16 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
             "phase": "resident", "source": base_source,
         }));
     }
+    let cache_path = config
+        .base_content_id
+        .as_ref()
+        .map(|_| cache_key.with_extension("cache.json"));
+    #[cfg(feature = "benchmark")]
+    let cache_path = if config.benchmark_trust_cache {
+        config.benchmark_cache_file.clone().or(cache_path)
+    } else {
+        cache_path
+    };
     Ok(serde_json::json!({
         "dataset": config.dataset,
         "components": components,
@@ -589,7 +628,7 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
         "graph_selection_reason": config.graph_selection_reason,
         "graph_action": if cache_hit { "load cache" } else if config.graph_source == GraphSource::Rust { "build Rust graph" } else if staged_source.is_some() { "import PA staged export" } else if cfg!(feature = "parlay") { "build ParlayANN graph" } else { "PA input required" },
         "cache_hit": cache_hit,
-        "cache_path": config.base_content_id.as_ref().map(|_| cache_key.with_extension("cache.json")),
+        "cache_path": cache_path,
         "staged_source": staged_source,
         "memory_budget_gib": config.memory_budget_gib,
         "excludes": [
@@ -609,16 +648,30 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
 #[cfg(all(test, feature = "cli"))]
 mod tests {
     use super::*;
+    use crate::VectorFormat;
 
-    use clap::Parser;
+    fn native_config() -> ResolvedRunConfig {
+        let mut config = crate::IndexOptions::default()
+            .resolve(
+                "missing.bvecs".into(),
+                VectorFormat::Bvecs,
+                128,
+                1_000_000_000,
+                None,
+            )
+            .unwrap();
+        config.prepare_only = false;
+        config.replay_queries = true;
+        config.query = Some("missing-query.bvecs".into());
+        config.groundtruth = Some("missing.ivecs".into());
+        config.sweep.k = 10;
+        config
+    }
     #[test]
     fn offline_sweep_keeps_unknown_query_buffers_explicit() {
         let directory =
             std::env::temp_dir().join(format!("orion-offline-sweep-{}", std::process::id()));
-        let mut config = crate::driver::Args::try_parse_from(["orion", "sift1b"])
-            .unwrap()
-            .resolve_for_sweep()
-            .unwrap();
+        let mut config = native_config();
         config.base = directory.join("base.bvecs");
         config.query = Some(directory.join("query.bvecs"));
         config.staged_file = Some(directory.join("graph.staged"));
@@ -657,20 +710,11 @@ mod tests {
             .flat_map(u32::to_le_bytes)
             .collect();
         std::fs::write(&staged, header).unwrap();
-        let args = crate::driver::Args::try_parse_from([
-            "orion",
-            "sift1b",
-            "--query-format",
-            "bvecs",
-            "--query",
-            "-",
-            "--staged-file",
-            staged.to_str().unwrap(),
-            "--cache-dir",
-            directory.to_str().unwrap(),
-        ])
-        .unwrap();
-        let config = args.resolve().unwrap();
+        let mut config = native_config();
+        config.replay_queries = false;
+        config.query = Some("-".into());
+        config.staged_file = Some(staged);
+        config.cache_dir = directory.clone();
         let report = estimate_resident_memory(&config, 1_000_000_000).unwrap();
         assert_eq!(report["base_f32_bytes"], 0);
         assert_eq!(report["base_u8_bytes"], 128_000_000_000u64);
@@ -682,10 +726,7 @@ mod tests {
     #[cfg(feature = "parlay")]
     #[test]
     fn slab_build_counts_graph_once() {
-        let mut config = crate::driver::Args::try_parse_from(["orion", "sift1b"])
-            .unwrap()
-            .resolve_for_sweep()
-            .unwrap();
+        let mut config = native_config();
         config.cache_dir =
             std::env::temp_dir().join(format!("orion-slab-budget-{}", std::process::id()));
         config.staged_file = None;
@@ -704,25 +745,26 @@ mod tests {
 
     #[test]
     fn billion_lower_bound_and_budget_guard() {
-        let args = crate::driver::Args::try_parse_from([
-            "orion",
-            "--base",
-            "missing-large.bvecs",
-            "--query",
-            "-",
-            "--groundtruth",
-            "missing.ivecs",
-            "--dimension",
-            "128",
-            "--metric",
-            "l2",
-            "--graph-source",
-            "rust",
-            "--cache-dir",
-            "/tmp/orion-resource-unit-test-unused",
-        ])
+        let mut config = crate::IndexOptions {
+            storage: Some(VectorStorageKind::F32),
+            graph: crate::GraphConfig {
+                source: crate::GraphSourcePolicy::Rust,
+                ..Default::default()
+            },
+            cache_dir: "/tmp/orion-resource-unit-test-unused".into(),
+            ..Default::default()
+        }
+        .resolve(
+            "missing-large.bvecs".into(),
+            VectorFormat::Bvecs,
+            128,
+            1_000_000_000,
+            None,
+        )
         .unwrap();
-        let mut config = args.resolve().unwrap();
+        config.query = Some("-".into());
+        config.groundtruth = Some("missing.ivecs".into());
+        config.prepare_only = false;
         let report = estimate_resident_memory(&config, 1_000_000_000).unwrap();
         assert_eq!(report["base_f32_bytes"], 512_000_000_000u64);
         assert_eq!(report["graph_slab_bytes"], 384_000_000_000u64);

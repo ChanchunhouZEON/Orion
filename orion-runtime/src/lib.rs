@@ -92,7 +92,8 @@ pub use config::cascade::SearchMetric;
 #[cfg(feature = "benchmark")]
 pub mod benchmark;
 #[cfg(feature = "cli")]
-pub mod driver;
+#[doc(hidden)]
+pub mod execution;
 pub use config::options::{CascadeConfig, GraphConfig, IndexOptions};
 pub use config::{GraphSourcePolicy, VectorStorageKind};
 #[cfg(feature = "file-queries")]

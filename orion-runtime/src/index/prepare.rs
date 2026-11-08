@@ -66,7 +66,7 @@ impl Index {
         // may we normalize our array copy for cosine's unit-vector search space.
         // L2/IP retain their coordinates; file rows were handled by the decoder.
         base.validate_and_normalize_array(&config)?;
-        let view = pool.install(|| match base.rows {
+        let mut view = pool.install(|| match base.rows {
             Rows::F32(rows) => prepare::<F32CascadeBackend>(
                 &config,
                 rows,
@@ -129,7 +129,12 @@ fn prepare<B: SearchBackend + 'static>(
                 None,
             );
             Ok(ReadView {
-                engine: Box::new(DynamicEngine::<B> { index, receipts }),
+                engine: Box::new(DynamicEngine::<B> {
+                    index,
+                    receipts,
+                    auto_pin: Default::default(),
+                    pin_report: Default::default(),
+                }),
                 object_store: saved.store,
                 payloads: files,
                 graph_bytes: graph.bytes,
@@ -161,6 +166,8 @@ fn prepare<B: SearchBackend + 'static>(
             );
             Ok(ReadView {
                 engine: Box::new(DynamicEngine::<B> {
+                    auto_pin: Default::default(),
+                    pin_report: Default::default(),
                     index: graph.index,
                     receipts,
                 }),

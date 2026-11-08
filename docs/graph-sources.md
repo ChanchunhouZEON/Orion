@@ -13,8 +13,7 @@ run the `diskann_sweep` search engine.
 
 ## Selection policy
 
-`--graph-source auto` is the default when neither CLI, legacy environment nor
-YAML specifies a source. Bundled presets explicitly use `source: auto`.
+`--graph-source auto` is the CLI default, matching Rust/Python `IndexOptions`.
 Resolution selects one concrete source before preflight or payload loading:
 
 1. Validate an existing PA cache for the current inputs and construction recipe.
@@ -27,12 +26,11 @@ Only absence permits fallback. An incomplete cache pair, incompatible manifest,
 malformed existing STAG header, or permission error is an error. Payload checks
 remain part of actual loading/import; a header probe is not a full integrity scan.
 
-Selection precedence is CLI source/CLI staged path, then `ORION_GRAPH`/
-`ORION_STAGED_FILE`, then YAML, then auto. `ORION_GRAPH=pa` aliases `parlayann`.
 An explicit staged path selects PA strictly, including alongside `auto`.
-`--graph-source rust --staged-file ...` is rejected. CLI Rust overrides legacy
-PA settings. A YAML `source: parlayann` or `source: rust` is strict as well;
-`--graph-source auto` can override that policy.
+`--graph-source rust --staged-file ...` is rejected. Production interfaces do not
+read legacy environment variables or YAML. Only the benchmark supports source
+precedence from experiment flags, `ORION_GRAPH`/`ORION_STAGED_FILE`, and YAML.
+
 
 Explicit PA loads/imports/builds with PA; it never substitutes the Rust builder. Explicit
 Rust ignores PA exports. Native u8 rejects explicit Rust before loading data.
@@ -52,7 +50,7 @@ degree. Export capacity determines the imported slab stride.
 
 `--print-config` reports `graph_source_policy`, concrete `graph_source`,
 `graph_selection_reason`, namespace, and directory. It may inspect headers but
-never loads vector/graph payloads. `--preflight` uses the same resolved source
+never loads orion-vector/graph payloads. `--preflight` uses the same resolved source
 and reports `graph_action`, `cache_path`, and memory components. When inputs are
 absent, an offline estimate can still succeed, including a PA estimate labeled
 `build ParlayANN graph`; this is not an executable-input validation success.
@@ -62,7 +60,7 @@ absent, an offline estimate can still succeed, including a PA estimate labeled
 Graph lookup uses a SHA-256 key over the input identity, indexed row count
 and resolved construction recipe. An available file base is identified by its
 complete contents. Offline preflight without the base estimates resources from
-the preset. Query and timing settings do not change the graph key. The working
+explicit shape metadata (or benchmark presets). Query and timing settings do not change the graph key. The working
 cache records the graph and metadata digests and checks them on load. An
 explicit STAG export is checked against its recorded content when available.
 

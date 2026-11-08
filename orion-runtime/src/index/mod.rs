@@ -81,10 +81,11 @@ impl Index {
 
     pub fn info(&self) -> serde_json::Value {
         serde_json::json!({"num_points": self.len(), "dimension": self.dimension(),
-            "storage": self.storage(), "metric": self.config.metric,
-            "graph_source": self.config.graph_source, "graph_selection_reason": self.config.graph_selection_reason,
-            "cascade": self.config.cascade(), "threads": self.options.threads,
-            "cache_namespace": self.config.cache_namespace, "calibrations": self.calibrations})
+        "storage": self.storage(), "metric": self.config.metric,
+        "graph_source": self.config.graph_source, "graph_selection_reason": self.config.graph_selection_reason,
+        "cascade": self.config.cascade(), "threads": self.options.threads,
+        "cache_namespace": self.config.cache_namespace, "calibrations": self.calibrations,
+        "residency": self.view.engine.pin_report()})
     }
 }
 

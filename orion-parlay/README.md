@@ -59,4 +59,4 @@ compare that independent writer byte-for-byte with the shared writer, then
 compare both with the resulting Orion slab. It is not needed by consumers.
 Portable builds deliberately omit `-march=native`; Rust search SIMD dispatch is
 independent of this C++ construction backend. Graph outputs are checked within a
-platform/build; identical floating-point ties across architectures are not promised.
+orion-platform/build; identical floating-point ties across architectures are not promised.

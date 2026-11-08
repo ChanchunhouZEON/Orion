@@ -17,9 +17,12 @@ use orion_ann_platform::residency::PinGuard;
 use std::collections::HashSet;
 
 /// A storage allocation selected for RAM residency, independently of its stage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum DatasetPin {
     Base,
+    /// Immutable navigation graph slab.
+    Graph,
     Quantized(QuantizedKind),
 }
 
@@ -52,21 +55,8 @@ impl Default for PinOptions {
     }
 }
 
-// Drivers call this only after preflight. The memory estimate and the OS
-// memlock allowance are independent: use best effort without raising limits.
-// An explicit deployment budget also bounds the page-rounded lock request.
-#[cfg(feature = "cli")]
-pub(crate) fn automatic_options(memory_budget_gib: Option<f64>) -> Result<PinOptions> {
-    if memory_budget_gib.is_some_and(|gib| !gib.is_finite() || gib <= 0.) {
-        return Err(Error::invalid_argument(
-            "memory budget must be finite and positive",
-        ));
-    }
-    Ok(PinOptions {
-        budget_bytes: memory_budget_gib.map_or(usize::MAX, |gib| (gib * 1_073_741_824.) as usize),
-        ..PinOptions::default()
-    })
-}
+mod automatic;
+pub(crate) use automatic::AutomaticPlan;
 
 /// Prepared dataset's total payload. Smaller allocations are attempted first
 /// by the default policy; no quality or CPU-cache-residency claim is implied.
@@ -77,11 +67,13 @@ pub struct PinHint {
 }
 
 /// Outcome of a best-effort or required residency request.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct PinReport {
     pub requested_datasets: usize,
     pub pinned_datasets: usize,
     pub pinned_bytes: usize,
+    /// Effective automatic budget and resource observations, absent for manual pin.
+    pub automatic: Option<serde_json::Value>,
     /// Dataset and reason for each skipped lock (budget or OS restrictions).
     pub skipped: Vec<(DatasetPin, String)>,
 }
@@ -95,6 +87,13 @@ pub struct PinnedDatasets<'a> {
     report: PinReport,
 }
 impl PinnedDatasets<'_> {
+    /// Caller must keep every covered allocation live until the returned token drops.
+    pub(crate) unsafe fn into_owned(
+        self,
+    ) -> (orion_ann_platform::residency::OwnedPinGuard, PinReport) {
+        (unsafe { self.guard.into_owned() }, self.report)
+    }
+
     pub fn report(&self) -> &PinReport {
         &self.report
     }
@@ -172,6 +171,24 @@ pub(crate) fn pin<'a, D>(
     requirements: &[DatasetRequirement],
     options: &PinOptions,
 ) -> Result<PinnedDatasets<'a>> {
+    pin_with(
+        index,
+        base,
+        shape,
+        requirements,
+        options,
+        |guard, regions, budget| guard.try_pin(regions, budget),
+    )
+}
+
+fn pin_with<'a, D>(
+    index: &'a CompressedIndex<D>,
+    base: &'a [u8],
+    shape: QuantizedDatasetShape,
+    requirements: &[DatasetRequirement],
+    options: &PinOptions,
+    mut lock: impl FnMut(&mut PinGuard<'a>, &[&'a [u8]], usize) -> std::io::Result<()>,
+) -> Result<PinnedDatasets<'a>> {
     let mut result = PinnedDatasets {
         guard: PinGuard::default(),
         report: PinReport::default(),
@@ -186,7 +203,7 @@ pub(crate) fn pin<'a, D>(
     if let Some(selected) = &options.datasets {
         if selected
             .iter()
-            .any(|s| !requirements.iter().any(|r| target(r) == *s))
+            .any(|s| *s != DatasetPin::Graph && !requirements.iter().any(|r| target(r) == *s))
         {
             return Err(Error::invalid_argument(
                 "pin selection is not in the search requirements",
@@ -203,10 +220,24 @@ pub(crate) fn pin<'a, D>(
                 .is_none_or(|s| s.contains(&target(r)))
         })
         .collect();
-    let datasets = prepared(index, base, shape, &selected)?;
+    let mut datasets = prepared(index, base, shape, &selected)?;
+    if options
+        .datasets
+        .as_ref()
+        .is_some_and(|s| s.contains(&DatasetPin::Graph))
+    {
+        datasets.push(PreparedDataset {
+            hint: PinHint {
+                dataset: DatasetPin::Graph,
+                bytes: index.graph().buffer_bytes().len(),
+            },
+            regions: vec![index.graph().buffer_bytes()],
+        });
+        datasets.sort_by_key(|d| d.hint.bytes);
+    }
     for dataset in datasets {
         result.report.requested_datasets += 1;
-        match result.guard.try_pin(&dataset.regions, options.budget_bytes) {
+        match lock(&mut result.guard, &dataset.regions, options.budget_bytes) {
             Ok(()) => result.report.pinned_datasets += 1,
             Err(error) => {
                 if options.mode == PinMode::Required {
@@ -234,6 +265,47 @@ pub(crate) fn pin<'a, D>(
     for (dataset, reason) in &result.report.skipped {
         log::warn!("RAM pin skipped {dataset:?}: {reason}; retaining pageable storage");
     }
+    Ok(result)
+}
+
+/// Add graph storage to the same requirement-driven residency transaction.
+pub(crate) fn automatic_pin<'a, D>(
+    index: &'a CompressedIndex<D>,
+    base: &'a [u8],
+    shape: QuantizedDatasetShape,
+    requirements: &[DatasetRequirement],
+    enabled: bool,
+    budget: Option<f64>,
+) -> Result<PinnedDatasets<'a>> {
+    // Explicit on-demand placement takes precedence over automatic code locks.
+    // The small PQ codebook retains its independent bounded core policy.
+    let on_demand = index.prepared_pq_code_storage() == Some(crate::PqCodeStorage::OnDemand);
+    let requirements: Vec<_> = requirements
+        .iter()
+        .copied()
+        .filter(|r| {
+            !(on_demand
+                && matches!(r, DatasetRequirement::Sidecar(s) if s.kind() == QuantizedKind::Pq))
+        })
+        .collect();
+    let mut plan = AutomaticPlan::detect(enabled, budget)?;
+    plan.options.datasets = Some(
+        requirements
+            .iter()
+            .map(|r| match r {
+                DatasetRequirement::Base => DatasetPin::Base,
+                DatasetRequirement::Sidecar(s) => DatasetPin::Quantized(s.kind()),
+            })
+            .chain(std::iter::once(DatasetPin::Graph))
+            .collect(),
+    );
+    let mut result = pin(index, base, shape, &requirements, &plan.options)?;
+    log::info!(
+        "Automatic RAM pin budget: {} bytes; pinned {} bytes",
+        plan.options.budget_bytes,
+        result.pinned_bytes()
+    );
+    result.report.automatic = Some(plan.observations);
     Ok(result)
 }
 

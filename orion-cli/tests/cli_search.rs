@@ -241,7 +241,7 @@ fn invalid_explicit_gt_is_not_ignored_and_budget_errors_keep_the_breakdown() {
 }
 
 #[test]
-fn anonymous_config_uses_defaults_and_preset_evaluation_can_be_disabled() {
+fn production_defaults_infer_native_bytes_and_reject_presets() {
     let f = Fixture::new();
     let out = f
         .command()
@@ -251,65 +251,44 @@ fn anonymous_config_uses_defaults_and_preset_evaluation_can_be_disabled() {
     assert!(out.status.success());
     let config: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(config["dataset"], "anonymous");
-    assert_eq!(config["graph_source"], "parlayann");
-    assert_eq!(config["cascade"]["admission"], "L2U8");
+    assert_eq!(config["cascade"]["admission"], "NativeL2U8");
     assert!(config["groundtruth"].is_null());
-
-    let out = f
+    for extra in [
+        vec!["sift10m"],
+        vec!["anonymous"],
+        vec!["--config", "anything.yaml"],
+    ] {
+        assert!(!f
+            .command()
+            .args(extra)
+            .arg("--prepare-only")
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    // No environment/YAML parsing occurs in the production executable.
+    let poisoned = f
         .command()
-        .args(["sift10m", "--no-groundtruth", "--print-config"])
+        .env("ORION_SWEEP_CONFIG", "missing.yaml")
+        .env("ORION_GRAPH", "invalid")
+        .env("ORION_STAGED_FILE", "missing.staged")
+        .args(["--query", "query.bvecs", "--print-config"])
         .output()
         .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+    assert!(poisoned.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&poisoned.stdout).unwrap(),
+        config
     );
-    let config: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(config["dataset"], "sift10m");
-    assert!(config["groundtruth"].is_null());
-
-    let out = f
-        .command()
-        .args(["--prepare-only", "--preflight"])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(report["sidecar_bytes"], 0);
-    assert_eq!(report["query_buffered_rows"], 0);
-
-    let out = f
-        .command()
-        .args([
-            "misspelled-preset",
-            "--query",
-            "query.bvecs",
-            "--print-config",
-        ])
-        .output()
-        .unwrap();
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown dataset shortcut"));
 }
 
 // Selection tests use real tiny imports/builds, so preflight predictions can be
 // checked against the cache files actually produced by execution.
 impl Fixture {
-    fn auto_config(&self) {
-        std::fs::write(
-            self.root.join("auto.yaml"),
-            include_str!("fixtures/search.yaml"),
-        )
-        .unwrap();
-    }
     fn auto_command(&self) -> Command {
         let mut command = self.command();
-        command.args(["fixture", "--config", "auto.yaml"]);
+        command.args(["--vector-storage", "f32"]);
         command
     }
     fn preflight(&self) -> Value {
@@ -328,116 +307,45 @@ impl Fixture {
 }
 
 #[test]
-fn automatic_selection_prefers_pa_cache_then_export_then_memory_build() {
+fn automatic_selection_reuses_import_then_builds_without_export() {
     let f = Fixture::new();
-    f.auto_config();
-    // Establish a Rust cache first. A PA export still takes precedence over it.
     successful(
         f.auto_command()
-            .args(["--graph-source", "rust", "--prepare-only"])
+            .args(["--staged-file", "graph.staged", "--prepare-only"])
             .output()
             .unwrap(),
     );
     let pa = f.preflight();
-    assert_eq!(pa["graph_source_policy"], "auto");
-    assert_eq!(pa["graph_source"], "parlayann");
-    assert_eq!(pa["graph_action"], "import PA staged export");
-    successful(f.auto_command().arg("--prepare-only").output().unwrap());
+    assert_eq!(pa["cache_hit"], true);
     assert_eq!(f.cache_manifest(&pa)["graph_source"], "parlayann");
-    assert!(f.cache_manifest(&pa)["imported_from"]["path"]
-        .as_str()
-        .unwrap()
-        .ends_with("graph.staged"));
-
     std::fs::remove_file(f.root.join("graph.staged")).unwrap();
-    let hit = f.preflight();
-    assert_eq!(hit["cache_hit"], true);
-    assert_eq!(hit["cache_path"], pa["cache_path"]);
-    // Auto and explicit PA use the same physical cache and namespace.
+    assert_eq!(f.preflight()["cache_hit"], true);
     successful(
         f.auto_command()
             .args(["--graph-source", "parlayann", "--prepare-only"])
             .output()
             .unwrap(),
     );
-
-    let path = f.root.join(pa["cache_path"].as_str().unwrap());
-    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(f.root.join(pa["cache_path"].as_str().unwrap())).unwrap();
     let built = f.preflight();
-    assert_eq!(built["graph_source"], "parlayann");
-    assert_eq!(built["cache_hit"], false);
     assert_eq!(built["graph_action"], "build ParlayANN graph");
     successful(f.auto_command().arg("--prepare-only").output().unwrap());
-    assert_eq!(
-        f.cache_manifest(&built)["builder_recipe"],
-        "parlay-memory-v1-unquantized-two-pass"
-    );
     assert!(f.cache_manifest(&built)["imported_from"].is_null());
-
-    std::fs::remove_dir_all(f.root.join("cache")).unwrap();
-    assert_eq!(f.preflight()["graph_action"], "build ParlayANN graph");
-    successful(f.auto_command().arg("--prepare-only").output().unwrap());
-    assert_eq!(f.preflight()["cache_hit"], true);
 }
 
 #[test]
-fn explicit_missing_exports_remain_errors_and_native_u8_builds() {
+fn explicit_missing_exports_fail_and_native_u8_builds_without_presets() {
     let f = Fixture::new();
-    f.auto_config();
     std::fs::remove_file(f.root.join("graph.staged")).unwrap();
-    for args in [
-        vec!["--staged-file", "graph.staged"],
-        vec!["--graph-source", "auto", "--staged-file", "graph.staged"],
-    ] {
-        let out = f
-            .auto_command()
-            .args(args)
-            .arg("--prepare-only")
-            .output()
-            .unwrap();
-        assert!(!out.status.success());
-        assert!(String::from_utf8_lossy(&out.stderr).contains("No Rust graph was substituted"));
-    }
-    let out = f
-        .auto_command()
-        .env("ORION_STAGED_FILE", "missing.staged")
-        .arg("--prepare-only")
-        .output()
-        .unwrap();
+    let out = f.native().arg("--prepare-only").output().unwrap();
     assert!(!out.status.success());
     assert!(!f.root.join("cache").exists());
-
-    // Offline native-u8 planning now identifies the in-memory PA build.
-    let out = f
-        .auto_command()
-        .args([
-            "--vector-storage",
-            "u8",
-            "--admission",
-            "native-l2-u8",
-            "--rerank",
-            "none",
-            "--preflight",
-        ])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(report["graph_source"], "parlayann");
-    assert_eq!(report["graph_action"], "build ParlayANN graph");
+    successful(f.command().arg("--prepare-only").output().unwrap());
 }
 
 #[test]
-fn auto_does_not_hide_invalid_exports_or_incomplete_caches() {
+fn auto_does_not_hide_incomplete_cache_objects() {
     let f = Fixture::new();
-    f.auto_config();
-    // Honor the historical suffix in both selection and preflight.
-    std::fs::rename(
-        f.root.join("graph.staged"),
-        f.root.join("graph_pct60.staged"),
-    )
-    .unwrap();
-    assert_eq!(f.preflight()["graph_action"], "import PA staged export");
     successful(f.auto_command().arg("--prepare-only").output().unwrap());
     let report = f.preflight();
     let digest = f.cache_manifest(&report)["graph_sha256"]
@@ -457,28 +365,11 @@ fn auto_does_not_hide_invalid_exports_or_incomplete_caches() {
         .unwrap()
         .status
         .success());
-    std::fs::remove_dir_all(f.root.join("cache")).unwrap();
-    std::fs::write(f.root.join("graph_pct60.staged"), b"bad export").unwrap();
-    assert!(!f
-        .auto_command()
-        .arg("--preflight")
-        .output()
-        .unwrap()
-        .status
-        .success());
-    // Explicit Rust ignores an unrelated broken PA export.
-    successful(
-        f.auto_command()
-            .args(["--graph-source", "rust", "--prepare-only"])
-            .output()
-            .unwrap(),
-    );
 }
 
 #[test]
 fn cache_source_is_required_and_validated() {
     let f = Fixture::new();
-    f.auto_config();
     successful(f.auto_command().arg("--prepare-only").output().unwrap());
     let report = f.preflight();
     let path = f.root.join(report["cache_path"].as_str().unwrap());
@@ -504,59 +395,33 @@ fn cache_source_is_required_and_validated() {
 }
 
 #[test]
-fn auto_uses_source_specific_default_directories_and_yaml_can_be_strict() {
+fn cli_uses_the_service_cache_directory_and_strict_graph_parameters() {
     let f = Fixture::new();
-    f.auto_config();
-    let run = |extra: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_orion"))
-            .current_dir(&f.root)
-            .env_remove("ORION_GRAPH")
-            .env_remove("ORION_STAGED_FILE")
-            .env_remove("ORION_SWEEP_CONFIG")
-            .args([
-                "fixture",
-                "--config",
-                "auto.yaml",
-                "--graph-degree",
-                "15",
-                "--max-extra",
-                "0",
-                "--k",
-                "1",
-                "--search-l",
-                "16",
-                "--threads",
-                "2",
-            ])
-            .args(extra)
+    let out = Command::new(env!("CARGO_BIN_EXE_orion"))
+        .current_dir(&f.root)
+        .args(["--base", "base.bvecs", "--preflight"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(report["cache_path"]
+        .as_str()
+        .unwrap()
+        .starts_with("cache/orion-ann/"));
+    for flags in [["--alpha", "0.98"], ["--build-l", "2"]] {
+        assert!(!f
+            .auto_command()
+            .args(flags)
+            .arg("--prepare-only")
             .output()
             .unwrap()
-    };
-    let report: Value = serde_json::from_slice(&run(&["--preflight"]).stdout).unwrap();
-    assert!(report["cache_path"]
-        .as_str()
-        .unwrap()
-        .starts_with("cache/orion_parlayann/"));
-    successful(run(&["--prepare-only"]));
-    std::fs::remove_file(f.root.join("graph.staged")).unwrap();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&run(&["--preflight"]).stdout).unwrap()["cache_hit"],
-        true
-    );
-    std::fs::remove_dir_all(f.root.join("cache")).unwrap();
-    let report: Value = serde_json::from_slice(&run(&["--preflight"]).stdout).unwrap();
-    assert!(report["cache_path"]
-        .as_str()
-        .unwrap()
-        .starts_with("cache/orion_parlayann/"));
-
-    let yaml_path = f.root.join("auto.yaml");
-    let mut yaml: serde_yaml::Value =
-        serde_yaml::from_slice(&std::fs::read(&yaml_path).unwrap()).unwrap();
-    yaml["datasets"]["fixture"]["base_graph"]["source"] = "parlayann".into();
-    std::fs::write(yaml_path, serde_yaml::to_string(&yaml).unwrap()).unwrap();
-    successful(run(&["--prepare-only"]));
-    successful(run(&["--graph-source", "auto", "--prepare-only"]));
+            .status
+            .success());
+    }
 }
 
 #[test]

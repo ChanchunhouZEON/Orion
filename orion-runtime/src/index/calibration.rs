@@ -29,7 +29,7 @@ impl Index {
     /// See the [complete example and contract](crate::guide::search).
     ///
     /// Calibrate a nonempty packed row-major query batch for a particular k.
-    /// Prepares the selected sidecars under exclusive access before publishing
+    /// Prepares sidecars and applies `auto_pin` under exclusive access before publishing
     /// calibration, so subsequent `&self` searches may run concurrently.
     ///
     /// # Errors

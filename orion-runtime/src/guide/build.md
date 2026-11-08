@@ -135,5 +135,6 @@ the core library.
 `orion_ann_core::Orion::build` and `build_from_slice` accept `orion_ann_core::BuildConfig`
 and return an in-memory index without cache I/O. `Index::new` delegates to the
 same builder after resolving files and cache policy. Programmatic graph defaults
-come from `BuildConfig`; historical YAML presets and cache identities stay intact.
+come from `BuildConfig`; the CLI uses the same defaults. Dataset-specific YAML
+recipes belong only to the benchmark workspace.
 The runtime normalizes cosine input before passing it to the core L2 builder.

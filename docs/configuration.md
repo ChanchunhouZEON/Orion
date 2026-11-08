@@ -3,39 +3,80 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# Configuration
+# Benchmark configuration
 
 [README](../README.md) · [CLI](cli.md) · [Graph sources](graph-sources.md)
 
-The CLI embeds [sweep.yaml](../benchmark/configs/sweep.yaml). `--config` loads a
-replacement YAML file; rebuilding is necessary only when changing embedded
-configuration. The optional `cli` feature of `orion-runtime` owns shared resolution used by
-`orion` and `orion-sweep`; the latter remains a benchmark executable. The validated
-plan and execution operations also live in `orion-runtime`. Python uses programmatic
-`IndexOptions` rather than CLI flags, YAML presets or legacy environment overrides.
+The unpublished benchmark embeds [sweep.yaml](../benchmark/configs/sweep.yaml).
+`orion-sweep --config` loads a replacement YAML file; rebuild only when changing
+its embedded defaults. Dataset shortcuts, path presets and legacy experiment
+environment variables are implemented in `benchmark/src/config`.
+
+The production CLI, Rust and Python use shared `IndexOptions` defaults instead.
+They never load YAML or resolve dataset shortcuts. The runtime owns validated
+recipes, storage compatibility and execution; each frontend owns its input syntax.
+See the [CLI guide](cli.md) for explicit file inputs and offline preflight.
 
 ## Resolution
 
 - Presets are optional. Without one, the name is `anonymous`; an unknown named
   preset is an error. Base/query paths and metric must then be supplied, with
   dimension inferred from the base header when omitted.
-- CLI input paths override corresponding preset paths. An overridden path
+- Benchmark input paths override corresponding preset paths. An overridden path
   discards its preset count. Ground truth is optional; `--no-groundtruth`
   disables preset GT. `--prepare-only` needs no queries.
 - Construction parameters use CLI → dataset overrides → global defaults.
 - Cascade selection uses dimension/metric defaults → dataset axes → CLI axes.
   Global legacy cascade fields are not the anonymous-data selector.
-- Graph policy uses CLI/legacy environment → YAML → auto. See
+- Graph policy uses Benchmark flags/legacy environment → YAML → auto. See
   [the complete precedence and fallback rules](graph-sources.md).
 - k selects its YAML L schedule; `--search-list-sizes` supplies an explicit
   schedule. Unknown k requires a configured schedule or that override.
-  `orion --search-l` selects one beam width and consumes queries once.
+  The separate production `orion --search-l` selects one beam width and consumes queries once.
 
 `SearchPlan` validates storage, input encodings, metric and cascade together.
 Serialized `vector_storage` and `cascade` are derived from it. Native u8 requires
 L2, byte base/query input, and `none/native-l2-u8/none` with PA. Dimensions
 are inferred at runtime, with internal row padding for the selected SIMD kernel.
 It does not silently quantize f32 input or fall back to a Rust build.
+
+## Benchmark residency and trusted caches
+
+`orion-sweep` uses the same bounded auto pin policy as Rust `Index`, Python and
+CLI: available RAM, lock-page allowance and the optional memory budget bound
+best-effort locks for the graph and required datasets. Shared `prepare_search`
+materializes those requirements and applies `auto_pin` in one step, independently
+of the `cli` feature. The residency guard releases
+locks after the run. `--no-auto-pin` disables these locks; query buffers are not
+locked separately. The other benchmark Orion runners use this policy too.
+
+Benchmark loaders trust experiment-owned cache contents and skip graph/sidecar
+SHA-256 verification. They still validate headers, dimensions, lengths and graph
+edges. This is an explicit benchmark execution policy, not a consequence of Cargo
+feature unification: production `Index::open`, snapshots and the CLI retain their
+integrity checks even in a build that also enables `benchmark`.
+
+Default content-addressed lookup still hashes the base to identify its cache.
+To skip that scan too, select the exact existing record or legacy metadata file:
+
+```bash
+cargo run --release --manifest-path benchmark/Cargo.toml --bin orion-sweep -- \
+  sift --graph-source parlayann --cache-file /data/cache/<digest>.cache.json
+
+# Historical V5/V6 metadata and its adjacent .pgraph; no graph rebuild.
+cargo run --release --manifest-path benchmark/Cargo.toml --bin orion-sweep -- \
+  sift --graph-source parlayann --cache-file /data/cache/sift-old.bin
+```
+
+With explicit selection, the experiment owner must match the base, graph and
+construction recipe. V5 contains no dataset identity/shape; its node count and
+layout are checked, but equal-shaped datasets cannot be distinguished without
+hashing. Unknown binary versions are rejected. Compatible legacy sidecars are
+loaded directly; absent or incompatible sidecars are prepared by the existing
+lazy dataset path. New benchmark sidecars remain flat, without production
+verification receipts. Newly built content-addressed graphs still need hashes
+for their object names. These changes shorten preparation, which remains outside
+search QPS timing.
 
 ## Preset construction recipes
 

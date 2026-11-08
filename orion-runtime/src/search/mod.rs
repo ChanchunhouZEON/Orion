@@ -64,23 +64,6 @@ pub trait SearchBackend: sealed::BuiltIn {
         )
     }
 
-    /// Recheck the configured memory budget, then attempt to lock prepared
-    /// search datasets for the driver's entire search phase. A passing estimate
-    /// does not grant OS locking permission; refusals are reported and pageable
-    /// search remains available. No sidecars are built by this operation.
-    #[cfg(feature = "cli")]
-    fn auto_pin_search_storage<'a>(
-        index: &'a orion_ann_core::Orion<Self::Element>,
-        config: &ResolvedRunConfig,
-    ) -> Result<crate::PinnedDatasets<'a>> {
-        crate::preflight::check_memory_budget(config, index.len())?;
-        Self::pin_search_storage(
-            index,
-            config,
-            &crate::residency::automatic_options(config.memory_budget_gib)?,
-        )
-    }
-
     fn pin_hints(
         index: &orion_ann_core::Orion<Self::Element>,
         config: &ResolvedRunConfig,
@@ -96,8 +79,34 @@ pub trait SearchBackend: sealed::BuiltIn {
         )
     }
 
-    /// Materialize the recipe before publishing a calibrated, shareable index.
-    fn prepare_search(
+    /// Prepare a search generation, including its optional automatic residency.
+    /// All frontends retain the returned guard for the search lifetime. This is
+    /// independent of the `cli` feature and never runs in the per-query path.
+    fn prepare_search<'a>(
+        index: &'a orion_ann_core::Orion<Self::Element>,
+        config: &ResolvedRunConfig,
+    ) -> Result<crate::PinnedDatasets<'a>> {
+        crate::preflight::check_search_budget(
+            config,
+            index.len(),
+            index.graph().stride() as u64 * 4,
+        )?;
+        Self::prepare_datasets(index, config)?;
+        crate::residency::automatic_pin(
+            index,
+            bytemuck::cast_slice(index.dataset().as_slice()),
+            orion_ann_core::QuantizedDatasetShape {
+                rows: index.len(),
+                dimension: index.dataset().layout().logical_dim(),
+            },
+            &config.cascade().dataset_requirements(),
+            config.auto_pin,
+            config.memory_budget_gib,
+        )
+    }
+
+    /// Representation-specific materialization, before the common residency step.
+    fn prepare_datasets(
         index: &orion_ann_core::Orion<Self::Element>,
         config: &ResolvedRunConfig,
     ) -> Result<()>;
@@ -149,7 +158,7 @@ pub struct F32CascadeBackend;
 impl SearchBackend for F32CascadeBackend {
     type Element = f32;
 
-    fn prepare_search(
+    fn prepare_datasets(
         index: &orion_ann_core::Orion<f32>,
         config: &ResolvedRunConfig,
     ) -> Result<()> {
@@ -232,7 +241,7 @@ pub struct NativeU8L2Backend;
 impl SearchBackend for NativeU8L2Backend {
     type Element = u8;
 
-    fn prepare_search(
+    fn prepare_datasets(
         _index: &orion_ann_core::Orion<u8>,
         _config: &ResolvedRunConfig,
     ) -> Result<()> {

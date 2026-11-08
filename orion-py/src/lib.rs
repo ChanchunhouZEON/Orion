@@ -263,13 +263,14 @@ impl PyIndex {
     }
 
     #[staticmethod]
-    #[pyo3(signature = (reference, base, threads=None, memory_budget_gib=None))]
+    #[pyo3(signature = (reference, base, threads=None, memory_budget_gib=None, auto_pin=None))]
     fn open(
         py: Python<'_>,
         reference: String,
         base: &Bound<'_, PyAny>,
         threads: Option<usize>,
         memory_budget_gib: Option<f64>,
+        auto_pin: Option<bool>,
     ) -> PyResult<Self> {
         boundary(py, "open", || {
             let input = match base.extract::<String>() {
@@ -281,6 +282,7 @@ impl PyIndex {
                 orion_ann::OpenOptions {
                     threads,
                     memory_budget_gib,
+                    auto_pin,
                 }
                 .open(source, input)
             })

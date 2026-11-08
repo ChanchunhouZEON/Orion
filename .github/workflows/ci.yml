@@ -12,7 +12,7 @@ on:
       - '**/Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
-      - 'vector/**'
+      - 'orion-vector/**'
       - 'orion-diskann/**'
       - 'orion-core/**'
       - 'orion-cli/**'
@@ -22,7 +22,7 @@ on:
       - 'orion-wasm/**'
       - 'orion-parlay/**'
       - 'orion-py/**'
-      - 'platform/**'
+      - 'orion-platform/**'
       - 'adsampling/**'
       - 'orion-logger/**'
       - 'benchmark/**'
@@ -33,7 +33,7 @@ on:
       - '**/Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
-      - 'vector/**'
+      - 'orion-vector/**'
       - 'orion-diskann/**'
       - 'orion-core/**'
       - 'orion-cli/**'
@@ -43,7 +43,7 @@ on:
       - 'orion-wasm/**'
       - 'orion-parlay/**'
       - 'orion-py/**'
-      - 'platform/**'
+      - 'orion-platform/**'
       - 'adsampling/**'
       - 'orion-logger/**'
       - 'benchmark/**'
@@ -245,6 +245,8 @@ jobs:
           python3 .github/scripts/check_workspace_features.py
           cargo fmt --manifest-path benchmark/Cargo.toml --all --check
           cargo check --locked --manifest-path benchmark/Cargo.toml --all-targets
+          cargo test --locked --manifest-path benchmark/Cargo.toml --lib
+          cargo test --locked -p orion-ann --features benchmark --lib
           cargo test --locked -p orion-ann-core --features benchmark --tests
       - name: Native ParlayANN FFI and service regressions
         run: cargo test --locked -p orion-ann-parlay -p orion-ann -p orion-ann-cli

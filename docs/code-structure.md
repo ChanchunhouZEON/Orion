@@ -7,9 +7,10 @@ Licensed under the MIT License.
 
 The runtime is grouped by responsibility and shared directly by CLI, Python and
 benchmark callers. `orion-cli` is binary-only: it has no library or forwarding
-modules. The runtime's optional `cli` feature enables flag parsing, YAML presets
-and legacy environment resolution; Python's programmatic options do not depend
-on those features.
+modules. CLI syntax and conversion to `IndexOptions` live in `orion-cli`.
+YAML, dataset shortcuts and legacy experiment environment resolution live only
+in the independent benchmark workspace. The runtime supplies shared validation
+and execution services to all adapters.
 
 ```text
 orion-runtime/src/          # Public orion-ann facade
@@ -21,8 +22,16 @@ orion-runtime/src/          # Public orion-ann facade
     query.rs               # Borrowed QueryBatch, SearchOptions and shared search
     view.rs                # Resident generation, payload identities and engine
     snapshot/              # Manifest encoding, verification and publication
-  config/                  # Programmatic options and validated execution plan
-  driver/                  # Optional CLI/environment/preset parsing and affinity
+  config/
+    options.rs             # IndexOptions aggregation and service resolution
+    data.rs                # Metric and resident storage representation
+    graph.rs               # Graph policy, recipe and core BuildConfig conversion
+    execution.rs           # Worker/window bounds and resolved sweep record
+    resources.rs           # Budget validation and GiB conversion
+    cascade/               # Choices, defaults, compatibility and requirements
+    plan.rs                # Base/search compatibility boundary
+    resolved.rs            # Resolved run and stable graph-cache identity
+  execution.rs             # Optional adapter support; no parsing or presets
   data/                    # Formats, padded readers and streaming query decoding
   graph/
     mod.rs                 # Build/import/load orchestration
@@ -45,7 +54,13 @@ orion-parlay/
 
 orion-cli/
   src/main.rs              # One-pass CLI, JSONL results and calibration summary
+  src/args.rs              # CLI syntax
+  src/resolve.rs           # Explicit input -> shared IndexOptions
   tests/                   # CLI execution and offline-preflight integration tests
+
+benchmark/
+  configs/sweep.yaml       # Experiment-only dataset paths and sweep defaults
+  src/config/             # YAML/preset parsing and benchmark CLI resolution
 
 orion-py/
   src/lib.rs               # PyO3 ownership boundary, GIL release and per-index lock
@@ -116,7 +131,7 @@ orion-core/
       compressed_index.rs           # Orion: ensure_quantized_dataset_*() accessors,
                                     #   PhasedGraph construction, OnceLock-cached sidecars
 
-vector/
+orion-vector/
   src/
     distance_stream.rs              # DistanceStream<K>: address resolution, bounded near cursor,
                                     #   group/burst scheduling and intentional near/far overlap

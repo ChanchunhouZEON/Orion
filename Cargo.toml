@@ -15,8 +15,8 @@ members = [
     "orion-wasm",
     "orion-parlay",
     "orion-py",
-    "platform",
-    "vector",
+    "orion-platform",
+    "orion-vector",
 ]
 # Python is built explicitly (or with maturin); ordinary Rust workspace builds
 # do not require a Python development environment. The extension's build.rs
@@ -32,8 +32,8 @@ default-members = [
     "orion-error",
     "orion-wasm",
     "orion-parlay",
-    "platform",
-    "vector",
+    "orion-platform",
+    "orion-vector",
 ]
 resolver = "2"
 

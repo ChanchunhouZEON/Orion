@@ -556,6 +556,14 @@ mod tests {
 }
 
 impl<D> CompressedIndex<D, DynamicSidecars> {
+    /// Runtime residency policy must respect explicit on-demand code placement.
+    #[doc(hidden)]
+    pub fn prepared_pq_code_storage(
+        &self,
+    ) -> Option<crate::model::dataset::quantized_dataset::pq::PqCodeStorage> {
+        self.sidecars.q_dataset_pq.get().map(|pq| pq.code_storage())
+    }
+
     /// Change placement of prepared PQ codes without changing the fitted model.
     /// Exclusively borrows the index so no search or pin guard can retain old codes.
     /// # Errors

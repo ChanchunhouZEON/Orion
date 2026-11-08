@@ -173,22 +173,12 @@ macro_rules! search_batch_orion {
 /// Prepare requirements, then hold their RAM residency across the sweep.
 macro_rules! pin_orion_hot {
     ($idx:ident, $self:ident) => {{
-        use orion_ann::benchmark::residency::{pin, prepare, DatasetRequirements};
+        use orion_ann::benchmark::residency::{auto_pin, prepare, DatasetRequirements};
         let requirements =
             DatasetRequirements::from_cascade($self.prefilter, $self.admission, $self.rerank)
                 .expect("dataset requirements");
         prepare($idx, &requirements).expect("prepare search datasets");
-        let pg = $idx.graph().buffer_bytes();
-        crate::utils::mlock_bytes("orion pgraph slab", pg.as_ptr(), pg.len());
-        pin(
-            $idx,
-            &requirements,
-            &orion_ann::PinOptions {
-                budget_bytes: usize::MAX,
-                ..Default::default()
-            },
-        )
-        .expect("pin prepared datasets")
+        auto_pin($idx, &requirements, true, None).expect("pin prepared datasets")
     }};
 }
 
@@ -197,11 +187,8 @@ impl OrionRunner {
         self.search_list_size = sls;
     }
 
-    /// Pin the dataset, quantized sidecar, and PhasedGraph slab into
-    /// RAM via `mlock(2)` so warmup + timed trials see the same
-    /// resident pages. Mirrors the timed-region setup in
-    /// `orion.rs`. Call once after `build()` and before the
-    /// timing loop.
+    /// Hold bounded, best-effort automatic residency across the timing loop.
+    /// The returned guard releases locks before any index allocation is dropped.
     pub fn pin_hot_regions(&self) -> orion_ann::PinnedDatasets<'_> {
         match self.inner.as_ref().expect("Index not built") {
             OrionInner::Dim32 { idx } => pin_orion_hot!(idx, self),

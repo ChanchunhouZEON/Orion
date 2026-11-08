@@ -3,7 +3,7 @@
  * Licensed under the MIT License.
  */
 
-use orion_ann::benchmark::config;
+use benchmark::config;
 mod dataset;
 mod metrics;
 mod report;
@@ -612,31 +612,8 @@ fn run_thread_sweep(dataset: &Dataset, k: usize, overrides: &config::SweepOverri
     // (3-4× slower per op) under sustained pressure or thermal load.
     utils::set_thread_qos_user_interactive();
 
-    // Pin the hot regions into RAM so warmup + timed trials see the
-    // same resident pages — no page-in cost on the timed-side critical
-    // path. Mirrors `orion`'s mlock setup.
-    //
-    // We pin: orion's f32 dataset, quantized sidecar (L2Q for SIFT/GIST),
-    // PhasedGraph slab, plus the query batch. DiskANN's internal graph
-    // sits behind `Box<dyn ANNInmemIndex>` and isn't directly addressable
-    // from here — its first-trial pages are still warmed by the per-pool
-    // warmup pass below, just not formally mlocked. If `RLIMIT_MEMLOCK`
-    // is too low the calls log a warning and fall back to ordinary
-    // paging without aborting.
+    // Share the production automatic budget and retain its guard through timing.
     let _residency = orion_runner.pin_hot_regions();
-    {
-        // Queries are a `Vec<Vec<f32>>`. The outer Vec's heap is small
-        // (one `Vec<f32>` header per query); the actual f32 payload
-        // lives in each inner Vec's heap allocation. Pinning the outer
-        // Vec's contiguous header array is cheap and mostly symbolic
-        // — the per-query payload pages are walked during search and
-        // brought in naturally by the warmup pass. For a future
-        // refactor that flattens `queries` to a single `Vec<f32>`,
-        // this single mlock would also cover the payload.
-        let q_ptr = queries.as_ptr() as *const u8;
-        let q_len = queries.len() * std::mem::size_of::<Vec<f32>>();
-        utils::mlock_bytes("queries (headers)", q_ptr, q_len);
-    }
 
     println!(
         "\n─── Thread Sweep [{} {}pts, k={k}, L={search_l}, {} queries, {trials} trials] ───\n",
@@ -2629,8 +2606,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
             let requirements=orion_ann::benchmark::residency::DatasetRequirements::from_cascade(
                 ocfg.prefilter,ocfg.admission,ocfg.rerank).expect("dataset requirements");
             pool.install(|| orion_ann::benchmark::residency::prepare(&idx,&requirements)).expect("prepare datasets");
-            let _residency=orion_ann::benchmark::residency::pin(&idx,&requirements,
-                &orion_ann::PinOptions{budget_bytes:usize::MAX,..Default::default()}).expect("pin datasets");
+            let _residency=orion_ann::benchmark::residency::auto_pin(&idx,&requirements,true,None).expect("pin datasets");
 
             // Generic measure closure: time a search fn over `queries`
             // × `search_list_sizes` × `trials`, return median QPS per L.

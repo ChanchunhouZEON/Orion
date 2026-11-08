@@ -4,9 +4,10 @@
  */
 
 //! EE-disabled same-graph neighbor-policy experiment.
+use benchmark::config::Args as RunArgs;
 use orion_ann::benchmark::cascade;
 use orion_ann::benchmark::utils;
-use orion_ann::benchmark::{graph, memory, Args as RunArgs, LoadedDataset, ResolvedRunConfig};
+use orion_ann::benchmark::{graph, memory, LoadedDataset, ResolvedRunConfig};
 use orion_ann::with_supported_dimension;
 use orion_ann_core::{Error, Result};
 

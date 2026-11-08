@@ -5,7 +5,7 @@
 
 //! Central config loader for `benchmark/configs/sweep.yaml`.
 //!
-//! The standalone CLI resolves raw presets through `config::cli`; older
+//! Benchmark executables resolve raw presets through `config::cli`; other
 //! benchmark/profiling utilities consume [`load_dataset_config`] metadata.
 //! The YAML file is the single source of truth for:
 //!
@@ -37,7 +37,7 @@ use std::path::PathBuf;
 
 /// Legacy benchmark metadata shares the CLI policy vocabulary. Availability is
 /// resolved by `config::cli`, where cache identity and storage type are known.
-pub use crate::config::GraphSourcePolicy as BaseGraphSource;
+pub use orion_ann::GraphSourcePolicy as BaseGraphSource;
 
 /// Legacy preset metadata for one dataset. Graph availability is resolved by
 /// the CLI, where cache identity and resident storage are also known.
@@ -65,9 +65,9 @@ pub struct OrionConfig {
     /// search pipeline reads these to build the prefilter / admission
     /// / rerank stages. Mirrors the `Cascade::default_for_dataset`
     /// mapping in `orion.rs`.
-    pub prefilter: crate::config::cascade::PrefilterChoice,
-    pub admission: crate::config::cascade::AdmissionChoice,
-    pub rerank: crate::config::cascade::RerankChoice,
+    pub prefilter: orion_ann::benchmark::config::PrefilterChoice,
+    pub admission: orion_ann::benchmark::config::AdmissionChoice,
+    pub rerank: orion_ann::benchmark::config::RerankChoice,
 }
 
 #[derive(Clone, Debug)]
@@ -81,7 +81,6 @@ pub struct BaseGraphConfig {
 pub struct SweepConfig {
     pub k: usize,
     pub threads: usize,
-    #[cfg(any(test, feature = "benchmark"))]
     pub trials: usize,
     pub calibration: CalibrationSettings,
     #[serde(default)]
@@ -93,7 +92,6 @@ pub struct SweepConfig {
 pub struct CalibrationSettings {
     pub samples: usize,
     pub base_l: usize,
-    #[cfg(any(test, feature = "benchmark"))]
     pub diagnostic_l: usize,
 }
 
@@ -102,7 +100,6 @@ impl CalibrationSettings {
         orion_ann_core::calibration_search_list_size!(self.base_l, k)
     }
 
-    #[cfg(any(test, feature = "benchmark"))]
     pub fn diagnostic_search_list_size(&self, k: usize) -> usize {
         orion_ann_core::calibration_search_list_size!(self.diagnostic_l, k)
     }
@@ -111,7 +108,6 @@ impl CalibrationSettings {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct ProfileDefaults {
     pub threads: Option<usize>,
-    #[cfg(any(test, feature = "benchmark"))]
     pub trials: Option<usize>,
 }
 
@@ -122,11 +118,10 @@ pub struct SweepOverrides {
     #[arg(long)]
     pub threads: Option<usize>,
     #[arg(long)]
-    #[cfg(any(test, feature = "benchmark"))]
     pub trials: Option<usize>,
 }
 
-pub use crate::config::ResolvedSweep;
+pub use orion_ann::benchmark::config::ResolvedSweep;
 
 impl SweepConfig {
     pub fn resolve(
@@ -134,35 +129,32 @@ impl SweepConfig {
         profile: &str,
         k: usize,
         overrides: &SweepOverrides,
-    ) -> crate::Result<ResolvedSweep> {
+    ) -> orion_ann::Result<ResolvedSweep> {
         let search_list_sizes = overrides.search_list_sizes.clone().or_else(|| {
             self.schedules_by_k.get(&k).and_then(|row| row.get(profile)).cloned()
         }).ok_or_else(|| format!("no sweep.schedules_by_k entry for k={k}, profile={profile}; add one or pass --search-list-sizes"))?;
-        crate::search::utils::validate_search_list_sizes(k, &search_list_sizes)?;
+        orion_ann::benchmark::config::validate_search_list_sizes(k, &search_list_sizes)?;
         let defaults = self.profiles.get(profile);
         let threads = overrides
             .threads
             .or_else(|| defaults.and_then(|p| p.threads))
             .unwrap_or(self.threads);
-        #[cfg(any(test, feature = "benchmark"))]
         let trials = overrides
             .trials
             .or_else(|| defaults.and_then(|p| p.trials))
             .unwrap_or(self.trials);
-        #[cfg(any(test, feature = "benchmark"))]
         if trials == 0 || self.calibration.diagnostic_l == 0 {
             return Err("trials and diagnostic_l must be positive".into());
         }
-        if threads == 0 || self.calibration.samples == 0 || self.calibration.base_l == 0 {
-            return Err("threads, calibration samples and base_l must be positive".into());
+        orion_ann::benchmark::config::validate_positive_threads(threads)?;
+        if self.calibration.samples == 0 || self.calibration.base_l == 0 {
+            return Err("calibration samples and base_l must be positive".into());
         }
         Ok(ResolvedSweep {
             k,
-            #[cfg(any(feature = "benchmark", test))]
             profile: profile.into(),
             search_list_sizes,
             threads,
-            #[cfg(any(feature = "benchmark", test))]
             trials,
             calibration_samples: self.calibration.samples,
             calibration_l: self.calibration.search_list_size(k),
@@ -220,7 +212,7 @@ pub struct RawDataset {
     pub num_queries: Option<usize>,
     pub max_points: Option<usize>,
     pub dimension: usize,
-    pub metric: Option<crate::config::cascade::SearchMetric>,
+    pub metric: Option<orion_ann::benchmark::config::SearchMetric>,
     pub paths: Option<RawPaths>,
     pub base_graph: Option<RawBaseGraph>,
     pub diskann: Option<RawDiskANNOverride>,
@@ -267,7 +259,7 @@ pub const DEFAULT_CONFIG: &str = include_str!("../../configs/sweep.yaml");
 
 /// Read presets without panicking on user-supplied files. Failed reads are not
 /// cached, so callers can correct configuration and retry in the same process.
-pub fn try_load_root() -> crate::Result<&'static RawRoot> {
+pub fn try_load_root() -> orion_ann::Result<&'static RawRoot> {
     static ROOT: std::sync::OnceLock<RawRoot> = std::sync::OnceLock::new();
     if let Some(root) = ROOT.get() {
         return Ok(root);
@@ -275,13 +267,13 @@ pub fn try_load_root() -> crate::Result<&'static RawRoot> {
     let (text, path) = match std::env::var("ORION_SWEEP_CONFIG") {
         Ok(path) => {
             let text = std::fs::read_to_string(&path)
-                .map_err(|e| crate::Error::io("read_config", std::path::Path::new(&path), e))?;
+                .map_err(|e| orion_ann::Error::io("read_config", std::path::Path::new(&path), e))?;
             (text, path)
         }
         Err(_) => (DEFAULT_CONFIG.to_owned(), "<bundled presets>".into()),
     };
     let root = serde_yaml::from_str(&text).map_err(|e| {
-        crate::Error::invalid_data(format!("invalid YAML: {e}"))
+        orion_ann::Error::invalid_data(format!("invalid YAML: {e}"))
             .at("read_config")
             .with_detail("path", path)
             .with_source(e)
@@ -362,17 +354,17 @@ fn resolve_dataset(root: &RawRoot, name: &str) -> DatasetConfig {
         window_size: ov
             .and_then(|o| o.window_size)
             .unwrap_or(orion_d.window_size),
-        prefilter: parse_cascade_str::<crate::config::cascade::PrefilterChoice>(
+        prefilter: parse_cascade_str::<orion_ann::benchmark::config::PrefilterChoice>(
             ov.and_then(|o| o.prefilter.as_deref())
                 .unwrap_or(orion_d.prefilter.as_str()),
             "prefilter",
         ),
-        admission: parse_cascade_str::<crate::config::cascade::AdmissionChoice>(
+        admission: parse_cascade_str::<orion_ann::benchmark::config::AdmissionChoice>(
             ov.and_then(|o| o.admission.as_deref())
                 .unwrap_or(orion_d.admission.as_str()),
             "admission",
         ),
-        rerank: parse_cascade_str::<crate::config::cascade::RerankChoice>(
+        rerank: parse_cascade_str::<orion_ann::benchmark::config::RerankChoice>(
             ov.and_then(|o| o.rerank.as_deref())
                 .unwrap_or(orion_d.rerank.as_str()),
             "rerank",
@@ -474,7 +466,7 @@ fn default_for(_var: &str) -> Option<String> {
 /// helpful error message keyed on which axis we're reading. Wraps the
 /// per-enum `FromStr` impls so the YAML loader can fail fast with a
 /// pointed message on a typo.
-fn parse_cascade_str<T: std::str::FromStr<Err = crate::Error>>(s: &str, axis: &str) -> T {
+fn parse_cascade_str<T: std::str::FromStr<Err = orion_ann::Error>>(s: &str, axis: &str) -> T {
     T::from_str(s).unwrap_or_else(|e| panic!("sweep.yaml orion.{axis} = {s:?} — {e}"))
 }
 

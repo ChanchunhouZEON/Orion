@@ -64,7 +64,7 @@ fn mean_recall(results: &[Vec<u32>], gt: &[Vec<u32>], k: usize) -> f64 {
 
 fn metric_default_for_dataset(_dataset: &str) -> Metric {
     // The `diskann` core crate's f32 distance kernel only implements
-    // L2 (Cosine panics at runtime — see `vector/src/distance.rs:57`).
+    // L2 (Cosine panics at runtime — see `orion-vector/src/distance.rs:57`).
     // For datasets whose intrinsic ranking is MIPS / cosine
     // (glove*, msmarco_bert_1M, wiki_ada_1M) we instead L2-normalise
     // the input data before handing it to DiskANN — L2 on unit-norm

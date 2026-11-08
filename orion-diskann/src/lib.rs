@@ -10,3 +10,7 @@ pub mod instrumentation;
 pub mod model;
 pub mod storage;
 pub mod utils;
+
+#[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+mod test_support;

@@ -15,7 +15,7 @@ use crate::{Error, Result};
 /// Immutable compatibility boundary for base representation and search recipe.
 /// The private fields prevent independently replacing one half of a valid plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct IndexPlan {
+pub struct IndexPlan {
     base: BaseRepresentation,
     search: SearchRecipe,
 }
@@ -40,7 +40,7 @@ impl IndexPlan {
     /// original byte representation rather than constructing auxiliary
     /// quantized storage.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn resolve(
+    pub fn resolve(
         vector_storage: VectorStorageKind,
         dimension: usize,
         metric: SearchMetric,
@@ -49,6 +49,7 @@ impl IndexPlan {
         cascade: Cascade,
         graph_source: GraphSource,
     ) -> Result<Self> {
+        cascade.validate_cascade_options(metric)?;
         match vector_storage {
             VectorStorageKind::F32 => {
                 orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::L2F32Distance>(
@@ -104,7 +105,6 @@ impl IndexPlan {
                 )
                 .at("configure"))
             } else {
-                cascade.validate_cascade_options(metric)?;
                 Ok(Self {
                     base: BaseRepresentation(vector_storage),
                     search: SearchRecipe::Cascade(cascade),
@@ -122,15 +122,9 @@ impl IndexPlan {
         // Float encodings are rejected rather than silently quantized because
         // quantization requires an explicit policy and would defeat the purpose
         // of preserving the original resident representation.
-        if !matches!(base_format, VectorFormat::Bvecs | VectorFormat::U8bin)
-            || !matches!(query_format, VectorFormat::Bvecs | VectorFormat::U8bin)
-        {
-            return Err(Error::unsupported(
-                "native u8 requires bvecs/u8bin base and queries; \
-                 it does not quantize floats",
-            )
-            .at("configure"));
-        }
+        let base = BaseRepresentation(vector_storage);
+        base.validate_format(base_format)?;
+        base.validate_format(query_format)?;
 
         // The native-u8 path is not a configurable three-stage cascade:
         //
@@ -189,6 +183,18 @@ impl IndexPlan {
 }
 
 impl BaseRepresentation {
+    pub(crate) fn validate_format(self, format: VectorFormat) -> Result<()> {
+        if self.0 == VectorStorageKind::U8
+            && !matches!(format, VectorFormat::Bvecs | VectorFormat::U8bin)
+        {
+            return Err(Error::unsupported(
+                "native u8 requires bvecs/u8bin base and queries; it does not quantize floats",
+            )
+            .at("configure"));
+        }
+        Ok(())
+    }
+
     pub(crate) fn kind(self) -> VectorStorageKind {
         self.0
     }
@@ -204,11 +210,7 @@ impl SearchRecipe {
     fn cascade(self) -> Cascade {
         match self {
             Self::Cascade(cascade) => cascade,
-            Self::NativeL2U8 => Cascade {
-                prefilter: PrefilterChoice::None,
-                admission: AdmissionChoice::NativeL2U8,
-                rerank: RerankChoice::None,
-            },
+            Self::NativeL2U8 => Cascade::native_l2_u8(),
         }
     }
 }

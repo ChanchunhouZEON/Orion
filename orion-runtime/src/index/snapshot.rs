@@ -59,6 +59,8 @@ impl From<&SnapshotRef> for SnapshotSource {
 pub struct OpenOptions {
     pub threads: Option<usize>,
     pub memory_budget_gib: Option<f64>,
+    /// Override the saved deployment policy; resources are always probed afresh.
+    pub auto_pin: Option<bool>,
 }
 
 impl OpenOptions {
@@ -95,6 +97,9 @@ impl OpenOptions {
         }
         if self.memory_budget_gib.is_some() {
             options.memory_budget_gib = self.memory_budget_gib;
+        }
+        if let Some(auto_pin) = self.auto_pin {
+            options.auto_pin = auto_pin;
         }
         Index::load(input, options, Some(snapshot))
     }

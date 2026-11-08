@@ -61,7 +61,7 @@ class IndexTests(unittest.TestCase):
         self.assertEqual(left.counts.dtype, np.uint32)
 
     def cli(self, base, query, cache, metric, storage, k):
-        args = [os.environ["ORION_TEST_CLI"], "anonymous", "--base", str(base), "--query", str(query),
+        args = [os.environ["ORION_TEST_CLI"], "--base", str(base), "--query", str(query),
                 "--no-groundtruth", "--metric", metric,
                 "--vector-storage", storage, "--graph-source", "parlayann", "--staged-file", str(self.staged),
                 "--graph-degree", "8", "--build-l", "32", "--alpha", "1.2", "--max-extra", "4",
@@ -73,6 +73,45 @@ class IndexTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         records = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
         return [v["ids"] for v in records if v.get("type") == "result"], next(v for v in records if v.get("type") == "summary")
+
+    def test_automatic_residency_policy_and_snapshot_cli_parity(self):
+        base, queries = self.arrays()
+        bp, qp = self.root / "auto-base.fbin", self.root / "auto-query.fbin"
+        write_vectors(bp, base); write_vectors(qp, queries)
+        index = Index.from_file(bp, graph=self.graph, cache_dir=self.root / "auto-cache", threads=2)
+        index.calibrate(queries, k=3, search_list_size=24)
+        residency = index.info["residency"]
+        self.assertTrue(residency["automatic"]["enabled"])
+        self.assertLessEqual(residency["pinned_bytes"], residency["automatic"]["budget_bytes"])
+        snapshot = index.save(self.root / "auto-snapshot")
+        expected = index.search(queries, k=3, search_list_size=24)
+        off = Index.open(snapshot, base=bp, auto_pin=False)
+        self.assertFalse(off.info["residency"]["automatic"]["enabled"])
+        self.assertEqual(off.info["residency"]["pinned_bytes"], 0)
+        self.assert_results(expected, off.search(queries, k=3, search_list_size=24))
+        for disabled in (False, True):
+            args = [os.environ["ORION_TEST_CLI"], "--snapshot", snapshot.path,
+                    "--base", str(bp), "--query", str(qp), "--k", "3", "--search-l", "24"]
+            if disabled:
+                args.append("--no-auto-pin")
+            run = subprocess.run(args, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            rows = [json.loads(line) for line in run.stdout.splitlines()]
+            report = rows[-1]["residency"]
+            self.assertEqual(report["automatic"]["enabled"], not disabled)
+            self.assertLessEqual(report["pinned_bytes"], report["automatic"]["budget_bytes"])
+            self.assertEqual([r["ids"] for r in rows[:-1]],
+                             [row[:n].tolist() for row, n in zip(expected.ids, expected.counts)])
+
+        # An absent CLI override inherits the saved policy, just like Rust/Python.
+        saved_off = off.save(self.root / "off-snapshot")
+        inherited = subprocess.run([os.environ["ORION_TEST_CLI"], "--snapshot", saved_off.path,
+            "--base", str(bp), "--query", str(qp), "--k", "3", "--search-l", "24"],
+            capture_output=True, text=True)
+        self.assertEqual(inherited.returncode, 0, inherited.stderr)
+        report = json.loads(inherited.stdout.splitlines()[-1])["residency"]
+        self.assertFalse(report["automatic"]["enabled"])
+        self.assertEqual(report["pinned_bytes"], 0)
 
     def test_file_array_cli_parity_and_cached_reload(self):
         for metric, dtype, dim, suffix in [("l2", np.float32, 32, ".fbin"),
@@ -252,8 +291,9 @@ class IndexTests(unittest.TestCase):
         with self.assertRaisesRegex(OrionError, "non-finite"): self.make(broken)
         with self.assertRaisesRegex(OrionError, "budget"):
             self.make(base, memory_budget_gib=1e-10)
-        with self.assertRaisesRegex(OrionError, "threads"):
+        with self.assertRaises(OrionError) as invalid_threads:
             Index.from_array(base, threads=0, graph=self.graph, cache_dir=self.root / "bad")
+        self.assertEqual(invalid_threads.exception.details["field"], "threads")
         index = self.make(base)
         for k, beam in [(0, 32), (65, 65), (10, 9)]:
             with self.assertRaises(OrionError): index.search(queries, k=k, search_list_size=beam)

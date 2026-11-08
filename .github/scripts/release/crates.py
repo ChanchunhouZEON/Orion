@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix='orion-crate-validation-') as temporary:
     assert set(packages) == PACKAGES, packages
     assert (packages['orion-ann-parlay'] / 'cpp/bridge.cpp').is_file()
     assert (packages['orion-ann-parlay'] / 'vendor/algorithms/vamana/index.h').is_file()
-    assert (packages['orion-ann'] / 'configs/sweep.yaml').is_file()
+    assert not (packages['orion-ann'] / 'configs').exists(), 'dataset presets belong to benchmark'
 
     # Patch only the unpublished Orion packages, using extracted .crate payloads.
     # The consumer has no dependency on the checkout, scripts, or its .cargo flags.

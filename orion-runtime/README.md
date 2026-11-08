@@ -19,9 +19,8 @@ panic contracts. Enable `cli` only for preset/command-line configuration support
 orion-ann = "0.1.0"
 ```
 
-The embedded preset is `configs/sweep.yaml`. Runtime use does not depend on the
-repository's benchmark folder. Each snapshot directory contains one manifest. Keep the external base and the
-shared object store beside the working cache when backing up or clearing cache files.
+Dataset presets and YAML configuration belong exclusively to the unpublished benchmark package.
+The CLI, Rust and Python interfaces share `IndexOptions` defaults.
 
 The default `parlay` feature bundles the ParlayANN memory builder for f32/u8 and
 requires a C++17 compiler on Linux/macOS. Cache/STAG loading remains available
@@ -31,8 +30,8 @@ for f32 only. Explicit missing staged files and corrupt caches remain errors.
 Ordinary applications need only this package. Search stages are supplied by Orion. Enable `benchmark` for research-only diagnostics and timing controls.
 
 The default Rust API exports the owned index, input constructors, configuration
-and result types, snapshot references, errors and search traces. CLI plumbing
-is available under `driver` with the `cli` feature. Python enables
+and result types, snapshot references, errors and search traces. Adapter execution helpers
+are available under `execution` with the `cli` feature; argument parsing lives in `orion-cli`. Python enables
 `file-queries` for query-file decoding. The separate experiment executables use
 the `benchmark` module. Raw allocations, graph loaders and resolved recipes
 are not part of the default API.

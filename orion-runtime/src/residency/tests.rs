@@ -27,12 +27,11 @@ fn shape() -> QuantizedDatasetShape {
     }
 }
 
-#[cfg(feature = "cli")]
 #[test]
-fn automatic_driver_pinning_checks_budget_before_borrowing_storage() {
+fn search_preparation_checks_budget_then_automatically_pins() {
     use crate::search::{F32CascadeBackend, SearchBackend};
     let index = index();
-    // Preflight only inspects this absent path; it must not create cache files.
+    // Resident preparation must not open input/cache files or require a CLI feature.
     let directory = std::env::temp_dir().join(format!(
         "orion-auto-pin-{}-{}",
         std::process::id(),
@@ -62,23 +61,29 @@ fn automatic_driver_pinning_checks_budget_before_borrowing_storage() {
         )
         .unwrap();
     config.prepare_only = false;
-    let error = F32CascadeBackend::auto_pin_search_storage(&index, &config).unwrap_err();
+    let error = F32CascadeBackend::prepare_search(&index, &config).unwrap_err();
     assert_eq!(error.code(), crate::ErrorCode::ResourceExhausted);
     assert!(index.resident_sidecar_regions(K::L2U8).is_err());
 
     config.memory_budget_gib = Some(1.);
-    F32CascadeBackend::prepare_search(&index, &config).unwrap();
-    let guard = F32CascadeBackend::auto_pin_search_storage(&index, &config).unwrap();
+    let guard = F32CascadeBackend::prepare_search(&index, &config).unwrap();
     let report = guard.report();
     assert!(report.requested_datasets > 0);
     assert_eq!(
         report.requested_datasets,
         report.pinned_datasets + report.skipped.len()
     );
-    assert_eq!(automatic_options(Some(1.)).unwrap().budget_bytes, 1 << 30);
-    assert_eq!(automatic_options(None).unwrap().mode, PinMode::BestEffort);
-    assert!(automatic_options(Some(f64::NAN)).is_err());
-    assert!(automatic_options(Some(-1.)).is_err());
+    assert_eq!(report.automatic.as_ref().unwrap()["enabled"], true);
+    drop(guard);
+    config.auto_pin = false;
+    // No source I/O even when the original staged export no longer exists.
+    config.graph_source = crate::config::GraphSource::Parlayann;
+    config.staged_file_explicit = true;
+    config.staged_file = Some(directory.join("missing.staged"));
+    let off = F32CascadeBackend::prepare_search(&index, &config).unwrap();
+    assert_eq!(off.pinned_bytes(), 0);
+    assert_eq!(off.report().automatic.as_ref().unwrap()["enabled"], false);
+    assert!(index.resident_sidecar_regions(K::L2U8).is_ok());
     assert!(!directory.exists());
 }
 
@@ -273,4 +278,46 @@ fn selecting_base_does_not_require_unselected_sidecars() {
     assert_eq!(result.report().requested_datasets, 1);
     assert_eq!(result.report().skipped[0].0, DatasetPin::Base);
     assert!(index.resident_sidecar_regions(K::L2U8).is_err());
+}
+
+#[test]
+fn os_lock_denial_falls_back_without_changing_prepared_storage() {
+    let index = index();
+    let base = bytemuck::cast_slice(index.dataset().as_slice());
+    let requirements = [DatasetRequirement::Base];
+    let options = PinOptions {
+        budget_bytes: usize::MAX,
+        ..Default::default()
+    };
+    let mut calls = 0;
+    let result = pin_with(&index, base, shape(), &requirements, &options, |_, _, _| {
+        calls += 1;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "test memlock refusal",
+        ))
+    })
+    .unwrap();
+    assert_eq!(calls, 1);
+    assert_eq!(result.pinned_bytes(), 0);
+    assert_eq!(result.report().skipped[0].0, DatasetPin::Base);
+    assert!(result.report().skipped[0]
+        .1
+        .contains("test memlock refusal"));
+    assert_eq!(
+        base,
+        bytemuck::cast_slice::<_, u8>(index.dataset().as_slice())
+    );
+    assert!(pin_with(
+        &index,
+        base,
+        shape(),
+        &requirements,
+        &PinOptions {
+            mode: PinMode::Required,
+            ..options
+        },
+        |_, _, _| Err(std::io::Error::other("denied"))
+    )
+    .is_err());
 }
