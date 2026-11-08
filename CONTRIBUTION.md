@@ -113,6 +113,20 @@ not a memory-safety guarantee. Keep the reporting scope intact; refresh numeric
 README badges and their [evidence record](docs/testing.md#readme-validation-snapshot)
 together after a new measurement.
 
+### Merge only validated feature commits
+
+Make changes on a `feature/**` branch and pass the relevant local checks before
+pushing it. Orion CI, Rust coverage and Release validation must all succeed on
+the exact feature commit before merging into `main`. A queued, running, skipped
+or cancelled workflow is not a successful validation. If a fix changes the
+commit, repeat local validation and wait for the new remote checks.
+
+Before merging, fetch `main`. If it has advanced beyond the feature branch's
+base, integrate it into the feature branch and validate the combined changes
+again. Preserve the feature branch unless its deletion is explicitly requested.
+Keep commit and merge subjects at most 50 characters, and use the configured
+GPG signing key. The Pages deployment remains separate on `pages`.
+
 ## Measure performance changes
 
 Follow the [measurement protocols](docs/benchmarks.md). Record the revision,

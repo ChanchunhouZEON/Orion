@@ -4,7 +4,7 @@
 name: Rust coverage
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, 'feature/**']
   pull_request:
   workflow_dispatch:
 
