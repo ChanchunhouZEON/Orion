@@ -2,6 +2,8 @@
 
 <p align="center"><a href="README.md" lang="en">English</a> · <strong>简体中文</strong> · <a href="README.yue.md" lang="yue">粵語</a></p>
 
+<p align="center"><a href="https://chanchunhouzeon.github.io/Orion/">交互式主页 ↗</a></p>
+
 <p align="center">
   <a href=".github/workflows/ci.yml"><img alt="Safety tests: Miri and adversarial inputs" src="https://img.shields.io/badge/safety-Miri_%2B_adversarial_tests-377EAD?style=flat&amp;labelColor=17263D" /></a>
   <a href="orion-runtime/src/guide/cache.md"><img alt="Verified persistence: SHA-256" src="https://img.shields.io/badge/integrity-SHA--256-377EAD?style=flat&amp;labelColor=17263D" /></a>
@@ -37,6 +39,8 @@
 [性能](#性能) · [使用示例](#使用示例) · [支持范围](#支持范围) · [CLI](#cli) · [基准测试与开发](#基准测试与开发)
 
 ## 性能
+
+在[交互式主页](https://chanchunhouzeon.github.io/Orion/)查看 QPS–recall 曲线、cascade 组合与消融实验。
 
 这些数据集涵盖图像描述子、学习得到的视觉特征、词向量和段落向量，用于检验低维与高维搜索，以及百万到十亿向量规模下的性能。所有列均使用 **8 线程、k=10、Recall@10 ≥ 0.95**；每个结果取达到目标召回率的最快实测 QPS 中位数，不进行插值。Wiki-Ada-1M 单元格的括号内标出实际 Recall@10；所选测量点的召回率并不相同。
 

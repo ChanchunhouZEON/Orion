@@ -2,6 +2,8 @@
 
 <p align="center"><strong>English</strong> · <a href="README.zh-CN.md" lang="zh-CN">简体中文</a> · <a href="README.yue.md" lang="yue">粵語</a></p>
 
+<p align="center"><a href="https://chanchunhouzeon.github.io/Orion/">Interactive homepage ↗</a></p>
+
 <p align="center">
   <a href=".github/workflows/ci.yml"><img alt="Safety tests: Miri and adversarial inputs" src="https://img.shields.io/badge/safety-Miri_%2B_adversarial_tests-377EAD?style=flat&amp;labelColor=17263D" /></a>
   <a href="orion-runtime/src/guide/cache.md"><img alt="Verified persistence: SHA-256" src="https://img.shields.io/badge/integrity-SHA--256-377EAD?style=flat&amp;labelColor=17263D" /></a>
@@ -48,6 +50,8 @@ graph and sidecar objects.
 [Support](#support) · [CLI](#cli) · [Benchmarks and development](#benchmarks-and-development)
 
 ## Performance
+
+Explore QPS–recall curves, cascade combinations and ablation studies on the [interactive homepage](https://chanchunhouzeon.github.io/Orion/).
 
 These datasets span image descriptors, learned visual features, word embeddings
 and passage embeddings, covering low- and high-dimensional search as well as

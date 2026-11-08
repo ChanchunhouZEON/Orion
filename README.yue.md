@@ -2,6 +2,8 @@
 
 <p align="center"><a href="README.md" lang="en">English</a> · <a href="README.zh-CN.md" lang="zh-CN">简体中文</a> · <strong lang="yue">粵語</strong></p>
 
+<p align="center"><a href="https://chanchunhouzeon.github.io/Orion/">互動主頁 ↗</a></p>
+
 <p align="center">
   <a href=".github/workflows/ci.yml"><img alt="Safety tests: Miri and adversarial inputs" src="https://img.shields.io/badge/safety-Miri_%2B_adversarial_tests-377EAD?style=flat&amp;labelColor=17263D" /></a>
   <a href="orion-runtime/src/guide/cache.md"><img alt="Verified persistence: SHA-256" src="https://img.shields.io/badge/integrity-SHA--256-377EAD?style=flat&amp;labelColor=17263D" /></a>
@@ -37,6 +39,8 @@
 [效能](#效能) · [使用例子](#使用例子) · [支援範圍](#支援範圍) · [CLI](#cli) · [基準測試同開發](#基準測試同開發)
 
 ## 效能
+
+喺[互動主頁](https://chanchunhouzeon.github.io/Orion/)睇 QPS–recall 曲線、cascade 組合同消融實驗。
 
 呢批數據集涵蓋圖像描述子、學習得到嘅視覺特徵、詞向量同段落向量，用嚟檢驗低維同高維搜尋，以及由百萬到十億條向量規模下嘅效能。所有欄位都用 **8 條執行緒、k=10、Recall@10 ≥ 0.95**；每個結果都係達到目標召回率嘅最快實測 QPS 中位數，唔做插值。Wiki-Ada-1M 欄入面嘅括號會標出實際 Recall@10；揀出嚟嘅測量點並唔係同一個召回率。
 

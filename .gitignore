@@ -69,3 +69,6 @@ core.*
 # Generated Python bytecode from local tools and CI checks.
 **/__pycache__/
 *.py[cod]
+
+# Website source and curated measurements live on the independent pages branch.
+/historical/

@@ -7,10 +7,12 @@ Licensed under the MIT License.
 
 [README](../README.md) · [Current dated summaries](benchmarks.md)
 
-The [Performance Atlas](../historical/README.md) now collects the retained
+The [Performance Atlas](https://chanchunhouzeon.github.io/Orion/) now collects the retained
 Orion, cascade and baseline measurements into a curated, self-contained JSON
 archive with an interactive viewer. Collection does not rerun experiments or
-modify the figures below.
+modify the figures below. The website source and curated JSON are maintained on
+the independent [`pages` branch](https://github.com/ChanchunhouZEON/Orion/tree/pages/historical),
+separate from the library checkout on `main`.
 
 The figures and visualization datasets previously embedded in the README remain
 in place and unchanged. They document earlier benchmark states. They have not

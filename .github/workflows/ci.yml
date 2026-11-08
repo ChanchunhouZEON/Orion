@@ -26,7 +26,6 @@ on:
       - 'adsampling/**'
       - 'orion-logger/**'
       - 'benchmark/**'
-      - 'historical/**'
       - '.cargo/**'
       - '.github/**'
   pull_request:
@@ -48,7 +47,6 @@ on:
       - 'adsampling/**'
       - 'orion-logger/**'
       - 'benchmark/**'
-      - 'historical/**'
       - '.cargo/**'
       - '.github/**'
   workflow_dispatch:
@@ -70,33 +68,6 @@ env:
   CARGO_INCREMENTAL: '0'
 
 jobs:
-  historical-web:
-    name: Performance Atlas / npm tests and build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: historical
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: historical/package-lock.json
-      - name: Install locked dependencies
-        run: npm ci
-      - name: Test catalog data, selections and components
-        run: npm test
-      - name: Check Svelte types and build production assets
-        run: npm run build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: historical-web
-          path: historical/dist/
-          if-no-files-found: error
-          retention-days: 7
-
   allocator-safety:
     name: Allocation and exclusive graph access / Miri
     runs-on: ubuntu-24.04
@@ -297,7 +268,7 @@ jobs:
         run: cargo clippy --locked -p orion-ann-vector --release -- -D warnings
 
   summary:
-    needs: [historical-web, compile-check-cross, build-and-test, python-api, portable-api, allocator-safety, graph-safety, randomized-safety, wasm-replay]
+    needs: [compile-check-cross, build-and-test, python-api, portable-api, allocator-safety, graph-safety, randomized-safety, wasm-replay]
     if: always()
     runs-on: ubuntu-24.04
     steps:
