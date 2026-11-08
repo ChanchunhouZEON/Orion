@@ -135,3 +135,13 @@ ablation display modes and the subdirectory-aware loader.
 `public/orion-astraeus.svg` is a vector redrawing of the dragon and three-star
 emblem. It uses a transparent background and blue/gold colors for the light
 page, and is shared by the header and favicon.
+
+## Typography
+
+Geist Sans is used for the interface, prose and charts; table measurements and
+axis labels use lining, tabular numerals. Geist Mono is reserved for code and
+configuration values. The normal variable faces and the Sans italic face use
+Latin WOFF2 subsets from pinned Fontsource packages. Vite emits content-hashed
+font files alongside the site, so readers make no third-party font requests.
+`font-display: swap` keeps text visible while fonts load; unsupported characters
+use the system fallback. Font licenses are included under `public/licenses/`.

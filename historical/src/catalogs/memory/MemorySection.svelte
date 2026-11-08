@@ -22,7 +22,12 @@
 </script>
 
 <div class="workspace">
-  <EnginePanel {atlas} engines={["orion", "diskann"]} count={series.length} />
+  <EnginePanel
+    {atlas}
+    mark="bar"
+    engines={["orion", "diskann"]}
+    count={series.length}
+  />
   <ChartPanel
     {atlas}
     {series}

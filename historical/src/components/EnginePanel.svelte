@@ -8,6 +8,7 @@
     atlas,
     engines,
     count,
+    mark = "curve",
     variants = false,
     hideVisibility = false,
     orionControls,
@@ -15,6 +16,7 @@
     atlas: AtlasState;
     engines: string[];
     count: number;
+    mark?: "curve" | "bar";
     variants?: boolean;
     hideVisibility?: boolean;
     orionControls?: Snippet;
@@ -27,7 +29,8 @@
 <aside class="engine-panel" aria-label="Engine configurations">
   <div class="panel-label">
     ENGINES <span
-      >{count} {variants ? "variants" : count === 1 ? "curve" : "curves"}</span
+      >{count}
+      {variants ? "variants" : `${mark}${count === 1 ? "" : "s"}`}</span
     >
   </div>
   {#each engines as engine}
@@ -47,7 +50,7 @@
               checked={!atlas.hidden.includes(engine)}
               onchange={() => atlas.toggleEngine(engine)}
             />
-            Show curve{engine === "orion" &&
+            Show {mark}{engine === "orion" &&
             (atlas.compare || atlas.section === "cascades")
               ? "s"
               : ""}</label
@@ -77,8 +80,10 @@
     </details>
   {/each}
   <p class="sidebar-note">
-    {atlas.section === "cascades"
-      ? "Compare Orion recipes here; baseline engines can be enabled individually."
-      : "Default shows one curve per engine. Use Cascades and Ablation to compare Orion variants."}
+    {mark === "bar"
+      ? "Each bar represents one engine; toggle visibility to compare measurements."
+      : atlas.section === "cascades"
+        ? "Compare Orion recipes here; baseline engines can be enabled individually."
+        : "Default shows one curve per engine. Use Cascades and Ablation to compare Orion variants."}
   </p>
 </aside>

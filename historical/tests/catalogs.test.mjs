@@ -57,6 +57,13 @@ test("all six catalogs render their measurements and protocol independently", ()
     assert.ok(output.includes(expected), section);
     assert.match(output, /Measurement notes &amp; protocol/);
     assert.doesNotMatch(output, /\bNaN\b|\bundefined\b/);
+    if (section === "build" || section === "memory") {
+      assert.match(output, /Show bar/);
+      assert.match(output, /2\s+bars/);
+      assert.doesNotMatch(output, /Show curve/);
+      atlas.toggleEngine("diskann");
+      assert.match(html(atlas), /1\s+bar/);
+    }
   }
 });
 

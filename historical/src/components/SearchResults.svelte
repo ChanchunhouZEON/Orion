@@ -47,7 +47,7 @@
                 : engineName(atlas.catalog, c.engine)}</td
             ><td>{p ? fmt(p.qps) : "Not reached"}</td><td
               >{p ? p.recall.toFixed(5) : "—"}</td
-            ><td
+            ><td class="search-setting"
               >{p?.L !== undefined
                 ? `L = ${p.L}`
                 : p?.Q !== undefined
