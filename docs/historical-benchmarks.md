@@ -7,6 +7,11 @@ Licensed under the MIT License.
 
 [README](../README.md) · [Current dated summaries](benchmarks.md)
 
+The [Performance Atlas](../historical/README.md) now collects the retained
+Orion, cascade and baseline measurements into a curated, self-contained JSON
+archive with an interactive viewer. Collection does not rerun experiments or
+modify the figures below.
+
 The figures and visualization datasets previously embedded in the README remain
 in place and unchanged. They document earlier benchmark states. They have not
 been regenerated to incorporate the October 2026 updates summarized in the new
