@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <a href="https://chanchunhouzeon.github.io/Orion/"><img alt="Homepage: Performance Atlas" src="https://img.shields.io/badge/homepage-Performance_Atlas-377EAD?style=flat&amp;labelColor=17263D" /></a>
+  <a href="https://chanchunhouzeon.github.io/Orion/"><img alt="Homepage: Orion Astraeus" src="https://img.shields.io/badge/homepage-Orion_Astraeus-377EAD?style=flat&amp;labelColor=17263D" /></a>
 </p>
 
 <p align="center">
@@ -53,7 +53,7 @@ graph and sidecar objects.
 
 ## Performance
 
-Explore QPS–recall curves, cascade combinations and ablation studies on the [interactive homepage](https://chanchunhouzeon.github.io/Orion/).
+Explore the search method, admission diagnostics, QPS–recall curves, and cascade comparisons on the [Orion Astraeus homepage](https://chanchunhouzeon.github.io/Orion/).
 
 These datasets span image descriptors, learned visual features, word embeddings
 and passage embeddings, covering low- and high-dimensional search as well as

@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <a href="https://chanchunhouzeon.github.io/Orion/"><img alt="Homepage: Performance Atlas" src="https://img.shields.io/badge/homepage-Performance_Atlas-377EAD?style=flat&amp;labelColor=17263D" /></a>
+  <a href="https://chanchunhouzeon.github.io/Orion/"><img alt="Homepage: Orion Astraeus" src="https://img.shields.io/badge/homepage-Orion_Astraeus-377EAD?style=flat&amp;labelColor=17263D" /></a>
 </p>
 
 <p align="center">
@@ -42,7 +42,7 @@
 
 ## 效能
 
-喺[互動主頁](https://chanchunhouzeon.github.io/Orion/)睇 QPS–recall 曲線、cascade 組合同消融實驗。
+喺 [Orion Astraeus 項目主頁](https://chanchunhouzeon.github.io/Orion/)了解圖搜尋同剪枝機制、admission 診斷，並互動比較 QPS–recall 曲線、cascade 組合同消融實驗。
 
 呢批數據集涵蓋圖像描述子、學習得到嘅視覺特徵、詞向量同段落向量，用嚟檢驗低維同高維搜尋，以及由百萬到十億條向量規模下嘅效能。所有欄位都用 **8 條執行緒、k=10、Recall@10 ≥ 0.95**；每個結果都係達到目標召回率嘅最快實測 QPS 中位數，唔做插值。Wiki-Ada-1M 欄入面嘅括號會標出實際 Recall@10；揀出嚟嘅測量點並唔係同一個召回率。
 
