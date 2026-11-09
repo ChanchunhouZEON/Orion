@@ -12,20 +12,13 @@
     /><span>ORION <span class="brand-sub">ASTRAEUS</span></span></a
   >
   <nav aria-label="Project">
+    <a href="#graph-search">Method</a><a href="#atlas">Benchmarks</a>
     <a href="https://github.com/ChanchunhouZEON/Orion">Source ↗</a><a
       href="https://github.com/ChanchunhouZEON/Orion-Explorer">Explorer ↗</a
     >
   </nav>
 </header>
 <main>
-  <div class="intro">
-    <p class="eyebrow">PERFORMANCE ATLAS</p>
-    <h1>Find the frontier.</h1>
-    <p>
-      Explore the speed–recall tradeoff, from compact embeddings to a billion
-      vectors.
-    </p>
-  </div>
   {@render children()}
   <footer>
     <div class="footer-signature">

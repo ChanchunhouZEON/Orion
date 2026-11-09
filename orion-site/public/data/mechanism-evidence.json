@@ -1,0 +1,46 @@
+{
+  "checkpoint": {
+    "source": "Matched-State Continuations, Work, Recall, and Violations",
+    "track": "Deployed cascade",
+    "k": 10,
+    "beam": 256,
+    "queriesPerDataset": 200,
+    "earlyExit": false,
+    "rows": [
+      {
+        "dataset": "SIFT",
+        "totalSavingsPercent": 17.21,
+        "tailSavingsPercent": 32.06,
+        "recallLossPp": 0.05
+      },
+      {
+        "dataset": "GIST",
+        "totalSavingsPercent": 6.92,
+        "tailSavingsPercent": 22.06,
+        "recallLossPp": 0.35
+      }
+    ]
+  },
+  "prefilter": {
+    "source": "Prefilter Activity Throughout a Query",
+    "k": 10,
+    "beam": 256,
+    "statistic": "Median per-query rejection percentage; interquartile range in brackets",
+    "rows": [
+      {
+        "dataset": "GIST",
+        "queries": 1000,
+        "recall": 0.9863,
+        "whole": { "median": 68.9, "q25": 64.0, "q75": 73.0 },
+        "late": { "median": 87.0, "q25": 83.9, "q75": 89.5 }
+      },
+      {
+        "dataset": "Wiki-Ada-1M",
+        "queries": 10000,
+        "recall": 0.99942,
+        "whole": { "median": 61.6, "q25": 52.2, "q75": 69.5 },
+        "late": { "median": 88.4, "q25": 83.6, "q75": 92.1 }
+      }
+    ]
+  }
+}

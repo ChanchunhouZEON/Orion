@@ -25,6 +25,7 @@ const readJson = async (name) =>
     ),
   );
 const catalog = await readJson("catalog");
+const evidence = await readJson("mechanism-evidence");
 const datasets = await Promise.all(catalog.datasets.map((d) => readJson(d.id)));
 const modules = {};
 for (const [id, name] of Object.entries({
@@ -41,6 +42,123 @@ for (const [id, name] of Object.entries({
 }
 const html = (atlas) =>
   render(modules[atlas.section], { props: { atlas } }).body;
+
+test("beam walkthrough retains sorted candidates and follows graph adjacency", async () => {
+  const { beamNodes, beamEdges, beamFrames } = await server.ssrLoadModule(
+    "/src/home/beamWalkthrough.ts",
+  );
+  const nodes = new Map(beamNodes.map((n) => [n.id, n]));
+  for (const frame of beamFrames) {
+    assert.ok(frame.beam.length <= 3);
+    assert.equal(new Set(frame.beam).size, frame.beam.length);
+    const distances = frame.beam.map((id) => nodes.get(id).distance);
+    assert.deepEqual(
+      distances,
+      [...distances].sort((a, b) => a - b),
+    );
+    if (frame.pending) {
+      assert.ok(!frame.beam.includes(frame.pending));
+      assert.ok(
+        beamEdges.some(
+          ([a, b]) => frame.expanded.includes(a) && b === frame.pending,
+        ),
+      );
+    }
+    if (frame.result) {
+      assert.deepEqual(frame.result, frame.beam.slice(0, 2));
+      assert.ok(frame.beam.every((id) => frame.expanded.includes(id)));
+    }
+  }
+  const admission = beamFrames.find((f) => f.added);
+  assert.ok(admission.beam.includes("C") && admission.expanded.includes("C"));
+  assert.ok(!admission.beam.includes("A"));
+});
+
+test("the explanatory homepage remains available before Atlas data loads", async () => {
+  const { default: App } = await server.ssrLoadModule("/src/App.svelte");
+  const output = render(App).body.replace(/\s+/g, " ");
+  assert.match(output, /Vamana-style/);
+  assert.match(output, /Loading measurements/);
+  for (const anchor of ["graph-search", "mechanism", "evidence", "atlas"]) {
+    assert.match(output, new RegExp(`id="${anchor}"`));
+    assert.match(output, new RegExp(`href="#${anchor}"`));
+  }
+  assert.match(output, /Schematic/);
+  assert.match(output, /Early exit stays off/);
+  assert.match(output, /32\.1/);
+  assert.match(output, /22\.1/);
+  assert.match(output, /0\.05 pp recall/);
+  assert.match(output, /0\.35 pp recall/);
+  assert.match(output, /87\.0%/);
+  assert.match(output, /88\.4%/);
+  assert.match(output, /not equal-recall throughput/);
+  assert.match(output, /data\/mechanism-evidence\.json/);
+  assert.doesNotMatch(output, /\bNaN\b|\bundefined\b|\/Users\/|sigmod_v2/);
+});
+
+test("diagnostic data preserves distinct denominators and measured distributions", () => {
+  const { checkpoint, prefilter } = evidence;
+  assert.equal(checkpoint.earlyExit, false);
+  assert.equal(checkpoint.queriesPerDataset, 200);
+  assert.equal(checkpoint.beam, prefilter.beam);
+  for (const row of checkpoint.rows) {
+    assert.ok(row.totalSavingsPercent < row.tailSavingsPercent);
+    assert.ok(row.tailSavingsPercent < 100);
+    assert.ok(row.recallLossPp > 0, "do not omit measured recall losses");
+  }
+  for (const row of prefilter.rows) {
+    assert.ok(row.queries >= 1000);
+    assert.ok(row.recall > 0 && row.recall <= 1);
+    for (const window of [row.whole, row.late]) {
+      assert.ok(0 <= window.q25 && window.q25 <= window.median);
+      assert.ok(window.median <= window.q75 && window.q75 <= 100);
+    }
+  }
+  assert.ok(!catalog.datasets.some((d) => d.id === "mechanism-evidence"));
+});
+
+test("historical signal and zone data retain their measurement scope", async () => {
+  const data = await readJson("search-diagnostics");
+  assert.equal(data.datasets.length, 4);
+  for (const d of data.datasets) {
+    assert.equal(d.calibration.num_points, 100000);
+    assert.equal(d.zoneSearchListSize, 100);
+    assert.ok(d.calibration.admission_rates.length > 100);
+    assert.ok(d.calibration.admission_rates.every((v) => v >= 0 && v <= 1));
+    for (const zone of Object.values(d.zones)) {
+      assert.ok(zone.unseen > 0 && zone.admitted >= 0);
+      assert.ok(zone.admitted <= zone.unseen);
+      assert.ok(
+        (100 * zone.admitted) / zone.unseen <= 2,
+        "shared chart domain must contain every yield",
+      );
+    }
+  }
+  assert.match(data.calibrationSource, /smoothed/);
+  assert.match(data.zoneSource, /do not record base count/);
+});
+
+test("the method story distinguishes search, pruning, controller rate and candidate yield", async () => {
+  const { default: App } = await server.ssrLoadModule("/src/App.svelte");
+  const output = render(App).body.replace(/\s+/g, " ");
+  assert.match(output, /100K base subset/);
+  assert.match(output, /not an individual query/);
+  assert.match(output, /candidate eligibility/);
+  assert.match(output, /not a guaranteed graph edge/);
+  assert.match(output, /cannot recover a vector missed/);
+  const ids = [
+    "graph-search",
+    "admission",
+    "mechanism",
+    "cascade",
+    "evidence",
+    "atlas",
+  ];
+  const positions = ids.map((id) => output.indexOf(`id="${id}"`));
+  assert.ok(
+    positions.every((p, i) => p >= 0 && (i === 0 || p > positions[i - 1])),
+  );
+});
 
 test("all six catalogs render their measurements and protocol independently", () => {
   const atlas = new AtlasState(catalog, datasets);

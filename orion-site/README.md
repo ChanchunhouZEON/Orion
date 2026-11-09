@@ -1,15 +1,44 @@
 <!-- Copyright (c) Chanchunhou. All rights reserved. Licensed under the MIT License. -->
 
-# Orion Performance Atlas
+# Orion Astraeus Website
 
-A light, interactive performance page built with Svelte, Tailwind CSS and Vite.
+A light project homepage with interactive method explanations and performance charts built with Svelte, Tailwind CSS and Vite.
 The curve colors and white chart background follow the Python plotting style.
 A single visible Orion curve is labeled **Ours** at its screen-space midpoint,
 without an arrow. Ablations call the complete configuration **Default**;
 multiple Orion curves use their recipe or variant names in the legend.
 
+The homepage introduces admission-aware Vamana-style search before the Atlas.
+`src/home` separates the overview, phase-selection and cascade schematics, and
+controlled evidence panels. The schematics are illustrative, not query traces.
+The explanatory sections remain readable while Atlas measurements load or fail.
+
+`public/data/mechanism-evidence.json` records two independent diagnostic studies:
+the deployed-cascade, L=256 rows from **Matched-State Continuations / Work,
+Recall, and Violations**, and the complete table from **Prefilter Activity
+Throughout a Query**. Matched-state results include recall loss beside NDC
+savings; prefilter results retain per-query medians, quartiles, query counts,
+and recall. Both use k=10. They are not extra throughput trials and do not enter
+the engine catalog, QPS curves, or speedup selection. Expandable protocols state
+the denominators and distinguish fixed-L work savings from matched-recall QPS.
+
+The method narrative starts with an interactive beam-search walkthrough and
+an α-occlusion pruning schematic. It then introduces the admission signal,
+phase-specific neighbor selection, and three illustrative cascade recipes.
+The dashed w–v segment in the pruning diagram denotes a distance comparison,
+not a guaranteed graph edge. Recipe cards are explanatory, not new benchmarks.
+
+`public/data/search-diagnostics.json` curates the historical calibration and
+zone-admission records for SIFT, GIST, GloVe-25, and GloVe-100. Calibration files
+record 100K base subsets; their admission curves are already smoothed by the
+diagnostic producer, and the website adds no smoothing. The producer aggregates
+admission-positive fractions over queries still active at each step. These are
+not individual sliding-window controller traces. The zone files retain mean
+admitted/unseen counts and L=100, but do not record base counts. Their candidate
+eligibility denominator is distinct from the controller's step denominator.
+
 ```sh
-cd performance-atlas
+cd orion-site
 npm ci
 npm test
 npm run build
@@ -23,7 +52,7 @@ This directory and its curated JSON live only on the independent `pages`
 branch. Run `npm run build -- --base /Orion/` to reproduce the project-site
 asset paths locally. The production output is `dist/` and is not committed.
 
-The Performance Atlas Pages workflow runs `npm ci`, `npm test` and the production
+The Orion Website Pages workflow runs `npm ci`, `npm test` and the production
 build on Ubuntu with Node 24. A push to `pages` deploys only after these checks
 pass; pull requests targeting `pages` build without publishing. Manual runs
 must select `pages`. Website data updates do not enter `main`.

@@ -1,6 +1,6 @@
 # Copyright (c) Chanchunhou. All rights reserved.
 # Licensed under the MIT License.
-name: Performance Atlas Pages
+name: Orion Website Pages
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: atlas-pages-${{ github.event_name }}-${{ github.ref }}
+  group: orion-site-pages-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -27,14 +27,14 @@ jobs:
       pages: read
     defaults:
       run:
-        working-directory: performance-atlas
+        working-directory: orion-site
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: performance-atlas/package-lock.json
+          cache-dependency-path: orion-site/package-lock.json
       - name: Install locked dependencies
         run: npm ci
       - name: Test catalog data, selections and components
@@ -48,7 +48,7 @@ jobs:
         run: npm run build -- --base "${PAGES_BASE_PATH}/"
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: performance-atlas/dist/
+          path: orion-site/dist/
 
   deploy:
     if: github.ref == 'refs/heads/pages' && github.event_name != 'pull_request'
