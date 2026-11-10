@@ -1,0 +1,28 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+[package]
+name = "orion-ann-server"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Local HTTP adapter for the Orion native index"
+
+[[bin]]
+name = "orion-server"
+path = "src/main.rs"
+
+[dependencies]
+orion-ann = { path = "../orion-runtime" }
+axum = "0.8"
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+sha2 = "0.10"
+subtle = "2.6"
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

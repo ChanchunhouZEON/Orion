@@ -74,3 +74,6 @@ core.*
 /orion-site/
 
 rust-analyzer.toml
+
+# Local HTTP prototype data, snapshots and mapping scratch.
+/orion-service-data/
