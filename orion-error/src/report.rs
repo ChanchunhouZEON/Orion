@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorCode {
+    Unauthenticated,
     InvalidArgument,
     DimensionMismatch,
     UnsupportedConfiguration,
@@ -26,6 +27,7 @@ pub enum ErrorCode {
 impl ErrorCode {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Unauthenticated => "ORION_UNAUTHENTICATED",
             Self::InvalidArgument => "ORION_INVALID_ARGUMENT",
             Self::DimensionMismatch => "ORION_DIMENSION_MISMATCH",
             Self::UnsupportedConfiguration => "ORION_UNSUPPORTED_CONFIGURATION",

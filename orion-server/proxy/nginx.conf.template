@@ -1,0 +1,48 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+# Loopback TLS acceptance fixture. Use a publicly trusted certificate for remote deployments.
+# Render @PORT@, @UPSTREAM@ and @RUN_DIR@ using smoke-http.py.
+daemon off;
+master_process off;
+pid "@RUN_DIR@/nginx.pid";
+error_log stderr warn;
+events { worker_connections 128; }
+http {
+    client_body_temp_path "@RUN_DIR@/client-body";
+    proxy_temp_path "@RUN_DIR@/proxy-body";
+    log_format correlated escape=json '{"request_id":"$upstream_http_x_request_id","status":$status,"upstream_status":"$upstream_status"}';
+    access_log "@RUN_DIR@/proxy-access.jsonl" correlated;
+    server {
+        listen 127.0.0.1:@PORT@ ssl;
+        ssl_certificate "@CERT@";
+        ssl_certificate_key "@KEY@";
+        ssl_protocols TLSv1.2 TLSv1.3;
+        server_name localhost;
+        client_max_body_size 16m;
+        client_body_timeout 30s;
+        location /api/ {
+            proxy_pass @UPSTREAM@/;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host 127.0.0.1;
+            proxy_set_header Authorization $http_authorization;
+            # Authentication is always verified by Orion, including direct calls.
+            # Never turn a client-provided identity into a trusted identity.
+            proxy_set_header Forwarded "";
+            proxy_set_header X-Forwarded-For "";
+            proxy_set_header X-Forwarded-Host "";
+            proxy_set_header X-Forwarded-Proto "";
+            proxy_set_header X-Forwarded-User "";
+            proxy_set_header X-Real-IP "";
+            proxy_set_header X-Orion-Subject "";
+            proxy_set_header X-Request-ID "";
+            proxy_cache off;
+            proxy_next_upstream off;
+            proxy_request_buffering off;
+            proxy_buffering off;
+            proxy_connect_timeout 5s;
+            proxy_read_timeout 60s;
+            proxy_send_timeout 30s;
+        }
+    }
+}

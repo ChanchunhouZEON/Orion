@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix='orion-crate-validation-') as temporary:
         # Unpublished workspace crates cannot be verified through the public registry.
         command = ['cargo', 'package', '--locked', '--no-verify', '--workspace',
                    '--exclude', 'adsampling', '--exclude', 'orion-ann-python',
-                   '--exclude', 'orion-ann-wasm', '--target-dir', target]
+                   '--exclude', 'orion-ann-wasm', '--exclude', 'orion-ann-server', '--target-dir', target]
         if args.allow_dirty:
             command.append('--allow-dirty')
         run(command, repo, env)

@@ -28,6 +28,42 @@ env:
   CARGO_INCREMENTAL: '0'
 
 jobs:
+  native-http:
+    name: Native HTTP / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      RUSTFLAGS: '-D warnings'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@v2
+      - name: Install nginx on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y nginx
+      - name: Install nginx on macOS
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+        run: brew install nginx
+      - name: Verify native Rust and HTTP contracts
+        run: cargo test --locked -p orion-ann-server
+      - name: Exercise actual curl build, load, search and error requests
+        run: |
+          cargo build --locked -p orion-ann-server
+          python3 orion-server/tools/smoke-http.py --binary target/debug/orion-server --nginx "$(command -v nginx)" --output /tmp/orion-http-evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-http-${{ matrix.os }}
+          path: /tmp/orion-http-evidence/
+          if-no-files-found: warn
+
   allocator-safety:
     name: Allocation and exclusive graph access / Miri
     runs-on: ubuntu-24.04
