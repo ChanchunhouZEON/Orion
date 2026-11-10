@@ -159,7 +159,8 @@ fn borrowed_queries_and_mixed_requests_share_one_index() {
                         early_exit_limit: calibration.early_exit_limit,
                     },
                 )
-                .unwrap();
+                .unwrap()
+                .into();
             assert_eq!(core_result, expected[1]);
         }
         // A native parity check above recalibrates and refreshes resource observations.

@@ -4,11 +4,10 @@
  */
 
 //! Search kernels and built-in stages. Research instrumentation is opt-in.
-pub(crate) mod metrics;
 #[cfg(feature = "benchmark")]
-pub use metrics::*;
+pub use diagnostics::metrics::*;
 #[cfg(not(feature = "benchmark"))]
-pub(crate) use metrics::*;
+pub(crate) use diagnostics::metrics::*;
 
 /// Maximum worker count accepted by the service.
 pub const MAX_WORKERS: usize = 64;
@@ -43,19 +42,12 @@ pub(crate) fn include_extras() -> bool {
 pub mod in_mem_search;
 pub mod utils;
 
-#[cfg(feature = "benchmark")]
-pub mod async_beam_search;
-
-pub mod convergence;
-
-pub mod early_exit;
-
-pub mod calibrate;
-
-pub mod jl_hamming_cache;
+pub mod adaptive;
 
 pub mod stage;
 
 pub mod diagnostics;
 #[cfg(feature = "benchmark")]
 pub use diagnostics::SearchProfile;
+
+pub(crate) mod scoring;

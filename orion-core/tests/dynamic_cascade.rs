@@ -14,7 +14,7 @@ use graph_fixture::{GraphFixture, from_fixture_graph};
 #[cfg(feature = "benchmark")]
 use orion_ann_core::CalibrationDiagnostics;
 use orion_ann_core::algorithm::search::{
-    calibrate::CalibrationMetric,
+    adaptive::calibrate::CalibrationMetric,
     diagnostics::NeighborMode,
     stage::{
         Admission, Prefilter, Rerank,

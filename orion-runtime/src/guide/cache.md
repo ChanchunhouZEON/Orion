@@ -32,12 +32,13 @@ service/
 
 Keep snapshots outside the working directory. Stop active cache writers before
 removing `work/`. `Index::open` (CLI `--snapshot`) needs the snapshot manifest,
-the object store at the absolute path recorded in `object_store`, and the original
+the object store recorded in `object_store`, and the original
 base input. It can open either snapshot after `work/` is gone. Back up all three.
 Clearing the working cache never garbage-collects objects, so older manifests
 continue to resolve. Independent working directories have independent sibling
-stores. Older standalone snapshots can also be opened; their directory serves
-as the object store for snapshots subsequently saved from that handle.
+stores. Version 1 manifests are required; missing or unsupported versions are
+rejected before decoding payloads. SHA-256 names establish content identity;
+the explicit format version establishes the supported wire contract.
 
 ```rust
 use orion_ann::{BaseInput, GraphConfig, Index, IndexOptions, QueryBatch, SearchOptions, OpenOptions, SnapshotRef};
@@ -101,6 +102,45 @@ upgrading from older cache layouts.
 Object publication syncs the encoded payload before exposing its content name.
 A save syncs the manifest in a new sibling staging directory (owner-only on Unix),
 then renames that directory. Unix also syncs the staging and parent directories. If the last sync fails after rename, inspect the
-destination before retrying. Serialize writers to the same destination and
-keep the external input immutable. Search and dropping an index never commit
+destination before retrying. Cooperative writers use nonblocking OS file locks;
+a conflicting builder or publisher receives InvalidState. Lock marker files
+remain in place but the OS lease is released on close/process exit. Keep the
+external input immutable. Search and dropping an index never commit
 a snapshot.
+
+## Relocation and bundles
+
+`OpenOptions::object_store` explicitly relocates a shared store without disabling
+any checksum checks. Relative store paths in manifests resolve against the
+manifest directory. If the snapshot directory moves, `reference.relocated(path)`
+keeps its manifest digest; it does not re-sign altered content.
+
+`index.export_bundle(destination, include_base)` streams verified copies of the
+referenced objects into a new directory. Its returned reference names
+`destination/snapshot`; the manifest uses `../objects`. With `include_base=true`,
+it also copies the original base file to `destination/base`. Open it with
+`OpenOptions::default().open_bundle(reference)` or Python `Index.open(reference)`.
+CLI accepts `--snapshot destination/snapshot --query queries.fbin` without `--base`
+for such bundles. Publication is atomic on the destination filesystem and never
+replaces an existing directory. Source objects need not remain after export.
+
+Array-built indices can export objects with `include_base=false`, then reopen
+using `open(reference, original_array)`. Including a base currently requires a
+file-built index: the normalized resident representation cannot reconstruct the
+original unnormalized cosine input. Export requires temporary disk space for the
+complete copy. This is a copying deployment operation, unlike manifest-only save.
+Cross-ISA binary compatibility is not promised without a validated round trip.
+
+## Replacing an index generation
+
+Build a replacement `Index` outside the request path, explicitly calibrate its
+supported k values, and run representative warmup searches. `IndexSlot::new(index,
+&[10, 100])` records the required k values; `replace(next)` rejects missing
+calibrations and changed dimension, metric or storage without touching the old
+index. A short lock only clones/swaps an Arc; graph traversal takes no slot lock.
+Use `slot.current()` once for the entire request. Existing requests keep the old
+base, graph, mapping and calibration together; new requests obtain the new index.
+Retain the Arc returned by `replace` until readers drain and release it on a
+maintenance thread to avoid a large last-owner drop on a request thread. Both
+generations coexist until then, so provision memory/disk for both. This is whole-
+index replacement, not insertion, deletion or filtering inside the graph.

@@ -3,18 +3,12 @@
  * Licensed under the MIT License.
  */
 
-/// L2 distance between two f32 slices.
-/// Dispatches to SIMD (NEON on aarch64, AVX2 on x86_64) or scalar fallback.
+/// Squared L2 for PQ centroid assignment. Kept internal because the public
+/// distance kernels live in orion-vector; changing this reduction order can
+/// alter training assignments for nearly tied centroids.
 #[inline]
-pub fn l2_distance_slice(a: &[f32], b: &[f32]) -> f32 {
+pub(super) fn l2_sq_slice(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len(), "distance dimensions must match");
-    l2_sq_slice(a, b).sqrt()
-}
-
-// ─── Internal: squared L2 dispatcher ────────────────────────────────────────
-
-#[inline]
-pub(crate) fn l2_sq_slice(a: &[f32], b: &[f32]) -> f32 {
     #[cfg(target_arch = "aarch64")]
     {
         // NEON is always available on aarch64 (Apple Silicon, AWS Graviton, etc.)
@@ -225,42 +219,41 @@ fn l2_sq_scalar(a: &[f32], b: &[f32]) -> f32 {
 mod tests {
     use super::*;
 
-    fn reference_l2(a: &[f32], b: &[f32]) -> f32 {
+    fn reference_squared_l2(a: &[f32], b: &[f32]) -> f32 {
         a.iter()
             .zip(b.iter())
             .map(|(x, y)| (x - y).powi(2))
             .sum::<f32>()
-            .sqrt()
     }
 
     #[test]
-    fn test_l2_distance_slice_128() {
+    fn test_squared_l2_128() {
         let a: Vec<f32> = (0..128).map(|i| i as f32 * 0.1).collect();
         let b: Vec<f32> = (0..128).map(|i| (128 - i) as f32 * 0.1).collect();
-        let expected = reference_l2(&a, &b);
-        let got = l2_distance_slice(&a, &b);
+        let expected = reference_squared_l2(&a, &b);
+        let got = l2_sq_slice(&a, &b);
         assert!(
-            (got - expected).abs() < 1e-3,
+            (got - expected).abs() < 1e-5 * expected.max(1.0),
             "dim=128: expected {expected}, got {got}"
         );
     }
 
     #[test]
-    fn test_l2_distance_slice_non_multiple() {
+    fn test_squared_l2_non_multiple() {
         // Length not a multiple of 4 or 8
         let a: Vec<f32> = (0..17).map(|i| i as f32).collect();
         let b: Vec<f32> = (0..17).map(|i| (17 - i) as f32).collect();
-        let expected = reference_l2(&a, &b);
-        let got = l2_distance_slice(&a, &b);
+        let expected = reference_squared_l2(&a, &b);
+        let got = l2_sq_slice(&a, &b);
         assert!(
-            (got - expected).abs() < 1e-3,
+            (got - expected).abs() < 1e-5 * expected.max(1.0),
             "dim=17: expected {expected}, got {got}"
         );
     }
 
     #[test]
-    fn test_l2_distance_slice_identical() {
+    fn test_squared_l2_identical() {
         let a: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
-        assert!((l2_distance_slice(&a, &a) - 0.0).abs() < 1e-6);
+        assert!((l2_sq_slice(&a, &a) - 0.0).abs() < 1e-6);
     }
 }

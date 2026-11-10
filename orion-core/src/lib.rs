@@ -48,8 +48,7 @@ fn legacy(index: &Orion, q: &[f32], recipe: DynamicCascade<'_>) {
 pub use orion_ann_error as error;
 pub use orion_ann_error::{Error, ErrorCode, ErrorReport, Result};
 
-mod search_result;
-pub use search_result::SearchResult;
+pub use model::search_result::{ScoreMetric, SearchResult, SearchScores};
 
 pub mod algorithm;
 pub mod build;
@@ -58,22 +57,20 @@ pub use orion_ann_diskann::model::PaddedDataset;
 pub use orion_ann_vector::PaddedLayout;
 pub mod index;
 pub mod model;
-pub mod storage;
-pub mod utils;
 
 #[cfg(feature = "benchmark")]
 pub use algorithm::SearchProfile;
 #[cfg(feature = "benchmark")]
-pub use algorithm::search::calibrate::CalibrationDiagnostics;
-pub use algorithm::search::calibrate::{CalibratedParams, CalibrationConfig, CalibrationMetric};
-pub use algorithm::search::convergence::SearchConvergenceChecker;
+pub use algorithm::search::adaptive::calibrate::CalibrationDiagnostics;
+pub use algorithm::search::adaptive::calibrate::{
+    CalibratedParams, CalibrationConfig, CalibrationMetric,
+};
+pub use algorithm::search::adaptive::convergence::SearchConvergenceChecker;
 #[cfg(feature = "benchmark")]
 pub use algorithm::search::diagnostics::SearchProfileStats;
 #[cfg(feature = "benchmark")]
 pub use index::NaiveOrion;
 pub use index::compressed_index::graph::GraphView;
-#[cfg(feature = "benchmark")]
-pub use index::{BeamSearchConfig, BeamSearchResult, IoLimiter, async_beam_search};
 pub use index::{CompressedIndex, DynamicCascade, DynamicSearchConfig, Orion, StaticOrion};
 #[cfg(feature = "benchmark")]
 pub use index::{DIM_32, DIM_100, DIM_128, DIM_768, DIM_784, DIM_960, DIM_1536};

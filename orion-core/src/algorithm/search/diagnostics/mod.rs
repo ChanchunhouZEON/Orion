@@ -8,6 +8,7 @@
 mod legacy;
 #[cfg(feature = "benchmark")]
 mod matched_state;
+pub(crate) mod metrics;
 #[cfg(feature = "benchmark")]
 mod synergy;
 #[cfg(feature = "benchmark")]

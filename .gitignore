@@ -71,4 +71,4 @@ core.*
 *.py[cod]
 
 # Website source and curated measurements live on the independent pages branch.
-/historical/
+/orion-site/

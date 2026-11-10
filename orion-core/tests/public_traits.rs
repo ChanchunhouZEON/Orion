@@ -37,12 +37,6 @@ fn public_facade_trait_contracts() {
     debug::<SearchProfile>();
     #[cfg(feature = "benchmark")]
     debug::<SearchProfileStats>();
-    #[cfg(feature = "benchmark")]
-    debug::<BeamSearchConfig>();
-    #[cfg(feature = "benchmark")]
-    debug::<BeamSearchResult>();
-    #[cfg(feature = "benchmark")]
-    debug::<IoLimiter>();
     debug::<Error>();
     debug::<ErrorCode>();
     debug::<ErrorReport>();

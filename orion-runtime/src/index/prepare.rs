@@ -32,17 +32,58 @@ impl Index {
         options: IndexOptions,
         snapshot: Option<Snapshot>,
     ) -> Result<Self> {
+        let ids = snapshot
+            .as_ref()
+            .and_then(|s| s.payloads.external_ids.as_ref().map(|id| (s, id)))
+            .map(|(s, id)| {
+                super::ids::IdMap::load(
+                    &s.object_store,
+                    &id.sha256,
+                    id.points,
+                    options.memory_budget_gib,
+                )
+            })
+            .transpose()?;
+        Self::load_with_ids(input, options, snapshot, ids)
+    }
+
+    pub(super) fn load_with_ids(
+        input: BaseInput,
+        options: IndexOptions,
+        snapshot: Option<Snapshot>,
+        external_ids: Option<super::ids::IdMap>,
+    ) -> Result<Self> {
+        let working_directory = snapshot.is_none().then(|| options.cache_dir.clone());
+        let _lease = working_directory
+            .as_deref()
+            .map(crate::storage::WriterLease::acquire)
+            .transpose()?;
+        let mut allocation_options = options.clone();
+        // Reserve application identity alongside graph/base rather than silently
+        // spending the entire user budget on the core representation.
+        if let (Some(ids), Some(budget)) = (&external_ids, options.memory_budget_gib) {
+            allocation_options.memory_budget_gib =
+                Some(budget - ids.0.len() as f64 * 8.0 / 1073741824.0);
+        }
         let snapshot_graph = snapshot
             .as_ref()
             .map(|s| crate::storage::object(&s.object_store, &s.payloads.graph_sha256, "pgraph"))
             .transpose()?;
         let (mut base, mut config) =
-            input.validate_and_load(&options, snapshot_graph.as_deref())?;
+            input.validate_and_load(&allocation_options, snapshot_graph.as_deref())?;
         if config.graph_source_policy == GraphSourcePolicy::Auto {
             config.select_automatic_graph(true)?;
         }
 
         let points = base.rows.len();
+        if external_ids
+            .as_ref()
+            .is_some_and(|ids| ids.0.len() != points)
+        {
+            return Err(Error::invalid_argument(
+                "external ID count must equal indexed point count",
+            ));
+        }
         let saved = snapshot
             .map(|manifest| manifest.verify(&config, points, &base.sha256))
             .transpose()?;
@@ -87,6 +128,16 @@ impl Index {
             // any missing recipe sidecars before sharing the restored handle.
             pool.install(|| view.engine.prepare_search(&config))?;
         }
+        // Publish application identities once. Later calibration-only saves
+        // reference this immutable object without re-encoding the mapping.
+        if view.payloads.external_ids.is_none() {
+            if let Some(ids) = &external_ids {
+                view.payloads.external_ids = Some(super::snapshot::ExternalIdObject {
+                    sha256: ids.save(&view.object_store)?,
+                    points: ids.0.len(),
+                });
+            }
+        }
         Ok(Self {
             view,
             pool,
@@ -94,6 +145,8 @@ impl Index {
             options,
             base_file: base.file,
             calibrations,
+            external_ids,
+            working_directory,
         })
     }
 }
@@ -164,6 +217,7 @@ fn prepare<B: SearchBackend + 'static>(
                 provenance_bytes: bytes,
                 base_sha256: base_sha256.to_owned(),
                 sidecars: BTreeMap::new(),
+                external_ids: None,
             };
             let receipts = crate::sidecars::track(
                 &mut graph.index,

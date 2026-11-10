@@ -4,7 +4,8 @@ Licensed under the MIT License.
 -->
 
 Search with packed logical rows; internal padding is not part of the input.
-The library returns IDs and counts, not recall or synthesized distances.
+The library returns IDs and counts, with optional exact candidate scores. It
+does not calculate recall unless an application supplies its own ground truth.
 
 ```rust
 use orion_ann::{BaseInput, GraphConfig, Index, IndexOptions, QueryBatch, SearchOptions, Result};
@@ -111,10 +112,12 @@ native-u8 input stays bytes. Cosine normalization and representation conversion
 use internal buffers. SIMD padding and per-query working memory still allocate
 as required; borrowing the input does not promise allocation-free search.
 
-`SearchResult` is defined in `orion-ann-core` and re-exported by `orion-ann`.
-The batch core methods return the same type. `rows()` iterates valid IDs without
-padding. Requesting scores is reserved for a later API addition; no extra exact
-scoring pass is performed in this interface.
+Core `SearchResult` contains compact internal IDs, valid counts and optional
+scores. Runtime `SearchResult` moves these buffers without copying and adds an
+optional business-ID buffer. `rows()` iterates valid internal IDs without padding.
+The default request performs no extra exact scoring pass. Equal-distance tie
+ordering is not a cross-platform stability guarantee; use IDs to distinguish
+neighbors and counts to handle fewer-than-k results.
 
 ## Optional RAM residency
 
@@ -200,3 +203,71 @@ scores, calibration or snapshot identity.
 index.set_pq_code_storage(orion_ann::PqCodeStorage::OnDemand)?;
 # Ok(()) }
 ```
+
+## Optional scores and explicit preparation
+
+`SearchOptions::new(k, beam)` returns IDs only. Add `.with_scores(true)` to
+request full-precision scores for the selected candidates. Squared-L2 is lower
+is better; inner product and cosine similarity are higher is better. Internal
+negative dot products and quantized admission distances are not exported as
+business scores. Exact rerank scores are reused when their metric matches.
+
+Scores preserve the selected IDs and order. Approximate final ranking can leave
+the exact scores out of order; exact scores do not imply exact global top-k.
+Floating-point results can differ slightly across SIMD backends. Only the
+`counts[row]` prefix is valid; score padding is NaN, ID padding is `u32::MAX`.
+An unrepresentable/non-finite score returns an error rather than invalid JSON.
+
+Use `calibrate_many(samples, &[10, 100], None)` to explicitly prepare several k
+values. Inspect `calibrated_ks()` and `calibration(k)` without doing any work.
+Missing preparation remains `InvalidState`, including empty query batches.
+Calibration records are published together after successful batch preparation;
+previous records remain intact on failure, although sidecars may have been
+materialized. Calibration is sample-dependent and is not a recall guarantee.
+
+## Business identities
+
+```rust
+use orion_ann::{BaseInput, Index, IndexOptions, QueryBatch, SearchOptions};
+# let root = std::env::temp_dir().join(format!("orion-ids-doc-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+let base: Vec<f32> = (0..32 * 8).map(|i| (i % 101) as f32).collect();
+let business_ids: Vec<u64> = (100_000..100_032).collect();
+let mut index = Index::new_with_ids(BaseInput::from_f32(&base, 8)?,
+    IndexOptions { cache_dir: root.join("work"), threads: 1, ..Default::default() }, business_ids)?;
+index.calibrate_many(base[..8 * 4].to_vec(), &[3, 5], Some(16))?;
+assert_eq!(index.calibrated_ks().collect::<Vec<_>>(), [3, 5]);
+let result = index.search(QueryBatch::from_f32(&base[..8], 8)?,
+    &SearchOptions::new(3, 16).with_scores(true))?;
+let count = result.counts[0] as usize;
+println!("business IDs: {:?}", &result.external_ids.as_ref().unwrap()[..count]);
+println!("scores: {:?}", &result.scores.as_ref().unwrap().values[..count]);
+# drop(index);
+# std::fs::remove_dir_all(root)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+IDs must be unique and match the indexed prefix length. All `u64` values are
+valid business IDs, including `u64::MAX`; counts define padding. Strings remain
+application-owned. The graph and ground-truth evaluation keep internal `u32`
+IDs. The mapping costs eight resident bytes per point, plus a temporary sorting
+copy during validation. It is stored as a separately authenticated immutable
+object and does not change graph cache identity.
+
+Python accepts `external_ids=` in `Index.from_file` and `Index.from_array`;
+`SearchResult.external_ids` is a `uint64` array or `None`. CLI accepts
+`--external-ids ids.json` (one JSON array in base-row order) and `--scores`.
+JSONL results contain internal `ids` plus optional `external_ids`, `scores` and
+`score_metric`. Large JSON u64 values must be read with a lossless integer parser,
+not converted to JavaScript Number.
+
+A complete file-based example is available as `business_search`:
+
+```text
+cargo run -p orion-ann --release --features file-queries --example business_search -- \
+  base.fvecs query.fvecs business-ids.json index-options.json snapshot-dir
+```
+
+It uses the caller's `IndexOptions` JSON and u64 ID array, prepares k=10 and
+k=100 (requiring at least 100 base rows), searches with scores, saves and reopens,
+and checks the returned identities and scores. Existing graphs are reused when
+the options and base identity match the working cache.

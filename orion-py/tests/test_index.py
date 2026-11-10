@@ -96,6 +96,109 @@ class IndexTests(unittest.TestCase):
         rows = [json.loads(line) for line in run.stdout.splitlines() if line.startswith("{")]
         self.assertEqual([r["ids"] for r in rows if r["type"] == "result"], expected.ids.tolist())
 
+    def test_scores_calibration_and_cli_share_the_public_contract(self):
+        for metric in ("l2", "inner-product", "cosine"):
+            with self.subTest(metric=metric):
+                base, queries = self.arrays(dimension=13)
+                bp, qp = self.root / f"{metric}.fbin", self.root / f"{metric}-queries.fbin"
+                write_vectors(bp, base)
+                write_vectors(qp, queries)
+                index = Index.from_file(bp, graph=self.graph, metric=metric,
+                    cache_dir=self.root / f"{metric}-cache", threads=2, auto_pin=False)
+                self.assertEqual(index.calibrated_ks, [])
+                self.assertIsNone(index.calibration(3))
+                index.calibrate_many(queries, ks=[3, 5], search_list_size=24)
+                self.assertEqual(index.calibrated_ks, [3, 5])
+                self.assertEqual(index.calibration(3).k, 3)
+                plain = index.search(queries, k=3, search_list_size=24)
+                scored = index.search(queries, k=3, search_list_size=24, scores=True)
+                self.assert_results(plain, scored)
+                self.assertIsNone(plain.scores)
+                selected = base[scored.ids].astype(np.float64)
+                q = queries.astype(np.float64)[:, None, :]
+                if metric == "l2":
+                    expected = ((selected - q) ** 2).sum(axis=2)
+                    label = "squared_l2"
+                elif metric == "inner-product":
+                    expected = (selected * q).sum(axis=2)
+                    label = "inner_product"
+                else:
+                    expected = (selected * q).sum(axis=2) / (np.linalg.norm(selected, axis=2) * np.linalg.norm(q, axis=2))
+                    label = "cosine_similarity"
+                np.testing.assert_allclose(scored.scores, expected, rtol=2e-6, atol=2e-6)
+                self.assertEqual(scored.score_metric, label)
+                bp, qp = self.root / f"{metric}.fbin", self.root / f"{metric}-queries.fbin"
+                write_vectors(bp, base)
+                write_vectors(qp, queries)
+                ref = index.save(self.root / f"{metric}-snapshot")
+                run = subprocess.run([os.environ["ORION_TEST_CLI"], "--snapshot", ref.path,
+                    "--base", str(bp), "--query", str(qp), "--k", "3", "--search-l", "24", "--scores"],
+                    text=True, capture_output=True)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                rows = [json.loads(line) for line in run.stdout.splitlines() if line.startswith("{")]
+                rows = [r for r in rows if r["type"] == "result"]
+                self.assertEqual([r["ids"] for r in rows], scored.ids.tolist())
+                np.testing.assert_allclose([r["scores"] for r in rows], scored.scores, rtol=2e-6)
+                self.assertTrue(all(r["score_metric"] == label for r in rows))
+
+    def test_external_ids_and_portable_bundle_match_cli(self):
+        import shutil
+        base, queries = self.arrays(dimension=13)
+        bp, qp = self.root / "business.fbin", self.root / "business-query.fbin"
+        write_vectors(bp, base); write_vectors(qp, queries)
+        business = [2**40 + i for i in range(len(base))]
+        business[-1] = 2**64 - 1
+        for bad in ([1] * len(base), [1, 2]):
+            with self.assertRaises(OrionError):
+                Index.from_array(base, external_ids=bad, graph=self.graph,
+                    cache_dir=self.root / "invalid-ids", threads=2)
+        index = Index.from_file(bp, graph=self.graph, external_ids=business,
+            cache_dir=self.root / "business-cache", threads=2, auto_pin=False)
+        index.calibrate_many(queries, ks=[3, 5], search_list_size=24)
+        expected = index.search(queries, k=3, search_list_size=24, scores=True)
+        np.testing.assert_array_equal(expected.external_ids, np.asarray(business, dtype=np.uint64)[expected.ids])
+        reference = index.export_bundle(self.root / "bundle", include_base=True)
+        shutil.move(str(self.root / "bundle"), str(self.root / "moved"))
+        bp.unlink()
+        shutil.rmtree(self.root / "business-cache.objects")
+        relocated = reference.relocated(self.root / "moved/snapshot")
+        restored = Index.open(relocated, threads=2, auto_pin=False)
+        actual = restored.search(queries, k=3, search_list_size=24, scores=True)
+        self.assert_results(expected, actual)
+        np.testing.assert_array_equal(expected.external_ids, actual.external_ids)
+        np.testing.assert_allclose(expected.scores, actual.scores)
+        self.assertEqual(restored.calibrated_ks, [3, 5])
+        run = subprocess.run([os.environ["ORION_TEST_CLI"], "--snapshot", relocated.path,
+            "--query", str(qp), "--k", "3", "--search-l", "24", "--scores", "--no-auto-pin"],
+            text=True, capture_output=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        rows = [json.loads(line) for line in run.stdout.splitlines() if line.startswith("{")]
+        rows = [r for r in rows if r["type"] == "result"]
+        self.assertEqual([r["external_ids"] for r in rows], expected.external_ids.tolist())
+        self.assertEqual([r["ids"] for r in rows], expected.ids.tolist())
+        np.testing.assert_allclose([r["scores"] for r in rows], expected.scores)
+
+    def test_fresh_cli_external_ids_match_python(self):
+        base, queries = self.arrays()
+        bp, qp, ids_path = self.root / "ids.fbin", self.root / "ids-query.fbin", self.root / "ids.json"
+        write_vectors(bp, base); write_vectors(qp, queries)
+        business = [2**40 + i for i in range(len(base))]
+        ids_path.write_text(json.dumps(business))
+        index = Index.from_file(bp, graph=self.graph, external_ids=business,
+            cache_dir=self.root / "ids-cache", threads=2, auto_pin=False)
+        index.calibrate(queries, k=3)
+        expected = index.search(queries, k=3, search_list_size=24, scores=True)
+        run = subprocess.run([os.environ["ORION_TEST_CLI"], "--base", str(bp), "--query", str(qp),
+            "--external-ids", str(ids_path), "--staged-file", str(self.staged), "--graph-source", "parlayann",
+            "--graph-degree", "8", "--build-l", "32", "--alpha", "1.2", "--max-extra", "4",
+            "--threads", "2", "--cache-dir", str(self.root / "ids-cache"), "--no-auto-pin",
+            "--k", "3", "--search-l", "24", "--scores"], text=True, capture_output=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        rows = [json.loads(line) for line in run.stdout.splitlines() if line.startswith("{")]
+        rows = [r for r in rows if r["type"] == "result"]
+        self.assertEqual([r["external_ids"] for r in rows], expected.external_ids.tolist())
+        np.testing.assert_allclose([r["scores"] for r in rows], expected.scores)
+
     def test_automatic_residency_policy_and_snapshot_cli_parity(self):
         base, queries = self.arrays()
         bp, qp = self.root / "auto-base.fbin", self.root / "auto-query.fbin"

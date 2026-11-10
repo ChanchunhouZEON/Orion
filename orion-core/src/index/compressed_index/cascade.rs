@@ -110,6 +110,59 @@ impl<D: crate::model::dataset::rows::CascadeData> CompressedIndex<D> {
             .collect::<Result<Vec<_>>>()
             .and_then(|rows| crate::SearchResult::from_rows(rows, config.k, self.num_nodes))
     }
+
+    /// Same traversal and candidate order as `search_batch_cascade`, with exact
+    /// scores of the selected IDs. Approximate reranking may leave these scores
+    /// out of metric order; scoring does not silently select a different top-k.
+    pub fn search_batch_cascade_scored(
+        &self,
+        queries: &[f32],
+        config: DynamicSearchConfig,
+        recipe: DynamicCascade<'_>,
+        metric: crate::ScoreMetric,
+    ) -> Result<crate::SearchResult> {
+        self.validate_cascade(queries, config, recipe)?;
+        let rows = queries
+            .par_chunks(crate::model::dataset::rows::F32Rows::dimension(
+                &self.dataset,
+            ))
+            .map(|query| {
+                let started = crate::algorithm::search::diagnostics::metrics::SetupTimer::now();
+                let prefilter = recipe.prefilter.map(|stage| stage.open(query));
+                let admission = recipe.admission.open(query);
+                let (ids, scores) = self.search_sessions(
+                    config.k,
+                    config.search_list_size,
+                    config.window_size,
+                    config.epsilon,
+                    config.early_exit_limit,
+                    prefilter.as_deref(),
+                    admission.as_ref(),
+                    self.cascade_mode(),
+                    &mut NoopObserver,
+                    started,
+                    |scratch, factor| {
+                        recipe
+                            .rerank
+                            .rerank_scored(query, config.k, factor, scratch, metric)
+                    },
+                )?;
+                let scores = scores.unwrap_or_else(|| {
+                    ids.iter()
+                        .map(|&id| {
+                            crate::algorithm::search::scoring::exact_score(
+                                query,
+                                self.dataset.row(id as usize),
+                                metric,
+                            )
+                        })
+                        .collect()
+                });
+                Ok((ids, scores))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        crate::SearchResult::from_scored_rows(rows, config.k, self.num_nodes, metric)
+    }
     pub fn search_cascade_observed<O: SearchObserver>(
         &self,
         query: &[f32],
@@ -135,7 +188,7 @@ impl<D: crate::model::dataset::rows::CascadeData> CompressedIndex<D> {
         mode: NeighborMode,
         observer: &mut O,
     ) -> Result<Vec<u32>> {
-        let started = crate::algorithm::search::metrics::SetupTimer::now();
+        let started = crate::algorithm::search::diagnostics::metrics::SetupTimer::now();
         let prefilter = recipe.prefilter.map(|stage| stage.open(query));
         let admission = recipe.admission.open(query);
         self.search_sessions(

@@ -20,6 +20,10 @@ fn public_service_types_are_inspectable_and_movable() {
     debug::<Calibration>();
     debug::<SearchResult>();
     debug::<Index>();
+    debug::<orion_ann::IndexSlot>();
+    shareable::<orion_ann::IndexSlot>();
+    debug::<orion_ann::SearchScores>();
+    debug::<orion_ann::ScoreMetric>();
     debug::<orion_ann::PinOptions>();
     debug::<orion_ann::PinHint>();
     debug::<orion_ann::PinReport>();
@@ -43,6 +47,8 @@ fn input_and_result_debug_are_bounded_and_results_compare_by_value() {
         ids: vec![12345; 20_000],
         counts: vec![10; 2000],
         k: 10,
+        scores: None,
+        external_ids: None,
     };
     assert_eq!(result, result.clone());
     let summary = format!("{result:?}");

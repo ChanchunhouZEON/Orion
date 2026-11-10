@@ -27,7 +27,9 @@ macro_rules! calibration_search_list_size {
     ($base_l:expr, $k:expr $(,)?) => {{
         let base_l: usize = $base_l;
         let k: usize = $k;
-        base_l.max(k.saturating_mul($crate::algorithm::search::calibrate::CALIBRATION_BEAM_FACTOR))
+        base_l.max(k.saturating_mul(
+            $crate::algorithm::search::adaptive::calibrate::CALIBRATION_BEAM_FACTOR,
+        ))
     }};
 }
 

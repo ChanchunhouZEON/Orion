@@ -12,7 +12,7 @@ Part of [Orion ANN](https://github.com/ChanchunhouZEON/Orion). Requires Rust 1.9
 Use `orion_ann::{Index, IndexOptions, QueryBatch, SearchOptions, BaseInput}` for owned construction,
 calibration, batch search and persistence. The `guide` module contains executable
 examples for configuration, build, cache and search, with errors, concurrency and
-panic contracts. Enable `cli` only for preset/command-line configuration support.
+panic contracts. Enable `cli` only for command-line adapter support.
 
 ```toml
 [dependencies]
@@ -82,4 +82,4 @@ borrowed `QueryBatch`; share an index through `Arc` for concurrent requests.
 `SearchOptions` supplies each request's k and beam without changing index state.
 Calibration still requires exclusive `&mut` access. `Index` and `BaseInput` are movable and implement summary `Debug`, but deliberately do
 not implement `Clone` or `Default`. `SearchResult` implements `Clone`, `PartialEq`
-and `Eq`; its `Debug` shows dimensions/counts rather than every result ID.
+(scores contain floats and NaN padding, so it does not implement `Eq`); its `Debug` shows dimensions/counts rather than every result ID.

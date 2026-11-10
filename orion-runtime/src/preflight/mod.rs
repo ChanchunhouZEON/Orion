@@ -137,6 +137,13 @@ pub(crate) fn check_index_budget(
     snapshot_graph: Option<&std::path::Path>,
 ) -> Result<()> {
     let Some(path) = snapshot_graph else {
+        if config.base_content_id.is_none() {
+            // The streaming base decoder has not computed its content identity
+            // yet, so a cache miss here is not authoritative. Estimate allocation
+            // now; load() verifies the selected cache/source after hashing.
+            let input = resolve_memory_inputs(config, points, true, "file header")?;
+            return enforce_budget(&calculate_memory(config, input)?);
+        }
         return check_memory_budget(config, points);
     };
     // A restored snapshot is a cache hit regardless of installed builders and

@@ -4,10 +4,11 @@
  */
 
 //! Resolve a snapshot directory or trusted reference and open its generation.
+mod bundle;
 mod manifest;
 mod save;
 use crate::{BaseInput, Error, Index, Result};
-pub(super) use manifest::{CheckedManifest, Payloads, Snapshot};
+pub(super) use manifest::{CheckedManifest, ExternalIdObject, Payloads, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 /// A snapshot's location and the manifest identity recorded when it was saved.
@@ -20,6 +21,13 @@ pub struct SnapshotRef {
 }
 
 impl SnapshotRef {
+    /// Retain the manifest identity after moving a snapshot or bundle directory.
+    pub fn relocated(&self, path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            manifest_sha256: self.manifest_sha256.clone(),
+        }
+    }
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -55,8 +63,11 @@ impl From<&SnapshotRef> for SnapshotSource {
 }
 
 /// Resource overrides for reopening a snapshot. Defaults use the saved settings.
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct OpenOptions {
+    /// Explicit relocation of the immutable object store. Hash verification is unchanged.
+    pub object_store: Option<PathBuf>,
     pub threads: Option<usize>,
     pub memory_budget_gib: Option<f64>,
     /// Override the saved deployment policy; resources are always probed afresh.
@@ -67,30 +78,18 @@ pub struct OpenOptions {
 impl OpenOptions {
     /// Open through the same integrity checks as [`Index::open`].
     pub fn open(self, source: impl Into<SnapshotSource>, input: BaseInput) -> Result<Index> {
-        let source = source.into();
-        let path = match &source {
-            SnapshotSource::Directory(path) => path.as_path(),
-            SnapshotSource::Reference(reference) => reference.path(),
-        };
-        let bytes = crate::storage::read_bounded(&path.join("index.json"), 16 * 1024 * 1024)?;
-        if let SnapshotSource::Reference(reference) = &source {
-            crate::integrity::check(
-                "manifest",
-                &crate::integrity::sha256(&bytes),
-                reference.manifest_sha256(),
-            )?;
+        let (path, snapshot) = read_manifest(source.into())?;
+        self.load_snapshot(&path, snapshot, input)
+    }
+
+    fn load_snapshot(self, path: &Path, mut snapshot: Snapshot, input: BaseInput) -> Result<Index> {
+        snapshot.object_store = match self.object_store {
+            Some(store) => store,
+            None if snapshot.object_store.is_relative() => path.join(&snapshot.object_store),
+            None => snapshot.object_store,
         }
-        let mut snapshot: Snapshot = serde_json::from_slice(&bytes)?;
-        // Standalone snapshots from the earlier layout already contain objects
-        // under their content names. Their directory can serve as their store.
-        if snapshot.object_store.as_os_str().is_empty() {
-            snapshot.object_store = path.canonicalize()?;
-        }
-        if !snapshot.object_store.is_absolute() {
-            return Err(Error::cache(
-                "snapshot object store must be an absolute path",
-            ));
-        }
+        .canonicalize()
+        .map_err(Error::from)?;
         let mut options = snapshot.options.clone();
         options.cache_dir = path.canonicalize().map_err(Error::from)?;
         if let Some(n) = self.threads {
@@ -107,4 +106,29 @@ impl OpenOptions {
         }
         Index::load(input, options, Some(snapshot))
     }
+}
+
+/// Parse once so selecting a bundled base and loading payloads use the same
+/// checked manifest, even if another process replaces the directory meanwhile.
+fn read_manifest(source: SnapshotSource) -> Result<(PathBuf, Snapshot)> {
+    let path = match &source {
+        SnapshotSource::Directory(path) => path.clone(),
+        SnapshotSource::Reference(reference) => reference.path().to_owned(),
+    };
+    let bytes = crate::storage::read_bounded(&path.join("index.json"), 16 * 1024 * 1024)?;
+    if let SnapshotSource::Reference(reference) = source {
+        crate::integrity::check(
+            "manifest",
+            &crate::integrity::sha256(&bytes),
+            reference.manifest_sha256(),
+        )?;
+    }
+    let envelope: serde_json::Value = serde_json::from_slice(&bytes)?;
+    if envelope["format_version"].as_u64() != Some(manifest::FORMAT_VERSION as u64) {
+        return Err(Error::cache(
+            "unsupported snapshot format version; export with a compatible reader",
+        )
+        .with_detail("supported_version", manifest::FORMAT_VERSION));
+    }
+    Ok((path, serde_json::from_value(envelope)?))
 }

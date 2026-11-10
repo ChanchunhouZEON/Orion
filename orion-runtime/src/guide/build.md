@@ -121,7 +121,7 @@ load, but constructing a copied array input already allocates its own buffer.
 `BaseInput::from_f32/from_u8` copies the caller's row-major slice into owned,
 aligned storage; the caller may reuse its original slice immediately. `Index`
 takes ownership of that storage and its Rayon pool. Construction can create
-cache files, so give each concurrent builder a separate cache directory. A
+cache files. Builders sharing a directory use a nonblocking writer lease; a conflict returns InvalidState. Use separate directories to build concurrently. A
 failed build may leave temporary artifacts; reuse only a complete validated cache.
 
 Input errors are recoverable `Result`s, not a promise that all Rust code is

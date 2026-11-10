@@ -31,7 +31,7 @@ impl<'a, K: DistanceKernelBackend<Storage = f32>> DynamicF32Rerank<'a, K> {
         }
     }
 }
-impl<K: DistanceKernelBackend<Storage = f32> + Send + Sync> RerankStage
+impl<K: DistanceKernelBackend<Storage = f32> + Send + Sync + 'static> RerankStage
     for DynamicF32Rerank<'_, K>
 {
     fn precision(
@@ -52,6 +52,53 @@ impl<K: DistanceKernelBackend<Storage = f32> + Send + Sync> RerankStage
         factor: usize,
         scratch: &mut InMemSearchScratch,
     ) -> Vec<u32> {
+        self.ranked(query, k, factor, scratch)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    fn rerank_scored(
+        &self,
+        query: &[f32],
+        k: usize,
+        factor: usize,
+        scratch: &mut InMemSearchScratch,
+        metric: crate::ScoreMetric,
+    ) -> (Vec<u32>, Option<Vec<f32>>) {
+        use std::any::TypeId;
+        let rows = self.ranked(query, k, factor, scratch);
+        let compatible = match metric {
+            crate::ScoreMetric::SquaredL2 => TypeId::of::<K>() == TypeId::of::<L2F32Distance>(),
+            crate::ScoreMetric::InnerProduct => {
+                TypeId::of::<K>() == TypeId::of::<orion_ann_vector::IpF32Distance>()
+            }
+            // Recompute norms to preserve cosine semantics after f32 normalization.
+            crate::ScoreMetric::CosineSimilarity => false,
+        };
+        let scores = compatible.then(|| {
+            rows.iter()
+                .map(|(_, score)| {
+                    if metric == crate::ScoreMetric::InnerProduct {
+                        -*score
+                    } else {
+                        *score
+                    }
+                })
+                .collect()
+        });
+        (rows.into_iter().map(|(id, _)| id).collect(), scores)
+    }
+}
+
+impl<K: DistanceKernelBackend<Storage = f32>> DynamicF32Rerank<'_, K> {
+    fn ranked(
+        &self,
+        query: &[f32],
+        k: usize,
+        factor: usize,
+        scratch: &mut InMemSearchScratch,
+    ) -> Vec<(u32, f32)> {
         assert_eq!(
             query.len(),
             self.dataset.layout().logical_dim(),
@@ -92,7 +139,8 @@ impl<K: DistanceKernelBackend<Storage = f32> + Send + Sync> RerankStage
         }
         NDC_F32.add(n as u64);
         scored.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-        scored.into_iter().take(k).map(|(id, _)| id).collect()
+        scored.truncate(k);
+        scored
     }
 }
 

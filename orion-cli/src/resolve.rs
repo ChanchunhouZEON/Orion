@@ -11,7 +11,7 @@ use orion_ann::{
 };
 
 impl Args {
-    pub(crate) fn resolve_search(&self, beam: Option<usize>) -> Result<ResolvedRunConfig> {
+    pub(crate) fn index_options(&self) -> IndexOptions {
         let defaults = IndexOptions::default();
         let mut options = IndexOptions {
             metric: self.metric.unwrap_or(defaults.metric),
@@ -41,6 +41,21 @@ impl Args {
         options.graph.alpha = self.alpha.unwrap_or(options.graph.alpha);
         options.graph.max_extra = self.max_extra.unwrap_or(options.graph.max_extra);
 
+        options
+    }
+
+    pub(crate) fn resolve_search(&self, beam: Option<usize>) -> Result<ResolvedRunConfig> {
+        self.resolve(beam, true)
+    }
+
+    /// Actual execution hashes the base while Index loads it. Resolve only its
+    /// shape here; configuration-only/preflight commands still need an identity.
+    pub(crate) fn resolve_execution(&self, beam: Option<usize>) -> Result<ResolvedRunConfig> {
+        self.resolve(beam, false)
+    }
+
+    fn resolve(&self, beam: Option<usize>, fingerprint: bool) -> Result<ResolvedRunConfig> {
+        let options = self.index_options();
         let base = self.base.as_ref().ok_or("--base is required")?;
         let format = self
             .base_format
@@ -70,9 +85,10 @@ impl Args {
             .map(|h| h.count)
             .or(self.max_points)
             .ok_or("offline preflight requires --dimension and --max-points")?;
-        // Match service file identities; changing a label/path must not reuse
-        // an index belonging to different bytes. Offline estimates have no ID.
-        let content_id = if header.is_some() {
+        // Configuration-only commands need the service identity for cache lookup.
+        // Actual execution leaves fingerprinting to Index's single decoding pass;
+        // this preliminary config is used only for CLI query/evaluation settings.
+        let content_id = if fingerprint && header.is_some() {
             use sha2::Digest;
             let mut input = std::fs::File::open(base).map_err(|e| Error::io("open", base, e))?;
             let mut hash = sha2::Sha256::new();
@@ -122,7 +138,7 @@ impl Args {
         config.sweep.search_list_sizes = vec![beam];
         config.sweep.calibration_l =
             orion_ann_core::calibration_search_list_size!(48, config.sweep.k);
-        if config.graph_source_policy == GraphSourcePolicy::Auto {
+        if fingerprint && config.graph_source_policy == GraphSourcePolicy::Auto {
             config.select_automatic_graph(true)?;
         }
         // Query format is a CLI concern but storage compatibility is a shared rule.
@@ -251,6 +267,20 @@ mod tests {
             );
             assert_eq!(cli.cache_namespace, service.cache_namespace);
         }
+    }
+
+    #[test]
+    fn execution_defers_identity_to_the_verified_base_load() {
+        let file = Input::new();
+        let args = file.args(&[]);
+        let execution = args.resolve_execution(None).unwrap();
+        let inspection = args.resolve_search(None).unwrap();
+        assert!(execution.base_content_id.is_none());
+        assert!(inspection.base_content_id.is_some());
+        assert_eq!(execution.dimension, inspection.dimension);
+        assert_eq!(execution.storage(), inspection.storage());
+        assert_eq!(execution.metric, inspection.metric);
+        assert_eq!(execution.sweep.k, inspection.sweep.k);
     }
 
     #[test]

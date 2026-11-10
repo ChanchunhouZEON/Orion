@@ -1784,7 +1784,7 @@ fn run_cliff_profile(dataset: &Dataset) {
 }
 
 fn run_neighbor_contribution_profile(dataset: &Dataset) {
-    use orion_ann_core::algorithm::search::convergence::SearchConvergenceChecker;
+    use orion_ann_core::algorithm::search::adaptive::convergence::SearchConvergenceChecker;
     use orion_ann_core::{build_diskann_index, StaticOrion};
     use orion_ann_diskann::model::{Neighbor as DNeighbor, Vertex};
     use orion_ann_vector::Metric;

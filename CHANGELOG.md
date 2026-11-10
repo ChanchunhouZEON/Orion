@@ -15,6 +15,26 @@ unreleased development baseline, not a dated release announcement.
 
 ### Added
 
+- Optional exact candidate scores with explicit squared-L2, inner-product and
+  cosine semantics across Rust, Python and CLI; IDs-only remains the default.
+- Explicit multi-k calibration and calibration inspection, with missing-k errors
+  and atomic publication of newly computed calibration records.
+- Unique application u64 ID mappings outside the u32 graph, authenticated mapping
+  objects in snapshots, and matching NumPy/JSONL result fields.
+- Versioned snapshot manifests, explicit object-store relocation and portable
+  verified bundles, optionally including a file-built index's original base.
+- Nonblocking writer isolation for working-cache construction/calibration and
+  snapshot publication. Prepared whole-index generation switching keeps ongoing
+  requests on their original index and validates each replacement's contract.
+- Application-contract, corruption, relocation, concurrent generation and
+  Rust/Python/CLI consistency tests; filtering remains outside this update.
+- Core result models live under `model`; calibration, convergence and early-exit
+  policies are grouped under `search::adaptive`, and counters under search
+  diagnostics. Crate-root type exports and SIMD/prefetch scheduling are retained.
+- CLI execution fingerprints base vectors during shared Index loading instead
+  of scanning them once in argument resolution and again during decoding.
+
+
 - Allocation-time `Auto` / `Resident` / `Mapped` placement for base vectors,
   graph adjacency/extras and every sidecar payload, including norms, projections
   and PQ codebooks. File loads, STAG import and ParlayANN slab construction use
@@ -132,6 +152,13 @@ unreleased development baseline, not a dated release announcement.
 - Process-global environment mutation in a concurrently executed preset test.
 
 ### Removed
+
+- Unused core sector-page storage prototype and public utility helpers. PQ
+  training keeps its squared-L2 kernel inside the PQ module with the existing
+  reduction order; the core `utils` directory is removed.
+
+- Unused JL Hamming cache and experimental async beam search, including their
+  exports, dedicated tests and unused core async dependencies.
 
 - The runtime `driver` module, production dataset shortcuts and bundled sweep
   YAML. Experiment-specific parsing now lives only in the benchmark workspace.

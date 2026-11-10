@@ -21,6 +21,15 @@ use std::{
     },
 };
 
+// Owned NumPy buffers transferred after the GIL-free Rust search completes.
+type PySearchOutput<'py> = (
+    Bound<'py, PyArray2<u32>>,
+    Bound<'py, PyArray1<u32>>,
+    Option<Bound<'py, PyArray2<f32>>>,
+    Option<String>,
+    Option<Bound<'py, PyArray2<u64>>>,
+);
+
 #[pyclass(name = "_Index", module = "orion_ann._native")]
 struct PyIndex {
     inner: RwLock<Index>,
@@ -242,53 +251,69 @@ impl PyIndex {
     }
 
     #[staticmethod]
-    fn from_file(py: Python<'_>, path: String, options_json: &str) -> PyResult<Self> {
+    #[pyo3(signature = (path, options_json, external_ids=None))]
+    fn from_file(
+        py: Python<'_>,
+        path: String,
+        options_json: &str,
+        external_ids: Option<Vec<u64>>,
+    ) -> PyResult<Self> {
         boundary(py, "new", || {
             let options = errors::result(py, options(options_json))?;
-            py.allow_threads(move || Index::new(BaseInput::from_file(path), options))
-                .map(Self::wrap)
-                .map_err(|e| to_python(py, e))
+            py.allow_threads(move || match external_ids {
+                Some(ids) => Index::new_with_ids(BaseInput::from_file(path), options, ids),
+                None => Index::new(BaseInput::from_file(path), options),
+            })
+            .map(Self::wrap)
+            .map_err(|e| to_python(py, e))
         })
     }
 
     #[staticmethod]
-    fn from_array(py: Python<'_>, base: &Bound<'_, PyAny>, options_json: &str) -> PyResult<Self> {
+    #[pyo3(signature = (base, options_json, external_ids=None))]
+    fn from_array(
+        py: Python<'_>,
+        base: &Bound<'_, PyAny>,
+        options_json: &str,
+        external_ids: Option<Vec<u64>>,
+    ) -> PyResult<Self> {
         boundary(py, "new", || {
             let options = errors::result(py, options(options_json))?;
             let input = array_base(py, base)?;
-            py.allow_threads(move || Index::new(input, options))
-                .map(Self::wrap)
-                .map_err(|e| to_python(py, e))
+            py.allow_threads(move || match external_ids {
+                Some(ids) => Index::new_with_ids(input, options, ids),
+                None => Index::new(input, options),
+            })
+            .map(Self::wrap)
+            .map_err(|e| to_python(py, e))
         })
     }
 
     #[staticmethod]
-    #[pyo3(signature = (reference, base, threads=None, memory_budget_gib=None, auto_pin=None, storage_options=None))]
+    #[pyo3(signature = (reference, base, options_json="{}"))]
     fn open(
         py: Python<'_>,
         reference: String,
         base: &Bound<'_, PyAny>,
-        threads: Option<usize>,
-        memory_budget_gib: Option<f64>,
-        auto_pin: Option<bool>,
-        storage_options: Option<String>,
+        options_json: &str,
     ) -> PyResult<Self> {
         boundary(py, "open", || {
-            let input = match base.extract::<String>() {
-                Ok(p) => BaseInput::from_file(p),
-                Err(_) => array_base(py, base)?,
+            let input = if base.is_none() {
+                None
+            } else {
+                Some(match base.extract::<String>() {
+                    Ok(p) => BaseInput::from_file(p),
+                    Err(_) => array_base(py, base)?,
+                })
             };
+            let options: orion_ann::OpenOptions =
+                errors::result(py, serde_json::from_str(options_json).map_err(Error::from))?;
             py.allow_threads(move || {
                 let source: orion_ann::SnapshotSource = serde_json::from_str(&reference)?;
-                orion_ann::OpenOptions {
-                    threads,
-                    memory_budget_gib,
-                    auto_pin,
-                    storage_options: storage_options
-                        .map(|v| serde_json::from_str(&v))
-                        .transpose()?,
+                match input {
+                    Some(input) => options.open(source, input),
+                    None => options.open_bundle(source),
                 }
-                .open(source, input)
             })
             .map(Self::wrap)
             .map_err(|e| to_python(py, e))
@@ -324,7 +349,7 @@ impl PyIndex {
         })
     }
 
-    #[pyo3(signature = (queries, k, search_list_size, *, query_format=None))]
+    #[pyo3(signature = (queries, k, search_list_size, *, query_format=None, scores=false))]
     fn search<'py>(
         &self,
         py: Python<'py>,
@@ -332,7 +357,8 @@ impl PyIndex {
         k: usize,
         search_list_size: usize,
         query_format: Option<&str>,
-    ) -> PyResult<(Bound<'py, PyArray2<u32>>, Bound<'py, PyArray1<u32>>)> {
+        scores: bool,
+    ) -> PyResult<PySearchOutput<'py>> {
         boundary(py, "search", || {
             let queries =
                 Queries::extract(py, queries, query_format, self.dimension, self.storage)?;
@@ -342,17 +368,64 @@ impl PyIndex {
                     self.with_read(|index| {
                         index.search(
                             values.batch(self.dimension)?,
-                            &orion_ann::SearchOptions::new(k, search_list_size),
+                            &orion_ann::SearchOptions::new(k, search_list_size).with_scores(scores),
                         )
                     })
                 })
                 .map_err(|e| to_python(py, e))?;
-            let ids = ndarray::Array2::from_shape_vec((result.counts.len(), result.k), result.ids)
+            let shape = (result.counts.len(), result.k);
+            let metric = result.scores.as_ref().map(|s| s.metric.as_str().to_owned());
+            let scores = result
+                .scores
+                .map(|s| {
+                    ndarray::Array2::from_shape_vec(shape, s.values)
+                        .map(|v| v.into_pyarray_bound(py))
+                })
+                .transpose()
+                .map_err(|e| to_python(py, Error::internal(e.to_string()).with_source(e)))?;
+            let external_ids = result
+                .external_ids
+                .map(|values| {
+                    ndarray::Array2::from_shape_vec(shape, values).map(|v| v.into_pyarray_bound(py))
+                })
+                .transpose()
+                .map_err(|e| to_python(py, Error::internal(e.to_string()).with_source(e)))?;
+            let ids = ndarray::Array2::from_shape_vec(shape, result.ids)
                 .map_err(|e| to_python(py, Error::internal(e.to_string()).with_source(e)))?;
             Ok((
                 ids.into_pyarray_bound(py),
                 result.counts.into_pyarray_bound(py),
+                scores,
+                metric,
+                external_ids,
             ))
+        })
+    }
+
+    #[pyo3(signature = (queries, ks, search_list_size=None, query_format=None))]
+    fn calibrate_many(
+        &self,
+        py: Python<'_>,
+        queries: &Bound<'_, PyAny>,
+        ks: Vec<usize>,
+        search_list_size: Option<usize>,
+        query_format: Option<&str>,
+    ) -> PyResult<String> {
+        boundary(py, "calibrate", || {
+            let queries =
+                Queries::extract(py, queries, query_format, self.dimension, self.storage)?;
+            py.allow_threads(move || {
+                let values = queries.read(self.dimension, self.storage)?;
+                self.with_write(|index| {
+                    serde_json::to_string(&index.calibrate_many(
+                        values.into_f32(),
+                        &ks,
+                        search_list_size,
+                    )?)
+                    .map_err(Error::from)
+                })
+            })
+            .map_err(|e| to_python(py, e))
         })
     }
 
@@ -362,6 +435,20 @@ impl PyIndex {
                 self.with_read(|index| {
                     let reference = index.save(std::path::Path::new(&path))?;
                     serde_json::to_string(&reference).map_err(Error::from)
+                })
+            })
+            .map_err(|e| to_python(py, e))
+        })
+    }
+
+    fn export_bundle(&self, py: Python<'_>, path: String, include_base: bool) -> PyResult<String> {
+        boundary(py, "export_bundle", || {
+            py.allow_threads(|| {
+                self.with_read(|index| {
+                    serde_json::to_string(
+                        &index.export_bundle(std::path::Path::new(&path), include_base)?,
+                    )
+                    .map_err(Error::from)
                 })
             })
             .map_err(|e| to_python(py, e))

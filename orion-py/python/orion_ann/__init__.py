@@ -21,6 +21,10 @@ class SnapshotRef:
     path: str
     manifest_sha256: str
 
+    def relocated(self, path: PathLike) -> "SnapshotRef":
+        """Retain the manifest identity after moving the snapshot directory."""
+        return SnapshotRef(os.fspath(path), self.manifest_sha256)
+
     def to_json(self) -> str:
         """Serialize for storage in trusted application configuration."""
         return json.dumps(asdict(self))
@@ -68,6 +72,9 @@ class SearchResult:
     """Row-ordered uint32 IDs; counts excludes trailing UINT32_MAX padding."""
     ids: np.ndarray
     counts: np.ndarray
+    scores: Optional[np.ndarray] = None
+    score_metric: Optional[str] = None
+    external_ids: Optional[np.ndarray] = None
 
 
 def _input(value: Input):
@@ -120,23 +127,23 @@ class Index:
     def from_file(cls, base: PathLike, *, metric="l2", storage=None,
                   graph: Optional[GraphConfig] = None, cascade: Optional[CascadeConfig] = None,
                   cache_dir: PathLike = "cache/orion-ann", threads=8, window_size=5,
-                  memory_budget_gib=None, max_points=None, base_format=None, auto_pin=True, storage_options: Optional[StorageOptions] = None):
+                  memory_budget_gib=None, max_points=None, base_format=None, auto_pin=True, storage_options: Optional[StorageOptions] = None, external_ids=None):
         """Load base into Rust; reuse, import or construct its graph.
 
         Dimension/count come from the file. memory_budget_gib is an estimate,
         not an allocation cap. This may write graph cache files; concurrent
-        builders need separate cache directories. Raises OrionError with code,
+        builders sharing a cache receive an error on a writer conflict; use separate directories to build concurrently. Raises OrionError with code,
         details and causes on input, configuration, cache, I/O or backend errors.
         """
         options = _options(metric, storage, graph, cascade, cache_dir, threads,
                            window_size, memory_budget_gib, max_points, base_format, auto_pin, storage_options)
-        return cls(_Index.from_file(os.fspath(base), options))
+        return cls(_Index.from_file(os.fspath(base), options, external_ids))
 
     @classmethod
     def from_array(cls, base: np.ndarray, *, metric="l2", storage=None,
                    graph: Optional[GraphConfig] = None, cascade: Optional[CascadeConfig] = None,
                    cache_dir: PathLike = "cache/orion-ann", threads=8, window_size=5,
-                   memory_budget_gib=None, max_points=None, auto_pin=True, storage_options: Optional[StorageOptions] = None):
+                   memory_budget_gib=None, max_points=None, auto_pin=True, storage_options: Optional[StorageOptions] = None, external_ids=None):
         """Copy a nonempty 2-D C-contiguous float32/uint8 array into owned storage.
 
         The original array may be reused after return. Logical dimension is the
@@ -146,18 +153,23 @@ class Index:
         """
         options = _options(metric, storage, graph, cascade, cache_dir, threads,
                            window_size, memory_budget_gib, max_points, None, auto_pin, storage_options)
-        return cls(_Index.from_array(base, options))
+        return cls(_Index.from_array(base, options, external_ids))
 
     @classmethod
-    def open(cls, snapshot: Union[PathLike, SnapshotRef], *, base: Input, threads=None, memory_budget_gib=None, auto_pin=None, storage_options: Optional[StorageOptions] = None):
+    def open(cls, snapshot: Union[PathLike, SnapshotRef], *, base: Optional[Input] = None, threads=None, memory_budget_gib=None, auto_pin=None, storage_options: Optional[StorageOptions] = None, object_store: Optional[PathLike] = None):
         """Verify and reopen a snapshot directory or a saved SnapshotRef.
 
         With a reference, the manifest must also match the one issued by save().
+        Omit base only for bundles exported with include_base=True. object_store
+        relocates shared payloads without bypassing verification.
         """
         source = (snapshot.to_json() if isinstance(snapshot, SnapshotRef)
                   else json.dumps(os.fspath(snapshot)))
-        return cls(_Index.open(source, _input(base), threads, memory_budget_gib, auto_pin,
-            None if storage_options is None else json.dumps(_storage_options(storage_options))))
+        options = dict(threads=threads, memory_budget_gib=memory_budget_gib,
+                       auto_pin=auto_pin,
+                       storage_options=None if storage_options is None else _storage_options(storage_options),
+                       object_store=None if object_store is None else os.fspath(object_store))
+        return cls(_Index.open(source, _input(base), json.dumps(options)))
 
     @property
     def info(self) -> dict:
@@ -176,8 +188,23 @@ class Index:
         record = self._handle.calibrate(_input(queries), k, search_list_size, query_format)
         return Calibration(**json.loads(record))
 
+    def calibrate_many(self, queries: Input, *, ks, search_list_size=None,
+                       query_format=None) -> list[Calibration]:
+        """Explicitly prepare all requested k values; publish records together."""
+        records = self._handle.calibrate_many(_input(queries), list(ks), search_list_size, query_format)
+        return [Calibration(**value) for value in json.loads(records)]
+
+    @property
+    def calibrated_ks(self) -> list[int]:
+        """Prepared k values; inspecting them never performs calibration."""
+        return sorted(int(k) for k in self.info["calibrations"])
+
+    def calibration(self, k: int) -> Optional[Calibration]:
+        record = self.info["calibrations"].get(str(k))
+        return None if record is None else Calibration(**record)
+
     def search(self, queries: Input, *, k=10, search_list_size=64,
-               query_format=None) -> SearchResult:
+               query_format=None, scores=False) -> SearchResult:
         """Search a batch. Search uses the calibration for this k.
 
         Files are decoded as a complete batch. For bounded memory, pass separate
@@ -187,20 +214,34 @@ class Index:
         uint32 IDs preserve row order; use counts to exclude UINT32_MAX padding.
         Empty batches are supported after control/calibration validation.
 
+        scores=True adds float32 scores of the returned candidates and a
+        score_metric label. Squared L2 is lower-is-better; inner product and
+        cosine similarity are higher-is-better. Scores preserve result order
+        and do not imply exact global top-k. Ignore NaN padding using counts.
+
         Raises OrionError: missing calibration is ORION_INVALID_STATE; shape,
         value and backend failures carry structured reports. Ordinary invalid
         input can be corrected and retried. An unexpected Rust unwind instead
         invalidates the native handle: reopen it before further operations.
         """
-        ids, counts = self._handle.search(_input(queries), k, search_list_size,
-                                         query_format=query_format)
-        return SearchResult(ids, counts)
+        ids, counts, values, metric, external = self._handle.search(_input(queries), k, search_list_size,
+                                         query_format=query_format, scores=scores)
+        return SearchResult(ids, counts, values, metric, external)
+
+    def export_bundle(self, destination: PathLike, *, include_base=False) -> SnapshotRef:
+        """Copy verified objects into a relocatable bundle.
+
+        include_base requires a file-built index; arrays are supplied again to open.
+        The reference names destination/snapshot. With an included base, open()
+        needs no base argument. Existing destinations are never overwritten.
+        """
+        return SnapshotRef.from_json(self._handle.export_bundle(os.fspath(destination), include_base))
 
     def save(self, cache: PathLike) -> SnapshotRef:
         """Save a manifest referencing the shared object store and external base.
 
-        A staging directory is renamed after writes succeed. Serialize writers
-        to the same destination. Raises OrionError for an existing destination,
+        A staging directory is renamed after writes succeed. Conflicting writers
+        to the same destination are rejected. Raises OrionError for an existing destination,
         changed base, serialization or I/O failure; the loaded index remains
         usable. Rename visibility is not a full filesystem crash-durability claim.
         """

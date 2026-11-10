@@ -171,6 +171,26 @@ impl<B: SearchBackend> Engine for DynamicEngine<B> {
         options: &SearchOptions,
         params: orion_ann_core::CalibratedParams,
     ) -> Result<orion_ann_core::SearchResult> {
+        if options.scores {
+            return match q.values {
+                QueryValues::F32(values) => B::search_batch_scored(
+                    &self.index,
+                    values,
+                    c,
+                    options.k,
+                    options.search_list_size,
+                    params,
+                ),
+                QueryValues::U8(values) => B::search_batch_u8_scored(
+                    &self.index,
+                    values,
+                    c,
+                    options.k,
+                    options.search_list_size,
+                    params,
+                ),
+            };
+        }
         match q.values {
             QueryValues::F32(values) => B::search_batch(
                 &self.index,

@@ -66,7 +66,9 @@ impl Index {
             options.storage = Some(self.storage());
             options.base_format = Some(config.base_format);
             let snapshot = Snapshot {
+                format_version: super::manifest::FORMAT_VERSION,
                 object_store: self.view.object_store.clone(),
+                bundled_base: false,
                 graph_bytes: self.view.graph_bytes,
                 metadata_bytes: self.view.metadata_bytes,
                 payloads: files,

@@ -45,6 +45,12 @@ pub(crate) fn sync_dir(path: &Path) -> Result<()> {
 }
 
 pub(crate) fn publish<T>(destination: &Path, write: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
+    let _lease = super::WriterLease::acquire(destination)?;
+    if destination.try_exists()? {
+        return Err(Error::invalid_state(
+            "publication destination already exists",
+        ));
+    }
     let parent = destination
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -87,6 +93,13 @@ fn incomplete_generation_is_never_published() {
     });
     assert!(failed.is_err());
     assert!(!next.exists());
-    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    assert_eq!(
+        fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().unwrap().is_dir())
+            .count(),
+        1
+    );
     fs::remove_dir_all(root).unwrap();
 }

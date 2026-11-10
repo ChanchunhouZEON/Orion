@@ -19,7 +19,6 @@ benchmark = ["search-stats", "orion-ann-vector/benchmark", "orion-ann-diskann/be
 search-stats = []
 default = ["parlay"]
 parlay = ["dep:orion-ann-parlay"]
-indicatif = ["dep:indicatif"]
 
 [dependencies]
 orion-ann-parlay = { version = "0.1.0", path = "../orion-parlay", optional = true }
@@ -34,16 +33,12 @@ crossbeam = { workspace = true }
 serde = { workspace = true }
 serde_json.workspace = true
 bincode = { workspace = true}
-memmap2 = { workspace = true }
 thiserror = { workspace = true }
 byteorder = { workspace = true }
-indicatif = { workspace = true, optional = true }
 hashbrown = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 anyhow = "1"
-tokio = { workspace = true }
-futures = { workspace = true }
 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

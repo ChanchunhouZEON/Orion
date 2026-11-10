@@ -9,8 +9,8 @@ pub use input::QueryBatch;
 pub(super) use input::QueryValues;
 
 use super::Index;
+use super::SearchResult;
 use crate::{data::validate_and_normalize_vectors, Error, Result, VectorStorageKind};
-use orion_ann_core::SearchResult;
 use orion_ann_diagnostics::{RecordingObserver, SearchTrace, TraceLimits, TraceMetadata};
 
 /// Per-request search controls. Calibration for `k` must already exist.
@@ -21,6 +21,8 @@ pub struct SearchOptions {
     pub k: usize,
     /// Candidate queue capacity; must be at least `k`.
     pub search_list_size: usize,
+    /// Compute original-metric scores for the returned IDs. Default: IDs only.
+    pub scores: bool,
 }
 
 impl SearchOptions {
@@ -29,7 +31,15 @@ impl SearchOptions {
         Self {
             k,
             search_list_size,
+            scores: false,
         }
+    }
+
+    /// Include original-metric scores without changing selected IDs or ordering.
+    /// Reuse exact rerank scores when possible; otherwise score only returned IDs.
+    pub const fn with_scores(mut self, enabled: bool) -> Self {
+        self.scores = enabled;
+        self
     }
 }
 
@@ -124,11 +134,25 @@ impl Index {
         validate_search(self.len(), options.k, options.search_list_size)?;
         let queries = self.prepare_queries(queries)?;
         let params = self.search_params(options.k, adaptive)?;
-        self.pool.install(|| {
-            self.view
-                .engine
-                .search(queries.batch(), &self.config, options, params)
-        })
+        let mut result: SearchResult = self
+            .pool
+            .install(|| {
+                self.view
+                    .engine
+                    .search(queries.batch(), &self.config, options, params)
+            })?
+            .into();
+        if let Some(mapping) = &self.external_ids {
+            let mut ids = vec![u64::MAX; result.ids.len()];
+            for (row, &count) in result.counts.iter().enumerate() {
+                for column in 0..count as usize {
+                    let slot = row * result.k + column;
+                    ids[slot] = mapping.0[result.ids[slot] as usize];
+                }
+            }
+            result.external_ids = Some(ids);
+        }
+        Ok(result)
     }
 
     fn prepare_queries<'a>(&self, batch: QueryBatch<'a>) -> Result<PreparedQueries<'a>> {
@@ -193,6 +217,7 @@ impl Index {
                     ))
                     .at("search")
                     .with_detail("k", k)
+                    .with_detail("available_k", self.calibrated_ks().collect::<Vec<_>>())
                 })?
                 .params()
         } else {

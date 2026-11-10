@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crossbeam::queue::ArrayQueue;
 
-use crate::algorithm::search::convergence::SearchConvergenceChecker;
+use crate::algorithm::search::adaptive::convergence::SearchConvergenceChecker;
 use crate::model::Neighbor as DNeighbor;
 use crate::model::NeighborPriorityQueue;
 use crate::model::neighbor::neighbor_priority_queue::pad16;
@@ -78,7 +78,7 @@ pub struct InMemSearchScratch {
     /// Reusable convergence checker — avoids per-query allocation.
     pub(crate) scc: SearchConvergenceChecker,
     /// Reusable early exit checker.
-    pub(crate) early_exit: crate::algorithm::search::early_exit::EarlyExitChecker,
+    pub(crate) early_exit: crate::algorithm::search::adaptive::early_exit::EarlyExitChecker,
 }
 
 impl InMemSearchScratch {
@@ -114,7 +114,7 @@ impl InMemSearchScratch {
             jl_last_worst_id: u32::MAX,
             jl_tail_mean: 0.0,
             scc: SearchConvergenceChecker::new(5, 0.0),
-            early_exit: crate::algorithm::search::early_exit::EarlyExitChecker::new(5),
+            early_exit: crate::algorithm::search::adaptive::early_exit::EarlyExitChecker::new(5),
         }
     }
 

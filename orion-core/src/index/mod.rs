@@ -8,10 +8,6 @@ pub mod compressed_index;
 #[cfg(feature = "benchmark")]
 pub mod naive_compressed_index;
 
-#[cfg(feature = "benchmark")]
-pub use crate::algorithm::search::async_beam_search::{
-    BeamSearchConfig, BeamSearchResult, IoLimiter, async_beam_search,
-};
 pub use builder::{DiskANNBuildResult, build_diskann_index};
 pub use compressed_index::{
     CompressedIndex, DynamicCascade, DynamicSearchConfig, Orion, StaticOrion,

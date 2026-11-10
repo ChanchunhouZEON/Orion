@@ -102,7 +102,7 @@ The coverage expansion adds small-data lifecycle and contract tests for:
   batch boundaries;
 - CLI snapshot restoration against Rust search results, persisted calibration
   and non-overwriting result output;
-- async search phase transitions, benchmark baseline parity and diagnostic counters.
+- benchmark baseline parity and diagnostic counters.
 
 These tests caught and fixed little-/big-endian disagreement in deletion files,
 out-of-range deletion requests, reused IDs after graph extension, an overlapping

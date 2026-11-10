@@ -7,6 +7,18 @@ use super::{InMemSearchScratch, Neighbor};
 
 /// Final precision pass on the top-(k · rerank_factor) PQ entries.
 pub trait RerankStage: Send + Sync {
+    /// Reuse exact scores only when the implementation knows their metric.
+    /// Quantized stages leave scoring to the full-precision base after selection.
+    fn rerank_scored(
+        &self,
+        query: &[f32],
+        k: usize,
+        factor: usize,
+        scratch: &mut InMemSearchScratch,
+        _metric: crate::ScoreMetric,
+    ) -> (Vec<u32>, Option<Vec<f32>>) {
+        (self.rerank(query, &[], k, factor, scratch), None)
+    }
     /// Scoring representation, checked once before query sessions are opened.
     fn precision(
         &self,

@@ -36,37 +36,82 @@ impl Index {
     /// Invalid shapes, values, controls and backend failures are returned.
     pub fn calibrate(
         &mut self,
-        mut queries: Vec<f32>,
+        queries: Vec<f32>,
         k: usize,
         search_list_size: Option<usize>,
     ) -> Result<Calibration> {
-        let beam = search_list_size
-            .unwrap_or_else(|| orion_ann_core::calibration_search_list_size!(48, k));
-        validate_search(self.len(), k, beam)?;
-        if queries.is_empty() {
-            return Err("calibration requires at least one query".into());
+        self.calibrate_many(queries, &[k], search_list_size)?
+            .pop()
+            .ok_or_else(|| crate::Error::internal("missing prepared calibration"))
+    }
+
+    /// Explicitly prepare several k values using one validated sample batch.
+    /// Duplicate/empty k lists are rejected. Publish all calibration records
+    /// together after success; failures leave previous records intact. Preparing
+    /// sidecars/residency can still materialize storage before a later failure.
+    pub fn calibrate_many(
+        &mut self,
+        mut queries: Vec<f32>,
+        ks: &[usize],
+        search_list_size: Option<usize>,
+    ) -> Result<Vec<Calibration>> {
+        if queries.is_empty() || ks.is_empty() {
+            return Err(crate::Error::invalid_argument(
+                "calibration requires queries and at least one k",
+            ));
         }
+        let mut unique = std::collections::BTreeSet::new();
+        let controls = ks
+            .iter()
+            .map(|&k| {
+                if !unique.insert(k) {
+                    return Err(crate::Error::invalid_argument("duplicate calibration k")
+                        .with_detail("k", k));
+                }
+                let beam = search_list_size
+                    .unwrap_or_else(|| orion_ann_core::calibration_search_list_size!(48, k));
+                validate_search(self.len(), k, beam)?;
+                Ok((k, beam))
+            })
+            .collect::<Result<Vec<_>>>()?;
         self.queries(&mut queries)?;
-        let params = self.pool.install(|| {
-            // Sidecar builders may use Rayon while holding their initialization
-            // lock. Finish them under exclusive Index access, before allowing
-            // concurrent searches to enter this worker pool.
+        let samples = queries.len() / self.dimension();
+        let _lease = self
+            .working_directory
+            .as_deref()
+            .map(crate::storage::WriterLease::acquire)
+            .transpose()?;
+        let prepared = self.pool.install(|| {
             self.view.engine.prepare_search(&self.config)?;
-            self.view.engine.calibrate(&queries, &self.config, k, beam)
+            controls
+                .into_iter()
+                .map(|(k, beam)| {
+                    let params = self
+                        .view
+                        .engine
+                        .calibrate(&queries, &self.config, k, beam)?;
+                    Ok(Calibration {
+                        k,
+                        search_list_size: beam,
+                        samples,
+                        threshold: params.threshold,
+                        early_exit_limit: params.early_exit_limit,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
         })?;
-        let calibration = Calibration {
-            k,
-            search_list_size: beam,
-            samples: queries.len() / self.dimension(),
-            threshold: params.threshold,
-            early_exit_limit: params.early_exit_limit,
-        };
-        self.calibrations.insert(k, calibration.clone());
-        Ok(calibration)
+        for calibration in &prepared {
+            self.calibrations.insert(calibration.k, calibration.clone());
+        }
+        Ok(prepared)
+    }
+
+    /// Prepared k values, in increasing order. Does not perform any work.
+    pub fn calibrated_ks(&self) -> impl ExactSizeIterator<Item = usize> + '_ {
+        self.calibrations.keys().copied()
     }
 
     /// Calibration currently available for adaptive searches of this k.
-    #[cfg(feature = "cli")]
     pub fn calibration(&self, k: usize) -> Option<&Calibration> {
         self.calibrations.get(&k)
     }

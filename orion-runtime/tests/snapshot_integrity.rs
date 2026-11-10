@@ -183,17 +183,21 @@ fn snapshots_bind_every_consumed_payload() {
         );
         flip_byte(&path, offset);
     }
-    // Older standalone snapshots used this same object naming, but kept their
-    // payloads in the snapshot directory and had no object_store field.
+    // Unversioned snapshots are rejected. A versioned standalone directory
+    // can explicitly use a relative object store without weakening verification.
     let legacy = dir.join("standalone");
     fs::create_dir(&legacy).unwrap();
     let mut old: serde_json::Value =
         serde_json::from_slice(&fs::read(snapshot.join("index.json")).unwrap()).unwrap();
-    old.as_object_mut().unwrap().remove("object_store");
+    old.as_object_mut().unwrap().remove("format_version");
     fs::write(legacy.join("index.json"), serde_json::to_vec(&old).unwrap()).unwrap();
     for file in files() {
         fs::hard_link(&file, legacy.join(file.file_name().unwrap())).unwrap();
     }
+    assert!(Index::open(&legacy, input()).is_err());
+    old["format_version"] = 1.into();
+    old["object_store"] = ".".into();
+    fs::write(legacy.join("index.json"), serde_json::to_vec(&old).unwrap()).unwrap();
     assert_eq!(
         Index::open(&legacy, input())
             .unwrap()

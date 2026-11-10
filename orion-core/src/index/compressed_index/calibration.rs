@@ -6,8 +6,10 @@
 //! Orion calibration reuses the typed graph/statistics walk.
 use super::{CompressedIndex, DynamicElement};
 #[cfg(feature = "benchmark")]
-use crate::algorithm::search::calibrate::CalibrationDiagnostics;
-use crate::algorithm::search::calibrate::{CalibratedParams, CalibrationConfig, CalibrationMetric};
+use crate::algorithm::search::adaptive::calibrate::CalibrationDiagnostics;
+use crate::algorithm::search::adaptive::calibrate::{
+    CalibratedParams, CalibrationConfig, CalibrationMetric,
+};
 use crate::{Error, Result};
 use orion_ann_diskann::model::PaddedDataset;
 use std::cell::RefCell;

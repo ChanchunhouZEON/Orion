@@ -5,9 +5,11 @@
 
 //! Immutable content-addressed objects and bounded metadata reads.
 mod atomic;
+mod lease;
 use crate::integrity::{check, sha256, HashedFile};
 use crate::{Error, Result};
 pub(crate) use atomic::{publish, sync_dir, PendingFile};
+pub(crate) use lease::WriterLease;
 use orion_ann_platform::buffered_io::FILE_WRITE_BYTES;
 use std::{
     fs,

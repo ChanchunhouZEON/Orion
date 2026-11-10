@@ -12,7 +12,7 @@ use orion_ann_vector::{DistanceKernelBackend, L2F32Distance, L2U8Distance};
 use rayon::prelude::*;
 
 use super::{CompressedIndex, IndexData};
-use crate::algorithm::search::calibrate::CalibrationMetric;
+use crate::algorithm::search::adaptive::calibrate::CalibrationMetric;
 use crate::algorithm::search::diagnostics::{NeighborMode, NoopObserver, SearchObserver};
 use crate::model::dataset::quantized_dataset::exact::ExactSession;
 
@@ -98,6 +98,37 @@ fn error(message: impl Into<String>) -> Error {
 }
 
 impl CompressedIndex<PaddedDataset<u8>> {
+    /// Byte-valued f32 input with exact scores retained from the native queue.
+    pub fn search_batch_l2_byte_queries_scored(
+        &self,
+        queries: &[f32],
+        config: DynamicSearchConfig,
+    ) -> Result<crate::SearchResult> {
+        self.validate_search(config)?;
+        let dim = self.dataset.dimension();
+        if !queries.len().is_multiple_of(dim)
+            || queries
+                .iter()
+                .any(|v| !v.is_finite() || *v < 0. || *v > 255. || v.fract() != 0.)
+        {
+            return Err(error(
+                "native u8 query must contain exact byte values and complete rows",
+            ));
+        }
+        let rows = queries
+            .par_chunks(dim)
+            .map(|q| {
+                let bytes: Vec<u8> = q.iter().map(|&v| v as u8).collect();
+                self.search_l2_scored_row(&bytes, config)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        crate::SearchResult::from_scored_rows(
+            rows,
+            config.k,
+            self.num_nodes,
+            crate::ScoreMetric::SquaredL2,
+        )
+    }
     /// Accept byte-valued f32 queries from the shared CLI/Python interface.
     /// Prepare each query on its search worker, directly in its final padded
     /// buffer. This avoids a serial whole-batch conversion and a second copy.
@@ -114,7 +145,7 @@ impl CompressedIndex<PaddedDataset<u8>> {
         queries
             .par_chunks(dim)
             .map(|query| {
-                let started = crate::algorithm::search::metrics::SetupTimer::now();
+                let started = crate::algorithm::search::diagnostics::metrics::SetupTimer::now();
                 let mut padded = PaddedDataset::new(1, self.dataset.layout()).map_err(error)?;
                 for (out, &value) in padded.row_mut(0).unwrap().iter_mut().zip(query) {
                     // Conversion must remain exact: this is native byte search,
@@ -133,6 +164,59 @@ impl CompressedIndex<PaddedDataset<u8>> {
     }
 }
 impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
+    /// Native exact L2 output, reusing distances already held by the final queue.
+    pub fn search_batch_l2_scored(
+        &self,
+        queries: &[T],
+        config: DynamicSearchConfig,
+    ) -> Result<crate::SearchResult> {
+        self.validate_search(config)?;
+        let dim = self.dataset.dimension();
+        if !queries.len().is_multiple_of(dim) || queries.iter().any(|&x| !T::valid_coordinate(x)) {
+            return Err(error("invalid packed query shape or non-finite coordinate"));
+        }
+        let rows = queries
+            .par_chunks(dim)
+            .map(|q| self.search_l2_scored_row(q, config))
+            .collect::<Result<Vec<_>>>()?;
+        crate::SearchResult::from_scored_rows(
+            rows,
+            config.k,
+            self.num_nodes,
+            crate::ScoreMetric::SquaredL2,
+        )
+    }
+
+    fn search_l2_scored_row(
+        &self,
+        query: &[T],
+        config: DynamicSearchConfig,
+    ) -> Result<(Vec<u32>, Vec<f32>)> {
+        let started = crate::algorithm::search::diagnostics::metrics::SetupTimer::now();
+        let padded = PaddedDataset::from_packed(query, self.dataset.layout()).map_err(error)?;
+        let session = ExactSession::<T, T::Kernel>::new(&self.dataset, &padded, 0);
+        self.search_sessions(
+            config.k,
+            config.search_list_size,
+            config.window_size,
+            config.epsilon,
+            config.early_exit_limit,
+            None,
+            &session,
+            NeighborMode::default(),
+            &mut NoopObserver,
+            started,
+            |scratch, _| {
+                scratch
+                    .pq
+                    .neighbors()
+                    .iter()
+                    .take(config.k)
+                    .map(|n| (n.id, n.distance))
+                    .unzip()
+            },
+        )
+    }
     pub(super) fn validate_search(&self, config: DynamicSearchConfig) -> Result<()> {
         self.validate_dataset_graph()?;
         if config.k == 0
@@ -184,7 +268,7 @@ impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
         if query.iter().any(|&x| !T::valid_coordinate(x)) {
             return Err(error("query contains a non-finite coordinate"));
         }
-        let t_setup = crate::algorithm::search::metrics::SetupTimer::now();
+        let t_setup = crate::algorithm::search::diagnostics::metrics::SetupTimer::now();
         let queries = PaddedDataset::from_packed(query, self.dataset.layout()).map_err(error)?;
         self.search_prepared_observed(&queries, 0, config, t_setup, observer)
     }
@@ -212,7 +296,7 @@ impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
                     &padded,
                     id,
                     config,
-                    crate::algorithm::search::metrics::SetupTimer::now(),
+                    crate::algorithm::search::diagnostics::metrics::SetupTimer::now(),
                 )
             })
             .collect::<Result<Vec<_>>>()
@@ -224,7 +308,7 @@ impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
         queries: &PaddedDataset<T>,
         query_id: usize,
         config: DynamicSearchConfig,
-        started: crate::algorithm::search::metrics::SetupTimer,
+        started: crate::algorithm::search::diagnostics::metrics::SetupTimer,
     ) -> Result<Vec<u32>> {
         self.search_prepared_observed(queries, query_id, config, started, &mut NoopObserver)
     }
@@ -234,7 +318,7 @@ impl<T: DynamicElement> CompressedIndex<PaddedDataset<T>> {
         queries: &PaddedDataset<T>,
         query_id: usize,
         config: DynamicSearchConfig,
-        started: crate::algorithm::search::metrics::SetupTimer,
+        started: crate::algorithm::search::diagnostics::metrics::SetupTimer,
         observer: &mut O,
     ) -> Result<Vec<u32>> {
         let session = ExactSession::<T, T::Kernel>::new(&self.dataset, queries, query_id);

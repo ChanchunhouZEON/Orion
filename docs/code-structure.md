@@ -122,10 +122,12 @@ orion-core/
             f32_truth.rs            #   F32Rerank — full f32 base, L2 distance
             ip_f32_truth.rs         #   IpF32Rerank — full f32 base, IP distance, query unit-norm
             u16_truth.rs            #   U16Rerank — u16 sidecar, L2 (PA-bit-exact recipe)
-        convergence.rs              # Admission-rate sliding window (DCC)
-        early_exit.rs               # Consecutive-zero-admit countdown
-        calibrate.rs                # Auto-calibration of (threshold, early_exit_limit)
-        jl_hamming_cache.rs         # Per-query JL bitmap reuse across the beam loop
+        adaptive/
+          convergence.rs            # Admission-rate sliding window (DCC)
+          early_exit.rs             # Consecutive-zero-admit countdown
+          calibrate.rs              # Auto-calibration of (threshold, early_exit_limit)
+        diagnostics/
+          metrics.rs                # Optional search counters
     index/
       builder.rs                    # build_diskann_index: Vamana build + partition extraction
       compressed_index.rs           # Orion: ensure_quantized_dataset_*() accessors,

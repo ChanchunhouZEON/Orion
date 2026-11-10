@@ -92,7 +92,7 @@ The **L2-kernel-trick** (`l2-kt`) is the headline admission optimisation on high
   - `K · 1.5 > L` → linear `pq.batch_merge` (two-way set-union, near-capacity admits)
 
   Comparisons lower to pure shifts (`K << 3`, `K + (K >> 1)`). [`orion-core/src/algorithm/search/in_mem_search.rs:97–110`]
-- **Reversible convergence + early exit.** Single converged hop doesn't lock out navigation — protects against false-trigger recall loss. Once stably converged, `EarlyExitChecker` terminates on N consecutive zero-admission hops. GIST-960 L=200: cuts ~20 % of distance calls for < 0.4 pp recall loss. [`orion-core/src/algorithm/search/convergence.rs`, `early_exit.rs`]
+- **Reversible convergence + early exit.** Single converged hop doesn't lock out navigation — protects against false-trigger recall loss. Once stably converged, `EarlyExitChecker` terminates on N consecutive zero-admission hops. GIST-960 L=200: cuts ~20 % of distance calls for < 0.4 pp recall loss. [`orion-core/src/algorithm/search/adaptive/convergence.rs`, `early_exit.rs`]
 
 #### 5. Rerank tier (`--rerank`)
 
@@ -132,7 +132,7 @@ Three pieces used by every stage above:
 
 What makes the cascade compose:
 
-- **Metric-agnostic auto-calibration.** `calibrate()` derives `(threshold, early_exit_limit)` from admit-rate topology, not the distance function — same output drives every metric. [`orion-core/src/algorithm/search/calibrate.rs`]
+- **Metric-agnostic auto-calibration.** `calibrate()` derives `(threshold, early_exit_limit)` from admit-rate topology, not the distance function — same output drives every metric. [`orion-core/src/algorithm/search/adaptive/calibrate.rs`]
 - **No normalize at load.** Earlier MIPS paths L2-normalised at load, silently converting raw MIPS → cosine and breaking `msmarco_bert_1M` against its raw-dot-product GT. The whole `normalize_all` infrastructure was removed; admission tiers either consume unit-norm-by-construction input (glove, wiki-ada) or raw vectors (msmarco_bert).
 - **PA 2-pass base graph default.** Every entry in `sweep.yaml` points at `${PA_ROOT}/data/<ds>/<stub>.staged` (PA `-num_passes 2` refine; ~10 % matched-recall lift over a 1-pass build; ~3 s one-time import). [`benchmark/src/runner/parlayann_bridge.rs`]
 - **Cascade-uniform machinery.** Adding a new admission tier means writing one `QuantSpec` impl — the preparation, peeled warm-up, per-hop cadence, rerank, and shared kernels are reused unchanged.

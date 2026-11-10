@@ -376,7 +376,7 @@ impl FixedChunkPQTable {
 fn nearest(row: &[f32], centers: &[f32], width: usize) -> usize {
     let mut best = (0, f32::INFINITY);
     for (c, center) in centers.chunks_exact(width).enumerate() {
-        let d = crate::utils::distance::l2_sq_slice(row, center);
+        let d = super::distance::l2_sq_slice(row, center);
         if d < best.1 {
             best = (c, d);
         }

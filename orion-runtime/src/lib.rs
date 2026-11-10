@@ -90,6 +90,7 @@ pub mod guide;
 mod index;
 mod search;
 pub use config::cascade::SearchMetric;
+pub use orion_ann_core::{ScoreMetric, SearchScores};
 /// Interfaces used by the independently built experiment executables.
 #[cfg(feature = "benchmark")]
 pub mod benchmark;
@@ -102,7 +103,7 @@ pub use config::{GraphSourcePolicy, VectorStorageKind};
 pub use data::query::read_query_file;
 pub use data::VectorFormat;
 pub use index::{
-    BaseInput, Calibration, Index, OpenOptions, QueryBatch, SearchOptions, SearchResult,
+    BaseInput, Calibration, Index, IndexSlot, OpenOptions, QueryBatch, SearchOptions, SearchResult,
     SnapshotRef, SnapshotSource,
 };
 

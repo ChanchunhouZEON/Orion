@@ -18,8 +18,9 @@ const COUNTERS: usize = 10;
 const COUNTERS: usize = 3;
 
 #[cfg(feature = "search-stats")]
-static WORKERS: [WorkerCounters; super::MAX_WORKERS] =
-    [const { WorkerCounters([const { AtomicU64::new(0) }; COUNTERS]) }; super::MAX_WORKERS];
+static WORKERS: [WorkerCounters; crate::algorithm::search::MAX_WORKERS] =
+    [const { WorkerCounters([const { AtomicU64::new(0) }; COUNTERS]) };
+        crate::algorithm::search::MAX_WORKERS];
 
 /// Read-only handle to a process-wide experimental metric.
 #[derive(Debug)]

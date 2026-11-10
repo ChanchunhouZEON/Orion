@@ -12,9 +12,13 @@
 //! with decoding, validation, and dispatch helpers below the main flow.
 mod base;
 mod calibration;
+mod generation;
+mod ids;
+pub use generation::IndexSlot;
 mod prepare;
 mod query;
 mod residency;
+mod result;
 mod snapshot;
 mod view;
 use crate::{
@@ -23,8 +27,8 @@ use crate::{
 };
 pub use base::BaseInput;
 pub use calibration::Calibration;
-pub use orion_ann_core::SearchResult;
 pub use query::{QueryBatch, SearchOptions};
+pub use result::SearchResult;
 pub use snapshot::{OpenOptions, SnapshotRef, SnapshotSource};
 use std::{collections::BTreeMap, path::PathBuf};
 use view::ReadView;
@@ -39,6 +43,8 @@ pub struct Index {
     options: IndexOptions,
     base_file: Option<PathBuf>,
     calibrations: BTreeMap<usize, Calibration>,
+    external_ids: Option<ids::IdMap>,
+    working_directory: Option<PathBuf>,
 }
 
 impl Index {
@@ -51,6 +57,20 @@ impl Index {
     /// Invalid inputs are rejected before graph construction where possible.
     pub fn new(input: BaseInput, options: IndexOptions) -> Result<Self> {
         Self::load(input, options, None)
+    }
+
+    /// Construct with one unique application u64 ID per indexed row. The graph
+    /// remains u32 and the mapping is saved independently of graph cache identity.
+    /// The owned mapping is retained; validation briefly allocates a sorting copy.
+    ///
+    /// # Errors
+    /// Rejects duplicate IDs, a count different from the indexed prefix, invalid
+    /// configuration, insufficient estimated memory, writer conflicts and the
+    /// same input/build/I/O failures as [`Index::new`].
+    pub fn new_with_ids(input: BaseInput, options: IndexOptions, ids: Vec<u64>) -> Result<Self> {
+        let count = ids.len();
+        let mapping = ids::IdMap::validate(ids, count, options.memory_budget_gib)?;
+        Self::load_with_ids(input, options, None, Some(mapping))
     }
 
     /// See the [complete example and contract](crate::guide::cache).
@@ -89,6 +109,7 @@ impl Index {
         "mapped_base_bytes": self.view.engine.mapped_base_bytes(),
         "mapped_graph_bytes": self.view.engine.mapped_graph_bytes(),
         "storage_options": self.options.storage_options,
+        "external_ids_bytes": self.external_ids.as_ref().map_or(0, |ids| ids.0.len() * 8),
         "residency": self.view.engine.pin_report()})
     }
 }

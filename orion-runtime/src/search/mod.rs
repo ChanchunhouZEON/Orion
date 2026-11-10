@@ -39,6 +39,27 @@ pub trait SearchBackend: sealed::BuiltIn {
     /// Resident element representation used by this backend.
     type Element: BaseElement;
 
+    fn search_batch_scored(
+        index: &orion_ann_core::Orion<Self::Element>,
+        queries: &[f32],
+        config: &ResolvedRunConfig,
+        k: usize,
+        beam: usize,
+        calibration: orion_ann_core::CalibratedParams,
+    ) -> Result<orion_ann_core::SearchResult>;
+
+    fn search_batch_u8_scored(
+        index: &orion_ann_core::Orion<Self::Element>,
+        queries: &[u8],
+        config: &ResolvedRunConfig,
+        k: usize,
+        beam: usize,
+        calibration: orion_ann_core::CalibratedParams,
+    ) -> Result<orion_ann_core::SearchResult> {
+        let values: Vec<f32> = queries.iter().map(|&v| f32::from(v)).collect();
+        Self::search_batch_scored(index, &values, config, k, beam, calibration)
+    }
+
     /// Loads or constructs the index used by this backend.
     #[cfg(feature = "cli")]
     fn load_index(
@@ -157,6 +178,35 @@ pub struct F32CascadeBackend;
 impl SearchBackend for F32CascadeBackend {
     type Element = f32;
 
+    fn search_batch_scored(
+        index: &orion_ann_core::Orion<f32>,
+        queries: &[f32],
+        config: &ResolvedRunConfig,
+        k: usize,
+        beam: usize,
+        calibration: orion_ann_core::CalibratedParams,
+    ) -> Result<orion_ann_core::SearchResult> {
+        let stages = config.cascade();
+        let ad = cascade::build_admission(index, stages.admission)?;
+        let pf = cascade::build_prefilter(index, stages.prefilter, stages.admission)?;
+        let rr = cascade::build_rerank(index, stages.rerank)?;
+        let metric = match config.metric {
+            crate::SearchMetric::L2 => orion_ann_core::ScoreMetric::SquaredL2,
+            crate::SearchMetric::InnerProduct => orion_ann_core::ScoreMetric::InnerProduct,
+            crate::SearchMetric::Cosine => orion_ann_core::ScoreMetric::CosineSimilarity,
+        };
+        index.search_batch_cascade_scored(
+            queries,
+            search_config(config, k, beam, calibration),
+            orion_ann_core::DynamicCascade {
+                prefilter: pf.as_deref(),
+                admission: ad.as_ref(),
+                rerank: rr.as_ref(),
+            },
+            metric,
+        )
+    }
+
     fn prepare_datasets(
         index: &orion_ann_core::Orion<f32>,
         config: &ResolvedRunConfig,
@@ -241,6 +291,31 @@ pub struct NativeU8L2Backend;
 
 impl SearchBackend for NativeU8L2Backend {
     type Element = u8;
+
+    fn search_batch_scored(
+        index: &orion_ann_core::Orion<u8>,
+        queries: &[f32],
+        config: &ResolvedRunConfig,
+        k: usize,
+        beam: usize,
+        calibration: orion_ann_core::CalibratedParams,
+    ) -> Result<orion_ann_core::SearchResult> {
+        index.search_batch_l2_byte_queries_scored(
+            queries,
+            search_config(config, k, beam, calibration),
+        )
+    }
+
+    fn search_batch_u8_scored(
+        index: &orion_ann_core::Orion<u8>,
+        queries: &[u8],
+        config: &ResolvedRunConfig,
+        k: usize,
+        beam: usize,
+        calibration: orion_ann_core::CalibratedParams,
+    ) -> Result<orion_ann_core::SearchResult> {
+        index.search_batch_l2_scored(queries, search_config(config, k, beam, calibration))
+    }
 
     fn prepare_datasets(
         _index: &orion_ann_core::Orion<u8>,

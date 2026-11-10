@@ -15,8 +15,8 @@ mod resolve;
 use args::Args;
 
 use orion_ann::execution::{
-    open_queries, open_snapshot_queries, resources, F32CascadeBackend, GroundTruthReader,
-    LoadedBase, NativeU8L2Backend, QuerySource, ResolvedRunConfig, SearchBackend,
+    open_queries, open_snapshot_queries, resources, GroundTruthReader, QuerySource,
+    ResolvedRunConfig,
 };
 use orion_ann::{Error, Result};
 use std::{
@@ -36,7 +36,7 @@ struct Command {
 
     /// Open a published Index::save snapshot and use its saved calibration.
     #[arg(
-        long, value_name = "DIR", requires_all = ["base", "query"],
+        long, value_name = "DIR", requires = "query",
         conflicts_with_all = [
             "cache_dir", "staged_file",
             "graph_source", "graph_degree", "build_l", "alpha", "max_extra",
@@ -47,6 +47,10 @@ struct Command {
     )]
     snapshot: Option<PathBuf>,
 
+    /// Relocate snapshot objects; all payload hashes are still verified.
+    #[arg(long, requires = "snapshot")]
+    object_store: Option<PathBuf>,
+
     /// Single beam width; defaults to max(k, 64).
     /// Sweeps use `orion-sweep`.
     #[arg(long, alias = "ls", alias = "search-list-sizes")]
@@ -56,6 +60,14 @@ struct Command {
     /// Defaults to stdout.
     #[arg(long)]
     output: Option<PathBuf>,
+
+    /// Include exact original-metric scores of returned candidates.
+    #[arg(long)]
+    scores: bool,
+
+    /// JSON array of unique u64 business IDs, one per indexed row.
+    #[arg(long, conflicts_with = "snapshot")]
+    external_ids: Option<PathBuf>,
 
     /// Structured errors on stderr for services; success output is unchanged.
     #[arg(long, value_enum, default_value = "text")]
@@ -68,7 +80,7 @@ enum ErrorFormat {
     Json,
 }
 
-fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -> Result<()> {
+fn run(config: &ResolvedRunConfig, command: &Command) -> Result<()> {
     // Open lightweight query/evaluation inputs before allocating the potentially
     // much larger base dataset and index structures.
     let gt_file = if config.prepare_only {
@@ -82,19 +94,18 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
         Some(open_queries(config)?)
     };
 
-    // Load the base vectors before constructing the index. Index loading takes
-    // ownership of this allocation; the loader retains no second base copy.
-    let mut data = LoadedBase::<B::Element>::load(config)?;
-    let points = data.num_points;
-
-    // Keep all search/index work inside a dedicated Rayon pool so the CLI's
-    // requested worker count does not depend on the process-wide Rayon pool.
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(config.sweep.threads)
-        .build()
-        .map_err(Error::thread_pool)?;
-
-    let index = pool.install(|| B::load_index(config, &mut data))?;
+    let input = orion_ann::BaseInput::from_file(&config.base);
+    let options = command.run.index_options();
+    let mut index = if let Some(path) = &command.external_ids {
+        let ids: Vec<u64> = serde_json::from_reader(BufReader::new(
+            std::fs::File::open(path).map_err(|e| Error::io("open external IDs", path, e))?,
+        ))?;
+        orion_ann::Index::new_with_ids(input, options, ids)?
+    } else {
+        orion_ann::Index::new(input, options)?
+    };
+    let points = index.len();
+    log::info!("Prepared index: {}", index.info());
 
     // `prepare_only` intentionally stops after all required index preparation
     // and loading work has completed.
@@ -106,7 +117,7 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
 
     let gt =
         gt_file.map(|file| GroundTruthReader::new(BufReader::new(file), config.sweep.k, points));
-    let writer = open_output(output)?;
+    let writer = open_output(command.output.as_ref())?;
 
     // The initial query batch serves two purposes:
     //   1. calibration;
@@ -121,30 +132,18 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
         return Err("query source is empty".into());
     }
 
-    // Prepare sidecars and optional automatic residency before calibration.
-    // Keep the guard alive through every search batch, just like Index does.
-    let _residency = pool.install(|| B::prepare_search(&index, config))?;
-
-    let calibration = pool
-        .install(|| {
-            index.calibrate(
-                &decoded,
-                config.sweep.calibration_l,
-                config.window_size,
-                orion_ann_core::CalibrationConfig {
-                    k: config.sweep.k,
-                    metric: config.metric.calibration_metric(),
-                },
-            )
-        })
-        .map_err(Error::from)?;
+    let calibration = index.calibrate(
+        decoded.clone(),
+        config.sweep.k,
+        Some(config.sweep.calibration_l),
+    )?;
 
     let k = config.sweep.k;
     let summary = RunSummary {
         dataset: &config.dataset,
         k,
         batch_size: config.query_batch_size,
-        residency: serde_json::to_value(_residency.report())?,
+        residency: index.info()["residency"].clone(),
         calibration: serde_json::json!({
             "threshold":calibration.threshold,"early_exit_limit":calibration.early_exit_limit,
             "search_list_size":config.sweep.calibration_l,
@@ -157,16 +156,11 @@ fn run<B: SearchBackend>(config: &ResolvedRunConfig, output: Option<&PathBuf>) -
         writer,
         summary,
         |decoded| {
-            pool.install(|| {
-                B::search_batch(
-                    &index,
-                    decoded,
-                    config,
-                    config.sweep.k,
-                    config.sweep.search_list_sizes[0],
-                    calibration,
-                )
-            })
+            index.search(
+                orion_ann::QueryBatch::from_f32(decoded, index.dimension())?,
+                &orion_ann::SearchOptions::new(config.sweep.k, config.sweep.search_list_sizes[0])
+                    .with_scores(command.scores),
+            )
         },
     )
 }
@@ -221,7 +215,7 @@ fn stream_results(
 
         let results = search(&decoded)?;
         search_seconds += started.elapsed().as_secs_f64();
-        for ids in results.rows() {
+        for (row_index, ids) in results.rows().enumerate() {
             // Ground truth is consumed in lockstep with the query stream.
             // This also detects ground-truth files that end too early.
             if let Some(truth) = gt.as_mut() {
@@ -233,15 +227,17 @@ fn stream_results(
                     ids.iter().filter(|id| row.contains(id)).count() as f64 / summary.k as f64;
             }
 
-            serde_json::to_writer(
-                &mut writer,
-                &serde_json::json!({
-                    "type": "result",
-                    "query_id": count,
-                    "ids": ids,
-                }),
-            )
-            .map_err(Error::from)?;
+            let mut record = serde_json::json!({ "type": "result", "query_id": count, "ids": ids });
+            if let Some(scores) = &results.scores {
+                let start = row_index * results.k;
+                record["scores"] = serde_json::json!(&scores.values[start..start + ids.len()]);
+                record["score_metric"] = scores.metric.as_str().into();
+            }
+            if let Some(external) = &results.external_ids {
+                let start = row_index * results.k;
+                record["external_ids"] = serde_json::json!(&external[start..start + ids.len()]);
+            }
+            serde_json::to_writer(&mut writer, &record).map_err(Error::from)?;
 
             writer.write_all(b"\n").map_err(Error::from)?;
 
@@ -300,9 +296,9 @@ fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
             "require positive query batch size and 1 <= k <= search L",
         ));
     }
-    let base = args.base.as_ref().ok_or("--base is required")?;
     let query = args.query.as_deref().ok_or("--query is required")?;
-    let index = orion_ann::OpenOptions {
+    let options = orion_ann::OpenOptions {
+        object_store: command.object_store.clone(),
         threads: args.threads,
         memory_budget_gib: args.memory_budget_gib,
         auto_pin: args.no_auto_pin.then_some(false),
@@ -312,8 +308,11 @@ fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
                 directory: args.mmap_dir.clone(),
             }
         }),
-    }
-    .open(directory, orion_ann::BaseInput::from_file(base))?;
+    };
+    let index = match &args.base {
+        Some(base) => options.open(directory, orion_ann::BaseInput::from_file(base))?,
+        None => options.open_bundle(directory)?,
+    };
     let calibration = index.calibration(k).ok_or_else(|| {
         Error::invalid_state(format!("snapshot has no saved calibration for k={k}"))
     })?;
@@ -345,7 +344,7 @@ fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
         |batch| {
             index.search(
                 orion_ann::QueryBatch::from_f32(batch, index.dimension())?,
-                &orion_ann::SearchOptions::new(k, beam),
+                &orion_ann::SearchOptions::new(k, beam).with_scores(command.scores),
             )
         },
     )
@@ -355,7 +354,11 @@ fn execute(command: Command) -> Result<()> {
     if let Some(directory) = &command.snapshot {
         return run_snapshot(&command, directory);
     }
-    let config = command.run.resolve_search(command.search_l)?;
+    let config = if command.run.preflight || command.run.print_config {
+        command.run.resolve_search(command.search_l)?
+    } else {
+        command.run.resolve_execution(command.search_l)?
+    };
 
     let resolved = serde_json::to_string_pretty(&config).map_err(Error::from)?;
 
@@ -373,18 +376,9 @@ fn execute(command: Command) -> Result<()> {
         return resources::enforce_budget(&report);
     }
 
-    log::info!("Run settings: {resolved}");
+    log::info!("Input settings (graph identity finalized during load): {resolved}");
 
-    // Dispatch only on resident coordinate type; dimensions stay runtime values.
-    match config.storage() {
-        orion_ann::VectorStorageKind::F32 => {
-            run::<F32CascadeBackend>(&config, command.output.as_ref())
-        }
-
-        orion_ann::VectorStorageKind::U8 => {
-            run::<NativeU8L2Backend>(&config, command.output.as_ref())
-        }
-    }
+    run(&config, &command)
 }
 
 fn main() {

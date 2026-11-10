@@ -219,7 +219,7 @@ where
         R: ?Sized + RerankStage,
         O: SearchObserver,
     {
-        let t_setup = crate::algorithm::search::metrics::SetupTimer::now();
+        let t_setup = crate::algorithm::search::diagnostics::metrics::SetupTimer::now();
         let aligned = AlignedQuery(*query);
 
         // ── Per-query stage state (sessions) ─────────────────────
@@ -389,7 +389,7 @@ impl<D, S> CompressedIndex<D, S> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn search_sessions<O: SearchObserver>(
+    pub(crate) fn search_sessions<O: SearchObserver, R>(
         &self,
         k: usize,
         search_list_size: usize,
@@ -400,9 +400,9 @@ impl<D, S> CompressedIndex<D, S> {
         a_session: &dyn AdmissionSession,
         mode: NeighborMode,
         observer: &mut O,
-        t_setup: crate::algorithm::search::metrics::SetupTimer,
-        finish: impl FnOnce(&mut InMemSearchScratch, usize) -> Vec<u32>,
-    ) -> Result<Vec<u32>> {
+        t_setup: crate::algorithm::search::diagnostics::metrics::SetupTimer,
+        finish: impl FnOnce(&mut InMemSearchScratch, usize) -> R,
+    ) -> Result<R> {
         let entry = self.entry;
         let graph = &self.graph;
         // ── Scratch pool ─────────────────────────────────────────

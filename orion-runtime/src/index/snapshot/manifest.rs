@@ -23,8 +23,10 @@ use std::{
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(in crate::index) struct Snapshot {
-    #[serde(default)]
+    pub(in crate::index) format_version: u32,
     pub(in crate::index) object_store: PathBuf,
+    #[serde(default)]
+    pub(super) bundled_base: bool,
     pub(super) options: IndexOptions,
     pub(super) calibrations: BTreeMap<usize, Calibration>,
     pub(super) namespace: String,
@@ -42,7 +44,17 @@ pub(in crate::index) struct Payloads {
     pub provenance_bytes: u64,
     pub base_sha256: String,
     pub sidecars: SnapshotSidecars,
+    pub external_ids: Option<ExternalIdObject>,
 }
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::index) struct ExternalIdObject {
+    pub sha256: String,
+    pub points: usize,
+}
+
+pub(in crate::index) const FORMAT_VERSION: u32 = 1;
 
 /// Manifest records checked before engine creation. Graph and sidecar bytes
 /// are verified by their decoders when the resident index is constructed.

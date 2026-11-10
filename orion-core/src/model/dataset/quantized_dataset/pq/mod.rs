@@ -17,6 +17,7 @@
 mod codebook;
 mod codec;
 mod dataset;
+mod distance;
 mod storage;
 pub use codebook::{FixedChunkPQTable, NUM_PQ_CENTROIDS, PqBuildOptions};
 pub use dataset::{PqDataset, PqMetric, PqQuery};
