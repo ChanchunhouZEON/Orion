@@ -5,3 +5,4 @@
 
 //! Configuration adapters for unpublished research executables.
 pub mod config;
+pub mod latency;

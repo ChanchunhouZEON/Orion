@@ -31,6 +31,10 @@ use crate::utils::file_util::{file_exists, load_metadata_from_file};
 use crate::utils::rayon_util::execute_with_rayon;
 use crate::utils::{Timer, set_rayon_num_threads};
 
+#[cfg(test)]
+#[path = "build_concurrency_tests.rs"]
+mod build_concurrency_tests;
+
 /// In-memory Index
 pub struct InmemIndex<T, const N: usize>
 where
@@ -241,11 +245,20 @@ where
         vertex_id: u32,
         scratch: &mut InMemQueryScratch<T, N>,
     ) -> Result<(), ANNError> {
-        let vertex = self.final_graph.read_vertex_and_neighbors(vertex_id)?;
-        assert!(vertex.size() <= self.configuration.index_write_parameter.max_degree as usize);
+        let neighbors = {
+            let vertex = self.final_graph.read_vertex_and_neighbors(vertex_id)?;
+            assert!(vertex.size() <= self.configuration.index_write_parameter.max_degree as usize);
+            vertex.get_neighbors().clone()
+        };
+        // Release the source read lock before acquiring any neighbor write lock.
+        // Otherwise concurrent A -> B and B -> A updates can wait on each other.
+        // The snapshot also preserves iteration order while reverse edges change.
+        #[cfg(test)]
+        build_concurrency_tests::before_reverse_insert(&self.final_graph, vertex_id);
+
         self.inter_insert(
             vertex_id,
-            vertex.get_neighbors(),
+            &neighbors,
             self.configuration.index_write_parameter.max_degree,
             scratch,
         )?;

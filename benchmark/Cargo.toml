@@ -9,7 +9,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-orion-ann = { version = "0.1.0", path = "../orion-runtime", features = ["cli", "benchmark"] }
+orion-ann = { version = "0.1.0", path = "../orion-runtime", features = ["cli", "benchmark", "file-queries"] }
 adsampling = { path = "../adsampling", features = ["benchmark"] }
 orion-ann-diskann = { version = "0.1.0", path = "../orion-diskann" }
 orion-ann-platform = { version = "0.1.0", path = "../orion-platform" }
@@ -31,10 +31,18 @@ env_logger = "0.11"
 comfy-table = "=7.1.4"
 serde_yaml = "0.9"
 sha2 = "0.10"
+hdrhistogram = { version = "7.5", default-features = false }
 
 [[bin]]
 name = "orion-sweep"
 path = "src/bin/orion_sweep.rs"
+
+[[bin]]
+name = "latency-sweep"
+path = "src/bin/latency_sweep.rs"
+
+[dev-dependencies]
+tempfile = "3"
 
 # Resolve experiments independently of the production feature graph.
 [workspace]

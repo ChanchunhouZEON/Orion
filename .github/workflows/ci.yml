@@ -205,7 +205,7 @@ jobs:
           python3 .github/scripts/check_workspace_features.py
           cargo fmt --manifest-path benchmark/Cargo.toml --all --check
           cargo check --locked --manifest-path benchmark/Cargo.toml --all-targets
-          cargo test --locked --manifest-path benchmark/Cargo.toml --lib
+          cargo test --locked --manifest-path benchmark/Cargo.toml --lib --test latency
           cargo test --locked -p orion-ann --features benchmark --lib
           cargo test --locked -p orion-ann --lib
           cargo test --locked -p orion-ann-vector --features benchmark --test dynamic_ads

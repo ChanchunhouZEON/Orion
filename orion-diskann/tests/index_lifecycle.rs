@@ -98,6 +98,7 @@ fn memory_build_matches_file_build_and_mmap_export() {
     let mut original = index(24);
     original.build_from_data(&data, 24).unwrap();
     assert_eq!(original.num_active_points(), 24);
+    #[cfg(feature = "orion")]
     original.sort_neighbors_by_distance_in_place().unwrap();
     let path = dir.file("graph.mmap");
     original.save_graph_mmap_with_vectors(&path).unwrap();
