@@ -3,6 +3,19 @@
  * Licensed under the MIT License.
  */
 
+//! # Layout at a glance
+//!
+//! ```text
+//! memory: N packed 4-bit code rows + N f32 norms + N f32 taus
+//!         + shared D * D f32 rotation matrix
+//! file:   [32 B header][rotation][norms][taus][N code rows]
+//! ```
+//!
+//! Each byte holds two signed nibbles (coordinate 2i low, 2i+1 high). Row
+//! stride is `ceil(D / 2)` rounded to 16 B; unused bits/bytes are zero. The
+//! codec persists that stride. Norms, scales and rotation are separate arrays,
+//! not fields interleaved into every code row.
+
 //! Extended RaBitQ at **B=4 bits per dim** — the configuration Milvus
 //! ships in `IVF_RABITQ` and the one the paper recommends for high
 //! recall. Same random-rotation front-end as 1-bit RaBitQ but with a
@@ -50,7 +63,7 @@ use crate::Result;
 use crate::model::dataset::quantized_dataset::{
     QuantizedDataset, QuantizedDatasetShape, ResidentMemory,
 };
-use crate::model::dataset::rows::F32Rows;
+use crate::model::dataset::rows::Rows;
 use crate::model::dataset::validation::{self, CheckedRows};
 use orion_ann_diskann::common::AlignedBoxWithSlice;
 
@@ -67,7 +80,7 @@ pub const QMAX: i8 = 7;
 /// 16-byte multiple so per-vertex offset arithmetic stays trivial and
 /// future NEON loads can use 16-byte alignment.
 pub const fn rabitq_b4_code_stride(dim: usize) -> usize {
-    let bytes = (dim + 1) / 2; // ceil(D/2)
+    let bytes = dim.div_ceil(2); // ceil(D/2)
     (bytes + 15) & !15
 }
 
@@ -104,7 +117,7 @@ impl RabitQ4Dataset {
     /// # Panics
     /// Panics on invalid input or allocation failure. Use [`Self::try_build_from`]
     /// to propagate a structured error at application boundaries.
-    pub fn build_from(dataset: &impl F32Rows, seed: u64) -> Self {
+    pub fn build_from(dataset: &impl Rows, seed: u64) -> Self {
         Self::try_build_from(dataset, seed).expect("invalid sidecar input")
     }
 
@@ -113,13 +126,13 @@ impl RabitQ4Dataset {
     /// # Errors
     /// Returns an error for invalid rows, unsupported dimensions, invalid fitted
     /// parameters, or allocation failure. Logical rows exclude SIMD padding.
-    pub fn try_build_from(dataset: &impl F32Rows, seed: u64) -> Result<Self> {
+    pub fn try_build_from(dataset: &impl Rows, seed: u64) -> Result<Self> {
         Self::try_build_from_with_storage(dataset, seed, &Default::default())
     }
 
     /// Build/load into the selected private storage; layout and arithmetic are unchanged.
     pub fn try_build_from_with_storage(
-        dataset: &impl F32Rows,
+        dataset: &impl Rows,
         seed: u64,
         storage: &orion_ann_platform::region::RegionOptions,
     ) -> Result<Self> {
@@ -143,8 +156,9 @@ impl RabitQ4Dataset {
         let mut taus = AlignedBoxWithSlice::<f32>::new_with_storage(num_vertices, 64, storage)?;
         let mut rotated = vec![0.0f32; dim];
 
+        let mut row_scratch = Vec::new();
         for vid in 0..num_vertices {
-            let x = dataset.row(vid);
+            let x = dataset.row_f32(vid, &mut row_scratch);
 
             // P @ x and per-vertex L2 norm.
             crate::model::dataset::rabitq_dataset::apply_rotation_pub(
@@ -323,7 +337,7 @@ impl RabitQ4Dataset {
             &[(matrix_len, 4), (num_vertices, 8), (num_vertices, stride)],
         )?;
         let mut rotation = AlignedBoxWithSlice::<f32>::new_with_storage(matrix_len, 16, storage)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
+            .map_err(|e| std::io::Error::other(format!("{e:?}")))?;
         let rot_bytes = bytemuck::cast_slice_mut(rotation.as_mut_slice());
         r.read_exact(rot_bytes)?;
 
@@ -340,7 +354,7 @@ impl RabitQ4Dataset {
             16,
             storage,
         )
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
+        .map_err(|e| std::io::Error::other(format!("{e:?}")))?;
         r.read_exact(codes.as_mut_slice())?;
 
         validation::finite(rotation.as_slice(), false)?;
@@ -617,6 +631,87 @@ impl std::fmt::Debug for RabitQ4Dataset {
     }
 }
 
+impl RabitQ4Dataset {
+    /// Read-only access to the sidecar dimension.
+    #[inline]
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+    /// Read-only access to the sidecar codes.
+    #[inline]
+    pub fn codes(&self) -> &[u8] {
+        self.codes.as_slice()
+    }
+    /// Read-only access to the sidecar norms.
+    #[inline]
+    pub fn norms(&self) -> &[f32] {
+        &self.norms
+    }
+    /// Read-only access to the sidecar taus.
+    #[inline]
+    pub fn taus(&self) -> &[f32] {
+        &self.taus
+    }
+    /// Read-only access to the sidecar rotation.
+    #[inline]
+    pub fn rotation(&self) -> &[f32] {
+        self.rotation.as_slice()
+    }
+    /// Read-only access to the sidecar num vertices.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.num_vertices
+    }
+    /// Whether this sidecar contains no rows.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.num_vertices == 0
+    }
+}
+
+impl crate::model::dataset::quantized_dataset::sealed::Sealed for RabitQ4Dataset {}
+impl QuantizedDataset for RabitQ4Dataset {
+    type BuildOptions = u64;
+    fn default_build_options() -> Self::BuildOptions {
+        RABITQ_B4_MAGIC as u64
+    }
+    fn build(base: &impl Rows, options: &Self::BuildOptions) -> Result<Self> {
+        Self::estimate_resident_memory(
+            QuantizedDatasetShape {
+                rows: base.len(),
+                dimension: base.dimension(),
+            },
+            options,
+        )?;
+        Self::try_build_from(base, *options)
+    }
+    fn estimate_resident_memory(
+        input_shape: QuantizedDatasetShape,
+        _options: &Self::BuildOptions,
+    ) -> Result<ResidentMemory> {
+        input_shape.validate()?;
+        ResidentMemory::new(
+            validation::product(
+                input_shape.rows,
+                rabitq_b4_code_stride(input_shape.dimension),
+            )?,
+            validation::product(input_shape.rows, 8)?,
+            validation::product(
+                validation::product(input_shape.dimension, input_shape.dimension)?,
+                4,
+            )?,
+        )
+    }
+    fn resident_memory(&self) -> ResidentMemory {
+        ResidentMemory::new(
+            self.codes.len(),
+            (self.norms.len() + self.taus.len()) * 4,
+            std::mem::size_of_val(self.rotation.as_slice()),
+        )
+        .expect("validated resident allocation sizes")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -649,11 +744,11 @@ mod tests {
         // Production sizes: SIFT D=128, GIST D=960.
         fn check<const D: usize>(seed: u64) {
             let mut rng = XorShiftPub::new(seed);
-            let code_bytes = (D + 1) / 2;
+            let code_bytes = D.div_ceil(2);
             let stride = rabitq_b4_code_stride(D);
             let mut code = vec![0u8; stride];
-            for b in 0..code_bytes {
-                code[b] = (rng.next_u64() & 0xff) as u8;
+            for byte in &mut code[..code_bytes] {
+                *byte = (rng.next_u64() & 0xff) as u8;
             }
             let mut q = [0f32; D];
             for v in q.iter_mut() {
@@ -737,86 +832,5 @@ mod tests {
         assert_eq!(a.codes.as_slice(), b.codes.as_slice());
         assert_eq!(a.norms.as_slice(), b.norms.as_slice());
         assert_eq!(a.taus.as_slice(), b.taus.as_slice());
-    }
-}
-
-impl RabitQ4Dataset {
-    /// Read-only access to the sidecar dimension.
-    #[inline]
-    pub fn dimension(&self) -> usize {
-        self.dimension
-    }
-    /// Read-only access to the sidecar codes.
-    #[inline]
-    pub fn codes(&self) -> &[u8] {
-        self.codes.as_slice()
-    }
-    /// Read-only access to the sidecar norms.
-    #[inline]
-    pub fn norms(&self) -> &[f32] {
-        &self.norms
-    }
-    /// Read-only access to the sidecar taus.
-    #[inline]
-    pub fn taus(&self) -> &[f32] {
-        &self.taus
-    }
-    /// Read-only access to the sidecar rotation.
-    #[inline]
-    pub fn rotation(&self) -> &[f32] {
-        self.rotation.as_slice()
-    }
-    /// Read-only access to the sidecar num vertices.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.num_vertices
-    }
-    /// Whether this sidecar contains no rows.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.num_vertices == 0
-    }
-}
-
-impl crate::model::dataset::quantized_dataset::sealed::Sealed for RabitQ4Dataset {}
-impl QuantizedDataset for RabitQ4Dataset {
-    type BuildOptions = u64;
-    fn default_build_options() -> Self::BuildOptions {
-        RABITQ_B4_MAGIC as u64
-    }
-    fn build(base: &impl F32Rows, options: &Self::BuildOptions) -> Result<Self> {
-        Self::estimate_resident_memory(
-            QuantizedDatasetShape {
-                rows: base.len(),
-                dimension: base.dimension(),
-            },
-            options,
-        )?;
-        Self::try_build_from(base, *options)
-    }
-    fn estimate_resident_memory(
-        input_shape: QuantizedDatasetShape,
-        _options: &Self::BuildOptions,
-    ) -> Result<ResidentMemory> {
-        input_shape.validate()?;
-        ResidentMemory::new(
-            validation::product(
-                input_shape.rows,
-                rabitq_b4_code_stride(input_shape.dimension),
-            )?,
-            validation::product(input_shape.rows, 8)?,
-            validation::product(
-                validation::product(input_shape.dimension, input_shape.dimension)?,
-                4,
-            )?,
-        )
-    }
-    fn resident_memory(&self) -> ResidentMemory {
-        ResidentMemory::new(
-            self.codes.len(),
-            (self.norms.len() + self.taus.len()) * 4,
-            std::mem::size_of_val(self.rotation.as_slice()),
-        )
-        .expect("validated resident allocation sizes")
     }
 }

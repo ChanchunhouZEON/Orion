@@ -103,9 +103,11 @@ impl Index {
 
     pub fn info(&self) -> serde_json::Value {
         serde_json::json!({"num_points": self.len(), "dimension": self.dimension(),
+        "supplier": self.view.payloads.supplier,
         "storage": self.storage(), "metric": self.config.metric,
         "graph_source": self.config.graph_source, "graph_selection_reason": self.config.graph_selection_reason,
         "cascade": self.config.cascade(), "threads": self.options.threads,
+        "search_dispatch": self.config.cascade().dispatch_description(self.storage()),
         "cache_namespace": self.config.cache_namespace, "calibrations": self.calibrations,
         "mapped_sidecar_bytes": self.view.engine.mapped_sidecar_bytes(),
         "mapped_base_bytes": self.view.engine.mapped_base_bytes(),
@@ -127,3 +129,6 @@ impl std::fmt::Debug for Index {
             .finish_non_exhaustive()
     }
 }
+
+#[cfg(feature = "experimental-graph")]
+pub(crate) mod supplier;

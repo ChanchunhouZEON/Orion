@@ -3,6 +3,18 @@
  * Licensed under the MIT License.
  */
 
+//! # Layout at a glance
+//!
+//! ```text
+//! memory: N rows of [D codes of Q::Storage | neutral zero padding] + Q::Params
+//! file:   [24 B header: magic/version/N/D/parameters][N * D packed codes]
+//! ```
+//!
+//! The scalar specification chooses code width and metric. Headers are
+//! little-endian; parameter/code payloads use their POD representation. File
+//! rows omit SIMD padding, which is rebuilt for the selected kernel at load.
+//! `ArrayView` provides the same row layout for owned and private-mapped data.
+
 //! Padded scalar-quantized storage. Codec rules live in `quantized_spec`;
 //! the common dataset contract includes projection and kernel-trick stores too.
 use crate::model::dataset::quantized_dataset::{
@@ -10,7 +22,7 @@ use crate::model::dataset::quantized_dataset::{
 };
 pub mod spec;
 use crate::Result;
-use crate::model::dataset::rows::F32Rows;
+use crate::model::dataset::rows::Rows;
 use crate::model::dataset::validation::{self, CheckedRows};
 use orion_ann_platform::region::{ArrayView, Placement, RegionOptions};
 use orion_ann_vector::DistanceKernelBackend;
@@ -50,7 +62,7 @@ impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
     /// # Panics
     /// Panics on invalid input or allocation failure. Use [`Self::try_from_f32_dataset`]
     /// to propagate a structured error at application boundaries.
-    pub fn from_f32_dataset(ds: &impl F32Rows) -> Self {
+    pub fn from_f32_dataset(ds: &impl Rows) -> Self {
         Self::try_from_f32_dataset(ds).expect("invalid sidecar input")
     }
 
@@ -59,14 +71,14 @@ impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
     /// # Errors
     /// Returns an error for invalid rows, unsupported dimensions, invalid fitted
     /// parameters, or allocation failure. Logical rows exclude SIMD padding.
-    pub fn try_from_f32_dataset(ds: &impl F32Rows) -> Result<Self> {
+    pub fn try_from_f32_dataset(ds: &impl Rows) -> Result<Self> {
         Self::build_with_storage(ds, &RegionOptions::default())
     }
 
     /// Build directly into the selected backing, without a full heap staging copy.
     /// # Errors
     /// Reports invalid input/layout, allocation and private-file I/O failures.
-    pub fn build_with_storage(ds: &impl F32Rows, storage: &RegionOptions) -> Result<Self> {
+    pub fn build_with_storage(ds: &impl Rows, storage: &RegionOptions) -> Result<Self> {
         let checked = CheckedRows::new(ds, Q::QuantKernel::MAX_COORDINATES)?;
         let ds = &checked;
         let dimension = ds.dimension();
@@ -87,13 +99,15 @@ impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
             layout.alignment(),
             storage,
             |start, rows| {
-                rows.par_chunks_mut(stride)
-                    .enumerate()
-                    .for_each(|(id, out)| {
-                        for (dst, &value) in out.iter_mut().zip(ds.row(start + id)) {
+                rows.par_chunks_mut(stride).enumerate().for_each_init(
+                    Vec::new,
+                    |row_scratch, (id, out)| {
+                        for (dst, &value) in out.iter_mut().zip(ds.row_f32(start + id, row_scratch))
+                        {
                             *dst = Q::quantize_scalar(&params, value);
                         }
-                    });
+                    },
+                );
                 Ok(())
             },
         )?;
@@ -379,6 +393,88 @@ impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
     }
 }
 
+impl<Q: QuantSpec> std::fmt::Debug for ScalarQuantizedDataset<Q> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScalarQuantizedDataset")
+            .field("quantizer", &std::any::type_name::<Q>())
+            .field("points", &self.n)
+            .field("dimension", &self.dimension)
+            .field("stride", &self.stride)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
+    /// Placement of the immutable quantized payload.
+    #[inline]
+    pub fn placement(&self) -> Placement {
+        self.data.placement()
+    }
+
+    /// Read-only access to the sidecar data.
+    #[inline]
+    pub fn data(&self) -> &[Q::Storage] {
+        self.data.as_slice()
+    }
+    /// Read-only access to the sidecar params.
+    #[inline]
+    pub fn params(&self) -> &Q::Params {
+        &self.params
+    }
+    /// Read-only access to the sidecar n.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.n
+    }
+    /// Whether this sidecar contains no rows.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+    /// Read-only access to the sidecar dimension.
+    #[inline]
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+    /// Read-only access to the sidecar stride.
+    #[inline]
+    pub fn stride(&self) -> usize {
+        self.stride
+    }
+}
+
+impl<Q: QuantSpec> crate::model::dataset::quantized_dataset::sealed::Sealed
+    for ScalarQuantizedDataset<Q>
+{
+}
+impl<Q: QuantSpec> QuantizedDataset for ScalarQuantizedDataset<Q> {
+    type BuildOptions = ();
+    fn default_build_options() -> Self::BuildOptions {}
+    fn build(base: &impl Rows, _options: &Self::BuildOptions) -> Result<Self> {
+        Self::estimate_resident_memory(
+            QuantizedDatasetShape {
+                rows: base.len(),
+                dimension: base.dimension(),
+            },
+            _options,
+        )?;
+        Self::try_from_f32_dataset(base)
+    }
+    fn estimate_resident_memory(
+        input_shape: QuantizedDatasetShape,
+        _options: &Self::BuildOptions,
+    ) -> Result<ResidentMemory> {
+        input_shape.validate()?;
+        let layout =
+            orion_ann_vector::PaddedLayout::for_kernel::<Q::QuantKernel>(input_shape.dimension)?;
+        ResidentMemory::new(layout.allocation_bytes(input_shape.rows)?, 0, 0)
+    }
+    fn resident_memory(&self) -> ResidentMemory {
+        ResidentMemory::new(std::mem::size_of_val(self.data.as_slice()), 0, 0)
+            .expect("validated resident allocation sizes")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,89 +607,5 @@ mod tests {
         let ds = make_ds::<8>(8);
         let qds = ScalarQuantizedDataset::<L2U16>::from_f32_dataset(&ds);
         assert_eq!(qds.n, 8);
-    }
-}
-
-impl<Q: QuantSpec> std::fmt::Debug for ScalarQuantizedDataset<Q> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ScalarQuantizedDataset")
-            .field("quantizer", &std::any::type_name::<Q>())
-            .field("points", &self.n)
-            .field("dimension", &self.dimension)
-            .field("stride", &self.stride)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
-    /// Placement of the immutable quantized payload.
-    #[inline]
-    pub fn placement(&self) -> Placement {
-        self.data.placement()
-    }
-
-    /// Read-only access to the sidecar data.
-    #[inline]
-    pub fn data(&self) -> &[Q::Storage] {
-        self.data.as_slice()
-    }
-    /// Read-only access to the sidecar params.
-    #[inline]
-    pub fn params(&self) -> &Q::Params {
-        &self.params
-    }
-    /// Read-only access to the sidecar n.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.n
-    }
-    /// Whether this sidecar contains no rows.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.n == 0
-    }
-    /// Read-only access to the sidecar dimension.
-    #[inline]
-    pub fn dimension(&self) -> usize {
-        self.dimension
-    }
-    /// Read-only access to the sidecar stride.
-    #[inline]
-    pub fn stride(&self) -> usize {
-        self.stride
-    }
-}
-
-impl<Q: QuantSpec> crate::model::dataset::quantized_dataset::sealed::Sealed
-    for ScalarQuantizedDataset<Q>
-{
-}
-impl<Q: QuantSpec> QuantizedDataset for ScalarQuantizedDataset<Q> {
-    type BuildOptions = ();
-    fn default_build_options() -> Self::BuildOptions {
-        ()
-    }
-    fn build(base: &impl F32Rows, _options: &Self::BuildOptions) -> Result<Self> {
-        Self::estimate_resident_memory(
-            QuantizedDatasetShape {
-                rows: base.len(),
-                dimension: base.dimension(),
-            },
-            _options,
-        )?;
-        Self::try_from_f32_dataset(base)
-    }
-    fn estimate_resident_memory(
-        input_shape: QuantizedDatasetShape,
-        _options: &Self::BuildOptions,
-    ) -> Result<ResidentMemory> {
-        input_shape.validate()?;
-        let layout =
-            orion_ann_vector::PaddedLayout::for_kernel::<Q::QuantKernel>(input_shape.dimension)?;
-        ResidentMemory::new(layout.allocation_bytes(input_shape.rows)?, 0, 0)
-    }
-    fn resident_memory(&self) -> ResidentMemory {
-        ResidentMemory::new(std::mem::size_of_val(self.data.as_slice()), 0, 0)
-            .expect("validated resident allocation sizes")
     }
 }

@@ -470,6 +470,11 @@ impl HashsetSeen {
         }
     }
 
+    /// Whether this visited set currently contains no IDs.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
         match &self.inner {

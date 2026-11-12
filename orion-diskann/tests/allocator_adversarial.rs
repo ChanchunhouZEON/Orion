@@ -17,6 +17,10 @@ fn invalid_layouts_are_errors() {
 }
 
 #[test]
+#[expect(
+    clippy::reversed_empty_ranges,
+    reason = "intentionally exercise malformed range rejection"
+)]
 fn invalid_ranges_and_oversized_copy_leave_data_unchanged() {
     let mut values = AlignedBoxWithSlice::<u32>::new(4, 64).unwrap();
     values.memcpy(&[1, 2, 3, 4]).unwrap();

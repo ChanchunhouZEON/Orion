@@ -19,7 +19,7 @@
 //! let input_shape = QuantizedDatasetShape { rows: 2, dimension: 3 };
 //! let expected = ScalarQuantizedDataset::<L2U8>::estimate_resident_memory(input_shape, &())?;
 //! let base = PaddedDataset::from_packed(
-//!     &[1., 2., 3., 4., 5., 6.], PaddedLayout::for_kernel::<L2F32Distance>(3)?,
+//!     &[1.0f32, 2., 3., 4., 5., 6.], PaddedLayout::for_kernel::<L2F32Distance>(3)?,
 //! )?;
 //! let sidecar = ScalarQuantizedDataset::<L2U8>::build(&base, &())?;
 //! assert_eq!(expected, sidecar.resident_memory());
@@ -27,7 +27,7 @@
 //! assert_eq!(query.distance(0)?, 0.0);
 //! # Ok::<(), orion_ann_core::Error>(())
 //! ```
-use crate::model::dataset::{rows::F32Rows, validation};
+use crate::model::dataset::{rows::Rows, validation};
 use crate::{Error, Result};
 
 pub(crate) mod sealed {
@@ -143,7 +143,7 @@ pub trait QuantizedDataset: QuantizedDatasetCompute + Sized + Send + Sync {
     ///
     /// # Errors
     /// Rejects invalid shape, options or coordinates; propagates allocation errors.
-    fn build(base: &impl F32Rows, options: &Self::BuildOptions) -> Result<Self>;
+    fn build(base: &impl Rows, options: &Self::BuildOptions) -> Result<Self>;
 
     /// Estimate resident payload without reading or allocating the base.
     ///

@@ -3,8 +3,8 @@
  * Licensed under the MIT License.
  */
 
-use crate::data::{padded, VectorFormat};
 use crate::SearchMetric;
+use crate::data::{VectorFormat, padded};
 use orion_ann_vector::{L2F32Distance, L2U8Distance, PaddedLayout};
 
 struct Temp(std::path::PathBuf);
@@ -31,7 +31,7 @@ fn formats_and_arrays_share_padded_layout() {
         let rows = 5;
         let layout = PaddedLayout::for_kernel::<L2F32Distance>(dim).unwrap();
         let values: Vec<f32> = (0..rows * dim).map(|i| (i % 251) as f32).collect();
-        let array = padded::from_packed(&values, layout, SearchMetric::L2).unwrap();
+        let array = padded::from_packed(&values, layout, SearchMetric::SquaredL2).unwrap();
         for format in [
             VectorFormat::Fbin,
             VectorFormat::U8bin,
@@ -59,16 +59,18 @@ fn formats_and_arrays_share_padded_layout() {
             }
             let f = file(&bytes);
             let loaded =
-                padded::load::<f32>(&f.0, format, layout, rows, SearchMetric::L2, None).unwrap();
+                padded::load::<f32>(&f.0, format, layout, rows, SearchMetric::SquaredL2, None)
+                    .unwrap();
             assert_eq!(loaded.as_slice(), array.as_slice());
             let prefix =
-                padded::load::<f32>(&f.0, format, layout, 2, SearchMetric::L2, None).unwrap();
+                padded::load::<f32>(&f.0, format, layout, 2, SearchMetric::SquaredL2, None)
+                    .unwrap();
             assert_eq!(
                 prefix.as_slice(),
                 &array.as_slice()[..2 * layout.stride_elements()]
             );
             assert!(
-                padded::load::<f32>(&f.0, format, layout, rows, SearchMetric::L2, Some(1))
+                padded::load::<f32>(&f.0, format, layout, rows, SearchMetric::SquaredL2, Some(1))
                     .err()
                     .unwrap()
                     .to_string()
@@ -77,7 +79,7 @@ fn formats_and_arrays_share_padded_layout() {
             if !float {
                 let u8layout = PaddedLayout::for_kernel::<L2U8Distance>(dim).unwrap();
                 let loaded =
-                    padded::load::<u8>(&f.0, format, u8layout, rows, SearchMetric::L2, None)
+                    padded::load::<u8>(&f.0, format, u8layout, rows, SearchMetric::SquaredL2, None)
                         .unwrap();
                 for i in 0..rows {
                     assert_eq!(
@@ -94,21 +96,30 @@ fn formats_and_arrays_share_padded_layout() {
                 bytes[header_offset..header_offset + 4].copy_from_slice(&7u32.to_le_bytes());
                 let bad = file(&bytes);
                 assert!(
-                    padded::load::<f32>(&bad.0, format, layout, rows, SearchMetric::L2, None)
-                        .is_err()
+                    padded::load::<f32>(
+                        &bad.0,
+                        format,
+                        layout,
+                        rows,
+                        SearchMetric::SquaredL2,
+                        None
+                    )
+                    .is_err()
                 );
             }
             bytes.pop();
             let truncated = file(&bytes);
-            assert!(padded::load::<f32>(
-                &truncated.0,
-                format,
-                layout,
-                rows,
-                SearchMetric::L2,
-                None
-            )
-            .is_err());
+            assert!(
+                padded::load::<f32>(
+                    &truncated.0,
+                    format,
+                    layout,
+                    rows,
+                    SearchMetric::SquaredL2,
+                    None
+                )
+                .is_err()
+            );
         }
     }
 }
@@ -125,7 +136,7 @@ fn cosine_and_query_reuse_exclude_padding() {
         assert!(row[3..].iter().all(|&x| x == 0.));
     }
     assert!(padded::from_packed(&[0.; 3], layout, SearchMetric::Cosine).is_err());
-    assert!(padded::from_packed(&[f32::NAN, 0., 1.], layout, SearchMetric::L2).is_err());
+    assert!(padded::from_packed(&[f32::NAN, 0., 1.], layout, SearchMetric::SquaredL2).is_err());
 }
 
 #[test]
@@ -144,7 +155,7 @@ fn native_reads_cross_io_blocks_with_and_without_padding() {
             VectorFormat::U8bin,
             layout,
             rows,
-            SearchMetric::L2,
+            SearchMetric::SquaredL2,
             None,
         )
         .unwrap();

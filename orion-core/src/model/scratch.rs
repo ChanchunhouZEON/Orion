@@ -7,11 +7,11 @@ use std::sync::Arc;
 
 use crossbeam::queue::ArrayQueue;
 
-use crate::algorithm::search::adaptive::convergence::SearchConvergenceChecker;
 use crate::model::Neighbor as DNeighbor;
 use crate::model::NeighborPriorityQueue;
 use crate::model::neighbor::neighbor_priority_queue::pad16;
 use crate::model::visited_set::HashsetSeen;
+use crate::search::adaptive::convergence::SearchConvergenceChecker;
 
 /// Pre-allocated scratch for in-memory greedy search.
 pub struct InMemSearchScratch {
@@ -55,30 +55,18 @@ pub struct InMemSearchScratch {
     /// once at scratch creation, refilled each query.
     pub(crate) q_query_f32_padded: Vec<f32>,
 
-    /// Adaptive pre-filter threshold state (ParlayANN `beamSearch.h:136-145`):
-    /// running average of the frontier's u8-distance tail-mean, used to
-    /// tighten the quantized pre-filter cutoff as the search stabilizes.
-    pub(crate) filter_threshold_sum: f32,
-    pub(crate) filter_threshold_count: u32,
-    pub(crate) last_worst_id: u32,
-    pub(crate) filter_tail_mean: f32,
-    /// **JL Hamming pre-filter** threshold state — PA's reference
-    /// `filtered_beam_search` (`beamSearch.h:138-152`) shape. Mean
-    /// over the **whole frontier** is the higher-quality threshold
-    /// signal (an EMA over only admitted candidates produces a tighter
-    /// threshold that loses recall at iso-throughput; verified
-    /// empirically). The recompute cost on GIST is bounded by L2
-    /// hit-rate on the JL slab — the same ~L vertex IDs are
-    /// re-Hammed across consecutive recomputes so the signatures
-    /// stay implicitly cached at the hardware level.
-    pub(crate) jl_threshold_sum: f32,
-    pub(crate) jl_threshold_count: u32,
-    pub(crate) jl_last_worst_id: u32,
-    pub(crate) jl_tail_mean: f32,
+    /// Shared prefilter threshold history (JL, Hadamard and RaBitQ).
+    /// Cache the mean distance over the whole beam until its worst ID changes,
+    /// then average those per-hop means. The observation count includes hops
+    /// that reuse a cached mean; it is not a distance-evaluation count.
+    pub(crate) prefilter_frontier_mean_sum: f32,
+    pub(crate) prefilter_observations: u32,
+    pub(crate) prefilter_last_worst_id: u32,
+    pub(crate) prefilter_frontier_mean: f32,
     /// Reusable convergence checker — avoids per-query allocation.
     pub(crate) scc: SearchConvergenceChecker,
     /// Reusable early exit checker.
-    pub(crate) early_exit: crate::algorithm::search::adaptive::early_exit::EarlyExitChecker,
+    pub(crate) early_exit: crate::search::adaptive::early_exit::EarlyExitChecker,
 }
 
 impl InMemSearchScratch {
@@ -105,16 +93,12 @@ impl InMemSearchScratch {
             // glove100 / SIFT (N ≤ 128) we use the first 16 elements
             // and the rest are unused but pre-allocated.
             q_query_f32_padded: Vec::with_capacity(1024),
-            filter_threshold_sum: 0.0,
-            filter_threshold_count: 0,
-            last_worst_id: u32::MAX,
-            filter_tail_mean: 0.0,
-            jl_threshold_sum: 0.0,
-            jl_threshold_count: 0,
-            jl_last_worst_id: u32::MAX,
-            jl_tail_mean: 0.0,
+            prefilter_frontier_mean_sum: 0.0,
+            prefilter_observations: 0,
+            prefilter_last_worst_id: u32::MAX,
+            prefilter_frontier_mean: 0.0,
             scc: SearchConvergenceChecker::new(5, 0.0),
-            early_exit: crate::algorithm::search::adaptive::early_exit::EarlyExitChecker::new(5),
+            early_exit: crate::search::adaptive::early_exit::EarlyExitChecker::new(5),
         }
     }
 
@@ -127,14 +111,10 @@ impl InMemSearchScratch {
         self.seen.resize_for(search_list_size);
         self.id_scratch.clear();
         self.merge_scratch.clear();
-        self.filter_threshold_sum = 0.0;
-        self.filter_threshold_count = 0;
-        self.last_worst_id = u32::MAX;
-        self.filter_tail_mean = 0.0;
-        self.jl_threshold_sum = 0.0;
-        self.jl_threshold_count = 0;
-        self.jl_last_worst_id = u32::MAX;
-        self.jl_tail_mean = 0.0;
+        self.prefilter_frontier_mean_sum = 0.0;
+        self.prefilter_observations = 0;
+        self.prefilter_last_worst_id = u32::MAX;
+        self.prefilter_frontier_mean = 0.0;
         self.scc.reset();
         self.early_exit.reset();
     }
@@ -239,33 +219,25 @@ mod tests {
         let s = InMemSearchScratch::new(64);
         assert_eq!(s.pq.size(), 0);
         assert_eq!(s.id_scratch.len(), 0);
-        assert_eq!(s.filter_threshold_sum, 0.0);
-        assert_eq!(s.filter_threshold_count, 0);
-        assert_eq!(s.last_worst_id, u32::MAX);
-        assert_eq!(s.jl_threshold_sum, 0.0);
-        assert_eq!(s.jl_threshold_count, 0);
-        assert_eq!(s.jl_last_worst_id, u32::MAX);
+        assert_eq!(s.prefilter_frontier_mean_sum, 0.0);
+        assert_eq!(s.prefilter_observations, 0);
+        assert_eq!(s.prefilter_last_worst_id, u32::MAX);
+        assert_eq!(s.prefilter_frontier_mean, 0.0);
     }
 
     #[test]
     fn prepare_for_query_resets_state() {
         let mut s = InMemSearchScratch::new(32);
-        s.filter_threshold_sum = 12.5;
-        s.filter_threshold_count = 8;
-        s.last_worst_id = 42;
-        s.filter_tail_mean = 99.0;
-        s.jl_threshold_sum = 3.3;
-        s.jl_threshold_count = 4;
-        s.jl_last_worst_id = 77;
+        s.prefilter_frontier_mean_sum = 3.3;
+        s.prefilter_observations = 4;
+        s.prefilter_last_worst_id = 77;
+        s.prefilter_frontier_mean = 99.0;
         s.id_scratch.extend_from_slice(&[1u32, 2, 3]);
         s.prepare_for_query(32);
-        assert_eq!(s.filter_threshold_sum, 0.0);
-        assert_eq!(s.filter_threshold_count, 0);
-        assert_eq!(s.last_worst_id, u32::MAX);
-        assert_eq!(s.filter_tail_mean, 0.0);
-        assert_eq!(s.jl_threshold_sum, 0.0);
-        assert_eq!(s.jl_threshold_count, 0);
-        assert_eq!(s.jl_last_worst_id, u32::MAX);
+        assert_eq!(s.prefilter_frontier_mean_sum, 0.0);
+        assert_eq!(s.prefilter_observations, 0);
+        assert_eq!(s.prefilter_last_worst_id, u32::MAX);
+        assert_eq!(s.prefilter_frontier_mean, 0.0);
         assert_eq!(s.id_scratch.len(), 0);
     }
 
@@ -282,7 +254,7 @@ mod tests {
     fn pool_acquire_returns_guard() {
         let pool = InMemScratchPool::new(2, 32);
         let mut g = pool.acquire();
-        g.scratch().filter_threshold_count = 5;
+        g.scratch().prefilter_observations = 5;
         // Drop returns to pool.
         drop(g);
         // Re-acquire — the same scratch is back (state retained for cheap reuse).

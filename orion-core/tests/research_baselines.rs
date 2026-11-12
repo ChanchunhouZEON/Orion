@@ -6,9 +6,9 @@
 #![cfg(feature = "benchmark")]
 use orion_ann_core::{
     NaiveOrion,
-    algorithm::search::diagnostics::{MatchedStateTrace, SearchObserver},
     model::Neighbor,
     model::scratch::InMemSearchScratch,
+    search::diagnostics::{MatchedStateTrace, SearchObserver},
 };
 use orion_ann_diskann::model::{CsrGraph, InmemDataset};
 
@@ -123,7 +123,7 @@ fn matched_state_trace_keeps_first_checkpoint_across_reversals() {
 
 #[test]
 fn benchmark_compatibility_search_matches_validated_cascade() {
-    use orion_ann_core::algorithm::search::stage::{
+    use orion_ann_core::search::cascade::stage::{
         Prefilter, admission::L2U8Admission, rerank::F32Rerank,
     };
     use orion_ann_core::{DynamicCascade, DynamicSearchConfig, StaticOrion};
@@ -146,14 +146,16 @@ fn benchmark_compatibility_search_matches_validated_cascade() {
         early_exit_limit: usize::MAX,
     };
     let expected = index
-        .search_cascade(
-            &query,
+        .search_observed(
+            orion_ann_core::search::query::QueryInput::F32(&query),
             config,
             DynamicCascade {
-                prefilter: None,
+                prefilter: &orion_ann_core::search::cascade::stage::NoPrefilter,
                 admission: &admission,
                 rerank: &rerank,
             },
+            orion_ann_core::search::diagnostics::NeighborMode::default(),
+            &mut orion_ann_core::search::diagnostics::NoopObserver,
         )
         .unwrap();
     assert_eq!(expected, [5, 6, 4]);

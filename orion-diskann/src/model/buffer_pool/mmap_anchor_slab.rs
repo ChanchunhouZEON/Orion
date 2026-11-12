@@ -29,7 +29,7 @@ const SLOT_HEADER: usize = 8; // count (u32) + reserved (u32)
 
 fn compute_slot_bytes(max_pairs: usize) -> usize {
     let raw = SLOT_HEADER + max_pairs * 8;
-    (raw + CACHE_LINE - 1) / CACHE_LINE * CACHE_LINE
+    raw.div_ceil(CACHE_LINE) * CACHE_LINE
 }
 
 pub struct MmapAnchorSlab {

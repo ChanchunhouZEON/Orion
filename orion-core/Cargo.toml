@@ -15,6 +15,7 @@ include = ["assets/**", "src/**", "tests/**", "configs/**", "Cargo.toml", "READM
 edition = "2024"
 
 [features]
+experimental-graph = []
 benchmark = ["search-stats", "orion-ann-vector/benchmark", "orion-ann-diskann/benchmark"]
 search-stats = []
 default = ["parlay"]

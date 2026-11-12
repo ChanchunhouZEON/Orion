@@ -47,8 +47,7 @@ pub(super) fn build(
         None,
         true,
         config.max_extra,
-    )
-    .map_err(Error::from)?;
+    )?;
 
     // Release the builder's working index before allocating the final graph slab.
     let entry = build.entry_point;

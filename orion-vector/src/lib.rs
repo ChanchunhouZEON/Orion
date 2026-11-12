@@ -106,8 +106,8 @@ pub use ip_neon_distance_i16::{distance_ip_vector_i16, distance_ip_vector_i16_ba
 
 mod distance_kernel;
 pub use distance_kernel::{
-    DistanceKernelBackend, IpF32Distance, IpI16Distance, IpI8Distance, JLHammingDistance,
-    L2F32Distance, L2U16Distance, L2U8Distance, PqAdcDistance,
+    DistanceKernelBackend, IpF32Distance, IpI16Distance, IpI8Distance, IpU8Distance,
+    JLHammingDistance, L2F32Distance, L2U16Distance, L2U8Distance, PqAdcDistance,
 };
 
 mod distance_stream;

@@ -139,9 +139,8 @@ impl MutableRegion {
         let ptr = match &backing {
             MutableBacking::Owned(a) => a.ptr,
             #[cfg(not(target_arch = "wasm32"))]
-            MutableBacking::Mapped(m) => {
-                NonNull::new(m.as_ptr().cast_mut()).expect("nonempty mapping")
-            }
+            MutableBacking::Mapped(m) => NonNull::new(m.as_ptr().cast_mut())
+                .ok_or_else(|| invalid("nonempty mapping has a null address"))?,
         };
         Ok(Self {
             ptr,

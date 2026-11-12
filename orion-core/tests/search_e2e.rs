@@ -7,7 +7,7 @@
 //! graph and exercise the validated cascade search entry points. The fixture
 //! retains static storage for the legacy profiling scenarios below.
 //!
-//! Exists to lift `algorithm/search/{in_mem_search, calibrate, utils}`,
+//! Exists to lift `search/{in_mem_search, calibrate, utils}`,
 //! `index/compressed_index`, and `orion-vector/distance_{fn,stream}` from
 //! 0% line coverage — those files only run when a real PhasedGraph +
 //! ScalarQuantizedDataset are wired together, which unit tests can't do in
@@ -23,14 +23,14 @@
 
 #[path = "support/sidecar_file.rs"]
 mod sidecar_file;
-use orion_ann_core::algorithm::search::stage::Prefilter;
-use orion_ann_core::algorithm::search::stage::admission::{
+use orion_ann_core::search::cascade::stage::Prefilter;
+use orion_ann_core::search::cascade::stage::admission::{
     L2KTAdmission, L2U8Admission, L2U16Admission, MipsI8Admission,
 };
-use orion_ann_core::algorithm::search::stage::prefilter::{
+use orion_ann_core::search::cascade::stage::prefilter::{
     JlHadamardPrefilter, JlPrefilter, RabitqPrefilter,
 };
-use orion_ann_core::algorithm::search::stage::rerank::{F32Rerank, IpF32Rerank, U16Rerank};
+use orion_ann_core::search::cascade::stage::rerank::{F32Rerank, IpF32Rerank, U16Rerank};
 use orion_ann_core::{DynamicCascade, DynamicSearchConfig, StaticOrion, build_diskann_index};
 use orion_ann_diskann::model::InmemDataset;
 
@@ -105,15 +105,14 @@ fn build_orion_fixture(flat: &[f32]) -> StaticOrion<DIM> {
 
     let mut ds = InmemDataset::<f32, DIM>::new(N_POINTS, 1.0).unwrap();
     ds.data.memcpy(&flat[..N_POINTS * DIM]).unwrap();
-    let orion = StaticOrion::<DIM>::new(
+
+    StaticOrion::<DIM>::new(
         ds,
         &result.partitions,
         result.entry_point,
         GRAPH_DEGREE,
         MAX_EXTRA,
-    );
-
-    orion
+    )
 }
 
 fn query_at(flat: &[f32], idx: usize) -> [f32; DIM] {
@@ -138,14 +137,14 @@ fn search_pipeline_e2e() {
 
     let admission = L2U8Admission::new(orion.ensure_quantized_dataset());
     let rerank = F32Rerank::new(orion.dataset());
-    let no_pf: Option<&Prefilter<'_>> = None;
+    let no_pf: &Prefilter<'_> = &orion_ann_core::search::cascade::stage::NoPrefilter;
 
     // ── Scenario 1: self-query recovers self as top-1 ──
     for i in 0..8u32 {
         let q = query_at(&flat, i as usize);
         let neighbors = orion
-            .search_cascade(
-                &q,
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(&q),
                 DynamicSearchConfig {
                     k: 5,
                     search_list_size: 32,
@@ -158,8 +157,10 @@ fn search_pipeline_e2e() {
                     admission: &admission,
                     rerank: &rerank,
                 },
+                orion_ann_core::search::diagnostics::NeighborMode::default(),
+                &mut orion_ann_core::search::diagnostics::NoopObserver,
             )
-            .expect("search_cascade");
+            .expect("search");
         assert!(!neighbors.is_empty(), "vid={i}: empty result");
         assert_eq!(
             neighbors[0], i,
@@ -187,8 +188,8 @@ fn search_pipeline_e2e() {
     let mut single_top1 = Vec::with_capacity(4);
     for q in queries.iter() {
         let r = orion
-            .search_cascade(
-                q,
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(q),
                 DynamicSearchConfig {
                     k: 3,
                     search_list_size: 32,
@@ -201,13 +202,15 @@ fn search_pipeline_e2e() {
                     admission: &admission,
                     rerank: &rerank,
                 },
+                orion_ann_core::search::diagnostics::NeighborMode::default(),
+                &mut orion_ann_core::search::diagnostics::NoopObserver,
             )
             .unwrap();
         single_top1.push(r[0]);
     }
     let batch = orion
-        .search_batch_cascade(
-            queries.as_flattened(),
+        .search_batch(
+            orion_ann_core::search::query::QueryInput::F32(queries.as_flattened()),
             DynamicSearchConfig {
                 k: 3,
                 search_list_size: 32,
@@ -220,8 +223,9 @@ fn search_pipeline_e2e() {
                 admission: &admission,
                 rerank: &rerank,
             },
+            None,
         )
-        .expect("search_batch_cascade");
+        .expect("search_batch");
     assert_eq!(batch.len(), 4);
     for (i, row) in batch.rows().enumerate() {
         assert_eq!(
@@ -233,8 +237,8 @@ fn search_pipeline_e2e() {
     // ── Scenario 4: non-zero epsilon path (DCC reconfigure) ──
     let q = query_at(&flat, 0);
     let r = orion
-        .search_cascade(
-            &q,
+        .search_observed(
+            orion_ann_core::search::query::QueryInput::F32(&q),
             DynamicSearchConfig {
                 k: 5,
                 search_list_size: 32,
@@ -247,15 +251,17 @@ fn search_pipeline_e2e() {
                 admission: &admission,
                 rerank: &rerank,
             },
+            orion_ann_core::search::diagnostics::NeighborMode::default(),
+            &mut orion_ann_core::search::diagnostics::NoopObserver,
         )
-        .expect("search_cascade with convergence");
+        .expect("search with convergence");
     assert!(!r.is_empty());
     assert_eq!(r[0], 0);
 
     // ── Scenario 5: distinct queries → distinct neighborhoods ──
     let r0 = orion
-        .search_cascade(
-            &query_at(&flat, 0),
+        .search_observed(
+            orion_ann_core::search::query::QueryInput::F32(&query_at(&flat, 0)),
             DynamicSearchConfig {
                 k: 10,
                 search_list_size: 32,
@@ -268,11 +274,13 @@ fn search_pipeline_e2e() {
                 admission: &admission,
                 rerank: &rerank,
             },
+            orion_ann_core::search::diagnostics::NeighborMode::default(),
+            &mut orion_ann_core::search::diagnostics::NoopObserver,
         )
         .unwrap();
     let r5 = orion
-        .search_cascade(
-            &query_at(&flat, 5),
+        .search_observed(
+            orion_ann_core::search::query::QueryInput::F32(&query_at(&flat, 5)),
             DynamicSearchConfig {
                 k: 10,
                 search_list_size: 32,
@@ -285,6 +293,8 @@ fn search_pipeline_e2e() {
                 admission: &admission,
                 rerank: &rerank,
             },
+            orion_ann_core::search::diagnostics::NeighborMode::default(),
+            &mut orion_ann_core::search::diagnostics::NoopObserver,
         )
         .unwrap();
     assert_ne!(
@@ -302,8 +312,8 @@ fn search_pipeline_e2e() {
         let admission_u16 = L2U16Admission::new(orion.ensure_quantized_dataset_l2_u16());
         let rerank_u16 = U16Rerank::new(orion.ensure_quantized_dataset_l2_u16());
         let r = orion
-            .search_cascade(
-                &q,
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(&q),
                 DynamicSearchConfig {
                     k: 3,
                     search_list_size: 32,
@@ -316,6 +326,8 @@ fn search_pipeline_e2e() {
                     admission: &admission_u16,
                     rerank: &rerank_u16,
                 },
+                orion_ann_core::search::diagnostics::NeighborMode::default(),
+                &mut orion_ann_core::search::diagnostics::NoopObserver,
             )
             .expect("L2-U16 cascade");
         assert_eq!(r[0], 1);
@@ -326,8 +338,8 @@ fn search_pipeline_e2e() {
         let kt_ds = orion.ensure_quantized_dataset_l2_kt();
         let admission_kt = L2KTAdmission::new(kt_ds);
         let r = orion
-            .search_cascade(
-                &q,
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(&q),
                 DynamicSearchConfig {
                     k: 3,
                     search_list_size: 32,
@@ -340,6 +352,8 @@ fn search_pipeline_e2e() {
                     admission: &admission_kt,
                     rerank: &rerank,
                 },
+                orion_ann_core::search::diagnostics::NeighborMode::default(),
+                &mut orion_ann_core::search::diagnostics::NoopObserver,
             )
             .expect("L2-KT cascade");
         assert_eq!(r[0], 2);
@@ -354,10 +368,10 @@ fn search_pipeline_e2e() {
         let q = query_at(&flat, 3);
         let jl_ds = orion.ensure_quantized_dataset_jl();
         let pf = JlPrefilter::new(jl_ds);
-        let pf_opt: Option<&Prefilter<'_>> = Some(&pf);
+        let filter: &Prefilter<'_> = &pf;
         let r = orion
-            .search_cascade(
-                &q,
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(&q),
                 DynamicSearchConfig {
                     k: 3,
                     search_list_size: 32,
@@ -366,10 +380,12 @@ fn search_pipeline_e2e() {
                     early_exit_limit: usize::MAX,
                 },
                 DynamicCascade {
-                    prefilter: pf_opt,
+                    prefilter: filter,
                     admission: &admission,
                     rerank: &rerank,
                 },
+                orion_ann_core::search::diagnostics::NeighborMode::default(),
+                &mut orion_ann_core::search::diagnostics::NoopObserver,
             )
             .expect("JL prefilter cascade");
         assert!(!r.is_empty());
@@ -384,8 +400,8 @@ fn search_pipeline_e2e() {
         let admission_mips = MipsI8Admission::new(mips_ds);
         let rerank_ip = IpF32Rerank::new(orion.dataset());
         let r = orion
-            .search_cascade(
-                &q,
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(&q),
                 DynamicSearchConfig {
                     k: 3,
                     search_list_size: 32,
@@ -398,6 +414,8 @@ fn search_pipeline_e2e() {
                     admission: &admission_mips,
                     rerank: &rerank_ip,
                 },
+                orion_ann_core::search::diagnostics::NeighborMode::default(),
+                &mut orion_ann_core::search::diagnostics::NoopObserver,
             )
             .expect("MIPS cascade");
         assert!(!r.is_empty());
@@ -408,10 +426,10 @@ fn search_pipeline_e2e() {
         let q = query_at(&flat, 5);
         let rabitq_ds = orion.ensure_quantized_dataset_rabitq();
         let pf = RabitqPrefilter::new(rabitq_ds);
-        let pf_opt: Option<&Prefilter<'_>> = Some(&pf);
+        let filter: &Prefilter<'_> = &pf;
         let r = orion
-            .search_cascade(
-                &q,
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(&q),
                 DynamicSearchConfig {
                     k: 3,
                     search_list_size: 32,
@@ -420,10 +438,12 @@ fn search_pipeline_e2e() {
                     early_exit_limit: usize::MAX,
                 },
                 DynamicCascade {
-                    prefilter: pf_opt,
+                    prefilter: filter,
                     admission: &admission,
                     rerank: &rerank,
                 },
+                orion_ann_core::search::diagnostics::NeighborMode::default(),
+                &mut orion_ann_core::search::diagnostics::NoopObserver,
             )
             .expect("RaBitQ prefilter cascade");
         assert!(!r.is_empty());
@@ -434,10 +454,10 @@ fn search_pipeline_e2e() {
         let q = query_at(&flat, 6);
         let jlh_ds = orion.ensure_quantized_dataset_jl_hadamard();
         let pf = JlHadamardPrefilter::new(jlh_ds);
-        let pf_opt: Option<&Prefilter<'_>> = Some(&pf);
+        let filter: &Prefilter<'_> = &pf;
         let r = orion
-            .search_cascade(
-                &q,
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(&q),
                 DynamicSearchConfig {
                     k: 3,
                     search_list_size: 32,
@@ -446,10 +466,12 @@ fn search_pipeline_e2e() {
                     early_exit_limit: usize::MAX,
                 },
                 DynamicCascade {
-                    prefilter: pf_opt,
+                    prefilter: filter,
                     admission: &admission,
                     rerank: &rerank,
                 },
+                orion_ann_core::search::diagnostics::NeighborMode::default(),
+                &mut orion_ann_core::search::diagnostics::NoopObserver,
             )
             .expect("JL Hadamard prefilter cascade");
         assert!(!r.is_empty());
@@ -464,7 +486,7 @@ fn search_pipeline_e2e() {
     //   `analysis/neighbor_contribution.rs` file end-to-end.
     #[cfg(feature = "benchmark")]
     {
-        use orion_ann_core::algorithm::analysis::neighbor_contribution::{
+        use orion_ann_core::search::diagnostics::analysis::neighbor_contribution::{
             PositionContributionStats, greedy_search_truncated, search_with_contribution,
             sort_neighbors_by_distance,
         };
@@ -525,7 +547,7 @@ fn search_pipeline_e2e() {
     //   they cover the 588-line `cliff_neighbor_stats.rs` file.
     #[cfg(feature = "benchmark")]
     {
-        use orion_ann_core::algorithm::analysis::cliff_neighbor_stats::{
+        use orion_ann_core::search::diagnostics::analysis::cliff_neighbor_stats::{
             annotate_bf_ranks, compute_cliff_stats, summarize_cliff_ranks, summarize_cliff_stats,
         };
 
@@ -568,7 +590,7 @@ fn search_pipeline_e2e() {
     //   Exercises the MipsI16, RabitQ-B4, and JL-MIPS sidecar builders
     //   in `compressed_index.rs` that the other scenarios skipped.
     {
-        use orion_ann_core::algorithm::search::stage::admission::MipsI16Admission;
+        use orion_ann_core::search::cascade::stage::admission::MipsI16Admission;
 
         let q = query_at(&flat, 8);
 
@@ -577,8 +599,8 @@ fn search_pipeline_e2e() {
         let admission_mi16 = MipsI16Admission::new(mips_i16_ds);
         let rerank_ip = IpF32Rerank::new(orion.dataset());
         let r = orion
-            .search_cascade(
-                &q,
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(&q),
                 DynamicSearchConfig {
                     k: 3,
                     search_list_size: 32,
@@ -591,6 +613,8 @@ fn search_pipeline_e2e() {
                     admission: &admission_mi16,
                     rerank: &rerank_ip,
                 },
+                orion_ann_core::search::diagnostics::NeighborMode::default(),
+                &mut orion_ann_core::search::diagnostics::NoopObserver,
             )
             .expect("MipsI16 cascade");
         assert!(!r.is_empty());
@@ -623,7 +647,7 @@ fn search_pipeline_e2e() {
     // ── Scenario 14: diagnostic / profile search variants ──
     //   `search_diag` returns extra step metadata; `search_profile`
     //   returns deeper per-stage profile stats. Both live in
-    //   `algorithm/search/utils.rs` and aren't on the cascade path
+    //   `search/utils.rs` and aren't on the cascade path
     //   the unified search exercises.
     #[cfg(feature = "benchmark")]
     {
@@ -650,13 +674,13 @@ fn search_pipeline_e2e() {
     //   `FullPrecisionDistance::distance_compare_adsampling` for f32.
     #[cfg(feature = "benchmark")]
     {
-        use orion_ann_core::algorithm::search::stage::admission::ads_f32::AdsF32Admission;
+        use orion_ann_core::search::cascade::stage::admission::ads_f32::AdsF32Admission;
 
         let q = query_at(&flat, 10);
         let admission_ads = AdsF32Admission::new(orion.dataset(), /* ads_epsilon */ 2.1);
         let r = orion
-            .search_cascade(
-                &q,
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(&q),
                 DynamicSearchConfig {
                     k: 3,
                     search_list_size: 32,
@@ -669,6 +693,8 @@ fn search_pipeline_e2e() {
                     admission: &admission_ads,
                     rerank: &rerank,
                 },
+                orion_ann_core::search::diagnostics::NeighborMode::default(),
+                &mut orion_ann_core::search::diagnostics::NoopObserver,
             )
             .expect("ADS admission cascade");
         assert!(!r.is_empty());
@@ -679,16 +705,16 @@ fn search_pipeline_e2e() {
     //   non-mips half was hit in Scenario 6). Uses the JL-MIPS sidecar
     //   built lazily in Scenario 12.
     {
-        use orion_ann_core::algorithm::search::stage::prefilter::JlMipsPrefilter;
+        use orion_ann_core::search::cascade::stage::prefilter::JlMipsPrefilter;
         let q = query_at(&flat, 11);
         let jl_mips_ds = orion.ensure_quantized_dataset_jl_mips();
         let pf = JlMipsPrefilter::new(jl_mips_ds);
-        let pf_opt: Option<&Prefilter<'_>> = Some(&pf);
+        let filter: &Prefilter<'_> = &pf;
         let admission_mips = MipsI8Admission::new(orion.ensure_quantized_dataset_mips());
         let rerank_ip = IpF32Rerank::new(orion.dataset());
         let r = orion
-            .search_cascade(
-                &q,
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(&q),
                 DynamicSearchConfig {
                     k: 3,
                     search_list_size: 32,
@@ -697,10 +723,12 @@ fn search_pipeline_e2e() {
                     early_exit_limit: usize::MAX,
                 },
                 DynamicCascade {
-                    prefilter: pf_opt,
+                    prefilter: filter,
                     admission: &admission_mips,
                     rerank: &rerank_ip,
                 },
+                orion_ann_core::search::diagnostics::NeighborMode::default(),
+                &mut orion_ann_core::search::diagnostics::NoopObserver,
             )
             .expect("JL-MIPS prefilter cascade");
         assert!(!r.is_empty());
@@ -727,8 +755,8 @@ fn search_pipeline_e2e() {
         // Search through both — top-1 must agree on the same query.
         let q = query_at(&flat, 12);
         let r_orig = orion
-            .search_cascade(
-                &q,
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(&q),
                 DynamicSearchConfig {
                     k: 5,
                     search_list_size: 32,
@@ -741,14 +769,16 @@ fn search_pipeline_e2e() {
                     admission: &admission,
                     rerank: &rerank,
                 },
+                orion_ann_core::search::diagnostics::NeighborMode::default(),
+                &mut orion_ann_core::search::diagnostics::NoopObserver,
             )
             .unwrap();
         // Rebuild admission + rerank against the reloaded instance.
         let admission2 = L2U8Admission::new(reloaded.ensure_quantized_dataset());
         let rerank2 = F32Rerank::new(reloaded.dataset());
         let r_reloaded = reloaded
-            .search_cascade(
-                &q,
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(&q),
                 DynamicSearchConfig {
                     k: 5,
                     search_list_size: 32,
@@ -761,6 +791,8 @@ fn search_pipeline_e2e() {
                     admission: &admission2,
                     rerank: &rerank2,
                 },
+                orion_ann_core::search::diagnostics::NeighborMode::default(),
+                &mut orion_ann_core::search::diagnostics::NoopObserver,
             )
             .unwrap();
         assert_eq!(r_orig[0], r_reloaded[0], "top-1 mismatch after reload");
@@ -816,8 +848,8 @@ fn search_pipeline_e2e() {
         let q = query_at(&flat, 13);
         for &sls in &[8usize, 16, 48, 96] {
             let r = orion
-                .search_cascade(
-                    &q,
+                .search_observed(
+                    orion_ann_core::search::query::QueryInput::F32(&q),
                     DynamicSearchConfig {
                         k: 3,
                         search_list_size: sls,
@@ -830,16 +862,18 @@ fn search_pipeline_e2e() {
                         admission: &admission,
                         rerank: &rerank,
                     },
+                    orion_ann_core::search::diagnostics::NeighborMode::default(),
+                    &mut orion_ann_core::search::diagnostics::NoopObserver,
                 )
-                .expect("search_cascade loop variation");
+                .expect("search loop variation");
             assert!(!r.is_empty(), "sls={sls}: empty result");
         }
         // Also exercise the early-exit path with a tight limit and the
         // convergence path with a non-trivial epsilon together — covers
         // the branch in the inner loop where both signals fire.
         let r = orion
-            .search_cascade(
-                &q,
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(&q),
                 DynamicSearchConfig {
                     k: 3,
                     search_list_size: 32,
@@ -852,6 +886,8 @@ fn search_pipeline_e2e() {
                     admission: &admission,
                     rerank: &rerank,
                 },
+                orion_ann_core::search::diagnostics::NeighborMode::default(),
+                &mut orion_ann_core::search::diagnostics::NoopObserver,
             )
             .expect("search with both convergence and early exit");
         assert!(!r.is_empty());

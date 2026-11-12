@@ -3,6 +3,10 @@
  * Licensed under the MIT License.
  */
 
+#[expect(
+    clippy::module_inception,
+    reason = "preserve the existing neighbor type module path"
+)]
 pub mod neighbor;
 pub use neighbor::*;
 

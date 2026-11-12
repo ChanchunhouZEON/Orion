@@ -324,7 +324,7 @@ fn inputs_with_plan(
 fn graph_stride_bytes(max_degree: u64, max_extra: u64) -> u64 {
     // Each node stores header words and both adjacency regions, rounded to a cache line.
     let record_bytes = (GRAPH_HEADER_WORDS + max_degree + max_extra) * 4;
-    (record_bytes + CACHE_LINE_BYTES - 1) / CACHE_LINE_BYTES * CACHE_LINE_BYTES
+    record_bytes.div_ceil(CACHE_LINE_BYTES) * CACHE_LINE_BYTES
 }
 
 /// Resolves the resident per-node stride used by internal graph slab
@@ -441,7 +441,7 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
             orion_ann_vector::L2F32Distance,
         >(config.dimension)?,
         VectorStorageKind::U8 => orion_ann_vector::PaddedLayout::for_kernel::<
-            orion_ann_vector::L2U8Distance,
+            orion_ann_vector::IpU8Distance,
         >(config.dimension)?,
     };
     let base_bytes = checked_mul_bytes(num_points as u64, layout.stride_bytes() as u64)?;
@@ -452,6 +452,7 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
     let requirements = config
         .index_plan()
         .sidecar_requirements(config.prepare_only);
+    let norm_bytes = crate::placement::native_norm_bytes(config, num_points)?;
     let sidecars = crate::sidecars::requirements::estimate_sidecars(
         orion_ann_core::QuantizedDatasetShape {
             rows: num_points,
@@ -541,7 +542,14 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
     // ParlayANN borrows the final slab for both adjacency and extras. There is
     // no independent N-sized graph/extras allocation in the production path.
     // Sidecars are prepared later; candidate/statistics scratch is listed below.
-    let working_bytes = 0u64;
+    // Parlay cosine owns temporary norms while constructing; they are dropped
+    // before preparing the separately placed search norm object.
+    let working_bytes =
+        if !cache_hit && staged_source.is_none() && config.graph_source == GraphSource::Parlayann {
+            norm_bytes
+        } else {
+            0
+        };
     let owned_base = if placement.options.contains_key("base") {
         0
     } else {
@@ -569,8 +577,8 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
         {"name":"result IDs", "bytes":if unknown_replay_buffers { None } else { Some(result_bytes) }, "basis":"buffered queries × k × u32", "phase":"search"},
         {"name":"ground truth IDs", "bytes":if unknown_replay_buffers && config.groundtruth.is_some() { None } else { Some(gt_bytes) }, "basis":"replay keeps all top-k rows; streaming keeps one row; absent GT uses none", "phase":"evaluation"},
         {"name":"worker scratch", "bytes":null, "basis":format!("{} workers; beam schedule {:?}; visited sets and candidate buffers grow dynamically", config.sweep.threads, config.sweep.search_list_sizes), "phase":"search"},
-        {"name":"ParlayANN working graph and extras", "bytes":working_bytes, "basis":"adjacency and extras share the final graph slab; no independent graph allocation", "phase":"build/import"},
-        {"name":"graph construction temporary memory", "bytes":null, "basis":if cache_hit {"cache load; decoder and allocator overhead not estimated"} else if config.graph_source == GraphSource::Parlayann {
+        {"name":"ParlayANN construction norms", "bytes":working_bytes, "basis":"temporary native-cosine squared norms (u32/u64), released before search norms; adjacency and extras share the final graph slab", "phase":"build/import"},
+        {"name":"graph construction temporary memory", "bytes":null, "basis":if cache_hit {"cache load; decoder and allocator overhead not estimated"} else if config.graph_source == GraphSource::Supplied {"streamed supplier import; one bounded partition row and validation scratch"} else if config.graph_source == GraphSource::Parlayann {
             if crate::graph::staged::available_staged_export(config)?.is_some() { "streamed STAG import; no in-process builder" }
             else { "ParlayANN borrows base and graph slab; construction statistics, insertion batches and worker candidate/partition scratch remain additional" }
         } else {"Rust builder retains working dataset and graph partitions; peak not estimated"}, "phase":"build/import"},
@@ -582,13 +590,19 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
         part["source"] = serde_json::json!(match part["name"].as_str().unwrap() {
             "base vectors" | "node reader counters" => base_source,
             "graph slab" => graph_source,
-            "ParlayANN working graph and extras" => "configuration",
+            "ParlayANN construction norms" => "configuration",
             "query buffers" | "result IDs" | "ground truth IDs" => query_source,
             _ => "not estimated",
         });
     }
     // Dataset owners supply all payload components; stage labels never affect
     // allocation identity or accounting.
+    if norm_bytes != 0 {
+        let mapped = placement
+            .options
+            .contains_key(orion_ann_core::model::dataset::native_u8::NORM_CODEC);
+        components.as_array_mut().unwrap().push(serde_json::json!({"name":"native u8 squared norms","bytes":norm_bytes,"placement":if mapped {"mapped payload"}else{"owned"},"basis":"one exact u32 squared norm per vector; u64 when 65025 × dimension exceeds u32","phase":if mapped {"mapped"}else{"resident"},"source":base_source}));
+    }
     for allocation in sidecars.allocations() {
         let memory = allocation.memory;
         components.as_array_mut().unwrap().push(serde_json::json!({
@@ -630,7 +644,7 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
         "base_f32_bytes": if storage == VectorStorageKind::F32 { base_bytes } else { 0 },
         "base_u8_bytes": if storage == VectorStorageKind::U8 { base_bytes } else { 0 },
         "graph_slab_bytes": graph_bytes,
-        "sidecar_bytes": sidecars.total_bytes(),
+        "sidecar_bytes": sidecars.total_bytes() as u64 + norm_bytes,
         "sidecar_owned_bytes": placement.resident_bytes
             - if placement.options.contains_key("base") { 0 } else { base_bytes }
             - if placement.options.contains_key("graph") { 0 } else { graph_bytes },
@@ -644,7 +658,7 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
         "graph_source_policy": config.graph_source_policy,
         "graph_source": config.graph_source,
         "graph_selection_reason": config.graph_selection_reason,
-        "graph_action": if cache_hit { "load cache" } else if config.graph_source == GraphSource::Rust { "build Rust graph" } else if staged_source.is_some() { "import PA staged export" } else if cfg!(feature = "parlay") { "build ParlayANN graph" } else { "PA input required" },
+        "graph_action": if cache_hit { "load cache" } else if config.graph_source == GraphSource::Supplied { "import supplier partitions" } else if config.graph_source == GraphSource::Rust { "build Rust graph" } else if staged_source.is_some() { "import PA staged export" } else if cfg!(feature = "parlay") { "build ParlayANN graph" } else { "PA input required" },
         "cache_hit": cache_hit,
         "cache_path": cache_path,
         "staged_source": staged_source,
@@ -661,6 +675,13 @@ fn calculate_memory(config: &ResolvedRunConfig, input: MemoryInputs) -> Result<s
                  Measure a smaller run before a full build. \
                  A PA cache miss requires an existing staged export."
     });
+    report["metric"] = serde_json::json!(config.metric);
+    report["cascade"] = serde_json::json!(config.cascade());
+    report["search_dispatch"] = config
+        .cascade()
+        .dispatch_description(config.storage())
+        .into();
+    report["native_norm_bytes"] = norm_bytes.into();
     report["mapped_bytes"] = placement.mapped_bytes.into();
     report["base_mapped"] = (owned_base == 0 && base_bytes != 0).into();
     report["graph_mapped"] = (owned_graph == 0 && graph_bytes != 0).into();
@@ -760,7 +781,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|c| c["name"] == "ParlayANN working graph and extras")
+            .find(|c| c["name"] == "ParlayANN construction norms")
             .unwrap();
         assert_eq!(working["bytes"], 0);
     }

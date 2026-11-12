@@ -85,10 +85,7 @@ impl DiskANNRunner {
         file.write_all(&(dimension as i32).to_le_bytes())?;
 
         let byte_slice = unsafe {
-            std::slice::from_raw_parts(
-                data.as_ptr() as *const u8,
-                data.len() * std::mem::size_of::<f32>(),
-            )
+            std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
         };
         file.write_all(byte_slice)?;
         file.flush()?;

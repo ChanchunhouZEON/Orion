@@ -3,6 +3,18 @@
  * Licensed under the MIT License.
  */
 
+//! # Layout at a glance
+//!
+//! ```text
+//! memory: N padded i8 code rows + N i32 squared norms + quantization parameters
+//! file:   [32 B header][N rows at disk stride][N i32 squared norms]
+//! ```
+//!
+//! The header records N, D, disk stride, slope and offset. Memory stride can
+//! exceed disk stride to cover complete kernel blocks; extra bytes are zero.
+//! Code and norm buffers are separate, so the stream can prefetch each array.
+//! The detailed format and kernel identity are described below.
+
 //! **L2 kernel-trick** quantized base: i8 storage + per-vertex
 //! squared L2 norm, designed to let `sdot` carry the per-hop distance
 //! compute while staying L2-rank-exact.
@@ -12,7 +24,7 @@
 //! The default L2-Q kernel ([`orion_ann_vector::L2U8Distance`]) computes
 //! `Σ(a-b)²` directly with `vabdq_u8 → vmull_u8 → vpadalq_u16`
 //! — about **14 SIMD ops per 32-byte chunk** (2 abd + 4 widening mul
-//! + 4 pairwise-add + 2 loads × 2 sides). Apple Silicon's `sdot`
+//! plus 4 pairwise-add + 2 loads × 2 sides). Apple Silicon's `sdot`
 //! instruction does 16 i8×i8 multiplies + a 4-way partial sum into
 //! `int32x4_t` in **one** op — **2 sdot ops per 32-byte chunk** is all
 //! the kernel does for inner-product compute.
@@ -65,7 +77,7 @@
 use crate::model::dataset::quantized_dataset::{
     QuantizedDataset, QuantizedDatasetShape, ResidentMemory,
 };
-use crate::model::dataset::rows::F32Rows;
+use crate::model::dataset::rows::Rows;
 use crate::model::dataset::validation::{self, CheckedRows};
 use orion_ann_diskann::common::AlignedBoxWithSlice;
 use rayon::prelude::*;
@@ -123,7 +135,7 @@ impl L2KTDataset {
     /// # Panics
     /// Panics on invalid input or allocation failure. Use [`Self::try_build_from`]
     /// to propagate a structured error at application boundaries.
-    pub fn build_from(dataset: &impl F32Rows) -> Self {
+    pub fn build_from(dataset: &impl Rows) -> Self {
         Self::try_build_from(dataset).expect("invalid sidecar input")
     }
 
@@ -132,13 +144,13 @@ impl L2KTDataset {
     /// # Errors
     /// Returns an error for invalid rows, unsupported dimensions, invalid fitted
     /// parameters, or allocation failure. Logical rows exclude SIMD padding.
-    pub fn try_build_from(dataset: &impl F32Rows) -> Result<Self> {
+    pub fn try_build_from(dataset: &impl Rows) -> Result<Self> {
         Self::try_build_from_with_storage(dataset, &Default::default())
     }
 
     /// Build/load into the selected private storage; layout and arithmetic are unchanged.
     pub fn try_build_from_with_storage(
-        dataset: &impl F32Rows,
+        dataset: &impl Rows,
         storage: &orion_ann_platform::region::RegionOptions,
     ) -> Result<Self> {
         let checked = CheckedRows::new(dataset, i32::MAX as usize / (128 * 128))?;
@@ -176,8 +188,8 @@ impl L2KTDataset {
             .par_chunks_mut(stride)
             .zip(norms_slice.par_iter_mut())
             .enumerate()
-            .for_each(|(vid, (out, norm_slot))| {
-                let f32_v = dataset.row(vid);
+            .for_each_init(Vec::new, |row_scratch, (vid, (out, norm_slot))| {
+                let f32_v = dataset.row_f32(vid, row_scratch);
                 let mut sum: i32 = 0;
                 for j in 0..dim {
                     let q = quantize_to_i8(&params, f32_v[j]);
@@ -227,8 +239,8 @@ impl L2KTDataset {
     pub fn query_norm_sq(&self, q_query_padded: &[i8]) -> i32 {
         let dim = self.dimension;
         let mut sum: i32 = 0;
-        for j in 0..dim {
-            let v = q_query_padded[j] as i32;
+        for &value in &q_query_padded[..dim] {
+            let v = value as i32;
             sum += v * v;
         }
         sum
@@ -345,7 +357,7 @@ impl L2KTDataset {
 
         // i32 norms_sq.
         let mut norms_sq = AlignedBoxWithSlice::<i32>::new_with_storage(num_vertices, 32, storage)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
+            .map_err(|e| std::io::Error::other(format!("{e:?}")))?;
         let norms_bytes = bytemuck::cast_slice_mut(norms_sq.as_mut_slice());
         r.read_exact(norms_bytes)?;
 
@@ -389,6 +401,77 @@ impl std::fmt::Debug for L2KTDataset {
             .field("num_vertices", &self.num_vertices)
             .field("stride", &self.stride)
             .finish_non_exhaustive()
+    }
+}
+
+impl L2KTDataset {
+    /// Read-only access to the sidecar dimension.
+    #[inline]
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+    /// Read-only access to the sidecar data.
+    #[inline]
+    pub fn data(&self) -> &[i8] {
+        self.data.as_slice()
+    }
+    /// Read-only access to the sidecar norms sq.
+    #[inline]
+    pub fn norms_sq(&self) -> &[i32] {
+        self.norms_sq.as_slice()
+    }
+    /// Read-only access to the sidecar num vertices.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.num_vertices
+    }
+    /// Whether this sidecar contains no rows.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.num_vertices == 0
+    }
+    /// Read-only access to the sidecar params.
+    #[inline]
+    pub fn params(&self) -> &QuantParamsL2 {
+        &self.params
+    }
+}
+
+impl crate::model::dataset::quantized_dataset::sealed::Sealed for L2KTDataset {}
+impl QuantizedDataset for L2KTDataset {
+    type BuildOptions = ();
+    fn default_build_options() -> Self::BuildOptions {}
+    fn build(base: &impl Rows, _options: &Self::BuildOptions) -> Result<Self> {
+        Self::estimate_resident_memory(
+            QuantizedDatasetShape {
+                rows: base.len(),
+                dimension: base.dimension(),
+            },
+            _options,
+        )?;
+        Self::try_build_from(base)
+    }
+    fn estimate_resident_memory(
+        input_shape: QuantizedDatasetShape,
+        _options: &Self::BuildOptions,
+    ) -> Result<ResidentMemory> {
+        input_shape.validate()?;
+        orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::IpI8Distance>(
+            input_shape.dimension,
+        )?;
+        ResidentMemory::new(
+            validation::product(input_shape.rows, l2_kt_stride(input_shape.dimension))?,
+            validation::product(input_shape.rows, 4)?,
+            0,
+        )
+    }
+    fn resident_memory(&self) -> ResidentMemory {
+        ResidentMemory::new(
+            self.data.len(),
+            std::mem::size_of_val(self.norms_sq.as_slice()),
+            0,
+        )
+        .expect("validated resident allocation sizes")
     }
 }
 
@@ -480,78 +563,5 @@ mod tests {
             }
             assert_eq!(kt.norms_sq.as_slice()[vid], expected, "vid={vid}");
         }
-    }
-}
-
-impl L2KTDataset {
-    /// Read-only access to the sidecar dimension.
-    #[inline]
-    pub fn dimension(&self) -> usize {
-        self.dimension
-    }
-    /// Read-only access to the sidecar data.
-    #[inline]
-    pub fn data(&self) -> &[i8] {
-        self.data.as_slice()
-    }
-    /// Read-only access to the sidecar norms sq.
-    #[inline]
-    pub fn norms_sq(&self) -> &[i32] {
-        self.norms_sq.as_slice()
-    }
-    /// Read-only access to the sidecar num vertices.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.num_vertices
-    }
-    /// Whether this sidecar contains no rows.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.num_vertices == 0
-    }
-    /// Read-only access to the sidecar params.
-    #[inline]
-    pub fn params(&self) -> &QuantParamsL2 {
-        &self.params
-    }
-}
-
-impl crate::model::dataset::quantized_dataset::sealed::Sealed for L2KTDataset {}
-impl QuantizedDataset for L2KTDataset {
-    type BuildOptions = ();
-    fn default_build_options() -> Self::BuildOptions {
-        ()
-    }
-    fn build(base: &impl F32Rows, _options: &Self::BuildOptions) -> Result<Self> {
-        Self::estimate_resident_memory(
-            QuantizedDatasetShape {
-                rows: base.len(),
-                dimension: base.dimension(),
-            },
-            _options,
-        )?;
-        Self::try_build_from(base)
-    }
-    fn estimate_resident_memory(
-        input_shape: QuantizedDatasetShape,
-        _options: &Self::BuildOptions,
-    ) -> Result<ResidentMemory> {
-        input_shape.validate()?;
-        orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::IpI8Distance>(
-            input_shape.dimension,
-        )?;
-        ResidentMemory::new(
-            validation::product(input_shape.rows, l2_kt_stride(input_shape.dimension))?,
-            validation::product(input_shape.rows, 4)?,
-            0,
-        )
-    }
-    fn resident_memory(&self) -> ResidentMemory {
-        ResidentMemory::new(
-            self.data.len(),
-            std::mem::size_of_val(self.norms_sq.as_slice()),
-            0,
-        )
-        .expect("validated resident allocation sizes")
     }
 }

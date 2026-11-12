@@ -339,3 +339,44 @@ impl DistanceKernelBackend for L2F32Distance {
         }
     }
 }
+
+// Unsigned byte products widen before accumulation. No signed-byte reinterpretation
+// or saturating pairwise multiply; high-dimensional rows retain their full sum.
+pub struct IpU8Distance;
+impl DistanceKernelBackend for IpU8Distance {
+    type Storage = u8;
+    type Acc = uint64x2_t;
+    const CHUNK_BYTES: usize = 32;
+    const MAX_COORDINATES: usize = if usize::BITS < 64 {
+        usize::MAX
+    } else {
+        (u64::MAX / 65025) as usize
+    };
+    #[inline(always)]
+    fn init() -> Self::Acc {
+        unsafe { vdupq_n_u64(0) }
+    }
+    #[inline(always)]
+    unsafe fn step(acc: &mut Self::Acc, a: *const u8, b: *const u8) {
+        for offset in [0, 16] {
+            let x = vld1q_u8(a.add(offset));
+            let y = vld1q_u8(b.add(offset));
+            let lo = vmull_u8(vget_low_u8(x), vget_low_u8(y));
+            let hi = vmull_u8(vget_high_u8(x), vget_high_u8(y));
+            *acc = vaddq_u64(
+                *acc,
+                vpaddlq_u32(vaddq_u32(vpaddlq_u16(lo), vpaddlq_u16(hi))),
+            );
+        }
+    }
+    #[inline(always)]
+    fn reduce(acc: Self::Acc) -> f32 {
+        unsafe { -(vaddvq_u64(acc) as f32) }
+    }
+    #[inline(always)]
+    fn merge(into: &mut Self::Acc, src: Self::Acc) {
+        unsafe {
+            *into = vaddq_u64(*into, src);
+        }
+    }
+}

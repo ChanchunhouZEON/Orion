@@ -312,3 +312,41 @@ impl DistanceKernelBackend for L2F32Distance {
         unsafe { *into = _mm512_add_ps(*into, src) }
     }
 }
+
+// Unsigned byte products widen before accumulation. No signed-byte reinterpretation
+// or saturating pairwise multiply; high-dimensional rows retain their full sum.
+pub struct IpU8Distance;
+impl DistanceKernelBackend for IpU8Distance {
+    type Storage = u8;
+    type Acc = __m512i;
+    const CHUNK_BYTES: usize = 64;
+    const MAX_COORDINATES: usize = if usize::BITS < 64 {
+        usize::MAX
+    } else {
+        (u64::MAX / 65025) as usize
+    };
+    #[inline(always)]
+    fn init() -> Self::Acc {
+        unsafe { _mm512_setzero_si512() }
+    }
+    #[inline(always)]
+    unsafe fn step(acc: &mut Self::Acc, a: *const u8, b: *const u8) {
+        for offset in [0, 32] {
+            let x = _mm512_cvtepu8_epi16(_mm256_loadu_si256(a.add(offset).cast()));
+            let y = _mm512_cvtepu8_epi16(_mm256_loadu_si256(b.add(offset).cast()));
+            let p = _mm512_madd_epi16(x, y);
+            *acc = _mm512_add_epi64(*acc, _mm512_cvtepu32_epi64(_mm512_castsi512_si256(p)));
+            *acc = _mm512_add_epi64(*acc, _mm512_cvtepu32_epi64(_mm512_extracti64x4_epi64(p, 1)));
+        }
+    }
+    #[inline(always)]
+    fn reduce(acc: Self::Acc) -> f32 {
+        unsafe { -(_mm512_reduce_add_epi64(acc) as u64 as f32) }
+    }
+    #[inline(always)]
+    fn merge(into: &mut Self::Acc, src: Self::Acc) {
+        unsafe {
+            *into = _mm512_add_epi64(*into, src);
+        }
+    }
+}

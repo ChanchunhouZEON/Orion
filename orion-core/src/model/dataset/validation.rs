@@ -4,7 +4,7 @@
  */
 
 //! Cold-path validation shared by sidecar constructors and cache readers.
-use super::rows::F32Rows;
+use super::rows::Rows;
 use crate::{Error, Result};
 
 pub(super) fn product(a: usize, b: usize) -> Result<usize> {
@@ -71,7 +71,7 @@ pub(super) fn finite(values: &[f32], nonnegative: bool) -> Result<()> {
 }
 
 /// Borrow rows, validate their shape and coordinates, and cache the fitted range.
-/// This does not trust an externally implemented `F32Rows::range` override.
+/// This does not trust an externally implemented `Rows::range` override.
 /// It replaces the range scan already required by affine quantizers.
 pub(super) struct CheckedRows<'a, D> {
     data: &'a D,
@@ -79,15 +79,16 @@ pub(super) struct CheckedRows<'a, D> {
     rows: usize,
     range: (f32, f32),
 }
-impl<'a, D: F32Rows> CheckedRows<'a, D> {
+impl<'a, D: Rows> CheckedRows<'a, D> {
     pub(super) fn new(data: &'a D, max_dimension: usize) -> Result<Self> {
         let dimension = data.dimension();
         let rows = data.len();
         shape(rows, dimension, max_dimension)?;
         let mut min = f32::INFINITY;
         let mut max = f32::NEG_INFINITY;
+        let mut scratch = Vec::new();
         for id in 0..rows {
-            let row = data.row(id);
+            let row = data.row_f32(id, &mut scratch);
             if row.len() != dimension {
                 return Err(
                     Error::dimension("sidecar row", dimension, row.len()).with_detail("row", id)
@@ -112,18 +113,26 @@ impl<'a, D: F32Rows> CheckedRows<'a, D> {
         })
     }
 }
-impl<D: F32Rows> F32Rows for CheckedRows<'_, D> {
+impl<D: Rows> Rows for CheckedRows<'_, D> {
     fn dimension(&self) -> usize {
         self.dimension
     }
     fn len(&self) -> usize {
         self.rows
     }
+    fn copy_row_f32(&self, id: usize, output: &mut Vec<f32>) {
+        self.data.copy_row_f32(id, output);
+        assert_eq!(
+            output.len(),
+            self.dimension,
+            "row provider changed shape during construction"
+        );
+    }
     fn range(&self) -> (f32, f32) {
         self.range
     }
-    fn row(&self, id: usize) -> &[f32] {
-        let row = self.data.row(id);
+    fn row_f32<'a>(&'a self, id: usize, scratch: &'a mut Vec<f32>) -> &'a [f32] {
+        let row = self.data.row_f32(id, scratch);
         // A custom row provider can change between calls. Never let a shorter
         // second row reach raw SIMD code, even after the initial validation.
         assert_eq!(

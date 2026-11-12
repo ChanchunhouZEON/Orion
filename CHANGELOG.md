@@ -13,7 +13,56 @@ unreleased development baseline, not a dated release announcement.
 
 ## Unreleased
 
+### Typed query preparation
+
+- Decouple query coordinates from base storage: borrowed Rust queries and NumPy
+  batches accept f32, u8, i8, u16 and u32 for both f32 and native-u8 indexes.
+- Share typed transport across search, calibration, filtered search and tracing;
+  prepare conversions and normalization per row while retaining original values
+  for exact scoring. Compatible rows reuse existing SIMD streams; mixed or wide
+  exact queries use wider arithmetic without narrowing to the base type.
+- Add borrowed `calibrate_batch` / `calibrate_many_batches` and typed query file
+  decoding (`i8bin`, `u16bin`, `u32bin`) for CLI and Python. Existing f32 calibration
+  convenience methods and persisted base/index formats remain available.
+
+### Core organization and shared execution
+
+- Group graph construction and experimental suppliers under `build`; replace
+  `algorithm` and `compressed_index` directories with responsibility-based
+  `build`, `index`, `search` and `model` modules.
+- Preserve benchmark analysis under `search::diagnostics::analysis`; keep index
+  ownership separate from sidecar storage, query plans and adaptive calibration.
+- Share validation, query/session lifetime, batch scheduling, traversal and result
+  assembly across quantized f32 and native-u8 identity admission. Preserve SIMD,
+  prefetch, exact score conventions, graph partitions and persisted formats.
+- Prepare byte transport directly in the final padded query and keep cosine norm
+  preparation behind input validation. Add representation/observer/score parity
+  and failure-recovery regression tests.
+
+
+- Make cosine cascade dispatch explicit with `cosine-i8`, `cosine-i16`,
+  `pq-cosine`, and `cosine-f32`; distinguish raw-IP arms (`ip-i8`/`ip-i16`)
+  and reject metric mismatches. Reuse existing codes, SIMD and prefetch paths.
+  Preflight explains normalization, admission arithmetic and result scores.
+  Explicit cosine configurations using IP stage names must select cosine names;
+  resolved recipe signatures now reflect the distinct semantic arms.
+
 ### Added
+
+- Native-u8 inner-product and cosine search, calibration and original-metric
+  scores across Rust, Python and CLI, including ParlayANN and supplier graphs.
+  Cosine squared norms use u32 through 66,051 dimensions and u64 above it,
+  with allocation budgets, mmap lifecycle and verified snapshot persistence.
+  Unsigned dot kernels reuse runtime SIMD dispatch and existing prefetch scheduling.
+
+- Default-disabled `experimental-graph` supplier API: named partition provenance,
+  validated streaming local/remote/extra imports, and portable STAG v4 read/write.
+  The importer preserves entry and neighbor order; legacy v3 has an explicit
+  metadata adapter. No search SIMD or prefetch changes.
+- Shared Rust/Python/CLI supplier import with allocation planning, mmap support,
+  content-addressed graph publication, and ordinary snapshots that reopen without
+  the supplier feature. Tests cover structural failures, atomic publication,
+  source cleanup, feature-disabled restoration and cross-interface results.
 
 - Versioned label membership with atomic batch publication, optimistic revision
   checks, immutable query views and rollback on validation/conflict failures.

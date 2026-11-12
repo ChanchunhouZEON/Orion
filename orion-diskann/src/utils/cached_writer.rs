@@ -24,14 +24,11 @@ impl CachedWriter {
         let writer = OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(false)
             .open(Path::new(filename))?;
 
         if cache_size == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Cache size must be greater than 0",
-            )
-            .into());
+            return Err(std::io::Error::other("Cache size must be greater than 0").into());
         }
 
         Ok(Self {

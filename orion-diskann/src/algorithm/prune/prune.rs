@@ -69,7 +69,7 @@ where
                 }
                 occlude_factor[i] = f32::MAX;
 
-                if delete_set_ptr.map_or(true, |delete_set| !delete_set.contains(&neighbor.id))
+                if delete_set_ptr.is_none_or(|delete_set| !delete_set.contains(&neighbor.id))
                     && neighbor.id != location
                 {
                     result.push(neighbor.id);
@@ -109,12 +109,11 @@ where
 
         // Flush (distance_bits, pruned_id) pairs to slab[location].
         #[cfg(feature = "orion")]
-        if !scratch.candidate_buffer.is_empty() {
-            if let Some(ref slab) = self.candidate_sets {
-                if (location as usize) < slab.num_anchors() {
-                    slab.atomic_append_pairs(location as usize, &scratch.candidate_buffer);
-                }
-            }
+        if !scratch.candidate_buffer.is_empty()
+            && let Some(ref slab) = self.candidate_sets
+            && (location as usize) < slab.num_anchors()
+        {
+            slab.atomic_append_pairs(location as usize, &scratch.candidate_buffer);
         }
 
         Ok(())

@@ -15,6 +15,7 @@ include = ["src/**", "tests/**", "examples/**", "Cargo.toml", "README.md", "LICE
 edition = "2021"
 
 [features]
+experimental-graph = ["orion-ann-core/experimental-graph"]
 file-queries = []
 benchmark = ["cli", "orion-ann-core/benchmark"]
 default = ["parlay"]

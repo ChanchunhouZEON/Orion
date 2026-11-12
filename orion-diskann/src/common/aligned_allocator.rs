@@ -121,7 +121,7 @@ impl<T> AlignedBoxWithSlice<T> {
         if slice_len == 0
             || range.start > range.end
             || range.end > self.len
-            || range.len() % slice_len != 0
+            || !range.len().is_multiple_of(slice_len)
         {
             return Err(ANNError::log_index_error(format!(
                 "invalid slice range {range:?}, chunk length {slice_len}, allocation length {}",

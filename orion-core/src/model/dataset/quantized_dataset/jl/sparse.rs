@@ -3,6 +3,19 @@
  * Licensed under the MIT License.
  */
 
+//! # Layout at a glance
+//!
+//! ```text
+//! memory: N padded bit-signature rows + BITS * NZ u32 projection indices
+//!         MIPS additionally stores N f32 norms
+//! file:   [40 B header][projection indices][N rows at disk stride][MIPS norms]
+//! ```
+//!
+//! Each signature packs bit i into the low-to-high bits of its byte. Disk
+//! stride is `ceil(BITS / 8)` rounded to 16 B; memory additionally rounds to
+//! complete Hamming-kernel blocks. Projection indices are shared by all rows,
+//! not duplicated per vector. The L2 and MIPS codecs have different magic values.
+
 //! Johnson-Lindenstrauss sparse-projection binary signature for
 //! ultra-cheap pre-filter distance compute in the L2 search cascade.
 //!
@@ -53,7 +66,7 @@ use crate::Result;
 use crate::model::dataset::quantized_dataset::{
     QuantizedDataset, QuantizedDatasetShape, ResidentMemory,
 };
-use crate::model::dataset::rows::F32Rows;
+use crate::model::dataset::rows::Rows;
 use crate::model::dataset::validation::{self, CheckedRows};
 use orion_ann_diskann::common::AlignedBoxWithSlice;
 use rayon::prelude::*;
@@ -116,7 +129,7 @@ pub const fn jl_sparse_stride(bits: usize) -> usize {
 }
 
 pub const fn jl_sparse_stride_disk(bits: usize) -> usize {
-    let raw = (bits + 7) / 8;
+    let raw = bits.div_ceil(8);
     (raw + 15) & !15
 }
 
@@ -154,7 +167,7 @@ impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
     /// # Panics
     /// Panics on invalid input or allocation failure. Use [`Self::try_build_from`]
     /// to propagate a structured error at application boundaries.
-    pub fn build_from(dataset: &impl F32Rows, seed: u64) -> Self {
+    pub fn build_from(dataset: &impl Rows, seed: u64) -> Self {
         Self::try_build_from(dataset, seed).expect("invalid sidecar input")
     }
 
@@ -163,13 +176,13 @@ impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
     /// # Errors
     /// Returns an error for invalid rows, unsupported dimensions, invalid fitted
     /// parameters, or allocation failure. Logical rows exclude SIMD padding.
-    pub fn try_build_from(dataset: &impl F32Rows, seed: u64) -> Result<Self> {
+    pub fn try_build_from(dataset: &impl Rows, seed: u64) -> Result<Self> {
         Self::try_build_from_with_storage(dataset, seed, &Default::default())
     }
 
     /// Build/load into the selected private storage; layout and arithmetic are unchanged.
     pub fn try_build_from_with_storage(
-        dataset: &impl F32Rows,
+        dataset: &impl Rows,
         seed: u64,
         storage: &orion_ann_platform::region::RegionOptions,
     ) -> Result<Self> {
@@ -196,7 +209,7 @@ impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
         let total_slots = validation::product(BITS, NZ)?;
         if BITS == 0
             || BITS > u32::MAX as usize
-            || BITS % 8 != 0
+            || !BITS.is_multiple_of(8)
             || NZ == 0
             || NZ > u32::MAX as usize
         {
@@ -236,8 +249,8 @@ impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
         codes_slice
             .par_chunks_mut(stride)
             .enumerate()
-            .for_each(|(vid, code)| {
-                let x = dataset.row(vid);
+            .for_each_init(Vec::new, |row_scratch, (vid, code)| {
+                let x = dataset.row_f32(vid, row_scratch);
                 encode_vertex_scalar::<BITS, NZ>(x, &indices, code);
             });
 
@@ -380,7 +393,7 @@ impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
         let slots = validation::product(BITS, NZ)?;
         if BITS == 0
             || BITS > u32::MAX as usize
-            || BITS % 8 != 0
+            || !BITS.is_multiple_of(8)
             || NZ == 0
             || NZ > u32::MAX as usize
         {
@@ -492,7 +505,7 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
     /// # Panics
     /// Panics on invalid input or allocation failure. Use [`Self::try_build_from`]
     /// to propagate a structured error at application boundaries.
-    pub fn build_from(dataset: &impl F32Rows, seed: u64) -> Self {
+    pub fn build_from(dataset: &impl Rows, seed: u64) -> Self {
         Self::try_build_from(dataset, seed).expect("invalid sidecar input")
     }
 
@@ -501,13 +514,13 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
     /// # Errors
     /// Returns an error for invalid rows, unsupported dimensions, invalid fitted
     /// parameters, or allocation failure. Logical rows exclude SIMD padding.
-    pub fn try_build_from(dataset: &impl F32Rows, seed: u64) -> Result<Self> {
+    pub fn try_build_from(dataset: &impl Rows, seed: u64) -> Result<Self> {
         Self::try_build_from_with_storage(dataset, seed, &Default::default())
     }
 
     /// Build/load into the selected private storage; layout and arithmetic are unchanged.
     pub fn try_build_from_with_storage(
-        dataset: &impl F32Rows,
+        dataset: &impl Rows,
         seed: u64,
         storage: &orion_ann_platform::region::RegionOptions,
     ) -> Result<Self> {
@@ -523,7 +536,7 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
         let total_slots = validation::product(BITS, NZ)?;
         if BITS == 0
             || BITS > u32::MAX as usize
-            || BITS % 8 != 0
+            || !BITS.is_multiple_of(8)
             || NZ == 0
             || NZ > u32::MAX as usize
         {
@@ -565,8 +578,8 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
             .par_chunks_mut(stride)
             .zip(norms_slice.par_iter_mut())
             .enumerate()
-            .for_each(|(vid, (code, norm_slot))| {
-                let x = dataset.row(vid);
+            .for_each_init(Vec::new, |row_scratch, (vid, (code, norm_slot))| {
+                let x = dataset.row_f32(vid, row_scratch);
                 encode_vertex_scalar::<BITS, NZ>(x, &indices, code);
                 let mut s = 0.0f64;
                 for &v in x {
@@ -711,7 +724,7 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
         let slots = validation::product(BITS, NZ)?;
         if BITS == 0
             || BITS > u32::MAX as usize
-            || BITS % 8 != 0
+            || !BITS.is_multiple_of(8)
             || NZ == 0
             || NZ > u32::MAX as usize
         {
@@ -744,7 +757,7 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
         )?;
 
         let mut norms = AlignedBoxWithSlice::<f32>::new_with_storage(num_vertices, 32, storage)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e:?}")))?;
+            .map_err(|e| std::io::Error::other(format!("{e:?}")))?;
         let norm_bytes = bytemuck::cast_slice_mut(norms.as_mut_slice());
         r.read_exact(norm_bytes)?;
 
@@ -775,7 +788,7 @@ pub fn hamming_dispatch(p: &[u8], q: &[u8]) -> u32 {
         "Hamming distance exceeds u32"
     );
     // SIMD kernels consume complete 16-byte blocks; retain every tail bit.
-    if p.len() % 16 != 0 {
+    if !p.len().is_multiple_of(16) {
         return hamming_scalar(p, q);
     }
     // Miri does not implement NEON pairwise widening. Validate this safe
@@ -994,6 +1007,167 @@ impl<const BITS: usize, const NZ: usize> std::fmt::Debug for JLSparseDatasetMips
     }
 }
 
+impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
+    /// Read-only access to the sidecar dimension.
+    #[inline]
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+    /// Read-only access to the sidecar codes.
+    #[inline]
+    pub fn codes(&self) -> &[u8] {
+        self.codes.as_slice()
+    }
+    /// Read-only access to the sidecar indices.
+    #[inline]
+    pub fn indices(&self) -> &[u32] {
+        &self.indices
+    }
+    /// Read-only access to the sidecar num vertices.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.num_vertices
+    }
+    /// Whether this sidecar contains no rows.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.num_vertices == 0
+    }
+    /// Read-only access to the sidecar seed.
+    #[inline]
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+}
+
+impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
+    /// Read-only access to the sidecar dimension.
+    #[inline]
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+    /// Read-only access to the sidecar codes.
+    #[inline]
+    pub fn codes(&self) -> &[u8] {
+        self.codes.as_slice()
+    }
+    /// Read-only access to the sidecar indices.
+    #[inline]
+    pub fn indices(&self) -> &[u32] {
+        &self.indices
+    }
+    /// Read-only access to the sidecar norms.
+    #[inline]
+    pub fn norms(&self) -> &[f32] {
+        self.norms.as_slice()
+    }
+    /// Read-only access to the sidecar num vertices.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.num_vertices
+    }
+    /// Whether this sidecar contains no rows.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.num_vertices == 0
+    }
+    /// Read-only access to the sidecar seed.
+    #[inline]
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+}
+
+impl<const BITS: usize, const NZ: usize> crate::model::dataset::quantized_dataset::sealed::Sealed
+    for JLSparseDataset<BITS, NZ>
+{
+}
+impl<const BITS: usize, const NZ: usize> QuantizedDataset for JLSparseDataset<BITS, NZ> {
+    type BuildOptions = u64;
+    fn default_build_options() -> Self::BuildOptions {
+        JL_SPARSE_MAGIC as u64
+    }
+    fn build(base: &impl Rows, options: &Self::BuildOptions) -> Result<Self> {
+        Self::estimate_resident_memory(
+            QuantizedDatasetShape {
+                rows: base.len(),
+                dimension: base.dimension(),
+            },
+            options,
+        )?;
+        Self::try_build_from(base, *options)
+    }
+    fn estimate_resident_memory(
+        input_shape: QuantizedDatasetShape,
+        _options: &Self::BuildOptions,
+    ) -> Result<ResidentMemory> {
+        input_shape.validate()?;
+        if BITS == 0
+            || !BITS.is_multiple_of(8)
+            || BITS > u32::MAX as usize
+            || NZ == 0
+            || NZ > u32::MAX as usize
+        {
+            return Err(crate::Error::invalid_argument(
+                "invalid JL bit count or sparsity",
+            ));
+        }
+        ResidentMemory::new(
+            validation::product(input_shape.rows, jl_sparse_stride(BITS))?,
+            0,
+            validation::product(validation::product(BITS, NZ)?, 4)?,
+        )
+    }
+    fn resident_memory(&self) -> ResidentMemory {
+        ResidentMemory::new(self.codes.len(), 0, self.indices.len() * 4)
+            .expect("validated resident allocation sizes")
+    }
+}
+
+impl<const BITS: usize, const NZ: usize> crate::model::dataset::quantized_dataset::sealed::Sealed
+    for JLSparseDatasetMips<BITS, NZ>
+{
+}
+impl<const BITS: usize, const NZ: usize> QuantizedDataset for JLSparseDatasetMips<BITS, NZ> {
+    type BuildOptions = u64;
+    fn default_build_options() -> Self::BuildOptions {
+        JL_SPARSE_MAGIC as u64
+    }
+    fn build(base: &impl Rows, options: &Self::BuildOptions) -> Result<Self> {
+        Self::estimate_resident_memory(
+            QuantizedDatasetShape {
+                rows: base.len(),
+                dimension: base.dimension(),
+            },
+            options,
+        )?;
+        Self::try_build_from(base, *options)
+    }
+    fn estimate_resident_memory(
+        input_shape: QuantizedDatasetShape,
+        options: &Self::BuildOptions,
+    ) -> Result<ResidentMemory> {
+        input_shape.validate()?;
+        let l2 = <JLSparseDataset<BITS, NZ> as QuantizedDataset>::estimate_resident_memory(
+            input_shape,
+            options,
+        )?;
+        ResidentMemory::new(
+            l2.total_bytes(),
+            validation::product(input_shape.rows, 4)?,
+            0,
+        )
+    }
+    fn resident_memory(&self) -> ResidentMemory {
+        ResidentMemory::new(
+            self.codes.len(),
+            std::mem::size_of_val(self.norms.as_slice()),
+            self.indices.len() * 4,
+        )
+        .expect("validated resident allocation sizes")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1110,173 +1284,8 @@ mod tests {
     // test file doesn't depend on `rabitq_dataset`'s public xor/gauss
     // helpers (keeps the module self-contained).
     fn gaussian(rng: &mut XorShift64) -> f32 {
-        let u1 = ((rng.next_u64() >> 40) as f32 / ((1u32 << 24) as f32))
-            .max(1e-7)
-            .min(1.0 - 1e-7);
-        let u2 = ((rng.next_u64() >> 40) as f32 / ((1u32 << 24) as f32))
-            .max(1e-7)
-            .min(1.0 - 1e-7);
+        let u1 = ((rng.next_u64() >> 40) as f32 / ((1u32 << 24) as f32)).clamp(1e-7, 1.0 - 1e-7);
+        let u2 = ((rng.next_u64() >> 40) as f32 / ((1u32 << 24) as f32)).clamp(1e-7, 1.0 - 1e-7);
         (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
-    }
-}
-
-impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
-    /// Read-only access to the sidecar dimension.
-    #[inline]
-    pub fn dimension(&self) -> usize {
-        self.dimension
-    }
-    /// Read-only access to the sidecar codes.
-    #[inline]
-    pub fn codes(&self) -> &[u8] {
-        self.codes.as_slice()
-    }
-    /// Read-only access to the sidecar indices.
-    #[inline]
-    pub fn indices(&self) -> &[u32] {
-        &self.indices
-    }
-    /// Read-only access to the sidecar num vertices.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.num_vertices
-    }
-    /// Whether this sidecar contains no rows.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.num_vertices == 0
-    }
-    /// Read-only access to the sidecar seed.
-    #[inline]
-    pub fn seed(&self) -> u64 {
-        self.seed
-    }
-}
-
-impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
-    /// Read-only access to the sidecar dimension.
-    #[inline]
-    pub fn dimension(&self) -> usize {
-        self.dimension
-    }
-    /// Read-only access to the sidecar codes.
-    #[inline]
-    pub fn codes(&self) -> &[u8] {
-        self.codes.as_slice()
-    }
-    /// Read-only access to the sidecar indices.
-    #[inline]
-    pub fn indices(&self) -> &[u32] {
-        &self.indices
-    }
-    /// Read-only access to the sidecar norms.
-    #[inline]
-    pub fn norms(&self) -> &[f32] {
-        self.norms.as_slice()
-    }
-    /// Read-only access to the sidecar num vertices.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.num_vertices
-    }
-    /// Whether this sidecar contains no rows.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.num_vertices == 0
-    }
-    /// Read-only access to the sidecar seed.
-    #[inline]
-    pub fn seed(&self) -> u64 {
-        self.seed
-    }
-}
-
-impl<const BITS: usize, const NZ: usize> crate::model::dataset::quantized_dataset::sealed::Sealed
-    for JLSparseDataset<BITS, NZ>
-{
-}
-impl<const BITS: usize, const NZ: usize> QuantizedDataset for JLSparseDataset<BITS, NZ> {
-    type BuildOptions = u64;
-    fn default_build_options() -> Self::BuildOptions {
-        JL_SPARSE_MAGIC as u64
-    }
-    fn build(base: &impl F32Rows, options: &Self::BuildOptions) -> Result<Self> {
-        Self::estimate_resident_memory(
-            QuantizedDatasetShape {
-                rows: base.len(),
-                dimension: base.dimension(),
-            },
-            options,
-        )?;
-        Self::try_build_from(base, *options)
-    }
-    fn estimate_resident_memory(
-        input_shape: QuantizedDatasetShape,
-        _options: &Self::BuildOptions,
-    ) -> Result<ResidentMemory> {
-        input_shape.validate()?;
-        if BITS == 0
-            || BITS % 8 != 0
-            || BITS > u32::MAX as usize
-            || NZ == 0
-            || NZ > u32::MAX as usize
-        {
-            return Err(crate::Error::invalid_argument(
-                "invalid JL bit count or sparsity",
-            ));
-        }
-        ResidentMemory::new(
-            validation::product(input_shape.rows, jl_sparse_stride(BITS))?,
-            0,
-            validation::product(validation::product(BITS, NZ)?, 4)?,
-        )
-    }
-    fn resident_memory(&self) -> ResidentMemory {
-        ResidentMemory::new(self.codes.len(), 0, self.indices.len() * 4)
-            .expect("validated resident allocation sizes")
-    }
-}
-
-impl<const BITS: usize, const NZ: usize> crate::model::dataset::quantized_dataset::sealed::Sealed
-    for JLSparseDatasetMips<BITS, NZ>
-{
-}
-impl<const BITS: usize, const NZ: usize> QuantizedDataset for JLSparseDatasetMips<BITS, NZ> {
-    type BuildOptions = u64;
-    fn default_build_options() -> Self::BuildOptions {
-        JL_SPARSE_MAGIC as u64
-    }
-    fn build(base: &impl F32Rows, options: &Self::BuildOptions) -> Result<Self> {
-        Self::estimate_resident_memory(
-            QuantizedDatasetShape {
-                rows: base.len(),
-                dimension: base.dimension(),
-            },
-            options,
-        )?;
-        Self::try_build_from(base, *options)
-    }
-    fn estimate_resident_memory(
-        input_shape: QuantizedDatasetShape,
-        options: &Self::BuildOptions,
-    ) -> Result<ResidentMemory> {
-        input_shape.validate()?;
-        let l2 = <JLSparseDataset<BITS, NZ> as QuantizedDataset>::estimate_resident_memory(
-            input_shape,
-            options,
-        )?;
-        ResidentMemory::new(
-            l2.total_bytes(),
-            validation::product(input_shape.rows, 4)?,
-            0,
-        )
-    }
-    fn resident_memory(&self) -> ResidentMemory {
-        ResidentMemory::new(
-            self.codes.len(),
-            std::mem::size_of_val(self.norms.as_slice()),
-            self.indices.len() * 4,
-        )
-        .expect("validated resident allocation sizes")
     }
 }

@@ -127,6 +127,7 @@ pub fn open_file_to_write(file_name: &str) -> ANNResult<File> {
     Ok(OpenOptions::new()
         .write(true)
         .create(true)
+        .truncate(false)
         .open(Path::new(file_name))?)
 }
 

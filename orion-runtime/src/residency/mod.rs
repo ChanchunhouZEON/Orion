@@ -133,7 +133,15 @@ fn prepared<'a, D>(
             continue;
         }
         let (dataset, regions) = match r {
-            DatasetRequirement::Base => (DatasetPin::Base, vec![base]),
+            DatasetRequirement::Base => {
+                let mut regions = vec![base];
+                if let Some((norms, orion_ann_platform::region::Placement::Resident)) =
+                    index.native_norms_region()
+                {
+                    regions.push(norms);
+                }
+                (DatasetPin::Base, regions)
+            }
             DatasetRequirement::Sidecar(s) => (
                 DatasetPin::Quantized(s.kind()),
                 index.resident_sidecar_regions(s.kind())?,
@@ -269,7 +277,7 @@ fn pin_with<'a, D>(
 }
 
 /// Add graph storage to the same requirement-driven residency transaction.
-pub(crate) fn automatic_pin<'a, D: orion_ann_core::index::compressed_index::IndexData>(
+pub(crate) fn automatic_pin<'a, D: orion_ann_core::index::IndexData>(
     index: &'a CompressedIndex<D>,
     base: &'a [u8],
     shape: QuantizedDatasetShape,

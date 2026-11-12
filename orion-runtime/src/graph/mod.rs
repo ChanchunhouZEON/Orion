@@ -38,7 +38,7 @@ pub(crate) struct LoadedGraph<T: BaseElement> {
 /// Consumes the base allocation. Query and evaluation inputs are owned separately.
 /// Check the export path/header before transferring ownership of the allocation.
 /// The graph payload itself is validated later, during streaming import.
-#[cfg(feature = "cli")]
+#[cfg(any(feature = "benchmark", all(test, feature = "cli")))]
 pub fn load_index(config: &ResolvedRunConfig, data: &mut LoadedBase) -> Result<Orion> {
     let cache = CachePlan::resolve(config, data.num_points)?;
     #[cfg(feature = "benchmark")]
@@ -48,7 +48,7 @@ pub fn load_index(config: &ResolvedRunConfig, data: &mut LoadedBase) -> Result<O
     attach_working(prepare_f32(config, data, cache)?, config)
 }
 
-#[cfg(feature = "cli")]
+#[cfg(any(feature = "benchmark", all(test, feature = "cli")))]
 pub fn load_u8_index(config: &ResolvedRunConfig, data: &mut LoadedBase<u8>) -> Result<Orion<u8>> {
     let cache = CachePlan::resolve(config, data.num_points)?;
     #[cfg(feature = "benchmark")]
@@ -66,7 +66,7 @@ pub(crate) fn prepare_f32(
     load_index_impl(config, data, cache, |config, dataset| {
         let bytes = crate::preflight::graph_bytes(config, dataset.len())?;
         let storage = crate::placement::graph_options(config, &dataset, bytes)?;
-        Orion::<f32>::build_with_storage(dataset, config.build_config(), &storage)
+        Orion::<f32>::build_with_storage(dataset, config.build_config()?, &storage)
     })
 }
 
@@ -78,11 +78,11 @@ pub(crate) fn prepare_u8(
     load_index_impl(config, data, cache, |config, dataset| {
         let bytes = crate::preflight::graph_bytes(config, dataset.len())?;
         let storage = crate::placement::graph_options(config, &dataset, bytes)?;
-        Orion::<u8>::build_with_storage(dataset, config.build_config(), &storage)
+        Orion::<u8>::build_with_storage(dataset, config.build_config()?, &storage)
     })
 }
 
-#[cfg(feature = "cli")]
+#[cfg(any(feature = "benchmark", all(test, feature = "cli")))]
 fn attach_working<T: BaseElement>(
     mut graph: LoadedGraph<T>,
     _config: &ResolvedRunConfig,
@@ -258,8 +258,8 @@ mod large_input_tests {
             assert_eq!(index.dataset().as_slice().len(), 4 * 128);
             assert_eq!(&index.dataset().as_slice()[384..512], &[3; 128]);
             let result = index
-                .search_l2(
-                    &[0u8; 128],
+                .search(
+                    orion_ann_core::search::query::QueryInput::U8(&[0u8; 128]),
                     orion_ann_core::DynamicSearchConfig {
                         k: 1,
                         search_list_size: 4,
@@ -267,7 +267,16 @@ mod large_input_tests {
                         epsilon: 1.,
                         early_exit_limit: 100,
                     },
+                    orion_ann_core::DynamicCascade {
+                        prefilter: &orion_ann_core::search::cascade::stage::NoPrefilter,
+                        admission: &index
+                            .exact_stage(orion_ann_core::ScoreMetric::SquaredL2)
+                            .unwrap(),
+                        rerank: &orion_ann_core::search::cascade::stage::rerank::NoRerank,
+                    },
+                    None,
                 )
+                .map(|r| r.ids)
                 .unwrap();
             assert_eq!(result, vec![0]);
             if !reload {
@@ -275,11 +284,11 @@ mod large_input_tests {
             }
         }
         assert!(std::fs::read_dir(&directory).unwrap().all(|entry| {
-            !entry
+            entry
                 .unwrap()
                 .path()
                 .extension()
-                .is_some_and(|ext| ext == "qds")
+                .is_none_or(|ext| ext != "qds")
         }));
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -357,7 +366,7 @@ mod large_input_tests {
                 crate::search::cascade::AdmissionChoice::NativeL2U8,
             );
             assert!(
-                matches!(rejected, Err(error) if error.to_string().contains("requires a native u8 index"))
+                matches!(rejected, Err(error) if error.to_string().contains("requires u8 base storage"))
             );
         }
         for (i, (l, r, e)) in old.partitions.iter().enumerate() {

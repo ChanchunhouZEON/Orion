@@ -114,7 +114,7 @@ macro_rules! agreement {
                         let total: f64 = (0..dim)
                             .map(|i| ($term)(base[id as usize * count + i], query[i]))
                             .sum();
-                        (id, ($sign * total) as f32)
+                        (id, (if $sign < 0.0 { -total } else { total }) as f32)
                     })
                     .collect();
                 let base = Guarded::new(&base);
@@ -293,5 +293,47 @@ fn automatic_backend_is_supported_and_empty_stream_is_safe() {
             32,
         )
         .run(|_, _| panic!("empty sink"));
+    }
+}
+
+agreement!(
+    unsigned_ip_backends,
+    IpU8Distance,
+    run_ipu8distance,
+    u8,
+    |i: usize| [0, 255, 128, 1, 254, 23, 177][i % 7],
+    |a: u8, b: u8| a as f64 * b as f64,
+    -1.0,
+    0.0
+);
+
+#[test]
+fn unsigned_ip_wide_accumulators_do_not_wrap() {
+    // Cross both signed-32 and unsigned-32 limits, including a 32B tail.
+    for dim in [33024usize, 66051, 66052, 70001] {
+        let count = dim.div_ceil(32) * 32;
+        let mut bytes = vec![0u8; count];
+        bytes[..dim].fill(255);
+        let base = Guarded::new(&bytes);
+        let query = Guarded::new(&bytes);
+        for backend in backends() {
+            let mut actual = Vec::new();
+            unsafe {
+                let stream = DistanceStream::<scalar::IpU8Distance>::new(
+                    base.as_ptr(),
+                    count,
+                    count,
+                    query.as_ptr(),
+                    &[0, 0],
+                    32,
+                );
+                run_ipu8distance(stream, |id, d| actual.push((id, d)), backend);
+            }
+            assert_eq!(
+                actual,
+                vec![(0, -((dim as u64 * 65025) as f32)); 2],
+                "{backend:?}"
+            );
+        }
     }
 }

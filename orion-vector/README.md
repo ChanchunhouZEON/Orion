@@ -36,5 +36,5 @@ independent of SIMD chunk width. The four accumulator chains are retained;
 trigger positions specialize at compilation for each backend. A partial last
 line is accounted for after each vector, without carrying credits between
 random vertex IDs. Group/burst scheduling and near/far overlap remain separate.
-The low-level kernel trait is `DistanceKernelBackend`; `SearchBackend` belongs
-to the runtime's higher-level search interface.
+The low-level kernel trait is `DistanceKernelBackend`. Higher layers select
+cascade stages independently of coordinate storage and ISA dispatch.

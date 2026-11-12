@@ -6,7 +6,7 @@
 //! Sealed scalar quantization specifications, independent of dataset allocation.
 use super::validation;
 use crate::Result;
-use orion_ann_vector::{DistanceKernelBackend, IpI8Distance, IpI16Distance, L2U8Distance, Metric};
+use orion_ann_vector::{DistanceKernelBackend, IpI8Distance, IpI16Distance, L2U8Distance};
 
 // Storage, kernel and on-disk parameter layout must agree. Keep the set of
 // codecs closed; a downstream safe implementation must not weaken this contract.
@@ -45,9 +45,9 @@ pub trait QuantSpec: sealed::Sealed + 'static {
     /// Default prefetch lookahead (in elements) for the batch loop.
     /// Tuned per the MSHR-depth-vs-vertex-lines sweet spot.
     const PF_BATCH_DEFAULT: usize;
-    /// Truth-distance metric used by the f32 second stage in the
-    /// unified search path.
-    const METRIC: Metric;
+    /// Objective of the raw truth kernel: squared L2 or negative inner product.
+    /// Cosine normalization is an input-preparation contract, not a kernel step.
+    const METRIC: crate::CalibrationMetric;
 
     /// Build params from a flat `[f32]` slice (the f32 base
     /// dataset's value range / abs-max).
@@ -187,7 +187,7 @@ impl QuantSpec for L2U8 {
     const LABEL: &'static str = "u8/L2";
     const ALIGN_ELEMS: usize = 32; // 32 × 1 B = 32 B stride
     const PF_BATCH_DEFAULT: usize = 8;
-    const METRIC: Metric = Metric::L2;
+    const METRIC: crate::CalibrationMetric = crate::CalibrationMetric::SquaredL2;
 
     fn build_params(slice: &[f32]) -> Self::Params {
         let mut min_val = f32::INFINITY;
@@ -264,7 +264,7 @@ impl QuantSpec for L2U16 {
     const LABEL: &'static str = "u16/L2";
     const ALIGN_ELEMS: usize = 16; // 16 × 2 B = 32 B stride
     const PF_BATCH_DEFAULT: usize = 8;
-    const METRIC: Metric = Metric::L2;
+    const METRIC: crate::CalibrationMetric = crate::CalibrationMetric::SquaredL2;
 
     fn build_params(slice: &[f32]) -> Self::Params {
         let mut min_val = f32::INFINITY;
@@ -359,7 +359,7 @@ impl QuantSpec for MipsI8 {
     const LABEL: &'static str = "i8/MIPS";
     const ALIGN_ELEMS: usize = 32; // 32 × 1 B = 32 B stride
     const PF_BATCH_DEFAULT: usize = 4;
-    const METRIC: Metric = Metric::Cosine;
+    const METRIC: crate::CalibrationMetric = crate::CalibrationMetric::InnerProduct;
 
     fn build_params(slice: &[f32]) -> Self::Params {
         let mut abs_max = 0.0f32;
@@ -432,7 +432,7 @@ impl QuantSpec for MipsI16 {
     const LABEL: &'static str = "i16/MIPS";
     const ALIGN_ELEMS: usize = 16; // 16 × 2 B = 32 B stride
     const PF_BATCH_DEFAULT: usize = 4;
-    const METRIC: Metric = Metric::Cosine;
+    const METRIC: crate::CalibrationMetric = crate::CalibrationMetric::InnerProduct;
 
     fn build_params(slice: &[f32]) -> Self::Params {
         let mut abs_max = 0.0f32;

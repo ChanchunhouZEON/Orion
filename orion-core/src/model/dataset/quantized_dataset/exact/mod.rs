@@ -3,11 +3,22 @@
  * Licensed under the MIT License.
  */
 
+//! # Layout at a glance
+//!
+//! ```text
+//! base:  borrowed PaddedDataset<T>, N rows of [D coordinates | zero padding]
+//! query: borrowed PaddedDataset<T>, matching physical row layout
+//! ```
+//!
+//! Exact sessions borrow existing rows and do not own a quantized sidecar or
+//! file codec. The kernel determines arithmetic; the generic dataset determines
+//! storage. Native cosine additionally borrows the squared-norm auxiliary array.
+
 //! Identity representation: borrow the base and padded queries without a sidecar.
 //!
 //! Traversal owns validation and candidate queues; this session only computes
 //! exact distances using the same SIMD stream as the native-storage path.
-use crate::{algorithm::search::stage::AdmissionSession, model::Neighbor};
+use crate::{model::Neighbor, search::cascade::stage::AdmissionSession};
 use bytemuck::Pod;
 use orion_ann_diskann::model::PaddedDataset;
 use orion_ann_vector::DistanceKernelBackend;
@@ -72,3 +83,9 @@ unsafe impl<T: Pod + Send + Sync, K: DistanceKernelBackend<Storage = T>> Admissi
 
 #[cfg(feature = "benchmark")]
 pub(crate) mod reference;
+
+pub(crate) mod native;
+
+pub mod stage;
+
+mod mixed;

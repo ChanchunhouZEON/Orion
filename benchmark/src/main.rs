@@ -9,7 +9,6 @@ mod metrics;
 mod report;
 mod runner;
 #[allow(unused_imports)]
-#[allow(unused_imports)]
 use clap::Parser;
 use dataset::Dataset;
 use orion_ann::benchmark::utils;
@@ -1560,11 +1559,11 @@ fn run_ads_comparison(dataset: &Dataset, k: usize, overrides: &config::SweepOver
 }
 
 fn run_cliff_profile(dataset: &Dataset) {
-    use orion_ann_core::algorithm::analysis::{
+    use orion_ann_core::build_diskann_index;
+    use orion_ann_core::search::diagnostics::analysis::{
         annotate_bf_ranks, compute_cliff_stats, print_node_cliff_detail, summarize_cliff_ranks,
         summarize_cliff_stats,
     };
-    use orion_ann_core::build_diskann_index;
 
     let num_points = dataset.num_base();
     let dimension = dataset.dimension;
@@ -1746,7 +1745,7 @@ fn run_cliff_profile(dataset: &Dataset) {
     }
 
     // ── Phase 5: Rank-Precision Cliff ───────────────────────────────────
-    use orion_ann_core::algorithm::analysis::{
+    use orion_ann_core::search::diagnostics::analysis::{
         compute_rank_precision_profiles, sort_neighbors_by_distance, summarize_rank_precision,
     };
 
@@ -1784,7 +1783,7 @@ fn run_cliff_profile(dataset: &Dataset) {
 }
 
 fn run_neighbor_contribution_profile(dataset: &Dataset) {
-    use orion_ann_core::algorithm::search::adaptive::convergence::SearchConvergenceChecker;
+    use orion_ann_core::search::adaptive::convergence::SearchConvergenceChecker;
     use orion_ann_core::{build_diskann_index, StaticOrion};
     use orion_ann_diskann::model::{Neighbor as DNeighbor, Vertex};
     use orion_ann_vector::Metric;
@@ -2414,19 +2413,19 @@ fn run_calibration_diag(dataset: &Dataset, k: usize) {
 /// calibration**:
 ///
 ///   * `origin`        — cascade + convergence ON, **no extras + no
-///                       early-stop** (the bare-cascade reference).
-///                       This is NOT Microsoft Vamana — that headline
-///                       gain lives in the 3-engine sweep panel. Here
-///                       origin isolates "what does the cascade alone
-///                       achieve without either convergence-side
-///                       optimization?", so deltas vs `full`/`no_ee`/
-///                       `no_extra` cleanly attribute to each knob.
+///     early-stop** (the bare-cascade reference).
+///     This is NOT Microsoft Vamana — that headline
+///     gain lives in the 3-engine sweep panel. Here
+///     origin isolates "what does the cascade alone
+///     achieve without either convergence-side
+///     optimization?", so deltas vs `full`/`no_ee`/
+///     `no_extra` cleanly attribute to each knob.
 ///   * `no_extra`      — cascade + early-stop, **extras off**.
-///                       Isolates the marginal value of early-stop
-///                       on top of bare-cascade.
+///     Isolates the marginal value of early-stop
+///     on top of bare-cascade.
 ///   * `no_early_stop` — cascade + extras, **`ee = MAX`**.
-///                       Isolates the marginal value of extras on top
-///                       of bare-cascade.
+///     Isolates the marginal value of extras on top
+///     of bare-cascade.
 ///   * `full`          — cascade + early-stop + extras (production).
 ///
 /// Earlier versions of this ablation used Microsoft Vamana as origin
@@ -2650,7 +2649,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
             // This is the 2×2 factorial's bare reference point — deltas
             // to the other three attribute cleanly to (a) extras alone,
             // (b) early-stop alone, (c) the combined effect.
-            orion_ann_core::algorithm::search::set_include_extras(false);
+            orion_ann_core::search::set_include_extras(false);
             let origin_data = measure("origin (cascade-only)", &|q, sls| {
                 search_compose::<_>(
                     &idx,
@@ -2669,7 +2668,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
 
             // ── 1. Full ──
             // Default INCLUDE_EXTRAS=true; convergence + early-exit on.
-            orion_ann_core::algorithm::search::set_include_extras(true);
+            orion_ann_core::search::set_include_extras(true);
             let full_data = measure("full", &|q, sls| {
                 search_compose::<_>(
                     &idx,
@@ -2689,7 +2688,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
             // ── 2. No early-stop (convergence on, ee = MAX) ──
             // Convergence detection still fires; just doesn't terminate
             // the beam early. Extras still walked post-convergence.
-            orion_ann_core::algorithm::search::set_include_extras(true);
+            orion_ann_core::search::set_include_extras(true);
             let no_ee_data = measure("no-early-stop", &|q, sls| {
                 search_compose::<_>(
                     &idx,
@@ -2708,8 +2707,8 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
 
             // ── 3. No extra — same graph, post-convergence branch
             //     falls back to local+remote (see `INCLUDE_EXTRAS`
-            //     plumbing in `algorithm::search::mod`).
-            orion_ann_core::algorithm::search::set_include_extras(false);
+            //     plumbing in `search::mod`).
+            orion_ann_core::search::set_include_extras(false);
             let no_extra_data = measure("no-extra", &|q, sls| {
                 search_compose::<_>(
                     &idx,
@@ -2728,7 +2727,7 @@ fn run_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOverrides)
             // Restore default so any subsequent code (other dataset
             // dispatch arms, downstream tests in the same process)
             // gets production semantics.
-            orion_ann_core::algorithm::search::set_include_extras(true);
+            orion_ann_core::search::set_include_extras(true);
 
             // ── Summary table ──
             println!(
@@ -2976,7 +2975,8 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
             pool.install(|| {
                 match ocfg.admission {
                     crate::runner::cascade::AdmissionChoice::PqL2
-                    | crate::runner::cascade::AdmissionChoice::PqIp => {
+                    | crate::runner::cascade::AdmissionChoice::PqIp
+                    | crate::runner::cascade::AdmissionChoice::PqCosine => {
                         // Both ADC metrics share the same trained codes and codebook.
                         idx.try_ensure_quantized_dataset_pq()
                             .expect("prepare PQ admission sidecar");
@@ -2990,14 +2990,16 @@ fn run_cascade_ablation(dataset: &Dataset, k: usize, overrides: &config::SweepOv
                     crate::runner::cascade::AdmissionChoice::L2Kt => {
                         let _ = idx.ensure_quantized_dataset_l2_kt();
                     }
-                    crate::runner::cascade::AdmissionChoice::MipsI8 => {
+                    crate::runner::cascade::AdmissionChoice::IpI8 | crate::runner::cascade::AdmissionChoice::CosineI8 => {
                         let _ = idx.ensure_quantized_dataset_mips();
                     }
-                    crate::runner::cascade::AdmissionChoice::MipsI16 => {
+                    crate::runner::cascade::AdmissionChoice::IpI16 | crate::runner::cascade::AdmissionChoice::CosineI16 => {
                         let _ = idx.ensure_quantized_dataset_mips_i16();
                     }
                     crate::runner::cascade::AdmissionChoice::AdsF32
-                    | crate::runner::cascade::AdmissionChoice::NativeL2U8 => {}
+                    | crate::runner::cascade::AdmissionChoice::NativeL2U8
+                    | crate::runner::cascade::AdmissionChoice::NativeIpU8
+                    | crate::runner::cascade::AdmissionChoice::NativeCosineU8 => {}
                 }
                 match ocfg.prefilter {
                     PrefilterChoice::None => {}

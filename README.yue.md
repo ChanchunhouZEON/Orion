@@ -131,7 +131,7 @@ result = index.search(queries, k=10, search_list_size=100)
 print(result.ids[0, :result.counts[0]])
 ```
 
-需要正規化嘅嵌入向量可以用 `metric="cosine"`；原始內積就用 `metric="ip"`。接口接受 C 連續佈局嘅 `float32` 同 `uint8` 陣列，原生位元組輸入用 L2 度量。Python 接口會喺釋放 GIL 之前複製輸入；並行搜尋會共用已設定好嘅 Rust 執行緒池。
+需要正規化嘅嵌入向量可以用 `metric="cosine"`；原始內積就用 `metric="ip"`。Base 接受 C 連續佈局嘅 `float32` 或 `uint8` 陣列，兩者都支援平方 L2、內積同餘弦。Query 仲支援 `int8`、`uint16` 同 `uint32`，唔受 base 類型限制。Python 接口會喺釋放 GIL 之前複製輸入；並行搜尋會共用已設定好嘅 Rust 執行緒池。
 
 ### 讀取檔案，保存已校準嘅快照
 
@@ -148,16 +148,26 @@ result = restored.search("queries.fbin", k=10, search_list_size=100)
 快照係一份細小嘅 manifest：圖同 sidecar 存喺共享、按 SHA-256 定址嘅物件庫入面，開啟快照時會恢復校準狀態。請一齊保留 manifest、外部 base 數據同物件庫；快照本身唔包含 base 向量。Rust 亦提供相同嘅 `Index::save` / `Index::open` 工作流程。
 [持久化指南](orion-runtime/src/guide/cache.md) · [Python 指南](orion-py/README.md)。
 
+### 匯入自訂圖（實驗性）
+
+開啟預設關閉嘅 `experimental-graph` feature，就可以由記憶體或者 STAG 檔案匯入 supplier 命名嘅 `local / remote / extra` 分區。Orion 會檢查 ID、容量同跨分區重複邊，保留原本入口同鄰居次序，沿用現有搜尋引擎。預設建圖方式不變；匯入後用普通 `Index` 介面校準、搜尋同儲存，還原快照唔需要呢個 feature。
+
+```toml
+orion-ann = { path = "orion-runtime", features = ["experimental-graph"] }
+```
+
+[Import guide](orion-runtime/src/guide/supplier.md) · [Staged format](docs/supplier-staged.md)
+
 ## 支援範圍
 
 | 能力 | 目前支援 |
 |---|---|
 | 原生 CI 矩陣 | Linux、macOS × x86-64、ARM64；[驗證狀態](docs/platforms.md#native-ci-matrix) |
 | 接口 | Rust `Index`；Python 3.9+ / NumPy；獨立 CLI |
-| 距離度量 | f32 L2、餘弦同內積；原生 u8 L2 |
+| 距離度量 | f32 同原生 u8 都支援平方 L2、餘弦同內積 |
 | 維度 | 執行時維度，自動逐行 padding |
 | SIMD | 按 CPU 能力同每行嘅佈局，自動揀 scalar、NEON/dot-product、AVX2/FMA 或 AVX-512 |
-| 建圖 | 預設內置 ParlayANN 記憶體建圖；f32 Rust DiskANN 建圖；STAG 匯入 |
+| 建圖 | 預設內置 ParlayANN 記憶體建圖；f32 Rust DiskANN 建圖；STAG 匯入；實驗性第三方分區 supplier |
 | 輸入 | 連續 Rust 切片、NumPy 陣列、`fvecs`、`bvecs`、`fbin`、`u8bin`；CLI 查詢串流 |
 | 持久化 | 經 SHA-256 校驗嘅圖同 sidecar 物件，以及已校準快照 |
 | 錯誤處理 | Rust、Python、CLI 共用錯誤碼同詳細資料；Python 會將可以展開堆疊嘅 panic 轉成例外 |

@@ -11,6 +11,12 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 
+// Callers pass an already bounds-checked four-byte field. Decode the fixed
+// width directly, without a fallible slice-to-array conversion.
+fn read_u32_le(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
 /// Magic number for the ANNS mmap graph format: "ANNS" in little-endian.
 pub const MMAP_MAGIC: u32 = 0x414E4E53;
 /// Current format version.
@@ -114,7 +120,7 @@ impl MmapGraph {
         }
 
         // Parse header
-        let magic = u32::from_le_bytes(mmap[0..4].try_into().unwrap());
+        let magic = read_u32_le(&mmap[0..4]);
         if magic != MMAP_MAGIC {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -122,7 +128,7 @@ impl MmapGraph {
             ));
         }
 
-        let version = u32::from_le_bytes(mmap[4..8].try_into().unwrap());
+        let version = read_u32_le(&mmap[4..8]);
         if version != MMAP_VERSION {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -130,9 +136,9 @@ impl MmapGraph {
             ));
         }
 
-        let num_nodes = u32::from_le_bytes(mmap[8..12].try_into().unwrap());
-        let max_degree = u32::from_le_bytes(mmap[12..16].try_into().unwrap());
-        let dimension = u32::from_le_bytes(mmap[16..20].try_into().unwrap());
+        let num_nodes = read_u32_le(&mmap[8..12]);
+        let max_degree = read_u32_le(&mmap[12..16]);
+        let dimension = read_u32_le(&mmap[16..20]);
         let metric = mmap[20];
         let algorithm = AlgorithmId::try_from(mmap[21])?;
 
@@ -186,7 +192,7 @@ impl MmapGraph {
     pub fn neighbors(&self, node_id: u32) -> &[u32] {
         let stride = self.header.node_adj_stride();
         let base = self.adj_offset() + (node_id as usize) * stride;
-        let count = u32::from_le_bytes(self.mmap[base..base + 4].try_into().unwrap()) as usize;
+        let count = read_u32_le(&self.mmap[base..base + 4]) as usize;
         let count = count.min(self.header.max_degree as usize);
         let ptr = &self.mmap[base + 4..base + 4 + count * 4];
         // SAFETY: u32 is 4-byte aligned and the slice length is correct.
@@ -379,7 +385,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("bad_magic.anns");
 
-        std::fs::write(&path, &[0u8; 32]).unwrap();
+        std::fs::write(&path, [0u8; 32]).unwrap();
         assert!(MmapGraph::open(&path, 0).is_err());
 
         std::fs::remove_dir_all(&dir).ok();

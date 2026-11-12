@@ -4,11 +4,11 @@
  */
 
 use crate::{
-    data::{
-        query::{QuerySource, VectorReader},
-        VectorFormat,
-    },
     SearchMetric,
+    data::{
+        VectorFormat,
+        query::{QuerySource, VectorReader},
+    },
 };
 use std::io::{self, Cursor, Read};
 
@@ -48,8 +48,13 @@ fn all_formats_stream_in_partial_reads_and_preserve_batch_boundaries() {
                 }
             }
         }
-        let mut source =
-            VectorReader::new(Chunks(Cursor::new(encoded)), format, 2, SearchMetric::L2).unwrap();
+        let mut source = VectorReader::new(
+            Chunks(Cursor::new(encoded)),
+            format,
+            2,
+            SearchMetric::SquaredL2,
+        )
+        .unwrap();
         assert_eq!(source.dimension(), 2);
         assert_eq!(source.count_hint(), binary.then_some(3));
         let mut batch = vec![];
@@ -73,7 +78,7 @@ fn malformed_streams_fail_instead_of_silently_dropping_records() {
             Cursor::new([good.clone(), suffix].concat()),
             VectorFormat::Bvecs,
             2,
-            SearchMetric::L2,
+            SearchMetric::SquaredL2,
         )
         .unwrap();
         assert!(source.read_batch(&mut vec![], 8).is_err());
@@ -83,7 +88,7 @@ fn malformed_streams_fail_instead_of_silently_dropping_records() {
         Cursor::new([encoded, vec![1, 2, 3]].concat()),
         VectorFormat::U8bin,
         2,
-        SearchMetric::L2,
+        SearchMetric::SquaredL2,
     )
     .unwrap();
     assert!(source.read_batch(&mut vec![], 8).is_err());
@@ -105,7 +110,13 @@ fn query_headers_and_batch_sizes_fail_with_context() {
         ),
     ] {
         assert!(
-            VectorReader::new(Cursor::new(bytes), format, dimension, SearchMetric::L2).is_err()
+            VectorReader::new(
+                Cursor::new(bytes),
+                format,
+                dimension,
+                SearchMetric::SquaredL2
+            )
+            .is_err()
         );
     }
     let mut reader = VectorReader::new(
@@ -148,7 +159,7 @@ fn query_reader_retries_interruptions_but_propagates_io_errors() {
         },
         VectorFormat::Bvecs,
         1,
-        SearchMetric::L2,
+        SearchMetric::SquaredL2,
     )
     .unwrap();
     let mut result = vec![];
@@ -164,7 +175,7 @@ fn query_reader_retries_interruptions_but_propagates_io_errors() {
         }
     }
     assert!(
-        VectorReader::new(Broken, VectorFormat::Bvecs, 1, SearchMetric::L2)
+        VectorReader::new(Broken, VectorFormat::Bvecs, 1, SearchMetric::SquaredL2)
             .unwrap_err()
             .to_string()
             .contains("denied test input")
@@ -175,9 +186,13 @@ fn query_reader_retries_interruptions_but_propagates_io_errors() {
 fn query_reader_rejects_non_finite_values_and_trailing_records() {
     for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let input = [1u32.to_le_bytes(), value.to_le_bytes()].concat();
-        let mut reader =
-            VectorReader::new(Cursor::new(input), VectorFormat::Fvecs, 1, SearchMetric::L2)
-                .unwrap();
+        let mut reader = VectorReader::new(
+            Cursor::new(input),
+            VectorFormat::Fvecs,
+            1,
+            SearchMetric::SquaredL2,
+        )
+        .unwrap();
         assert!(reader.read_batch(&mut vec![], 1).is_err());
     }
     let input = [
@@ -186,8 +201,13 @@ fn query_reader_rejects_non_finite_values_and_trailing_records() {
         &[7, 0, 0, 0, 0],
     ]
     .concat();
-    let mut reader =
-        VectorReader::new(Cursor::new(input), VectorFormat::U8bin, 1, SearchMetric::L2).unwrap();
+    let mut reader = VectorReader::new(
+        Cursor::new(input),
+        VectorFormat::U8bin,
+        1,
+        SearchMetric::SquaredL2,
+    )
+    .unwrap();
     assert!(reader.read_batch(&mut vec![], 8).is_err());
 }
 
@@ -218,8 +238,8 @@ fn ground_truth_truncates_to_k_and_validates_every_id_and_width() {
 #[cfg(feature = "file-queries")]
 #[test]
 fn file_queries_cross_decode_batches_and_validate_format_policy() {
-    use crate::data::query::read_query_file;
     use crate::VectorStorageKind;
+    use crate::data::query::read_query_file;
     let path = std::env::temp_dir().join(format!("orion-query-file-{}.bvecs", std::process::id()));
     let mut bytes = vec![];
     let mut expected = vec![];
@@ -242,11 +262,76 @@ fn file_queries_cross_decode_batches_and_validate_format_policy() {
     assert!(read_query_file(&path, None, 3, VectorStorageKind::F32).is_err());
     std::fs::remove_file(&path).unwrap();
     assert!(read_query_file(&path, None, 2, VectorStorageKind::U8).is_err());
-    assert!(read_query_file(
-        &path.with_extension("unknown"),
-        None,
-        2,
-        VectorStorageKind::F32
-    )
-    .is_err());
+    assert!(
+        read_query_file(
+            &path.with_extension("unknown"),
+            None,
+            2,
+            VectorStorageKind::F32
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn typed_integer_readers_preserve_signedness_width_and_batch_boundaries() {
+    use crate::QueryBuffer;
+    for (format, expected, payload) in [
+        (
+            VectorFormat::I8bin,
+            QueryBuffer::I8(vec![-128, -1, 0, 127, 1, -2]),
+            vec![128, 255, 0, 127, 1, 254],
+        ),
+        (
+            VectorFormat::U16bin,
+            QueryBuffer::U16(vec![0, 65535, 256, 1, 32768, 7]),
+            [0u16, 65535, 256, 1, 32768, 7]
+                .into_iter()
+                .flat_map(u16::to_le_bytes)
+                .collect(),
+        ),
+        (
+            VectorFormat::U32bin,
+            QueryBuffer::U32(vec![0, u32::MAX, 16_777_217, 1, 256, 7]),
+            [0u32, u32::MAX, 16_777_217, 1, 256, 7]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect(),
+        ),
+    ] {
+        let mut bytes = Vec::new();
+        bytes.extend(3u32.to_le_bytes());
+        bytes.extend(2u32.to_le_bytes());
+        bytes.extend(&payload);
+        let mut reader =
+            VectorReader::new(Cursor::new(&bytes), format, 2, SearchMetric::Cosine).unwrap();
+        let mut batch = QueryBuffer::default();
+        assert_eq!(reader.read_typed_batch(&mut batch, 2).unwrap(), 2);
+        assert_eq!(
+            batch.as_input().element_type(),
+            expected.as_input().element_type()
+        );
+        assert_eq!(
+            batch.as_input().to_f32(),
+            expected.as_input().slice(0..4).to_f32()
+        );
+        // Check the actual typed bytes, including u32's low bits (f32 is insufficient).
+        match (&batch, &expected) {
+            (QueryBuffer::I8(a), QueryBuffer::I8(b)) => assert_eq!(a, &b[..4]),
+            (QueryBuffer::U16(a), QueryBuffer::U16(b)) => assert_eq!(a, &b[..4]),
+            (QueryBuffer::U32(a), QueryBuffer::U32(b)) => assert_eq!(a, &b[..4]),
+            _ => panic!("reader changed dtype"),
+        }
+        assert_eq!(reader.read_typed_batch(&mut batch, 2).unwrap(), 1);
+        assert_eq!(reader.read_typed_batch(&mut batch, 2).unwrap(), 0);
+        assert!(batch.is_empty());
+        let mut truncated = VectorReader::new(
+            Cursor::new(&bytes[..bytes.len() - 1]),
+            format,
+            2,
+            SearchMetric::SquaredL2,
+        )
+        .unwrap();
+        assert!(truncated.read_typed_batch(&mut batch, 3).is_err());
+    }
 }

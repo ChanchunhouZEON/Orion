@@ -142,7 +142,7 @@ impl Index {
             .pool
             .install(|| {
                 self.view.engine.search_subset(
-                    prepared.batch(),
+                    prepared,
                     &ids,
                     self.config.metric,
                     options.k,

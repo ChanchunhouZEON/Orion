@@ -41,7 +41,10 @@ same policy:
 Cosine search uses inner products of unit vectors. File decoding applies this
 policy to resident rows; array input applies it to Orion's owned copy. Neither
 path changes the caller's array or source file, and SIMD padding is excluded.
-Native-u8 storage supports L2 and keeps the original byte values.
+Native-u8 storage supports squared L2, inner product and cosine, preserving raw
+byte coordinates. Cosine uses separate exact squared norms instead of normalizing
+bytes. Zero cosine vectors are rejected. The ParlayANN builder uses the matching
+metric; supplier metadata must declare that same metric.
 
 Cache and snapshot fingerprints identify the **original input**, not the
 normalized coordinates. Array input is fingerprinted and checked against a

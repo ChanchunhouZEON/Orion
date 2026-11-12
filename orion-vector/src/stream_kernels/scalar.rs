@@ -188,3 +188,35 @@ impl DistanceKernelBackend for L2F32Distance {
         *into += src;
     }
 }
+
+// Unsigned byte products widen before accumulation. No signed-byte reinterpretation
+// or saturating pairwise multiply; high-dimensional rows retain their full sum.
+pub struct IpU8Distance;
+impl DistanceKernelBackend for IpU8Distance {
+    type Storage = u8;
+    type Acc = u64;
+    const CHUNK_BYTES: usize = 32;
+    const MAX_COORDINATES: usize = if usize::BITS < 64 {
+        usize::MAX
+    } else {
+        (u64::MAX / 65025) as usize
+    };
+    #[inline(always)]
+    fn init() -> Self::Acc {
+        0
+    }
+    #[inline(always)]
+    unsafe fn step(acc: &mut Self::Acc, a: *const u8, b: *const u8) {
+        for i in 0..32 {
+            *acc += u64::from(*a.add(i)) * u64::from(*b.add(i));
+        }
+    }
+    #[inline(always)]
+    fn reduce(acc: Self::Acc) -> f32 {
+        -(acc as f32)
+    }
+    #[inline(always)]
+    fn merge(into: &mut Self::Acc, src: Self::Acc) {
+        *into += src;
+    }
+}

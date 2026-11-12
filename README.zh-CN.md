@@ -131,7 +131,7 @@ result = index.search(queries, k=10, search_list_size=100)
 print(result.ids[0, :result.counts[0]])
 ```
 
-需要归一化的嵌入向量可使用 `metric="cosine"`；原始内积可使用 `metric="ip"`。接口接受 C 连续布局的 `float32` 和 `uint8` 数组，原生字节输入使用 L2 度量。Python 接口在释放 GIL 前复制输入；并发搜索共享配置好的 Rust 线程池。
+需要归一化的嵌入向量可使用 `metric="cosine"`；原始内积可使用 `metric="ip"`。Base 接受 C 连续布局的 `float32` 或 `uint8` 数组，两者均支持平方 L2、内积和余弦。Query 还支持 `int8`、`uint16` 和 `uint32`，与 base 类型独立。Python 接口在释放 GIL 前复制输入；并发搜索共享配置好的 Rust 线程池。
 
 ### 读取文件并保存已校准的快照
 
@@ -148,16 +148,26 @@ result = restored.search("queries.fbin", k=10, search_list_size=100)
 快照是一个小型 manifest：图和 sidecar 保存在共享的、按 SHA-256 寻址的对象库中，打开快照时会恢复校准状态。请同时保留 manifest、外部 base 数据和对象库；快照不内嵌 base 向量。Rust 提供相同的 `Index::save` / `Index::open` 工作流。
 [持久化指南](orion-runtime/src/guide/cache.md) · [Python 指南](orion-py/README.md)。
 
+### 导入自定义图（实验性）
+
+通过默认关闭的 `experimental-graph` feature，从内存或 STAG 文件导入 supplier 命名的 `local / remote / extra` 分区。Orion 校验 ID、容量和分区间重复边，保留原始入口及邻居顺序，复用现有搜索引擎。默认构图行为不变；导入后使用普通 `Index` 接口校准、搜索和保存，恢复快照不需要该 feature。
+
+```toml
+orion-ann = { path = "orion-runtime", features = ["experimental-graph"] }
+```
+
+[Import guide](orion-runtime/src/guide/supplier.md) · [Staged format](docs/supplier-staged.md)
+
 ## 支持范围
 
 | 能力 | 当前支持 |
 |---|---|
 | 原生 CI 矩阵 | Linux、macOS × x86-64、ARM64；[验证状态](docs/platforms.md#native-ci-matrix) |
 | 接口 | Rust `Index`；Python 3.9+ / NumPy；独立 CLI |
-| 距离度量 | f32 L2、余弦和内积；原生 u8 L2 |
+| 距离度量 | f32 和原生 u8 均支持平方 L2、余弦和内积 |
 | 维度 | 运行时维度，自动逐行 padding |
 | SIMD | 根据 CPU 能力与行布局，自动选择 scalar、NEON/dot-product、AVX2/FMA 或 AVX-512 |
-| 构图 | 默认内置 ParlayANN 内存构图；f32 Rust DiskANN 构图；STAG 导入 |
+| 构图 | 默认内置 ParlayANN 内存构图；f32 Rust DiskANN 构图；STAG 导入；实验性第三方分区 supplier |
 | 输入 | 连续 Rust 切片、NumPy 数组、`fvecs`、`bvecs`、`fbin`、`u8bin`；CLI 查询流 |
 | 持久化 | SHA-256 校验的图与 sidecar 对象，以及已校准快照 |
 | 错误处理 | Rust、Python、CLI 共享错误码与详情；Python 将可展开的 panic 转换为异常 |

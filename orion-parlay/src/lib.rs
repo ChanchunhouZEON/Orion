@@ -50,6 +50,8 @@ pub struct BuildOptions {
 pub enum Metric {
     L2,
     InnerProduct,
+    /// Cosine over native u8 with wide, exact squared norms.
+    Cosine,
 }
 impl Default for BuildOptions {
     fn default() -> Self {
@@ -94,6 +96,7 @@ impl Options {
             metric: match o.metric {
                 Metric::L2 => 0,
                 Metric::InnerProduct => 1,
+                Metric::Cosine => 2,
             },
             alpha: o.alpha,
         }
@@ -213,7 +216,7 @@ impl<'a> Builder<'a> {
             options,
         )
     }
-    /// Build native-u8 L2 without conversion or quantization.
+    /// Build native-u8 L2, IP or cosine without conversion or quantization.
     ///
     /// # Errors
     /// Rejects invalid shapes, unsupported metrics/distance accumulator sizes,

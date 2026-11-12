@@ -19,6 +19,7 @@ name = "orion"
 path = "src/main.rs"
 
 [features]
+experimental-graph = ["orion-ann/experimental-graph"]
 default = ["parlay"]
 parlay = ["orion-ann/parlay"]
 benchmark = ["orion-ann/benchmark"]

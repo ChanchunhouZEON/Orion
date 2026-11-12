@@ -7,11 +7,11 @@
 //! IndexOptions aggregates property-specific controls and resolves service input.
 //! Graph and cascade definitions live beside their own defaults and rules.
 use super::{
+    GraphSourcePolicy, ResolvedRunConfig, ResolvedSweep, VectorStorageKind,
     cascade::{Cascade, SearchMetric},
     plan::IndexPlan,
-    GraphSourcePolicy, ResolvedRunConfig, ResolvedSweep, VectorStorageKind,
 };
-use crate::{data::VectorFormat, Result};
+use crate::{Result, data::VectorFormat};
 
 // Preserve existing public paths while each property owns its implementation.
 pub use super::cascade::CascadeConfig;
@@ -56,7 +56,7 @@ pub struct IndexOptions {
 impl Default for IndexOptions {
     fn default() -> Self {
         Self {
-            metric: SearchMetric::L2,
+            metric: SearchMetric::SquaredL2,
             storage: None,
             base_format: None,
             graph: GraphConfig::default(),
@@ -93,14 +93,17 @@ impl IndexOptions {
             .unwrap_or_else(|| VectorStorageKind::for_input(format));
         let mut policy = graph.source;
         if graph.staged_file.is_some() {
-            if policy == GraphSourcePolicy::Rust {
-                return Err("staged_file conflicts with graph source rust".into());
+            if matches!(
+                policy,
+                GraphSourcePolicy::Rust | GraphSourcePolicy::Supplied
+            ) {
+                return Err("staged_file conflicts with graph source rust or supplied".into());
             }
             policy = GraphSourcePolicy::Parlayann;
         }
         let source = policy.candidate();
         let defaults = if storage == VectorStorageKind::U8 {
-            Cascade::native_l2_u8()
+            Cascade::native_u8(self.metric)
         } else {
             Cascade::default_for_specified_dimension_and_metric(dimension, self.metric)
         };
@@ -163,7 +166,9 @@ impl IndexOptions {
             staged_file_explicit: graph.staged_file.is_some(),
             local_pct: 60,
         };
-        config.build_config().validate()?;
+        if config.graph_source != super::GraphSource::Supplied {
+            config.build_config()?.validate()?;
+        }
         config.cache_namespace = config.compute_cache_namespace();
         Ok(config)
     }

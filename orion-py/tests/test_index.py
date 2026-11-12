@@ -60,23 +60,110 @@ class IndexTests(unittest.TestCase):
         self.assertEqual(left.ids.dtype, np.uint32)
         self.assertEqual(left.counts.dtype, np.uint32)
 
-    def cli(self, base, query, cache, metric, storage, k):
+    def cli(self, base, query, cache, metric, storage, k, cascade=None):
         args = [os.environ["ORION_TEST_CLI"], "--base", str(base), "--query", str(query),
                 "--no-groundtruth", "--metric", metric,
                 "--vector-storage", storage, "--graph-source", "parlayann", "--staged-file", str(self.staged),
                 "--graph-degree", "8", "--build-l", "32", "--alpha", "1.2", "--max-extra", "4",
                 "--threads", "2", "--window-size", "5", "--k", str(k), "--search-l", "24", "--cache-dir", str(cache)]
-        if storage == "u8":
-            args += ["--prefilter", "none", "--admission", "native-l2-u8", "--rerank", "none"]
+        if cascade is not None:
+            args += ["--admission", cascade.admission, "--rerank", cascade.rerank]
+        if cascade is not None and cascade.prefilter is not None:
+            args += ["--prefilter", cascade.prefilter]
+        if storage == "u8" and cascade is None:
+            args += ["--prefilter", "none", "--admission", {"l2":"native-l2-u8","inner-product":"native-ip-u8","cosine":"native-cosine-u8"}[metric], "--rerank", "none"]
         env = {k: v for k, v in os.environ.items() if not k.startswith("ORION_") and k != "PA_ROOT"}
         result = subprocess.run(args, text=True, capture_output=True, env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         records = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
         return [v["ids"] for v in records if v.get("type") == "result"], next(v for v in records if v.get("type") == "summary")
 
+    def test_squared_l2_aliases_match_python_cli_and_exact_scores(self):
+        base, queries = self.arrays()
+        bp, qp = self.root / "base.fbin", self.root / "query.fbin"
+        write_vectors(bp, base)
+        write_vectors(qp, queries)
+        reference = None
+        for metric in ("squared-l2", "squared_l2", "l2"):
+            with self.subTest(metric=metric):
+                index = self.make(base, metric=metric)
+                index.calibrate(queries, k=3, search_list_size=48)
+                result = index.search(queries, k=3, search_list_size=24, scores=True)
+                self.assertEqual(result.score_metric, "squared_l2")
+                if reference is None:
+                    reference = result
+                else:
+                    self.assert_results(reference, result)
+                    np.testing.assert_array_equal(reference.scores, result.scores)
+                for query, ids, count, scores in zip(queries, result.ids, result.counts, result.scores):
+                    expected = np.sum((base[ids[:count]] - query) ** 2, axis=1)
+                    np.testing.assert_allclose(scores[:count], expected, rtol=1e-5)
+                rows, _ = self.cli(bp, qp, self.root / "cli-cache", metric, "f32", 3)
+                self.assertEqual(rows, [ids[:n].tolist() for ids, n in zip(result.ids, result.counts)])
+
+    def test_byte_cascades_match_cli_and_mapped_snapshot(self):
+        for metric, admission, rerank in [("l2", "pq-l2", "f32"),
+                ("inner-product", "pq-ip", "ip-f32"),
+                ("cosine", "pq-cosine", "cosine-f32"),
+                ("cosine", "cosine-i8", "cosine-f32")]:
+            with self.subTest(metric=metric, admission=admission):
+                base, queries = self.arrays(np.uint8, 25)
+                cascade = CascadeConfig(prefilter="jl", admission=admission, rerank=rerank)
+                index = self.make(base, metric=metric, cascade=cascade, auto_pin=False)
+                index.calibrate(queries, k=3, search_list_size=48)
+                expected = index.search(queries, k=3, search_list_size=24, scores=True)
+                folder = self.root / admission
+                folder.mkdir()
+                bp, qp = folder / "base.u8bin", folder / "query.u8bin"
+                write_vectors(bp, base); write_vectors(qp, queries)
+                rows, _ = self.cli(bp, qp, folder / "cache", metric, "u8", 3, cascade)
+                self.assertEqual(rows, [row[:n].tolist() for row, n in zip(expected.ids, expected.counts)])
+                saved = index.save(folder / "snapshot")
+                mapped = Index.open(saved, base=base, storage_options=StorageOptions(mode="mapped", directory=folder))
+                actual = mapped.search(queries, k=3, search_list_size=24, scores=True)
+                self.assert_results(expected, actual)
+                np.testing.assert_array_equal(expected.scores, actual.scores)
+
+    def test_cosine_cascade_names_match_cli_and_preserve_default_results(self):
+        base, queries = self.arrays(dimension=33)
+        bp, qp = self.root / "cosine.fbin", self.root / "queries.fbin"
+        write_vectors(bp, base)
+        write_vectors(qp, queries)
+        default = self.make(base, metric="cosine", auto_pin=False)
+        default.calibrate(queries, k=3, search_list_size=48)
+        expected = default.search(queries, k=3, search_list_size=24, scores=True)
+        for admission in ("cosine-i8", "cosine-i16", "pq-cosine"):
+            with self.subTest(admission=admission):
+                cascade = CascadeConfig(admission=admission, rerank="cosine-f32")
+                index = self.make(base, metric="cosine", cascade=cascade, auto_pin=False)
+                self.assertIn("L2-normalized", index.info["search_dispatch"])
+                self.assertIn("cosine-f32", index.info["search_dispatch"])
+                resolved = subprocess.run([os.environ["ORION_TEST_CLI"], "--base", str(bp),
+                    "--metric", "cosine", "--query", str(qp), "--no-groundtruth",
+                    "--admission", admission, "--rerank", "cosine-f32", "--print-config"], text=True, capture_output=True)
+                self.assertEqual(resolved.returncode, 0, resolved.stderr)
+                self.assertEqual(json.loads(resolved.stdout)["cascade"], index.info["cascade"])
+                index.calibrate(queries, k=3, search_list_size=48)
+                result = index.search(queries, k=3, search_list_size=24, scores=True)
+                rows, _ = self.cli(bp, qp, self.root / admission, "cosine", "f32", 3, cascade)
+                self.assertEqual(rows, [row[:count].tolist() for row, count in zip(result.ids, result.counts)])
+                if admission == "cosine-i8":
+                    self.assert_results(expected, result)
+                    np.testing.assert_array_equal(expected.scores, result.scores)
+                exact = (queries.astype(np.float64) @ base.astype(np.float64).T) / (
+                    np.linalg.norm(queries.astype(np.float64), axis=1)[:, None]
+                    * np.linalg.norm(base.astype(np.float64), axis=1)[None, :])
+                for i, count in enumerate(result.counts):
+                    np.testing.assert_allclose(result.scores[i, :count], exact[i, result.ids[i, :count]], atol=2e-6)
+        for metric, admission, rerank in [("cosine", "ip-i8", "cosine-f32"),
+                                            ("cosine", "cosine-i8", "ip-f32"),
+                                            ("inner-product", "cosine-i8", "ip-f32")]:
+            with self.assertRaises(OrionError):
+                self.make(base, metric=metric, cascade=CascadeConfig(admission=admission, rerank=rerank))
+
     def test_labels_python_cli_snapshot_and_exact_reference(self):
         for dtype, metric in [(np.float32, "l2"), (np.float32, "cosine"),
-                              (np.float32, "inner-product"), (np.uint8, "l2")]:
+                              (np.float32, "inner-product"), (np.uint8, "l2"), (np.uint8, "inner-product"), (np.uint8, "cosine")]:
             with self.subTest(dtype=dtype, metric=metric):
                 base, queries = self.arrays(dtype=dtype, dimension=13)
                 suffix = ".u8bin" if dtype == np.uint8 else ".fbin"
@@ -222,14 +309,16 @@ class IndexTests(unittest.TestCase):
         self.assertEqual([r["ids"] for r in rows if r["type"] == "result"], expected.ids.tolist())
 
     def test_scores_calibration_and_cli_share_the_public_contract(self):
-        for metric in ("l2", "inner-product", "cosine"):
+        for metric, dtype in [(m,d) for m in ("l2", "inner-product", "cosine") for d in (np.float32,np.uint8)]:
             with self.subTest(metric=metric):
-                base, queries = self.arrays(dimension=13)
-                bp, qp = self.root / f"{metric}.fbin", self.root / f"{metric}-queries.fbin"
+                base, queries = self.arrays(dtype=dtype, dimension=13)
+                suffix = ".u8bin" if dtype==np.uint8 else ".fbin"
+                name = metric + suffix
+                bp, qp = self.root / f"{name}", self.root / f"{metric}-queries{suffix}"
                 write_vectors(bp, base)
                 write_vectors(qp, queries)
                 index = Index.from_file(bp, graph=self.graph, metric=metric,
-                    cache_dir=self.root / f"{metric}-cache", threads=2, auto_pin=False)
+                    cache_dir=self.root / f"{name}-cache", threads=2, auto_pin=False)
                 self.assertEqual(index.calibrated_ks, [])
                 self.assertIsNone(index.calibration(3))
                 index.calibrate_many(queries, ks=[3, 5], search_list_size=24)
@@ -252,10 +341,10 @@ class IndexTests(unittest.TestCase):
                     label = "cosine_similarity"
                 np.testing.assert_allclose(scored.scores, expected, rtol=2e-6, atol=2e-6)
                 self.assertEqual(scored.score_metric, label)
-                bp, qp = self.root / f"{metric}.fbin", self.root / f"{metric}-queries.fbin"
+                bp, qp = self.root / f"{name}", self.root / f"{metric}-queries{suffix}"
                 write_vectors(bp, base)
                 write_vectors(qp, queries)
-                ref = index.save(self.root / f"{metric}-snapshot")
+                ref = index.save(self.root / f"{name}-snapshot")
                 run = subprocess.run([os.environ["ORION_TEST_CLI"], "--snapshot", ref.path,
                     "--base", str(bp), "--query", str(qp), "--k", "3", "--search-l", "24", "--scores"],
                     text=True, capture_output=True)
@@ -369,6 +458,7 @@ class IndexTests(unittest.TestCase):
                 ("l2", np.uint8, 128, ".u8bin"), ("l2", np.uint8, 128, ".bvecs"),
                 ("l2", np.float32, 31, ".fbin"), ("cosine", np.float32, 33, ".fvecs"),
                 ("inner-product", np.float32, 129, ".fbin"),
+                ("cosine", np.uint8, 33, ".u8bin"), ("inner-product", np.uint8, 129, ".bvecs"),
                 ("l2", np.uint8, 3, ".u8bin"), ("l2", np.uint8, 129, ".bvecs")]:
             with self.subTest(metric=metric, format=suffix):
                 base, queries = self.arrays(dtype, dim)
@@ -596,9 +686,11 @@ class IndexTests(unittest.TestCase):
         index.calibrate(queries, k=1)
         exact = index.search(base, k=1, search_list_size=64)
         np.testing.assert_array_equal(exact.ids[:, 0], np.arange(64))
-        with self.assertRaises(OrionError): index.search(queries.astype(np.float32))
-        with self.assertRaises(OrionError):
-            self.make(base, cascade=CascadeConfig(rerank="f32"))
+        self.assert_results(index.search(queries, k=1), index.search(queries.astype(np.float32), k=1))
+        # Exact rerank is now an ordinary stage for byte bases too.
+        reranked = Index.from_array(base, graph=graph, threads=2, cache_dir=self.root / "reranked", cascade=CascadeConfig(rerank="f32"))
+        reranked.calibrate(queries, k=10)
+        self.assertEqual(reranked.search(queries, k=10).ids.shape, (len(queries), 10))
         index.calibrate(queries, k=10)
         snapshot = self.root / "native-saved"; ref_snapshot = index.save(snapshot)
         restored = Index.open(ref_snapshot, base=base)

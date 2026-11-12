@@ -532,7 +532,10 @@ mod tests {
     fn recall_uses_requested_k() {
         assert_eq!(mean_recall(&[vec![1, 9]], &[vec![1, 2, 3]], 2), 0.5);
         let ids: Vec<u32> = (0..100).collect();
-        assert_eq!(mean_recall(&[ids.clone()], &[ids], 100), 1.0);
+        assert_eq!(
+            mean_recall(std::slice::from_ref(&ids), std::slice::from_ref(&ids), 100),
+            1.0
+        );
     }
     #[test]
     fn accepts_larger_k() {

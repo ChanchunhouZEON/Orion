@@ -70,6 +70,9 @@ pub fn format_report(report: &serde_json::Value) -> String {
         value("graph_selection_reason"),
         value("cache_path")
     ));
+    if let Some(dispatch) = report["search_dispatch"].as_str() {
+        text.push_str(&format!("Search dispatch: {dispatch}\n\n"));
+    }
     let mut table = Table::new();
     let width = table.width().unwrap_or(112).min(112);
     table

@@ -2,7 +2,6 @@
  * Copyright (c) Chanchunhou. All rights reserved.
  * Licensed under the MIT License.
  */
-#![cfg(target_family = "unix")]
 
 use crate::common::{ANNError, ANNResult};
 use crate::model::{AlignedRead, UnixIOContext};
@@ -133,7 +132,7 @@ impl UnixAlignedFileReader {
         ctx: &UnixIOContext,
     ) -> ANNResult<()> {
         let n_requests = read_requests.len();
-        let n_batches = (n_requests + MAX_IO_CONCURRENCY - 1) / MAX_IO_CONCURRENCY;
+        let n_batches = n_requests.div_ceil(MAX_IO_CONCURRENCY);
 
         for batch_idx in 0..n_batches {
             let batch_start = MAX_IO_CONCURRENCY * batch_idx;
@@ -144,7 +143,7 @@ impl UnixAlignedFileReader {
                 let req_buf_u8 = unsafe {
                     std::slice::from_raw_parts_mut(
                         req.aligned_buf.as_mut_ptr().cast::<u8>(),
-                        req.aligned_buf.len() * size_of::<T>(),
+                        std::mem::size_of_val(req.aligned_buf),
                     )
                 };
 

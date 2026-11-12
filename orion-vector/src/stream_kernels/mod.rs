@@ -211,6 +211,7 @@ macro_rules! dispatch {
     };
 }
 dispatch!(run_l2u8distance, L2U8Distance, u8);
+dispatch!(run_ipu8distance, IpU8Distance, u8);
 dispatch!(run_l2u16distance, L2U16Distance, u16);
 dispatch!(run_jlhammingdistance, JLHammingDistance, u8);
 dispatch!(run_ipi8distance, IpI8Distance, i8);

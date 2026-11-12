@@ -18,6 +18,10 @@ use crate::model::{
     vertex::{DIM_104, DIM_128, DIM_256, DIM_768, DIM_784, DIM_960, DIM_1536},
 };
 
+/// Per-node neighbor IDs in (local, remote, extra) partition order.
+#[cfg(feature = "orion")]
+pub type NodePartitions = (Vec<u32>, Vec<u32>, Vec<u32>);
+
 /// ANN inmem-index abstraction for custom <T, N>
 pub trait ANNInmemIndex<T>: Sync + Send
 where
@@ -91,7 +95,7 @@ where
     fn extract_graph_and_candidates(
         &mut self,
         _max_extra: usize,
-    ) -> ANNResult<Vec<(Vec<u32>, Vec<u32>, Vec<u32>)>> {
+    ) -> ANNResult<Vec<NodePartitions>> {
         Err(ANNError::log_index_error("not implemented".into()))
     }
 

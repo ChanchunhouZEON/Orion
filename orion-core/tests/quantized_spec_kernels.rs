@@ -22,7 +22,7 @@ where
             .zip(query)
             .map(|(&a, b)| {
                 let (a, b) = (Into::<f64>::into(a), Into::<f64>::into(b));
-                if Q::METRIC == orion_ann_vector::Metric::L2 {
+                if Q::METRIC == orion_ann_core::CalibrationMetric::SquaredL2 {
                     (a - b).powi(2)
                 } else {
                     -a * b
@@ -51,7 +51,7 @@ where
         .iter()
         .zip(b)
         .map(|(a, b)| {
-            if Q::METRIC == orion_ann_vector::Metric::L2 {
+            if Q::METRIC == orion_ann_core::CalibrationMetric::SquaredL2 {
                 (a - b).powi(2)
             } else {
                 -a * b

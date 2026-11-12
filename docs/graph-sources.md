@@ -88,3 +88,12 @@ Matching R, construction L and alpha is insufficient to make the two builders'
 graphs identical. Pruning, passes, seeds, quantization, historical cache versions
 and construction objective can all matter. See the
 [2026-10-29 comparison](benchmarks.md#same-engine-different-graph-sources).
+
+## Experimental third-party suppliers
+
+The opt-in `experimental-graph` import API is separate from the automatic builder
+policy above. `Index::from_partitions` and `Index::from_staged` preserve supplier
+entry and local/remote/extra ordering, validate structure and never fall back to a
+builder. `--supplier-staged` is the corresponding opt-in CLI flag; `--staged-file`
+keeps its existing ParlayANN semantics. See the [import guide](../orion-runtime/src/guide/supplier.md)
+and [portable format](supplier-staged.md).

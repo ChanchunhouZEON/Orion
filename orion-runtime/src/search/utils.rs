@@ -71,34 +71,6 @@ pub fn result_path(prefix: &str, dataset: &str, k: usize) -> String {
     format!("visualizations/{prefix}_{dataset}{suffix}.json")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn checks_ground_truth_depth_and_query_count() {
-        let gt = vec![vec![0; 100]; 2];
-        assert!(validate_ground_truth(&gt, 2, 100).is_ok());
-        for (queries, k) in [(3, 100), (2, 101), (0, 10), (2, 0)] {
-            assert!(validate_ground_truth(&gt, queries, k).is_err());
-        }
-        assert!(validate_ground_truth(&[vec![0; 100], vec![0; 10]], 2, 100).is_err());
-    }
-
-    #[test]
-    #[cfg(feature = "benchmark")]
-    fn result_paths_separate_top_k_runs() {
-        assert_eq!(
-            result_path("ablation", "sift", 10),
-            "visualizations/ablation_sift.json"
-        );
-        assert_eq!(
-            result_path("ablation", "sift", 100),
-            "visualizations/ablation_sift_k100.json"
-        );
-    }
-}
-
 /// 40 MB cache-flush trick — direct port of ParlayANN's
 /// `check_nn_recall.h:46` pattern
 /// (`auto volatile xx = parlay::random_permutation<long>(5000000);`).
@@ -203,3 +175,31 @@ pub fn mlock_bytes(label: &str, ptr: *const u8, len: usize) {
 #[cfg(not(unix))]
 #[inline]
 pub fn mlock_bytes(_label: &str, _ptr: *const u8, _len: usize) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checks_ground_truth_depth_and_query_count() {
+        let gt = vec![vec![0; 100]; 2];
+        assert!(validate_ground_truth(&gt, 2, 100).is_ok());
+        for (queries, k) in [(3, 100), (2, 101), (0, 10), (2, 0)] {
+            assert!(validate_ground_truth(&gt, queries, k).is_err());
+        }
+        assert!(validate_ground_truth(&[vec![0; 100], vec![0; 10]], 2, 100).is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "benchmark")]
+    fn result_paths_separate_top_k_runs() {
+        assert_eq!(
+            result_path("ablation", "sift", 10),
+            "visualizations/ablation_sift.json"
+        );
+        assert_eq!(
+            result_path("ablation", "sift", 100),
+            "visualizations/ablation_sift_k100.json"
+        );
+    }
+}

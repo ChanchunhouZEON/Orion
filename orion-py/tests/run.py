@@ -16,10 +16,11 @@ root = Path(__file__).resolve().parents[2]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--no-build", action="store_true")
 parser.add_argument("--profile", default="dev", choices=["dev", "python"])
+parser.add_argument("--experimental-graph", action="store_true")
 args = parser.parse_args()
 if not args.no_build:
     subprocess.run(["cargo", "+1.92", "build", "--offline", "--locked", "--profile", args.profile,
-                    "-p", "orion-ann-python", "-p", "orion-ann-cli", "--features", "orion-ann-python/test-hooks"], cwd=root, check=True)
+                    "-p", "orion-ann-python", "-p", "orion-ann-cli", "--features", "orion-ann-python/test-hooks" + (",orion-ann-python/experimental-graph,orion-ann-cli/experimental-graph" if args.experimental_graph else "")], cwd=root, check=True)
 metadata = subprocess.check_output(["cargo", "+1.92", "metadata", "--offline", "--no-deps", "--format-version", "1"], cwd=root)
 build = Path(json.loads(metadata)["target_directory"]) / ("debug" if args.profile == "dev" else args.profile)
 lib = build / ("lib_native.dylib" if sys.platform == "darwin" else "lib_native.so")

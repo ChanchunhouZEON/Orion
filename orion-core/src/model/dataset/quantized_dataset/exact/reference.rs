@@ -3,8 +3,8 @@
  * Licensed under the MIT License.
  */
 
-use crate::algorithm::search::stage::{AdmissionSession, AdmissionStage};
 use crate::model::Neighbor;
+use crate::search::cascade::stage::{AdmissionSession, AdmissionStage};
 use orion_ann_diskann::model::PaddedDataset;
 
 /// Reference f32 admission used by matched-state experiments.

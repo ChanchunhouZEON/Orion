@@ -63,10 +63,10 @@ fn borrowed_queries_and_mixed_requests_share_one_index() {
         SearchOptions::new(7, 40),
     ];
     for (native, metric) in [
-        (false, SearchMetric::L2),
+        (false, SearchMetric::SquaredL2),
         (false, SearchMetric::InnerProduct),
         (false, SearchMetric::Cosine),
-        (true, SearchMetric::L2),
+        (true, SearchMetric::SquaredL2),
     ] {
         let fixture = Fixture::new("shared");
         let staged = fixture.staged(96);
@@ -149,8 +149,8 @@ fn borrowed_queries_and_mixed_requests_share_one_index() {
             .unwrap();
             let calibration = index.calibrate(queries.to_vec(), 5, Some(40)).unwrap();
             let core_result: orion_ann::SearchResult = core
-                .search_batch_l2(
-                    &bytes[..DIM * 16],
+                .search_batch(
+                    orion_ann_core::search::query::QueryInput::U8(&bytes[..DIM * 16]),
                     orion_ann_core::DynamicSearchConfig {
                         k: 5,
                         search_list_size: 24,
@@ -158,6 +158,14 @@ fn borrowed_queries_and_mixed_requests_share_one_index() {
                         epsilon: calibration.threshold,
                         early_exit_limit: calibration.early_exit_limit,
                     },
+                    orion_ann_core::DynamicCascade {
+                        prefilter: &orion_ann_core::search::cascade::stage::NoPrefilter,
+                        admission: &core
+                            .exact_stage(orion_ann_core::ScoreMetric::SquaredL2)
+                            .unwrap(),
+                        rerank: &orion_ann_core::search::cascade::stage::rerank::NoRerank,
+                    },
+                    None,
                 )
                 .unwrap()
                 .into();
@@ -206,10 +214,12 @@ fn borrowed_queries_and_mixed_requests_share_one_index() {
             std::fs::read(first.path().join("index.json")).unwrap(),
             std::fs::read(after.path().join("index.json")).unwrap()
         );
-        assert!(index
-            .search(QueryBatch::from_f32(&[], DIM).unwrap(), &controls[0])
-            .unwrap()
-            .is_empty());
+        assert!(
+            index
+                .search(QueryBatch::from_f32(&[], DIM).unwrap(), &controls[0])
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             index
                 .search(
@@ -238,27 +248,33 @@ fn borrowed_queries_and_mixed_requests_share_one_index() {
             );
         }
         for value in [f32::NAN, f32::INFINITY] {
-            assert!(index
-                .search(
-                    QueryBatch::from_f32(&[value; DIM], DIM).unwrap(),
-                    &controls[0]
-                )
-                .is_err());
-        }
-        if native {
-            for value in [-1., 256., 1.5] {
-                assert!(index
+            assert!(
+                index
                     .search(
                         QueryBatch::from_f32(&[value; DIM], DIM).unwrap(),
                         &controls[0]
                     )
-                    .is_err());
+                    .is_err()
+            );
+        }
+        if native {
+            for value in [-1., 256., 1.5] {
+                assert!(
+                    index
+                        .search(
+                            QueryBatch::from_f32(&[value; DIM], DIM).unwrap(),
+                            &controls[0]
+                        )
+                        .is_ok()
+                );
             }
         }
         if metric == SearchMetric::Cosine {
-            assert!(index
-                .search(QueryBatch::from_u8(&[0; DIM], DIM).unwrap(), &controls[0])
-                .is_err());
+            assert!(
+                index
+                    .search(QueryBatch::from_u8(&[0; DIM], DIM).unwrap(), &controls[0])
+                    .is_err()
+            );
         }
         assert_eq!(index.search(batch, &controls[0]).unwrap(), expected[0]);
     }
@@ -278,15 +294,16 @@ fn query_views_validate_shape_without_reading_or_owning_coordinates() {
 }
 
 #[test]
-fn pq_snapshot_and_code_placement_preserve_both_metric_searches() {
+fn pq_snapshot_and_code_placement_preserve_all_metric_searches() {
     use orion_ann::{CascadeConfig, PqCodeStorage};
     const DIM: usize = 17;
     let values: Vec<f32> = (0..96 * DIM)
         .map(|i| ((i * 17 + i / DIM * 9) % 103) as f32 / 32.0)
         .collect();
     for (admission, metric, rerank) in [
-        ("pq-l2", SearchMetric::L2, "f32"),
+        ("pq-l2", SearchMetric::SquaredL2, "f32"),
         ("pq-ip", SearchMetric::InnerProduct, "ip-f32"),
+        ("pq-cosine", SearchMetric::Cosine, "cosine-f32"),
     ] {
         let fixture = Fixture::new(admission);
         let base = || BaseInput::from_f32(&values, DIM).unwrap();

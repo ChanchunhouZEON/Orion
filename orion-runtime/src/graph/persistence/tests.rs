@@ -57,7 +57,21 @@ fn saving_and_associating_preserve_search_and_loaded_sidecars() {
         search_list_size: 3,
         ..Default::default()
     };
-    let expected = index.search_l2(&[0., 1.], search).unwrap();
+    let expected = index
+        .search(
+            orion_ann_core::search::query::QueryInput::F32(&[0., 1.]),
+            search,
+            orion_ann_core::DynamicCascade {
+                prefilter: &orion_ann_core::search::cascade::stage::NoPrefilter,
+                admission: &index
+                    .exact_stage(orion_ann_core::ScoreMetric::SquaredL2)
+                    .unwrap(),
+                rerank: &orion_ann_core::search::cascade::stage::rerank::NoRerank,
+            },
+            None,
+        )
+        .map(|r| r.ids)
+        .unwrap();
     let base_ptr = index.dataset().as_slice().as_ptr();
     let sidecar_ptr = index.ensure_quantized_dataset() as *const _;
     let attached = temp.0.join("attached.bin");
@@ -84,7 +98,24 @@ fn saving_and_associating_preserve_search_and_loaded_sidecars() {
     save_graph(&index, &temp.0.join("export.bin")).unwrap();
     assert_eq!(index.dataset().as_slice().as_ptr(), base_ptr);
     assert_eq!(index.ensure_quantized_dataset() as *const _, sidecar_ptr);
-    assert_eq!(index.search_l2(&[0., 1.], search).unwrap(), expected);
+    assert_eq!(
+        index
+            .search(
+                orion_ann_core::search::query::QueryInput::F32(&[0., 1.]),
+                search,
+                orion_ann_core::DynamicCascade {
+                    prefilter: &orion_ann_core::search::cascade::stage::NoPrefilter,
+                    admission: &index
+                        .exact_stage(orion_ann_core::ScoreMetric::SquaredL2)
+                        .unwrap(),
+                    rerank: &orion_ann_core::search::cascade::stage::rerank::NoRerank
+                },
+                None
+            )
+            .map(|r| r.ids)
+            .unwrap(),
+        expected
+    );
     let restored: crate::integrity::Verified<Orion> = load_verified(
         &attached.with_extension("pgraph"),
         index.into_dataset(),
@@ -93,7 +124,23 @@ fn saving_and_associating_preserve_search_and_loaded_sidecars() {
     )
     .unwrap();
     assert_eq!(
-        restored.value.search_l2(&[0., 1.], search).unwrap(),
+        restored
+            .value
+            .search(
+                orion_ann_core::search::query::QueryInput::F32(&[0., 1.]),
+                search,
+                orion_ann_core::DynamicCascade {
+                    prefilter: &orion_ann_core::search::cascade::stage::NoPrefilter,
+                    admission: &restored
+                        .value
+                        .exact_stage(orion_ann_core::ScoreMetric::SquaredL2)
+                        .unwrap(),
+                    rerank: &orion_ann_core::search::cascade::stage::rerank::NoRerank
+                },
+                None
+            )
+            .map(|r| r.ids)
+            .unwrap(),
         expected
     );
 }
@@ -127,9 +174,40 @@ fn benchmark_v5_cache_preserves_search_but_rejects_corrupt_layout() {
         search_list_size: 3,
         ..Default::default()
     };
-    let expected = source.search_l2(&[0., 1.], search).unwrap();
+    let expected = source
+        .search(
+            orion_ann_core::search::query::QueryInput::F32(&[0., 1.]),
+            search,
+            orion_ann_core::DynamicCascade {
+                prefilter: &orion_ann_core::search::cascade::stage::NoPrefilter,
+                admission: &source
+                    .exact_stage(orion_ann_core::ScoreMetric::SquaredL2)
+                    .unwrap(),
+                rerank: &orion_ann_core::search::cascade::stage::rerank::NoRerank,
+            },
+            None,
+        )
+        .map(|r| r.ids)
+        .unwrap();
     let loaded = super::load_working(&path, source.into_dataset()).unwrap();
-    assert_eq!(loaded.search_l2(&[0., 1.], search).unwrap(), expected);
+    assert_eq!(
+        loaded
+            .search(
+                orion_ann_core::search::query::QueryInput::F32(&[0., 1.]),
+                search,
+                orion_ann_core::DynamicCascade {
+                    prefilter: &orion_ann_core::search::cascade::stage::NoPrefilter,
+                    admission: &loaded
+                        .exact_stage(orion_ann_core::ScoreMetric::SquaredL2)
+                        .unwrap(),
+                    rerank: &orion_ann_core::search::cascade::stage::rerank::NoRerank
+                },
+                None
+            )
+            .map(|r| r.ids)
+            .unwrap(),
+        expected
+    );
 
     let graph = path.with_extension("pgraph");
     let file = std::fs::OpenOptions::new()

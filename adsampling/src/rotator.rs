@@ -77,13 +77,13 @@ impl<const N: usize> Rotator<N> {
     #[inline]
     pub fn apply(&self, v: &[f32; N]) -> [f32; N] {
         let mut out = [0.0f32; N];
-        for i in 0..N {
+        for (i, value) in out.iter_mut().enumerate() {
             let row = &self.matrix[i * N..(i + 1) * N];
             let mut acc = 0.0f32;
             for j in 0..N {
                 acc += row[j] * v[j];
             }
-            out[i] = acc;
+            *value = acc;
         }
         out
     }
@@ -91,7 +91,10 @@ impl<const N: usize> Rotator<N> {
     /// Rotate every `N`-length chunk of a packed row-major dataset in place.
     /// Panics if `data.len()` is not a multiple of `N`.
     pub fn apply_batch_inplace(&self, data: &mut [f32]) {
-        assert!(data.len() % N == 0, "data.len() must be multiple of N");
+        assert!(
+            N != 0 && data.len().is_multiple_of(N),
+            "data.len() must be multiple of N"
+        );
         data.par_chunks_mut(N).for_each(|chunk| {
             let mut v = [0.0f32; N];
             v.copy_from_slice(chunk);

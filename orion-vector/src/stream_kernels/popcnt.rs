@@ -43,3 +43,5 @@ impl DistanceKernelBackend for JLHammingDistance {
         unsafe { *into = _mm512_add_epi64(*into, src) }
     }
 }
+
+pub use super::avx512::IpU8Distance;

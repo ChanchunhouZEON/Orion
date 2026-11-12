@@ -96,9 +96,13 @@ result = index.search(queries, k=10, search_list_size=100)
 - Dimensions are inferred at runtime; each resident row is padded for SIMD.
   The Rust/DiskANN graph builder supports logical dimensions up to 1536 by
   padding its working input; larger dimensions need a PA graph.
-  Native u8 requires L2 and uses the bundled PA builder or a PA cache/STAG export. It does
-  not fall back to Rust construction, allocate a quantized admission copy, or
-  rerank. Native-u8 ndarray queries must also be uint8.
+  Native u8 supports squared L2, inner product and cosine, using the bundled
+  PA builder or a PA cache/STAG export. It does not fall back to Rust construction.
+  Query arrays accept float32, uint8, int8, uint16 and uint32 independently of
+  base dtype. Search and calibration share this contract. File queries additionally
+  support i8bin/u16bin/u32bin with a little-endian two-u32 shape header.
+  Exact scoring retains wide integer coordinates instead of silently narrowing
+  them to float32; returned scores remain float32.
 
 For native SIFT bytes, `GraphConfig()` can build directly from the array or file.
 Use `staged_file=...` to import an existing export. `source='auto'` follows the

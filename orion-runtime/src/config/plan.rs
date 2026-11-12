@@ -5,9 +5,7 @@
 
 //! Resolve base representation and search compatibility together, before I/O.
 //! Only this module can assemble a plan; other layers borrow validated views.
-use crate::config::cascade::{
-    AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric,
-};
+use crate::config::cascade::{AdmissionChoice, Cascade, SearchMetric};
 use crate::config::{GraphSource, VectorStorageKind};
 use crate::data::VectorFormat;
 use crate::{Error, Result};
@@ -17,35 +15,26 @@ use crate::{Error, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IndexPlan {
     base: BaseRepresentation,
-    search: SearchRecipe,
+    search: Cascade,
 }
 
 /// Coordinate representation, independent of the source file and search stages.
 /// Padding/stride remain properties of the dataset's PaddedLayout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BaseRepresentation(VectorStorageKind);
-/// How search evaluates candidates; it does not own the base representation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SearchRecipe {
-    Cascade(Cascade),
-    NativeL2U8,
-}
-
 impl IndexPlan {
     /// Resolves user-facing search options into one validated execution plan.
     ///
     /// Validation happens before large allocations so unsupported combinations
-    /// fail early. In particular, native `u8` execution is intentionally
-    /// stricter than the generic `f32` cascade path because it preserves the
-    /// original byte representation rather than constructing auxiliary
-    /// quantized storage.
+    /// fail early. Storage selects row layout; every representation uses the
+    /// same precision-checked cascade and optional quantized sidecars.
     #[allow(clippy::too_many_arguments)]
     pub fn resolve(
         vector_storage: VectorStorageKind,
         dimension: usize,
         metric: SearchMetric,
         base_format: VectorFormat,
-        query_format: VectorFormat,
+        _query_format: VectorFormat,
         cascade: Cascade,
         graph_source: GraphSource,
     ) -> Result<Self> {
@@ -57,7 +46,7 @@ impl IndexPlan {
                 )?;
             }
             VectorStorageKind::U8 => {
-                orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::L2U8Distance>(
+                orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::IpU8Distance>(
                     dimension,
                 )?;
             }
@@ -65,7 +54,7 @@ impl IndexPlan {
 
         // Quantized stages also have accumulator bounds. Check them before
         // allocating the base instead of letting lazy sidecar fitting panic.
-        if vector_storage == VectorStorageKind::F32 {
+        {
             match cascade.admission {
                 AdmissionChoice::L2U8 => {
                     orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::L2U8Distance>(
@@ -77,12 +66,12 @@ impl IndexPlan {
                         dimension,
                     )?;
                 }
-                AdmissionChoice::MipsI8 | AdmissionChoice::L2Kt => {
+                AdmissionChoice::IpI8 | AdmissionChoice::CosineI8 | AdmissionChoice::L2Kt => {
                     orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::IpI8Distance>(
                         dimension,
                     )?;
                 }
-                AdmissionChoice::MipsI16 => {
+                AdmissionChoice::IpI16 | AdmissionChoice::CosineI16 => {
                     orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::IpI16Distance>(
                         dimension,
                     )?;
@@ -93,71 +82,62 @@ impl IndexPlan {
 
         // The conventional f32 path accepts the configured cascade unchanged.
         //
-        // `NativeL2U8`, however, means "score directly against a resident u8
+        // Native admissions mean "score directly against a resident u8
         // base". It therefore cannot be selected when the base itself is loaded
         // as f32. `L2U8` is the corresponding choice when an auxiliary
         // quantized sidecar is desired on top of f32 storage.
         if vector_storage == VectorStorageKind::F32 {
-            return if cascade.admission == AdmissionChoice::NativeL2U8 {
+            return if matches!(
+                cascade.admission,
+                AdmissionChoice::NativeL2U8
+                    | AdmissionChoice::NativeIpU8
+                    | AdmissionChoice::NativeCosineU8
+            ) {
                 Err(Error::unsupported(
-                    "native-l2-u8 requires --vector-storage u8; \
-                     use l2-u8 for a quantized f32 sidecar",
+                    "native admission requires --vector-storage u8; use a quantized or exact f32 cascade for f32 storage",
                 )
                 .at("configure"))
             } else {
                 Ok(Self {
                     base: BaseRepresentation(vector_storage),
-                    search: SearchRecipe::Cascade(cascade),
+                    search: cascade,
                 })
             };
         }
 
-        // Native byte distances support runtime dimensions but retain exact L2
-        // semantics; they do not implicitly quantize or normalize coordinates.
-        if metric != SearchMetric::L2 {
-            return Err(Error::unsupported("native u8 storage requires L2 vectors").at("configure"));
+        // Native cosine keeps byte coordinates; norms provide normalization.
+        if metric == SearchMetric::SquaredL2 {
+            orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::L2U8Distance>(
+                dimension,
+            )?;
         }
-
         // Native byte storage must come from byte-encoded inputs directly.
         // Float encodings are rejected rather than silently quantized because
         // quantization requires an explicit policy and would defeat the purpose
         // of preserving the original resident representation.
         let base = BaseRepresentation(vector_storage);
         base.validate_format(base_format)?;
-        base.validate_format(query_format)?;
+        // Query dtype is independent of resident base storage.
 
-        // The native-u8 path is not a configurable three-stage cascade:
-        //
-        //     no prefilter -> native byte L2 admission -> no rerank
-        //
-        // Requiring the explicit stage choices keeps the resolved plan and the
-        // run log aligned with the actual execution path.
-        if cascade.prefilter != PrefilterChoice::None
-            || cascade.admission != AdmissionChoice::NativeL2U8
-            || cascade.rerank != RerankChoice::None
-        {
-            return Err(Error::unsupported(
-                "native u8 requires --prefilter none \
-                 --admission native-l2-u8 --rerank none",
-            )
-            .at("configure"));
+        #[cfg(feature = "benchmark")]
+        if cascade.admission == AdmissionChoice::AdsF32 {
+            return Err(Error::unsupported("ADSampling requires f32 base storage"));
         }
 
         // Native u8 uses the ParlayANN in-memory builder or a STAG export/cache.
         // The in-process Rust graph builder still operates on f32 data, so
         // permitting another graph source here would imply a construction path
         // that does not exist.
-        if graph_source != GraphSource::Parlayann {
+        if !matches!(graph_source, GraphSource::Parlayann | GraphSource::Supplied) {
             return Err(Error::unsupported(
-                "native u8 requires a ParlayANN graph; \
-                 the Rust builder remains f32",
+                "native u8 requires ParlayANN or supplied partitions; the Rust builder remains f32",
             )
             .at("configure"));
         }
 
         Ok(Self {
             base: BaseRepresentation(vector_storage),
-            search: SearchRecipe::NativeL2U8,
+            search: cascade,
         })
     }
 
@@ -165,7 +145,7 @@ impl IndexPlan {
         self.base
     }
     pub(crate) fn cascade(self) -> Cascade {
-        self.search.cascade()
+        self.search
     }
 
     /// Resolve auxiliary allocations for the run phase from the validated recipe.
@@ -178,17 +158,18 @@ impl IndexPlan {
         if prepare_only {
             return Vec::new();
         }
-        self.search.cascade().sidecar_requirements()
+        self.search.sidecar_requirements()
     }
 }
 
 impl BaseRepresentation {
     pub(crate) fn validate_format(self, format: VectorFormat) -> Result<()> {
+        format.validate_base()?;
         if self.0 == VectorStorageKind::U8
             && !matches!(format, VectorFormat::Bvecs | VectorFormat::U8bin)
         {
             return Err(Error::unsupported(
-                "native u8 requires bvecs/u8bin base and queries; it does not quantize floats",
+                "native u8 base requires bvecs/u8bin; base loading does not quantize floats",
             )
             .at("configure"));
         }
@@ -206,22 +187,13 @@ impl BaseRepresentation {
     }
 }
 
-impl SearchRecipe {
-    fn cascade(self) -> Cascade {
-        match self {
-            Self::Cascade(cascade) => cascade,
-            Self::NativeL2U8 => Cascade::native_l2_u8(),
-        }
-    }
-}
-
 // Keep run logs and snapshot execution signatures stable across this refactor.
 impl serde::Serialize for IndexPlan {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(2))?;
         map.serialize_entry("vector_storage", &self.base.kind())?;
-        map.serialize_entry("cascade", &self.search.cascade())?;
+        map.serialize_entry("cascade", &self.search)?;
         map.end()
     }
 }
@@ -229,6 +201,7 @@ impl serde::Serialize for IndexPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::cascade::{PrefilterChoice, RerankChoice};
 
     fn native_cascade() -> Cascade {
         Cascade {
@@ -252,7 +225,7 @@ mod tests {
                 VectorStorageKind::F32,
                 VectorFormat::Bvecs,
                 GraphSource::Rust,
-                Cascade::default_for_specified_dimension_and_metric(128, SearchMetric::L2),
+                Cascade::default_for_specified_dimension_and_metric(128, SearchMetric::SquaredL2),
                 4,
             ),
             (
@@ -266,7 +239,7 @@ mod tests {
             let plan = IndexPlan::resolve(
                 storage,
                 128,
-                SearchMetric::L2,
+                SearchMetric::SquaredL2,
                 format,
                 format,
                 cascade,
@@ -289,21 +262,15 @@ mod tests {
     #[test]
     fn resolver_rejects_incompatible_representation_and_search_recipes() {
         let native = native_cascade();
-        let quantized = Cascade::default_for_specified_dimension_and_metric(128, SearchMetric::L2);
+        let quantized =
+            Cascade::default_for_specified_dimension_and_metric(128, SearchMetric::SquaredL2);
         for (storage, metric, format, source, cascade) in [
             (
                 VectorStorageKind::F32,
-                SearchMetric::L2,
+                SearchMetric::SquaredL2,
                 VectorFormat::Fbin,
                 GraphSource::Rust,
                 native,
-            ),
-            (
-                VectorStorageKind::U8,
-                SearchMetric::L2,
-                VectorFormat::U8bin,
-                GraphSource::Parlayann,
-                quantized,
             ),
             (
                 VectorStorageKind::U8,
@@ -314,14 +281,14 @@ mod tests {
             ),
             (
                 VectorStorageKind::U8,
-                SearchMetric::L2,
+                SearchMetric::SquaredL2,
                 VectorFormat::Fbin,
                 GraphSource::Parlayann,
                 native,
             ),
             (
                 VectorStorageKind::U8,
-                SearchMetric::L2,
+                SearchMetric::SquaredL2,
                 VectorFormat::U8bin,
                 GraphSource::Rust,
                 native,

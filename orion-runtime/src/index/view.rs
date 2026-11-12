@@ -3,12 +3,12 @@
  * Licensed under the MIT License.
  */
 
-//! Search backend and immutable identities selected for this session.
+//! Storage and immutable identities selected for this session.
 //! ReadView owns the engine; Engine defines its operations; DynamicEngine
-//! connects those operations to the selected core search backend.
-use super::query::{QueryBatch, QueryValues, SearchOptions};
+//! connects those operations to one core search interface for every element type.
+use super::query::{QueryBatch, SearchOptions};
 use super::snapshot::Payloads;
-use crate::{config::ResolvedRunConfig, search::SearchBackend, Result};
+use crate::{config::ResolvedRunConfig, data::BaseElement, Result};
 use orion_ann_diagnostics::RecordingObserver;
 use std::path::PathBuf;
 /// Objects and engine captured together at load time. Search and save use the
@@ -22,6 +22,11 @@ pub(super) struct ReadView {
 }
 
 pub(super) trait Engine: Send + Sync {
+    fn prepare_auxiliary(
+        &mut self,
+        config: &ResolvedRunConfig,
+        store: &std::path::Path,
+    ) -> Result<()>;
     fn release_auto_pin(&mut self);
     fn mapped_sidecar_bytes(&self) -> usize;
     fn mapped_base_bytes(&self) -> usize;
@@ -38,7 +43,7 @@ pub(super) trait Engine: Send + Sync {
     fn prepare_search(&mut self, config: &ResolvedRunConfig) -> Result<()>;
     fn calibrate(
         &self,
-        queries: &[f32],
+        queries: orion_ann_core::search::query::QueryInput<'_>,
         config: &ResolvedRunConfig,
         k: usize,
         beam: usize,
@@ -60,7 +65,7 @@ pub(super) trait Engine: Send + Sync {
     ) -> Result<orion_ann_core::SearchResult>;
     fn search_observed(
         &self,
-        query: &[f32],
+        query: orion_ann_core::search::query::QueryInput<'_>,
         config: &ResolvedRunConfig,
         k: usize,
         beam: usize,
@@ -70,16 +75,41 @@ pub(super) trait Engine: Send + Sync {
     fn sidecars(&self) -> Result<crate::sidecars::SnapshotSidecars>;
 }
 
-pub(super) struct DynamicEngine<B: SearchBackend> {
+pub(super) struct DynamicEngine<T: BaseElement> {
     // Drop locks before the index's heap allocations, including on unwind.
     // All allocation-replacing operations must release this token first.
     pub(super) auto_pin: orion_ann_platform::residency::OwnedPinGuard,
     pub(super) pin_report: crate::PinReport,
     pub(super) receipts: crate::sidecars::Receipts,
-    pub(super) index: orion_ann_core::Orion<B::Element>,
+    pub(super) index: orion_ann_core::Orion<T>,
 }
 
-impl<B: SearchBackend> Engine for DynamicEngine<B> {
+impl<T: BaseElement> Engine for DynamicEngine<T>
+where
+    orion_ann_diskann::model::PaddedDataset<T>: orion_ann_core::model::dataset::rows::CascadeData,
+{
+    fn prepare_auxiliary(
+        &mut self,
+        config: &ResolvedRunConfig,
+        store: &std::path::Path,
+    ) -> Result<()> {
+        if crate::placement::native_norm_bytes(config, self.index.len())? == 0 {
+            return Ok(());
+        }
+        crate::placement::configure(&self.index, config, std::iter::empty())?;
+        crate::search::prepare_datasets(&self.index, config)?;
+        let mut receipts = self
+            .receipts
+            .lock()
+            .map_err(|_| crate::Error::invalid_state("sidecar receipt lock poisoned"))?;
+        self.index.visit_sidecars(|codec, encode| {
+            if !receipts.contains_key(codec) {
+                let record = crate::storage::put(store, codec, |writer| encode(writer))?;
+                receipts.insert(codec.to_owned(), record);
+            }
+            Ok(())
+        })
+    }
     fn mapped_base_bytes(&self) -> usize {
         if self.index.dataset().placement() == orion_ann_platform::region::Placement::Mapped {
             std::mem::size_of_val(self.index.dataset().as_slice())
@@ -119,7 +149,14 @@ impl<B: SearchBackend> Engine for DynamicEngine<B> {
                 regions.iter().map(|r| r.len()).sum::<usize>()
             }
         })
-        .sum()
+        .sum::<usize>()
+            + self
+                .index
+                .native_norms_region()
+                .filter(|(_, placement)| {
+                    *placement == orion_ann_platform::region::Placement::Mapped
+                })
+                .map_or(0, |(bytes, _)| bytes.len())
     }
 
     fn release_auto_pin(&mut self) {
@@ -131,7 +168,7 @@ impl<B: SearchBackend> Engine for DynamicEngine<B> {
     }
     fn prepare_search(&mut self, config: &ResolvedRunConfig) -> Result<()> {
         self.release_auto_pin();
-        let guard = B::prepare_search(&self.index, config)?;
+        let guard = crate::search::prepare_search(&self.index, config)?;
         // SAFETY: base, graph and prepared sidecars own stable heap buffers.
         // The token is dropped before index (field order). Calibration and PQ
         // replacement release it first; shared searches never replace buffers.
@@ -149,20 +186,20 @@ impl<B: SearchBackend> Engine for DynamicEngine<B> {
         config: &ResolvedRunConfig,
         options: &crate::PinOptions,
     ) -> Result<crate::PinnedDatasets<'a>> {
-        B::pin_search_storage(&self.index, config, options)
+        crate::search::pin_search_storage(&self.index, config, options)
     }
     fn pin_hints(&self, config: &ResolvedRunConfig) -> Result<Vec<crate::PinHint>> {
-        B::pin_hints(&self.index, config)
+        crate::search::pin_hints(&self.index, config)
     }
 
     fn calibrate(
         &self,
-        q: &[f32],
+        q: orion_ann_core::search::query::QueryInput<'_>,
         c: &ResolvedRunConfig,
         k: usize,
         beam: usize,
     ) -> Result<orion_ann_core::CalibratedParams> {
-        self.index.calibrate(
+        self.index.calibrate_queries(
             q,
             beam,
             c.window_size,
@@ -179,44 +216,16 @@ impl<B: SearchBackend> Engine for DynamicEngine<B> {
         options: &SearchOptions,
         params: orion_ann_core::CalibratedParams,
     ) -> Result<orion_ann_core::SearchResult> {
-        if options.scores {
-            return match q.values {
-                QueryValues::F32(values) => B::search_batch_scored(
-                    &self.index,
-                    values,
-                    c,
-                    options.k,
-                    options.search_list_size,
-                    params,
-                ),
-                QueryValues::U8(values) => B::search_batch_u8_scored(
-                    &self.index,
-                    values,
-                    c,
-                    options.k,
-                    options.search_list_size,
-                    params,
-                ),
-            };
-        }
-        match q.values {
-            QueryValues::F32(values) => B::search_batch(
-                &self.index,
-                values,
-                c,
-                options.k,
-                options.search_list_size,
-                params,
-            ),
-            QueryValues::U8(values) => B::search_batch_u8(
-                &self.index,
-                values,
-                c,
-                options.k,
-                options.search_list_size,
-                params,
-            ),
-        }
+        let input = q.values;
+        crate::search::search_batch(
+            &self.index,
+            input,
+            c,
+            options.k,
+            options.search_list_size,
+            params,
+            options.scores,
+        )
     }
     fn search_subset(
         &self,
@@ -227,30 +236,24 @@ impl<B: SearchBackend> Engine for DynamicEngine<B> {
         scores: bool,
     ) -> Result<orion_ann_core::SearchResult> {
         let metric = match metric {
-            crate::SearchMetric::L2 => crate::ScoreMetric::SquaredL2,
+            crate::SearchMetric::SquaredL2 => crate::ScoreMetric::SquaredL2,
             crate::SearchMetric::InnerProduct => crate::ScoreMetric::InnerProduct,
             crate::SearchMetric::Cosine => crate::ScoreMetric::CosineSimilarity,
         };
-        match q.values {
-            QueryValues::F32(values) => self
-                .index
-                .search_subset_exact(values, ids, k, metric, scores),
-            QueryValues::U8(values) => {
-                let q: Vec<f32> = values.iter().map(|&v| f32::from(v)).collect();
-                self.index.search_subset_exact(&q, ids, k, metric, scores)
-            }
-        }
+        self.index
+            .search_subset_queries(q.values, ids, k, metric, scores)
     }
+
     fn search_observed(
         &self,
-        query: &[f32],
+        query: orion_ann_core::search::query::QueryInput<'_>,
         config: &ResolvedRunConfig,
         k: usize,
         beam: usize,
         params: orion_ann_core::CalibratedParams,
         observer: &mut RecordingObserver,
     ) -> Result<Vec<u32>> {
-        B::search_observed(&self.index, query, config, k, beam, params, observer)
+        crate::search::search_observed(&self.index, query, config, k, beam, params, observer)
     }
     fn sidecars(&self) -> Result<crate::sidecars::SnapshotSidecars> {
         crate::sidecars::materialized(&self.index, &self.receipts)

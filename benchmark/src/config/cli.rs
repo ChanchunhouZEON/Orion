@@ -21,8 +21,8 @@
 //! The resulting configuration also derives the graph-cache identity used to distinguish
 //! graphs built from different datasets or construction parameters.
 use crate::config::presets::{
-    try_load_root, try_resolve_placeholders, RawBaseGraph, RawOrionOverride, RawRoot,
-    SweepOverrides,
+    RawBaseGraph, RawOrionOverride, RawRoot, SweepOverrides, try_load_root,
+    try_resolve_placeholders,
 };
 use clap::Parser;
 use orion_ann::benchmark::config::{
@@ -675,14 +675,18 @@ mod tests {
         assert_eq!(native.storage(), VectorStorageKind::U8);
         assert_eq!(native.cascade(), native.cascade());
         assert_eq!(float.cascade(), float.cascade());
-        assert!(resolve(&["orion", "sift10m", "--vector-storage", "f32"])
-            .unwrap_err()
-            .to_string()
-            .contains("native-l2-u8 requires --vector-storage u8"));
+        assert!(
+            resolve(&["orion", "sift10m", "--vector-storage", "f32"])
+                .unwrap_err()
+                .to_string()
+                .contains("native admission requires --vector-storage u8")
+        );
         assert!(resolve(&["orion", "sift10m", "--admission", "l2-u8"])
             .unwrap_err()
             .to_string()
-            .contains("--admission native-l2-u8"));
+            .contains(
+                "native u8 requires no prefilter/rerank and a native admission matching its metric"
+            ));
         assert_eq!(native.storage(), VectorStorageKind::U8);
         assert_eq!(float.storage(), VectorStorageKind::F32);
 
@@ -725,7 +729,7 @@ mod tests {
                 100,
                 200,
                 PrefilterChoice::None,
-                AdmissionChoice::MipsI8,
+                AdmissionChoice::IpI8,
                 RerankChoice::IpF32,
             ),
             (
@@ -735,7 +739,7 @@ mod tests {
                 100,
                 200,
                 PrefilterChoice::None,
-                AdmissionChoice::MipsI8,
+                AdmissionChoice::IpI8,
                 RerankChoice::IpF32,
             ),
             (
@@ -765,7 +769,7 @@ mod tests {
                 64,
                 128,
                 PrefilterChoice::None,
-                AdmissionChoice::MipsI8,
+                AdmissionChoice::IpI8,
                 RerankChoice::IpF32,
             ),
             (
@@ -775,7 +779,7 @@ mod tests {
                 64,
                 128,
                 PrefilterChoice::Jl,
-                AdmissionChoice::MipsI8,
+                AdmissionChoice::IpI8,
                 RerankChoice::IpF32,
             ),
         ] {
@@ -885,7 +889,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             c.cascade(),
-            Cascade::default_for_specified_dimension_and_metric(960, SearchMetric::L2)
+            Cascade::default_for_specified_dimension_and_metric(960, SearchMetric::SquaredL2)
         );
     }
 
@@ -925,11 +929,13 @@ mod tests {
             .resolve_with(&root(), &LegacyEnvironment::default())
             .unwrap();
         assert_eq!(default.graph_source, GraphSource::Parlayann);
-        assert!(default
-            .staged_file
-            .as_ref()
-            .unwrap()
-            .starts_with("../ParlayANN"));
+        assert!(
+            default
+                .staged_file
+                .as_ref()
+                .unwrap()
+                .starts_with("../ParlayANN")
+        );
         let elsewhere = args
             .resolve_with(
                 &root(),
@@ -972,9 +978,11 @@ mod tests {
     fn graph_recipe_has_a_full_sha256_name() {
         let config = resolve(&["orion", "sift"]).unwrap();
         assert_eq!(config.cache_namespace.len(), 64);
-        assert!(config
-            .cache_namespace
-            .bytes()
-            .all(|b| b.is_ascii_hexdigit()));
+        assert!(
+            config
+                .cache_namespace
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
+        );
     }
 }

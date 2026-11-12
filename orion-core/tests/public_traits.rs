@@ -49,7 +49,7 @@ fn public_facade_trait_contracts() {
 fn debug_does_not_require_storage_debug_or_dump_vector_payloads() {
     #[derive(Default)]
     struct Opaque;
-    impl orion_ann_core::index::compressed_index::IndexData for Opaque {
+    impl orion_ann_core::index::IndexData for Opaque {
         fn point_count(&self) -> usize {
             2
         }

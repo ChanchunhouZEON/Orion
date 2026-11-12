@@ -29,3 +29,9 @@ pub use quantized_dataset::{
 pub use quantized_spec::{L2U8, L2U16, MipsI8, MipsI16, QuantParamsL2, QuantParamsMips, QuantSpec};
 pub use rabitq_b4_dataset::{RABITQ_B4_MAGIC, RabitQ4Dataset, rabitq_b4_code_stride};
 pub use scalar_dataset::ScalarQuantizedDataset;
+
+#[doc(hidden)]
+pub mod native_u8;
+
+pub mod base;
+pub mod store;

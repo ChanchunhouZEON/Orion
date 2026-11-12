@@ -297,7 +297,7 @@ mod pq_storage_tests {
         let mut buf = vec![0u8; block_size * num_pq_chunks * std::mem::size_of::<u8>()];
         result_reader.read_exact(&mut buf).unwrap();
 
-        let ptr = buf.as_ptr() as *const u8;
+        let ptr = buf.as_ptr();
         let block_data = unsafe { std::slice::from_raw_parts(ptr, block_size * num_pq_chunks) };
 
         for index in 0..block_data.len() {

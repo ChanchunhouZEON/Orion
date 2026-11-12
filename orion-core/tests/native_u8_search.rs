@@ -4,14 +4,17 @@
  */
 
 //! Native-byte storage must reuse the production two-phase loop and exact scores.
+use orion_ann_core::ScoreMetric;
+use orion_ann_core::search::cascade::stage::rerank::NoRerank;
+use orion_ann_core::search::query::QueryInput;
 #[path = "support/index_graph.rs"]
 mod graph_fixture;
 use graph_fixture::{GraphFixture, from_fixture_graph};
-use orion_ann_core::algorithm::search::diagnostics::{NeighborMode, SearchObserver};
-use orion_ann_core::algorithm::search::stage::Admission;
-use orion_ann_core::algorithm::search::stage::admission::NativeU8Admission;
-use orion_ann_core::algorithm::search::stage::rerank::F32Rerank;
 use orion_ann_core::model::Neighbor;
+use orion_ann_core::search::cascade::stage::Admission;
+use orion_ann_core::search::cascade::stage::admission::NativeU8Admission;
+use orion_ann_core::search::cascade::stage::rerank::F32Rerank;
+use orion_ann_core::search::diagnostics::{NeighborMode, SearchObserver};
 use orion_ann_core::{
     CalibrationConfig, CalibrationMetric, DynamicCascade, DynamicSearchConfig, PaddedDataset,
     PaddedLayout,
@@ -109,7 +112,7 @@ fn native_storage_preserves_calibration_search_and_local_extra_expansion() {
         .collect();
     let target = CalibrationConfig {
         k: 5,
-        metric: CalibrationMetric::L2,
+        metric: CalibrationMetric::SquaredL2,
     };
     let actual = native
         .calibrate(queries.as_flattened(), 32, 3, target)
@@ -133,14 +136,24 @@ fn native_storage_preserves_calibration_search_and_local_extra_expansion() {
         let mut float_trace = Trace::default();
         let byte_query: Vec<u8> = query.iter().map(|&value| value as u8).collect();
         let result = native
-            .search_l2_observed(&byte_query, controls, &mut native_trace)
-            .unwrap();
-        let expected = reference
-            .search_cascade_observed(
-                query,
+            .search_observed(
+                QueryInput::U8(&byte_query),
                 controls,
                 DynamicCascade {
-                    prefilter: None,
+                    prefilter: &orion_ann_core::search::cascade::stage::NoPrefilter,
+                    admission: &native.exact_stage(ScoreMetric::SquaredL2).unwrap(),
+                    rerank: &NoRerank,
+                },
+                NeighborMode::default(),
+                &mut native_trace,
+            )
+            .unwrap();
+        let expected = reference
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(query),
+                controls,
+                DynamicCascade {
+                    prefilter: &orion_ann_core::search::cascade::stage::NoPrefilter,
                     // Byte scores are exact; the separate scalar test checks their values.
                     admission: &NativeU8Admission::new(&reference_bytes),
                     rerank: &F32Rerank::new(reference.dataset()),

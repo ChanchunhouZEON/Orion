@@ -91,6 +91,13 @@ class GraphConfig:
 
 @dataclass(frozen=True)
 class CascadeConfig:
+    """Optional metric-specific stages, shared with Rust and CLI.
+
+    Cosine: cosine-i8/cosine-i16/pq-cosine -> cosine-f32; inputs are
+    normalized internally. Raw IP: ip-i8/ip-i16/pq-ip -> ip-f32.
+    Existing cosine arms do not correct quantized-vector norms.
+    Mismatched metric/stage combinations raise OrionError at construction.
+    """
     prefilter: Optional[str] = None
     admission: Optional[str] = None
     rerank: Optional[str] = None
@@ -154,7 +161,8 @@ class Index:
     Construct with from_file/from_array/open. Searches may share one Index;
     concurrent batches share the configured worker pool with the GIL released.
     Calibration holds an exclusive lock. Array inputs are copied before release.
-    Array inputs must be C-contiguous float32 or uint8; no implicit dtype casting.
+    Base arrays must be C-contiguous float32 or uint8. Queries also accept
+    int8, uint16 and uint32, independently of base dtype; no implicit NumPy casting.
     """
     def __init__(self, handle):
         if not isinstance(handle, _Index):
@@ -162,7 +170,7 @@ class Index:
         self._handle = handle
 
     @classmethod
-    def from_file(cls, base: PathLike, *, metric="l2", storage=None,
+    def from_file(cls, base: PathLike, *, metric="squared-l2", storage=None,
                   graph: Optional[GraphConfig] = None, cascade: Optional[CascadeConfig] = None,
                   cache_dir: PathLike = "cache/orion-ann", threads=8, window_size=5,
                   memory_budget_gib=None, max_points=None, base_format=None, auto_pin=True, storage_options: Optional[StorageOptions] = None, external_ids=None):
@@ -178,7 +186,7 @@ class Index:
         return cls(_Index.from_file(os.fspath(base), options, external_ids))
 
     @classmethod
-    def from_array(cls, base: np.ndarray, *, metric="l2", storage=None,
+    def from_array(cls, base: np.ndarray, *, metric="squared-l2", storage=None,
                    graph: Optional[GraphConfig] = None, cascade: Optional[CascadeConfig] = None,
                    cache_dir: PathLike = "cache/orion-ann", threads=8, window_size=5,
                    memory_budget_gib=None, max_points=None, auto_pin=True, storage_options: Optional[StorageOptions] = None, external_ids=None):
@@ -192,6 +200,22 @@ class Index:
         options = _options(metric, storage, graph, cascade, cache_dir, threads,
                            window_size, memory_budget_gib, max_points, None, auto_pin, storage_options)
         return cls(_Index.from_array(base, options, external_ids))
+
+    if hasattr(_Index, "from_staged"):
+        @classmethod
+        def from_staged(cls, base: Input, staged: PathLike, *, metric="squared-l2", storage=None,
+                        cascade: Optional[CascadeConfig] = None, cache_dir: PathLike = "cache/orion-ann",
+                        threads=8, window_size=5, memory_budget_gib=None, base_format=None,
+                        auto_pin=True, storage_options: Optional[StorageOptions] = None):
+            """Experimental STAG v4 import, without repartitioning or builder fallback.
+
+            Requires a source build with Cargo feature experimental-graph. The file
+            owns graph capacities and entry; metric must agree with its descriptor.
+            Calibrate explicitly before searching; save/open use ordinary snapshots.
+            """
+            options = _options(metric, storage, None, cascade, cache_dir, threads, window_size,
+                               memory_budget_gib, None, base_format, auto_pin, storage_options)
+            return cls(_Index.from_staged(_input(base), os.fspath(staged), options))
 
     @classmethod
     def open(cls, snapshot: Union[PathLike, SnapshotRef], *, base: Optional[Input] = None, threads=None, memory_budget_gib=None, auto_pin=None, storage_options: Optional[StorageOptions] = None, object_store: Optional[PathLike] = None):
@@ -211,7 +235,7 @@ class Index:
 
     @property
     def info(self) -> dict:
-        """Shape, resolved graph/cascade, pool size and per-k calibration records."""
+        """Shape, resolved cascade/dispatch, pool size and per-k calibration records."""
         return json.loads(self._handle.info())
 
     def calibrate(self, queries: Input, *, k=10, search_list_size=None,
@@ -291,7 +315,9 @@ class Index:
         Files are decoded as a complete batch. For bounded memory, pass separate
         ndarray batches. No recall evaluation or cache flushing occurs here.
         Require 1 <= k <= point_count and k <= search_list_size <= u32::MAX/4.
-        Native-u8 queries must have exact integral values in [0, 255]. Returned
+        Query dtype is independent of base dtype. Float coordinates must be finite;
+        cosine rows must be nonzero. Wide integers retain their original values
+        for exact scoring (the output scores are still float32). Returned
         uint32 IDs preserve row order; use counts to exclude UINT32_MAX padding.
         Empty batches are supported after control/calibration validation.
 

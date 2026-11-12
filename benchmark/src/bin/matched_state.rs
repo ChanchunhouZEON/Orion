@@ -6,17 +6,17 @@
 //! Deterministic-prefix replay and local geometric audits; no timing claims.
 use benchmark::config::Args as RunArgs;
 use orion_ann::benchmark::cascade;
-use orion_ann::benchmark::{graph, memory, LoadedDataset, ResolvedRunConfig};
+use orion_ann::benchmark::{LoadedDataset, ResolvedRunConfig, graph, memory};
 use orion_ann::with_supported_dimension;
 use orion_ann_core::{Error, Result};
 
 use clap::{Parser, ValueEnum};
-use orion_ann_core::algorithm::search::stage::admission::ExactAdmission;
-use orion_ann_core::algorithm::search::{
+use orion_ann_core::search::cascade::stage::admission::ExactAdmission;
+use orion_ann_core::search::{
+    cascade::stage::{Admission, AdmissionQuery, Prefilter, Rerank, rerank::NoRerank},
     diagnostics::{Checkpoint, MatchedStateTrace, NeighborMode, NoopObserver},
-    stage::{rerank::NoRerank, Admission, AdmissionQuery, Prefilter, Rerank},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{collections::BTreeSet, fs::OpenOptions, io::Write, path::PathBuf};
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -231,6 +231,10 @@ fn audit<const N: usize>(
         "audit_admission_score_evaluations": scoring_evaluations})
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "keep the existing benchmark controls and call sites explicit"
+)]
 fn trace_json<const N: usize>(
     idx: &orion_ann_core::Orion,
     q: &[f32; N],
@@ -304,17 +308,15 @@ fn run<const N: usize>(
     }
     let idx = graph::load_index(config, &mut data)?;
 
-    let calib = idx
-        .calibrate(
-            queries[..settings.calibration_samples.min(queries.len())].as_flattened(),
-            settings.calibration_l,
-            config.window_size,
-            orion_ann_core::CalibrationConfig {
-                k: settings.k,
-                metric: orion_ann_core::CalibrationMetric::L2,
-            },
-        )
-        .map_err(Error::from)?;
+    let calib = idx.calibrate(
+        queries[..settings.calibration_samples.min(queries.len())].as_flattened(),
+        settings.calibration_l,
+        config.window_size,
+        orion_ann_core::CalibrationConfig {
+            k: settings.k,
+            metric: orion_ann_core::CalibrationMetric::SquaredL2,
+        },
+    )?;
     let count = if args.diagnostic_queries == 0 {
         queries.len()
     } else {
@@ -329,15 +331,15 @@ fn run<const N: usize>(
     let mut results = Vec::new();
     for &exact in tracks {
         let track = if exact { "exact_l2" } else { "cascade" };
-        let pf: Option<Box<Prefilter<'_>>> = if exact {
-            None
+        let pf: Box<Prefilter<'_>> = if exact {
+            Box::new(orion_ann_core::search::cascade::stage::NoPrefilter)
         } else {
             cascade::build_prefilter(&idx, config.cascade().prefilter, config.cascade().admission)?
         };
         let ad: Box<Admission<'_>> = if exact {
             Box::new(ExactAdmission(idx.dataset()))
         } else {
-            cascade::build_admission(&idx, config.cascade().admission).map_err(Error::from)?
+            cascade::build_admission(&idx, config.cascade().admission)?
         };
         let rr: Box<Rerank<'_>> = if exact {
             Box::new(NoRerank)
@@ -353,36 +355,32 @@ fn run<const N: usize>(
                 let mut returned = Vec::new();
                 for mode in NeighborMode::ALL {
                     let mut trace = MatchedStateTrace::new(truth);
-                    let ids = idx
-                        .search_unified_observed(
-                            q,
-                            settings.k,
-                            l,
-                            config.window_size,
-                            calib.threshold,
-                            usize::MAX,
-                            pf.as_deref(),
-                            ad.as_ref(),
-                            rr.as_ref(),
-                            mode,
-                            &mut trace,
-                        )
-                        .map_err(Error::from)?;
-                    let plain = idx
-                        .search_unified_observed(
-                            q,
-                            settings.k,
-                            l,
-                            config.window_size,
-                            calib.threshold,
-                            usize::MAX,
-                            pf.as_deref(),
-                            ad.as_ref(),
-                            rr.as_ref(),
-                            mode,
-                            &mut NoopObserver,
-                        )
-                        .map_err(Error::from)?;
+                    let ids = idx.search_unified_observed(
+                        q,
+                        settings.k,
+                        l,
+                        config.window_size,
+                        calib.threshold,
+                        usize::MAX,
+                        pf.as_ref(),
+                        ad.as_ref(),
+                        rr.as_ref(),
+                        mode,
+                        &mut trace,
+                    )?;
+                    let plain = idx.search_unified_observed(
+                        q,
+                        settings.k,
+                        l,
+                        config.window_size,
+                        calib.threshold,
+                        usize::MAX,
+                        pf.as_ref(),
+                        ad.as_ref(),
+                        rr.as_ref(),
+                        mode,
+                        &mut NoopObserver,
+                    )?;
                     if ids != plain {
                         return Err(Error::from(format!(
                             "Observer changed results: {track}, L={l}, query={qi}"
@@ -496,7 +494,7 @@ fn run<const N: usize>(
 
 fn execute(args: Args) -> Result<()> {
     let config = args.run.resolve_for_sweep()?;
-    if config.metric != cascade::SearchMetric::L2 {
+    if config.metric != cascade::SearchMetric::SquaredL2 {
         return Err("Geometric audit currently requires L2".into());
     }
     if !args.geometry_alpha.is_finite() || args.geometry_alpha <= 1.0 {

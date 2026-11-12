@@ -3,9 +3,21 @@
  * Licensed under the MIT License.
  */
 
-//! Runtime-dimensional storage shared by future Orion/DiskANN adapters.
-//! The existing const-generic dataset is deliberately retained until the
-//! index, vertex and scratch migration; neither owns a second copy here.
+//! # Layout at a glance
+//!
+//! ```text
+//! memory: row 0 [D values of T | zero padding] ... row N-1 [D values | padding]
+//!         row start = base + row_id * stride_bytes
+//!         stride_elements = stride_bytes / size_of::<T>()
+//! ```
+//!
+//! `T: Pod` describes storage, independently of distance-kernel support. The
+//! layout must declare the same element width as `T`; logical rows exclude
+//! padding. Owned and private-mapped allocations obey the same layout and
+//! lifetime rules. This module has no file codec: base loaders decode packed
+//! input rows into this layout, and persistence is owned by the runtime.
+
+//! Runtime-dimensional storage shared by Orion and DiskANN adapters.
 
 use bytemuck::Pod;
 use orion_ann_vector::{DistanceKernelBackend, DistanceStream, PaddedLayout};
@@ -44,7 +56,7 @@ impl<T: Pod> PaddedDataset<T> {
     /// Copies directly into the final allocation; also serves ndarray callers
     /// that have already validated a contiguous, row-major source slice.
     pub fn from_packed(values: &[T], layout: PaddedLayout) -> Result<Self, String> {
-        if values.len() % layout.logical_dim() != 0 {
+        if !values.len().is_multiple_of(layout.logical_dim()) {
             return Err("packed input is not a rectangular matrix".into());
         }
         let mut result = Self::new(values.len() / layout.logical_dim(), layout)?;
@@ -67,7 +79,7 @@ impl<T: Pod> PaddedDataset<T> {
         if rows == 0
             || layout.element_bytes() != std::mem::size_of::<T>()
             || data.len() * std::mem::size_of::<T>() != layout.allocation_bytes(rows)?
-            || data.as_ptr() as usize % layout.alignment() != 0
+            || !(data.as_ptr() as usize).is_multiple_of(layout.alignment())
         {
             return Err("invalid padded allocation shape or alignment".into());
         }
@@ -155,7 +167,7 @@ impl<T: Pod> PaddedDataset<T> {
             return Err("dimension exceeds the kernel's integer accumulator range".into());
         }
         let block = K::stream_block_bytes(self.layout.compute_bytes());
-        if block == 0 || self.layout.compute_bytes() % block != 0 {
+        if block == 0 || !self.layout.compute_bytes().is_multiple_of(block) {
             return Err("layout does not contain complete kernel blocks".into());
         }
         if ids.iter().any(|&id| id as usize >= self.rows) {

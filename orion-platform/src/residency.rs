@@ -277,6 +277,15 @@ impl Drop for PinGuard<'_> {
     }
 }
 
+impl std::fmt::Debug for PinGuard<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PinGuard")
+            .field("pinned_bytes", &self.bytes)
+            .field("range_count", &self.ranges.len())
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,14 +403,5 @@ mod tests {
         let mut guard = PinGuard::default();
         assert!(guard.try_pin(&[&bytes], 0).is_err());
         assert_eq!(guard.pinned_bytes(), 0);
-    }
-}
-
-impl std::fmt::Debug for PinGuard<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PinGuard")
-            .field("pinned_bytes", &self.bytes)
-            .field("range_count", &self.ranges.len())
-            .finish_non_exhaustive()
     }
 }

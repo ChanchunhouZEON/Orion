@@ -5,6 +5,7 @@
 
 //! ParlayANN borrows padded input and writes navigation/extras into the final slab.
 use super::*;
+use crate::ErrorCode;
 use orion_ann_parlay::{BuildOptions, Builder, Metric};
 pub fn convert_error(error: orion_ann_parlay::Error) -> Error {
     let code = match error.code {
@@ -27,8 +28,9 @@ fn options(config: &BuildConfig) -> BuildOptions {
         local_pct: config.local_pct as u32,
         alpha: config.alpha as f64,
         metric: match config.metric {
-            BuildMetric::L2 => Metric::L2,
+            BuildMetric::SquaredL2 => Metric::L2,
             BuildMetric::InnerProduct => Metric::InnerProduct,
+            BuildMetric::Cosine => Metric::Cosine,
         },
         ..BuildOptions::default()
     }

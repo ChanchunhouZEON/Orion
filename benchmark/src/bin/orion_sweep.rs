@@ -12,8 +12,7 @@ use std::time::Instant;
 use benchmark::config::Args;
 use clap::Parser;
 use orion_ann::benchmark::{
-    memory, utils, F32CascadeBackend, LoadedDataset, NativeU8L2Backend, ResolvedRunConfig,
-    SearchBackend,
+    BaseElement, LoadedDataset, ResolvedRunConfig, memory, prepare_search, search_batch, utils,
 };
 
 /// Promote the calling thread to the highest QoS tier (`USER_INTERACTIVE`,
@@ -127,14 +126,21 @@ macro_rules! log_search_metrics {
     };
 }
 
-fn run_sweep<B: SearchBackend>(
+fn run_sweep<T: BaseElement>(
     config: &ResolvedRunConfig,
-    mut data: LoadedDataset<B::Element>,
-) -> Result<()> {
+    mut data: LoadedDataset<T>,
+    load: impl FnOnce(
+        &ResolvedRunConfig,
+        &mut orion_ann::execution::LoadedBase<T>,
+    ) -> orion_ann::Result<orion_ann_core::Orion<T>>,
+) -> Result<()>
+where
+    orion_ann_diskann::model::PaddedDataset<T>: orion_ann_core::model::dataset::rows::CascadeData,
+{
     let run = &config.sweep;
     let k = run.k;
     let num_threads = run.threads;
-    let idx = B::load_index(config, &mut data)?;
+    let idx = load(config, &mut data)?;
     if config.prepare_only {
         return Ok(());
     }
@@ -144,7 +150,7 @@ fn run_sweep<B: SearchBackend>(
     let query_count = data.queries.len();
 
     // Preparation applies the shared auto-pin policy; retain its guard through timing.
-    let _residency = B::prepare_search(&idx, config).expect("prepare search datasets");
+    let _residency = prepare_search(&idx, config).expect("prepare search datasets");
     log::info!("Cascade: {}", config.cascade().label());
 
     // Calibrate on the full graph with the cascade's exact metric
@@ -152,7 +158,7 @@ fn run_sweep<B: SearchBackend>(
     let calib_qs = &queries_arr[..run.calibration_samples.min(query_count) * config.dimension];
     let calib = idx
         .calibrate(
-            &calib_qs,
+            calib_qs,
             run.calibration_l,
             config.window_size,
             orion_ann_core::CalibrationConfig {
@@ -235,14 +241,24 @@ fn run_sweep<B: SearchBackend>(
     // first timed L (16) ~5–10% slower than its run-2 reading
     // due to lingering cold-cache + DVFS-ramp jitter.
     for _ in 0..1 {
-        let _warm = pool
-            .install(|| B::search_batch(&idx, &queries_arr, config, k, warmup_l, calib).unwrap());
+        let _warm = pool.install(|| {
+            search_batch(
+                &idx,
+                queries_arr.as_slice().into(),
+                config,
+                k,
+                warmup_l,
+                calib,
+                false,
+            )
+            .unwrap()
+        });
         drop(_warm);
     }
     // Reset the per-phase atomic counters so the warmup's stats
     // don't contaminate the first timed L's averages.
     {
-        use orion_ann_core::algorithm::search::{
+        use orion_ann_core::search::{
             NDC_F32, NDC_I8, POST_CONV_ADMITS, POST_CONV_HOPS, PRE_CONV_ADMITS, PRE_CONV_HOPS,
             QUERY_COUNT, RAW_VISIT_COUNT, SETUP_NS, VISIT_COUNT,
         };
@@ -267,8 +283,18 @@ fn run_sweep<B: SearchBackend>(
             // the "first query" conditions PA reports.
             utils::flush_cache();
             let t = Instant::now();
-            let results =
-                pool.install(|| B::search_batch(&idx, &queries_arr, config, k, l, calib).unwrap());
+            let results = pool.install(|| {
+                search_batch(
+                    &idx,
+                    queries_arr.as_slice().into(),
+                    config,
+                    k,
+                    l,
+                    calib,
+                    false,
+                )
+                .unwrap()
+            });
             let wall = t.elapsed();
             samples.push(query_count as f64 / wall.as_secs_f64());
             recall = gt.as_ref().map(|truth| mean_recall(&results, truth, k));
@@ -283,7 +309,7 @@ fn run_sweep<B: SearchBackend>(
         // Compares directly against PA's `average visited` and
         // exposes pre/post-convergence yield for diagnosis.
 
-        use orion_ann_core::algorithm::search::{
+        use orion_ann_core::search::{
             NDC_F32, NDC_I8, POST_CONV_ADMITS, POST_CONV_HOPS, PRE_CONV_ADMITS, PRE_CONV_HOPS,
             QUERY_COUNT, RAW_VISIT_COUNT, SETUP_NS, VISIT_COUNT,
         };
@@ -407,11 +433,11 @@ fn execute(args: Args) -> Result<()> {
     match config.storage() {
         orion_ann::VectorStorageKind::F32 => {
             let data = LoadedDataset::<f32>::load(&config)?;
-            run_sweep::<F32CascadeBackend>(&config, data)
+            run_sweep::<f32>(&config, data, orion_ann::benchmark::graph::load_index)
         }
         orion_ann::VectorStorageKind::U8 => {
             let data = LoadedDataset::<u8>::load(&config)?;
-            run_sweep::<NativeU8L2Backend>(&config, data)
+            run_sweep::<u8>(&config, data, orion_ann::benchmark::graph::load_u8_index)
         }
     }
 }

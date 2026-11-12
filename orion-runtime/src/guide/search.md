@@ -36,6 +36,39 @@ assert_eq!(index.search(QueryBatch::from_f32(&values[..3], 3)?, &SearchOptions::
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+## Query dtype is independent of base dtype
+
+Use the same borrowed input for calibration and search. The generic constructor
+accepts `f32`, `u8`, `i8`, `u16` and `u32`; base storage remains f32 or native u8.
+
+```no_run
+# fn example(index: &mut orion_ann::Index) -> orion_ann::Result<()> {
+use orion_ann::{QueryBatch, SearchOptions};
+let values = vec![500u16; 4 * index.dimension()];
+let queries = QueryBatch::from_slice(&values, index.dimension())?;
+index.calibrate_batch(queries, 10, Some(64))?;
+let result = index.search(queries, &SearchOptions::new(10, 64).with_scores(true))?;
+assert_eq!(result.len(), 4);
+# Ok(()) }
+```
+
+Per-row preparation shares conversion and normalization across stages. It never
+casts a whole batch to the base dtype. Losslessly compatible rows reuse existing
+SIMD kernels. Signed/fractional queries against byte bases, and u32 coordinates
+that cannot be represented exactly as f32, use a wider exact computation path;
+this correctness path may be slower. Approximate sidecars still use their existing
+encoders. Scores are f32 outputs, so preserving input integers does not imply
+arbitrary-precision output scores. Calibration samples should represent the query
+workload, even though a calibration record is not restricted to one query dtype.
+
+Python accepts C-contiguous native-endian NumPy arrays of the same five dtypes
+and copies them before releasing the GIL. File queries retain their dtype through
+CLI streaming and Python loading. Alongside fvecs/fbin and bvecs/u8bin, the query
+formats `i8bin`, `u16bin`, and `u32bin` have a little-endian `(rows: u32, dimension:
+u32)` header followed by packed little-endian coordinates. These three formats
+are query-only. `calibrate_many_batches` prepares multiple k values from the same
+borrowed batch; the existing Vec<f32> calibration methods remain convenience APIs.
+
 ## Serve cosine queries in batches
 
 For embeddings, select `SearchMetric::Cosine` when building the index. The
@@ -86,8 +119,9 @@ For non-adaptive comparisons, use `benchmark::search_non_adaptive` with the
 `adaptive = false`. Both use approximate graph traversal.
 
 Require `1 <= k <= point_count` and `k <= beam <= u32::MAX/4`. A nonmultiple query
-length returns `DimensionMismatch`. Coordinates must be finite; for native u8
-indices the f32 transport values must be integral and in `[0, 255]`. Empty search
+length returns `DimensionMismatch`. Floating coordinates must be finite; cosine queries must be nonzero. Query
+coordinates are independent of the base dtype: signed, fractional and wide
+integer queries are accepted for both f32 and native-u8 bases. Empty search
 batches are allowed after parameter and calibration validation. Validating one
 request does not invalidate the index when it fails.
 
@@ -106,7 +140,7 @@ Python searches take a shared read lock and release the GIL; calibration takes
 an exclusive write lock. NumPy input is copied while holding the GIL before any
 worker reads it. Do not mutate an array concurrently with that initial copy.
 
-`QueryBatch` borrows packed `f32` or `u8` coordinates, validates shape, and never
+`QueryBatch` borrows packed `f32`, `u8`, `i8`, `u16` or `u32` coordinates, validates shape, and never
 changes the caller's buffer. L2/IP f32 input is borrowed until kernel preparation;
 native-u8 input stays bytes. Cosine normalization and representation conversion
 use internal buffers. SIMD padding and per-query working memory still allocate
@@ -175,9 +209,11 @@ by their storage width. The existing dimension/metric defaults are unchanged.
 
 ## Product quantization
 
-The `pq-l2` and `pq-ip` admission choices use the same fitted PQ dataset with
-squared-L2 and negative-inner-product lookup tables respectively. Query coordinates
-remain f32. PQ is trained only when requested; existing default recipes are unchanged.
+The `pq-l2`, `pq-ip`, and `pq-cosine` admission choices reuse the PQ
+representation. L2 uses squared-distance tables; IP and cosine use negative-IP
+tables. Cosine normalizes base/query rows before fitting and search; raw IP does
+not. PQ lookup tables use a per-row f32 transport; exact reranking and exported
+scores retain the original query coordinates. PQ is trained only when requested; existing default recipes are unchanged.
 PQ admissions can use exact reranking. Compression ratio alone does not establish
 an ordering against scalar quantizers, so PQ followed by u16 reranking is rejected.
 

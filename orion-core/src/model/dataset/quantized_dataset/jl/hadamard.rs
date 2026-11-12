@@ -3,12 +3,24 @@
  * Licensed under the MIT License.
  */
 
+//! # Layout at a glance
+//!
+//! ```text
+//! memory: N padded bit-signature rows + 3 sign arrays of d_pad i8 values
+//! file:   [32 B header][signs1][signs2][signs3][N rows at disk stride]
+//! ```
+//!
+//! D is the logical input dimension; d_pad is the power-of-two transform width
+//! and signature bit count. Signs are shared across rows. File stride is at
+//! least 32 B and rounded to 16 B; memory may add zero padding for the selected
+//! Hamming kernel. The bit packing matches sparse JL, not its file header.
+
 //! JL Hadamard — dense, structured-random binary signature for the
 //! prefilter tier.
 //!
 //! Each output bit is the sign of a sum-of-all-D-coordinates with
 //! pseudorandom `±1` weights, computed via three rounds of
-//! `random-sign-flip + FWHT (HDHDHDx)`. Same on-disk + in-RAM layout
+//! `random-sign-flip + FWHT (HDHDHDx)`. The same sign-bit packing
 //! as [`crate::model::dataset::jl_sparse_dataset::JLSparseDataset`] (bit-packed sign
 //! codes, LSB-first per byte) so the search-time hot path reuses
 //! `JLHammingDistance` unchanged.
@@ -38,7 +50,7 @@ use crate::Result;
 use crate::model::dataset::quantized_dataset::{
     QuantizedDataset, QuantizedDatasetShape, ResidentMemory,
 };
-use crate::model::dataset::rows::F32Rows;
+use crate::model::dataset::rows::Rows;
 use crate::model::dataset::validation::{self, CheckedRows};
 use orion_ann_diskann::common::AlignedBoxWithSlice;
 use rayon::prelude::*;
@@ -72,7 +84,7 @@ pub const fn jl_hadamard_stride(d_pad: usize) -> usize {
 }
 
 pub const fn jl_hadamard_stride_disk(d_pad: usize) -> usize {
-    let raw = (d_pad + 7) / 8;
+    let raw = d_pad.div_ceil(8);
     let floored = if raw < 32 { 32 } else { raw };
     (floored + 15) & !15
 }
@@ -108,7 +120,7 @@ impl JlHadamardDataset {
     /// # Panics
     /// Panics on invalid input or allocation failure. Use [`Self::try_build_from`]
     /// to propagate a structured error at application boundaries.
-    pub fn build_from(dataset: &impl F32Rows, seed: u64) -> Self {
+    pub fn build_from(dataset: &impl Rows, seed: u64) -> Self {
         Self::try_build_from(dataset, seed).expect("invalid sidecar input")
     }
 
@@ -117,13 +129,13 @@ impl JlHadamardDataset {
     /// # Errors
     /// Returns an error for invalid rows, unsupported dimensions, invalid fitted
     /// parameters, or allocation failure. Logical rows exclude SIMD padding.
-    pub fn try_build_from(dataset: &impl F32Rows, seed: u64) -> Result<Self> {
+    pub fn try_build_from(dataset: &impl Rows, seed: u64) -> Result<Self> {
         Self::try_build_from_with_storage(dataset, seed, &Default::default())
     }
 
     /// Build/load into the selected private storage; layout and arithmetic are unchanged.
     pub fn try_build_from_with_storage(
-        dataset: &impl F32Rows,
+        dataset: &impl Rows,
         seed: u64,
         storage: &orion_ann_platform::region::RegionOptions,
     ) -> Result<Self> {
@@ -139,7 +151,7 @@ impl JlHadamardDataset {
     /// # Panics
     /// Panics on invalid input or allocation failure. Use [`Self::try_build_with_padding`]
     /// to propagate a structured error at application boundaries.
-    pub fn build_with_padding(dataset: &impl F32Rows, seed: u64, d_pad: usize) -> Self {
+    pub fn build_with_padding(dataset: &impl Rows, seed: u64, d_pad: usize) -> Self {
         Self::try_build_with_padding(dataset, seed, d_pad).expect("invalid sidecar input")
     }
 
@@ -148,13 +160,13 @@ impl JlHadamardDataset {
     /// # Errors
     /// Returns an error for invalid rows, unsupported dimensions, invalid fitted
     /// parameters, or allocation failure. Logical rows exclude SIMD padding.
-    pub fn try_build_with_padding(dataset: &impl F32Rows, seed: u64, d_pad: usize) -> Result<Self> {
+    pub fn try_build_with_padding(dataset: &impl Rows, seed: u64, d_pad: usize) -> Result<Self> {
         Self::try_build_with_padding_with_storage(dataset, seed, d_pad, &Default::default())
     }
 
     /// Build/load into the selected private storage; layout and arithmetic are unchanged.
     pub fn try_build_with_padding_with_storage(
-        dataset: &impl F32Rows,
+        dataset: &impl Rows,
         seed: u64,
         d_pad: usize,
         storage: &orion_ann_platform::region::RegionOptions,
@@ -196,8 +208,8 @@ impl JlHadamardDataset {
         codes_slice
             .par_chunks_mut(stride)
             .enumerate()
-            .for_each(|(vid, code)| {
-                let x = dataset.row(vid);
+            .for_each_init(Vec::new, |row_scratch, (vid, code)| {
+                let x = dataset.row_f32(vid, row_scratch);
                 let mut buf = vec![0.0f32; d_pad];
                 encode_vector(x, &signs1, &signs2, &signs3, &mut buf, code);
             });
@@ -490,39 +502,6 @@ impl std::fmt::Debug for JlHadamardDataset {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fwht_self_inverse_up_to_scale() {
-        let mut x = [1.0, 2.0, 3.0, 4.0];
-        let orig = x;
-        fwht(&mut x);
-        fwht(&mut x);
-        let n = 4.0;
-        for i in 0..4 {
-            assert!((x[i] - orig[i] * n).abs() < 1e-5);
-        }
-    }
-
-    #[test]
-    fn hadamard_encode_round_trip_signs() {
-        // Two identical queries produce identical signatures.
-        let q = [0.5f32; 8];
-        let mut buf1 = [0.0f32; 8];
-        let mut buf2 = [0.0f32; 8];
-        let mut code1 = [0u8; 32];
-        let mut code2 = [0u8; 32];
-        let signs1 = vec![1i8, -1, 1, -1, 1, -1, 1, -1];
-        let signs2 = vec![1i8, 1, -1, -1, 1, 1, -1, -1];
-        let signs3 = vec![1i8, 1, 1, 1, -1, -1, -1, -1];
-        encode_vector(&q, &signs1, &signs2, &signs3, &mut buf1, &mut code1);
-        encode_vector(&q, &signs1, &signs2, &signs3, &mut buf2, &mut code2);
-        assert_eq!(code1, code2);
-    }
-}
-
 impl JlHadamardDataset {
     /// Read-only access to the sidecar dimension.
     #[inline]
@@ -580,7 +559,7 @@ impl QuantizedDataset for JlHadamardDataset {
             padded_dimension: None,
         }
     }
-    fn build(base: &impl F32Rows, options: &Self::BuildOptions) -> Result<Self> {
+    fn build(base: &impl Rows, options: &Self::BuildOptions) -> Result<Self> {
         Self::estimate_resident_memory(
             QuantizedDatasetShape {
                 rows: base.len(),
@@ -613,5 +592,38 @@ impl QuantizedDataset for JlHadamardDataset {
             self.signs1.len() + self.signs2.len() + self.signs3.len(),
         )
         .expect("validated resident allocation sizes")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fwht_self_inverse_up_to_scale() {
+        let mut x = [1.0, 2.0, 3.0, 4.0];
+        let orig = x;
+        fwht(&mut x);
+        fwht(&mut x);
+        let n = 4.0;
+        for i in 0..4 {
+            assert!((x[i] - orig[i] * n).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn hadamard_encode_round_trip_signs() {
+        // Two identical queries produce identical signatures.
+        let q = [0.5f32; 8];
+        let mut buf1 = [0.0f32; 8];
+        let mut buf2 = [0.0f32; 8];
+        let mut code1 = [0u8; 32];
+        let mut code2 = [0u8; 32];
+        let signs1 = vec![1i8, -1, 1, -1, 1, -1, 1, -1];
+        let signs2 = vec![1i8, 1, -1, -1, 1, 1, -1, -1];
+        let signs3 = vec![1i8, 1, 1, 1, -1, -1, -1, -1];
+        encode_vector(&q, &signs1, &signs2, &signs3, &mut buf1, &mut code1);
+        encode_vector(&q, &signs1, &signs2, &signs3, &mut buf2, &mut code2);
+        assert_eq!(code1, code2);
     }
 }

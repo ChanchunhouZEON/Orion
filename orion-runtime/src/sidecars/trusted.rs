@@ -5,12 +5,12 @@
 
 //! Benchmark-owned sidecars: decode legacy files or CAS objects without hashing.
 //! This service deliberately produces no verification receipts for snapshots.
-use super::working::{metadata_path, Identity};
+use super::working::{Identity, metadata_path};
 use crate::{Error, Result};
 use orion_ann_core::{
-    index::compressed_index::{DecodeSidecar, EncodeSidecar, IndexData, SidecarCache},
-    model::dataset::rows::F32Rows,
     CompressedIndex,
+    index::{DecodeSidecar, EncodeSidecar, IndexData, SidecarCache},
+    model::dataset::rows::Rows,
 };
 use orion_ann_platform::buffered_io::FILE_WRITE_BYTES;
 use std::{
@@ -37,7 +37,7 @@ pub(crate) fn attach<D: IndexData>(index: &mut CompressedIndex<D>, path: &Path) 
 impl SidecarCache for TrustedCache {
     fn load(
         &self,
-        _base: &dyn F32Rows,
+        _base: &dyn Rows,
         codec: &'static str,
         decode: &mut DecodeSidecar<'_>,
     ) -> Result<()> {
@@ -68,7 +68,7 @@ impl SidecarCache for TrustedCache {
 
     fn store(
         &self,
-        _base: &dyn F32Rows,
+        _base: &dyn Rows,
         codec: &'static str,
         encode: &EncodeSidecar<'_>,
     ) -> Result<()> {
@@ -100,7 +100,7 @@ mod tests {
         };
         fs::create_dir(&cache.objects).unwrap();
         let base = orion_ann_core::PaddedDataset::from_packed(
-            &[0., 1.],
+            &[0.0f32, 1.],
             orion_ann_core::PaddedLayout::for_kernel::<orion_ann_vector::L2F32Distance>(2).unwrap(),
         )
         .unwrap();
@@ -133,9 +133,11 @@ mod tests {
         )
         .unwrap();
         cache.load(&base, "qds", &mut read).unwrap();
-        assert!(cache
-            .load(&base, "qds", &mut |_, _| Err(Error::cache("invalid shape")))
-            .is_err());
+        assert!(
+            cache
+                .load(&base, "qds", &mut |_, _| Err(Error::cache("invalid shape")))
+                .is_err()
+        );
         assert!(
             cache.load(&base, "qds", &mut |_, _| Ok(())).is_err(),
             "trailing bytes must fail"

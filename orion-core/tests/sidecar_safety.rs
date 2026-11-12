@@ -6,8 +6,6 @@
 //! Adversarial tests for the safe sidecar boundary, separate from performance tests.
 #[path = "support/sidecar_file.rs"]
 mod sidecar_file;
-use orion_ann_core::algorithm::search::stage::Admission;
-use orion_ann_core::algorithm::search::stage::admission::L2U8Admission;
 use orion_ann_core::model::dataset::{
     jl_hadamard_dataset::JlHadamardDataset,
     jl_sparse_dataset::{JLSparseDataset, JLSparseDatasetMips, hamming_dispatch, hamming_scalar},
@@ -15,9 +13,11 @@ use orion_ann_core::model::dataset::{
     quantized_spec::{L2U8, L2U16, MipsI8, MipsI16, QuantParamsL2},
     rabitq_b4_dataset::RabitQ4Dataset,
     rabitq_dataset::{RabitQDataset, apply_rotation_pub},
-    rows::F32Rows,
+    rows::Rows,
     scalar_dataset::ScalarQuantizedDataset,
 };
+use orion_ann_core::search::cascade::stage::Admission;
+use orion_ann_core::search::cascade::stage::admission::L2U8Admission;
 use orion_ann_core::{ErrorCode, PaddedDataset, PaddedLayout};
 use orion_ann_vector::L2F32Distance;
 use std::{
@@ -134,14 +134,14 @@ struct BadRows {
     dim: usize,
     values: Vec<f32>,
 }
-impl F32Rows for BadRows {
+impl Rows for BadRows {
     fn len(&self) -> usize {
         self.rows
     }
     fn dimension(&self) -> usize {
         self.dim
     }
-    fn row(&self, _: usize) -> &[f32] {
+    fn row_f32<'a>(&'a self, _: usize, _: &'a mut Vec<f32>) -> &'a [f32] {
         &self.values
     }
     // A custom provider cannot bypass validation with a forged range.

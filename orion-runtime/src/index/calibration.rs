@@ -4,7 +4,7 @@
  */
 
 //! Per-k calibration for a resident index.
-use super::{query::validate_search, Index};
+use super::{Index, query::validate_search};
 use crate::Result;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -40,7 +40,22 @@ impl Index {
         k: usize,
         search_list_size: Option<usize>,
     ) -> Result<Calibration> {
-        self.calibrate_many(queries, &[k], search_list_size)?
+        self.calibrate_batch(
+            super::QueryBatch::from_f32(&queries, self.dimension())?,
+            k,
+            search_list_size,
+        )
+    }
+
+    /// Calibrate borrowed queries of any supported scalar type. No batch-wide
+    /// conversion is performed, and the borrow ends when calibration returns.
+    pub fn calibrate_batch(
+        &mut self,
+        queries: super::QueryBatch<'_>,
+        k: usize,
+        search_list_size: Option<usize>,
+    ) -> Result<Calibration> {
+        self.calibrate_many_batches(queries, &[k], search_list_size)?
             .pop()
             .ok_or_else(|| crate::Error::internal("missing prepared calibration"))
     }
@@ -51,7 +66,21 @@ impl Index {
     /// sidecars/residency can still materialize storage before a later failure.
     pub fn calibrate_many(
         &mut self,
-        mut queries: Vec<f32>,
+        queries: Vec<f32>,
+        ks: &[usize],
+        search_list_size: Option<usize>,
+    ) -> Result<Vec<Calibration>> {
+        self.calibrate_many_batches(
+            super::QueryBatch::from_f32(&queries, self.dimension())?,
+            ks,
+            search_list_size,
+        )
+    }
+
+    /// Prepare multiple k values from one borrowed batch, publishing together.
+    pub fn calibrate_many_batches(
+        &mut self,
+        queries: super::QueryBatch<'_>,
         ks: &[usize],
         search_list_size: Option<usize>,
     ) -> Result<Vec<Calibration>> {
@@ -74,8 +103,8 @@ impl Index {
                 Ok((k, beam))
             })
             .collect::<Result<Vec<_>>>()?;
-        self.queries(&mut queries)?;
-        let samples = queries.len() / self.dimension();
+        let queries = self.prepare_queries(queries)?;
+        let samples = queries.len();
         let _lease = self
             .working_directory
             .as_deref()
@@ -86,10 +115,10 @@ impl Index {
             controls
                 .into_iter()
                 .map(|(k, beam)| {
-                    let params = self
-                        .view
-                        .engine
-                        .calibrate(&queries, &self.config, k, beam)?;
+                    let params =
+                        self.view
+                            .engine
+                            .calibrate(queries.values, &self.config, k, beam)?;
                     Ok(Calibration {
                         k,
                         search_list_size: beam,

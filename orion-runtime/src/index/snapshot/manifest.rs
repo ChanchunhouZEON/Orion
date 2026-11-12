@@ -6,13 +6,13 @@
 //! Snapshot wire format and validation of manifest fields and small records.
 //! Snapshot is the serialized input, Payloads names its immutable objects, and
 //! CheckedManifest is the validated result passed to resident preparation.
-use crate::index::{query::validate_search, Calibration};
+use crate::index::{Calibration, query::validate_search};
 use crate::{
+    Error, IndexOptions, Result,
     config::ResolvedRunConfig,
     integrity::check,
     sidecars::SnapshotSidecars,
     storage::{object, read_record},
-    Error, IndexOptions, Result,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -38,6 +38,8 @@ pub(in crate::index) struct Snapshot {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(in crate::index) struct Payloads {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supplier: Option<SupplierProvenance>,
     pub graph_sha256: String,
     pub metadata_sha256: String,
     pub provenance_sha256: String,
@@ -139,7 +141,7 @@ pub(in crate::index) fn check_lengths(
 pub(super) fn execution_signature(config: &ResolvedRunConfig) -> Result<String> {
     let bytes = serde_json::to_vec(&(
         config.cache_namespace.as_str(),
-        config.metric,
+        config.metric.identity_key(),
         config.index_plan(),
         config.window_size,
     ))
@@ -153,17 +155,17 @@ mod config_contract_tests {
     use crate::data::VectorFormat;
     use crate::{SearchMetric, VectorStorageKind};
 
-    // Captured before reorganizing config. Fixed paths/content IDs make this
+    // Fixture includes metric-specific cosine/IP arms. Fixed paths/content IDs make this
     // independent of the host and test allocation order.
     #[test]
     fn resolved_config_and_snapshot_signatures_remain_stable() {
         let mut records = Vec::new();
         for (dimension, metric, storage, format) in [
-            (128, SearchMetric::L2, None, VectorFormat::Fbin),
-            (960, SearchMetric::L2, None, VectorFormat::Fbin),
+            (128, SearchMetric::SquaredL2, None, VectorFormat::Fbin),
+            (960, SearchMetric::SquaredL2, None, VectorFormat::Fbin),
             (
                 128,
-                SearchMetric::L2,
+                SearchMetric::SquaredL2,
                 Some(VectorStorageKind::U8),
                 VectorFormat::U8bin,
             ),
@@ -198,4 +200,28 @@ mod config_contract_tests {
             serde_json::from_str(include_str!("../../config/tests/resolution.json")).unwrap();
         assert_eq!(actual, expected);
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::index) struct SupplierProvenance {
+    pub name: String,
+    pub revision: Option<String>,
+}
+
+// Bind the exact topology and entry metadata, base, and search space. Supplier
+// names are informational: identical payloads deduplicate across suppliers.
+pub(in crate::index) fn supplier_namespace(
+    config: &ResolvedRunConfig,
+    files: &Payloads,
+) -> Result<String> {
+    Ok(crate::integrity::sha256(&serde_json::to_vec(&(
+        "orion/supplied-graph",
+        &files.base_sha256,
+        &files.graph_sha256,
+        &files.metadata_sha256,
+        config.metric.identity_key(),
+        config.storage(),
+        config.dimension,
+    ))?))
 }

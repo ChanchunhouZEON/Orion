@@ -109,7 +109,7 @@ impl ResolvedRunConfig {
             self.dimension,
             self.base_format,
             self.storage(),
-            self.metric,
+            self.metric.identity_key(),
             self.alpha.to_bits(),
             self.graph_degree,
             self.build_l,

@@ -17,6 +17,7 @@ crate-type = ["cdylib"]
 test = false
 
 [features]
+experimental-graph = ["orion-ann/experimental-graph"]
 test-hooks = []
 
 [dependencies]

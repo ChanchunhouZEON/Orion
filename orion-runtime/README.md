@@ -83,3 +83,13 @@ borrowed `QueryBatch`; share an index through `Arc` for concurrent requests.
 Calibration still requires exclusive `&mut` access. `Index` and `BaseInput` are movable and implement summary `Debug`, but deliberately do
 not implement `Clone` or `Default`. `SearchResult` implements `Clone`, `PartialEq`
 (scores contain floats and NaN padding, so it does not implement `Eq`); its `Debug` shows dimensions/counts rather than every result ID.
+
+## Experimental graph suppliers
+
+Enable `experimental-graph` to use `Index::from_staged` or
+`Index::from_partitions` with named local/remote/extra partitions. The common
+boundary validates structure, preserves entry and neighbor order, and applies
+ordinary memory planning. Calibration and `save` remain explicit. Imported
+snapshots open without this feature or the original supplier. See the
+`supplier` API and `guide::supplier` module when building documentation with the
+feature enabled. The default ParlayANN builder is unchanged.

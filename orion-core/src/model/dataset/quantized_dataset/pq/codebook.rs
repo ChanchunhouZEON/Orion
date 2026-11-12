@@ -3,7 +3,19 @@
  * Licensed under the MIT License.
  */
 
-use crate::model::dataset::rows::F32Rows;
+//! # Layout at a glance
+//!
+//! ```text
+//! shared codebook: [M+1 subspace offsets][D f32 mean][256 * D f32 centers]
+//! centroid c in subspace m starts at offsets[m] * 256 + c * width[m]
+//! training: a bounded, packed f32 sample; input rows may have any numeric backing
+//! ```
+//!
+//! The dataset's codec stores offsets as u64 and floats as little-endian f32.
+//! Offset and center arrays use owned or private-mapped regions. Query lookup
+//! tables are separate scratch and are not persisted with the codebook.
+
+use crate::model::dataset::rows::Rows;
 use crate::{Error, Result};
 use orion_ann_platform::region::{ArrayView, RegionOptions};
 use rand::{SeedableRng, seq::SliceRandom};
@@ -80,14 +92,14 @@ pub(super) struct PackedRows<'a> {
     pub data: &'a [f32],
     pub dim: usize,
 }
-impl F32Rows for PackedRows<'_> {
+impl crate::model::dataset::rows::Rows for PackedRows<'_> {
     fn dimension(&self) -> usize {
         self.dim
     }
     fn len(&self) -> usize {
         self.data.len() / self.dim
     }
-    fn row(&self, id: usize) -> &[f32] {
+    fn row_f32<'a>(&'a self, id: usize, _: &'a mut Vec<f32>) -> &'a [f32] {
         &self.data[id * self.dim..(id + 1) * self.dim]
     }
 }
@@ -167,7 +179,7 @@ impl FixedChunkPQTable {
         )
     }
 
-    pub(super) fn train_rows(base: &impl F32Rows, options: PqBuildOptions) -> Result<Self> {
+    pub(super) fn train_rows(base: &impl Rows, options: PqBuildOptions) -> Result<Self> {
         let dim = base.dimension();
         let m = options.chunks(dim)?;
         if base.is_empty() {
@@ -184,8 +196,9 @@ impl FixedChunkPQTable {
                 .checked_mul(dim)
                 .ok_or_else(|| Error::invalid_argument("PQ training sample overflow"))?,
         );
+        let mut row_scratch = Vec::new();
         for id in sample_ids {
-            let row = base.row(id);
+            let row = base.row_f32(id, &mut row_scratch);
             if row.len() != dim || row.iter().any(|x| !x.is_finite()) {
                 return Err(Error::invalid_argument("invalid PQ training row"));
             }
@@ -272,7 +285,7 @@ impl FixedChunkPQTable {
             dim: self.dim(),
         })
     }
-    pub(super) fn encode_rows(&self, base: &impl F32Rows) -> Result<Vec<u8>> {
+    pub(super) fn encode_rows(&self, base: &impl Rows) -> Result<Vec<u8>> {
         let m = self.get_num_chunks();
         let mut codes = vec![
             0;
@@ -285,15 +298,15 @@ impl FixedChunkPQTable {
     }
     pub(super) fn encode_into(
         &self,
-        base: &impl F32Rows,
+        base: &impl Rows,
         start: usize,
         codes: &mut [u8],
     ) -> Result<()> {
         let m = self.get_num_chunks();
         codes.par_chunks_mut(m).enumerate().try_for_each_init(
-            || vec![0.0; self.dim()],
-            |centered, (id, out)| -> Result<()> {
-                let row = base.row(start + id);
+            || (vec![0.0; self.dim()], Vec::new()),
+            |(centered, row_scratch), (id, out)| -> Result<()> {
+                let row = base.row_f32(start + id, row_scratch);
                 if row.len() != self.dim() || row.iter().any(|x| !x.is_finite()) {
                     return Err(Error::invalid_argument("invalid PQ encoding row"));
                 }

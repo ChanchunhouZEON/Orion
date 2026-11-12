@@ -6,7 +6,7 @@
 //! Bounded-memory input preparation for the f32 DiskANN baseline.
 use orion_ann::benchmark::cascade::SearchMetric;
 use orion_ann::benchmark::{GroundTruthReader, QuerySource, VectorReader};
-use orion_ann::{benchmark::inspect_vector_file, VectorFormat};
+use orion_ann::{VectorFormat, benchmark::inspect_vector_file};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ fn reader(
         BufReader::new(File::open(path)?),
         format,
         dim,
-        SearchMetric::L2,
+        SearchMetric::SquaredL2,
     )
     .map_err(anyhow::Error::msg)
 }
@@ -110,6 +110,9 @@ impl Drop for BuildInput {
     }
 }
 
+/// Query rows paired with their top-k ground-truth ID rows.
+type QueriesAndTruth = (Vec<Vec<f32>>, Vec<Vec<u32>>);
+
 pub(super) fn load_queries(
     path: &Path,
     truth: &Path,
@@ -117,7 +120,7 @@ pub(super) fn load_queries(
     count: usize,
     k: usize,
     normalize: bool,
-) -> anyhow::Result<(Vec<Vec<f32>>, Vec<Vec<u32>>)> {
+) -> anyhow::Result<QueriesAndTruth> {
     let format = VectorFormat::infer(path).map_err(anyhow::Error::msg)?;
     let mut source = reader(path, format, dim)?;
     let mut queries = Vec::new();
@@ -278,9 +281,13 @@ mod tests {
     #[test]
     fn reader_does_not_consume_unrequested_rows() {
         let bytes = [2, 0, 0, 0, 3, 4, 255, 255, 255, 255, 0, 0];
-        let mut reader =
-            VectorReader::new(Cursor::new(bytes), VectorFormat::Bvecs, 2, SearchMetric::L2)
-                .unwrap();
+        let mut reader = VectorReader::new(
+            Cursor::new(bytes),
+            VectorFormat::Bvecs,
+            2,
+            SearchMetric::SquaredL2,
+        )
+        .unwrap();
         let mut batch = Vec::new();
         assert_eq!(reader.read_batch(&mut batch, 1).unwrap(), 1);
         assert_eq!(batch, [3.0, 4.0]);

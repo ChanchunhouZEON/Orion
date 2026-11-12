@@ -15,13 +15,18 @@ use serde::{Deserialize, Serialize};
 /// - how calibration thresholds are interpreted,
 /// - whether vector normalization is required by the data path.
 ///
+/// `SquaredL2` uses the canonical config name `squared-l2`; `l2` and
+/// `squared_l2` remain accepted input aliases. Scores never take a square root.
+///
 /// `InnerProduct` also accepts the common CLI/config aliases `mips` and `ip`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum SearchMetric {
     /// Squared Euclidean-distance search.
-    L2,
+    #[serde(alias = "l2", alias = "squared_l2")]
+    #[cfg_attr(feature = "cli", value(alias = "l2", alias = "squared_l2"))]
+    SquaredL2,
 
     /// Maximum inner-product search (MIPS).
     #[serde(alias = "mips", alias = "ip")]
@@ -36,9 +41,20 @@ pub enum SearchMetric {
 }
 
 impl SearchMetric {
+    /// Stable identity token for persisted recipes, independent of public naming.
+    /// Keep the original L2 token so spelling changes do not invalidate graph,
+    /// sidecar or snapshot identities; this is not a user-facing metric name.
+    pub(crate) fn identity_key(self) -> &'static str {
+        match self {
+            Self::SquaredL2 => "l2",
+            Self::InnerProduct => "inner-product",
+            Self::Cosine => "cosine",
+        }
+    }
+
     pub fn calibration_metric(self) -> orion_ann_core::CalibrationMetric {
         match self {
-            Self::L2 => orion_ann_core::CalibrationMetric::L2,
+            Self::SquaredL2 => orion_ann_core::CalibrationMetric::SquaredL2,
             Self::InnerProduct => orion_ann_core::CalibrationMetric::InnerProduct,
             Self::Cosine => orion_ann_core::CalibrationMetric::Cosine,
         }
@@ -69,6 +85,29 @@ impl VectorStorageKind {
             Self::U8
         } else {
             Self::F32
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SearchMetric;
+
+    #[test]
+    fn squared_l2_names_have_one_canonical_representation() {
+        for name in ["squared-l2", "squared_l2", "l2"] {
+            let metric: SearchMetric = serde_json::from_value(serde_json::json!(name)).unwrap();
+            assert_eq!(metric, SearchMetric::SquaredL2);
+            assert_eq!(serde_json::to_value(metric).unwrap(), "squared-l2");
+            assert_eq!(
+                metric.calibration_metric(),
+                orion_ann_core::CalibrationMetric::SquaredL2
+            );
+            #[cfg(feature = "cli")]
+            assert_eq!(
+                <SearchMetric as clap::ValueEnum>::from_str(name, false).unwrap(),
+                metric
+            );
         }
     }
 }

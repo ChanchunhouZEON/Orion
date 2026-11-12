@@ -12,6 +12,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <type_traits>
 
 namespace parlayANN {
 std::atomic<size_t> g_total_i8_cmps{0}, g_total_i8_queries{0};
@@ -60,6 +61,45 @@ template <class F> int boundary(Failure *error, F &&f) noexcept {
   return -1;
 }
 
+// Keep unsigned-byte distance arithmetic separate from the vendor's int32
+// MIPS kernel. Vamana traversal, partitioning and pruning are unchanged.
+template<bool Cosine> struct NativeBytePoint {
+  using coordinate_type = uint8_t;
+  using distanceType = float;
+  struct parameters {
+    int dims;
+    const uint32_t *norm32 = nullptr;
+    const uint64_t *norm64 = nullptr;
+    explicit parameters(int d=0):dims(d) {}
+    int num_bytes() const { return dims; }
+    uint64_t norm(long id) const { return norm32 ? norm32[id] : norm64[id]; }
+  };
+  const uint8_t *values;
+  long id_;
+  parameters params;
+  NativeBytePoint(uint8_t *v,long id,parameters p): values(v),id_(id),params(p) {}
+  static constexpr bool is_metric = false;
+  static float d_min() { return -std::numeric_limits<float>::max(); }
+  uint8_t operator[](long i) const { return values[i]; }
+  long id() const { return id_; }
+  bool same_as(const NativeBytePoint& other) const { return values==other.values; }
+  bool operator==(const NativeBytePoint& other) const {
+    return std::equal(values,values+params.dims,other.values);
+  }
+  float translate_distance(float d) const {return d;}
+  void prefetch() const {
+    for (int i=0;i<params.dims;i+=64) __builtin_prefetch(values+i);
+  }
+  float distance(const NativeBytePoint& other) const {
+    uint64_t dot=0;
+    for(int i=0;i<params.dims;++i) dot+=uint64_t(values[i])*other.values[i];
+    if constexpr (Cosine) {
+      double denominator=std::sqrt(double(params.norm(id_)))*std::sqrt(double(params.norm(other.id_)));
+      return float(std::clamp(1.0-double(dot)/denominator,0.0,1.0));
+    } else return -float(dot);
+  }
+};
+
 // Existing point kernels accept mutable pointers, but construction only calls
 // distance/prefetch on these views. They never normalize or retain Rust rows.
 template <class P> struct BorrowedPoints {
@@ -67,6 +107,23 @@ template <class P> struct BorrowedPoints {
   const uint8_t *bytes;
   size_t count, stride_bytes;
   typename P::parameters params;
+  std::vector<uint32_t> norm32;
+  std::vector<uint64_t> norm64;
+  BorrowedPoints(const uint8_t* b,size_t n,size_t stride,typename P::parameters p)
+      :bytes(b),count(n),stride_bytes(stride),params(p) {
+    if constexpr (std::is_same_v<P,NativeBytePoint<true>>) {
+      bool narrow=size_t(params.dims)<=UINT32_MAX/65025;
+      if(narrow) norm32.resize(n); else norm64.resize(n);
+      for(size_t i=0;i<n;++i) {
+        uint64_t norm=0;
+        for(int j=0;j<params.dims;++j) {uint64_t v=bytes[i*stride+j]; norm+=v*v;}
+        if(!norm) throw std::invalid_argument("cosine requires nonzero base vectors");
+        if(narrow) norm32[i]=uint32_t(norm); else norm64[i]=norm;
+      }
+      params.norm32=narrow?norm32.data():nullptr;
+      params.norm64=narrow?nullptr:norm64.data();
+    }
+  }
   size_t size() const { return count; }
   long dimension() const { return params.dims; }
   unsigned get_dims() const { return params.dims; }
@@ -198,12 +255,12 @@ void validate(const Options &o, bool bytes) {
       o.degree > INT32_MAX || o.build_l < o.degree || o.build_l > INT32_MAX ||
       o.max_extra > INT32_MAX || !o.threads || o.threads > 4096 ||
       !o.local_pct || o.local_pct > 100 || !o.passes || o.passes > 16 ||
-      !std::isfinite(o.alpha) || o.alpha < 1 || o.metric > 1 ||
-      (bytes && o.metric != 0))
+      !std::isfinite(o.alpha) || o.alpha < 1 || o.metric > 2 ||
+      (!bytes && o.metric == 2))
     throw std::invalid_argument(
         "invalid ParlayANN shape, metric or build options");
   // The original byte distance kernel accumulates into int32_t.
-  if (bytes && o.dimension > size_t(INT32_MAX) / (255 * 255))
+  if (bytes && o.metric == 0 && o.dimension > size_t(INT32_MAX) / (255 * 255))
     throw std::invalid_argument(
         "u8 dimension exceeds int32 distance accumulator range");
 }
@@ -217,7 +274,11 @@ int orion_pa_build(const void *data, bool bytes, const Options *o,
       throw std::invalid_argument("null base pointer");
     std::unique_ptr<Handle> handle;
     parlay::execute_with_scheduler(o->threads, [&] {
-      if (bytes)
+      if (bytes && o->metric == 1)
+        handle = std::make_unique<Builder<NativeBytePoint<false>>>(data, *o);
+      else if (bytes && o->metric == 2)
+        handle = std::make_unique<Builder<NativeBytePoint<true>>>(data, *o);
+      else if (bytes)
         handle = std::make_unique<Builder<parlayANN::Euclidian_Point<uint8_t>>>(
             data, *o);
       else if (o->metric == 0)
@@ -239,7 +300,11 @@ int orion_pa_build_into(const void *data, bool bytes, const Options *o,
         stride > words / o->count)
       throw std::invalid_argument("invalid slab length or stride");
     parlay::execute_with_scheduler(o->threads, [&] {
-      if (bytes)
+      if (bytes && o->metric == 1)
+        build_slab<NativeBytePoint<false>>(data, *o, slab, stride);
+      else if (bytes && o->metric == 2)
+        build_slab<NativeBytePoint<true>>(data, *o, slab, stride);
+      else if (bytes)
         build_slab<parlayANN::Euclidian_Point<uint8_t>>(data, *o, slab, stride);
       else if (o->metric == 0)
         build_slab<parlayANN::Euclidian_Point<float>>(data, *o, slab, stride);

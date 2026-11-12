@@ -55,7 +55,19 @@ impl Args {
     }
 
     fn resolve(&self, beam: Option<usize>, fingerprint: bool) -> Result<ResolvedRunConfig> {
-        let options = self.index_options();
+        #[allow(unused_mut)]
+        let mut options = self.index_options();
+        #[cfg(feature = "experimental-graph")]
+        if let Some(path) = &self.supplier_staged {
+            let file =
+                std::fs::File::open(path).map_err(|e| Error::io("open supplier graph", path, e))?;
+            let reader = orion_ann::supplier::StagedReader::new(
+                std::io::BufReader::new(&file),
+                file.metadata()?.len(),
+            )?;
+            let spec = reader.spec();
+            execution::configure_supplier(spec, &mut options)?;
+        }
         let base = self.base.as_ref().ok_or("--base is required")?;
         let format = self
             .base_format

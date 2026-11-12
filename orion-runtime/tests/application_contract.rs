@@ -16,10 +16,12 @@ fn data() -> Vec<f32> {
 #[test]
 fn exact_scores_preserve_ids_for_all_metrics_and_native_bytes() {
     for (metric, native) in [
-        (SearchMetric::L2, false),
+        (SearchMetric::SquaredL2, false),
         (SearchMetric::InnerProduct, false),
         (SearchMetric::Cosine, false),
-        (SearchMetric::L2, true),
+        (SearchMetric::SquaredL2, true),
+        (SearchMetric::InnerProduct, true),
+        (SearchMetric::Cosine, true),
     ] {
         if native && !cfg!(feature = "parlay") {
             continue;
@@ -60,12 +62,16 @@ fn exact_scores_preserve_ids_for_all_metrics_and_native_bytes() {
             .unwrap();
         assert_eq!(index.calibrated_ks().collect::<Vec<_>>(), [3, 5]);
         let before = index.calibration(3).unwrap().clone();
-        assert!(index
-            .calibrate_many(queries.to_vec(), &[3, 0], Some(32))
-            .is_err());
-        assert!(index
-            .calibrate_many(queries.to_vec(), &[3, 3], Some(32))
-            .is_err());
+        assert!(
+            index
+                .calibrate_many(queries.to_vec(), &[3, 0], Some(32))
+                .is_err()
+        );
+        assert!(
+            index
+                .calibrate_many(queries.to_vec(), &[3, 3], Some(32))
+                .is_err()
+        );
         assert_eq!(index.calibration(3).unwrap(), &before);
         let plain = SearchOptions::new(3, 32);
         let ids = index
@@ -84,7 +90,7 @@ fn exact_scores_preserve_ids_for_all_metrics_and_native_bytes() {
         assert_eq!(
             scores.metric,
             match metric {
-                SearchMetric::L2 => ScoreMetric::SquaredL2,
+                SearchMetric::SquaredL2 => ScoreMetric::SquaredL2,
                 SearchMetric::InnerProduct => ScoreMetric::InnerProduct,
                 SearchMetric::Cosine => ScoreMetric::CosineSimilarity,
             }
@@ -100,7 +106,7 @@ fn exact_scores_preserve_ids_for_all_metrics_and_native_bytes() {
                     .map(|(&q, &x)| f64::from(q) * f64::from(x))
                     .sum::<f64>();
                 let expected = match metric {
-                    SearchMetric::L2 => query
+                    SearchMetric::SquaredL2 => query
                         .iter()
                         .zip(vector)
                         .map(|(&q, &x)| (f64::from(q) - f64::from(x)).powi(2))
@@ -300,12 +306,16 @@ fn portable_bundle_survives_move_and_rejects_version_or_content_changes() {
         serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
     value["format_version"] = 999.into();
     std::fs::write(&manifest, serde_json::to_vec(&value).unwrap()).unwrap();
-    assert!(orion_ann::OpenOptions::default()
-        .open_bundle(relocated.path())
-        .is_err());
-    assert!(orion_ann::OpenOptions::default()
-        .open_bundle(&relocated)
-        .is_err());
+    assert!(
+        orion_ann::OpenOptions::default()
+            .open_bundle(relocated.path())
+            .is_err()
+    );
+    assert!(
+        orion_ann::OpenOptions::default()
+            .open_bundle(&relocated)
+            .is_err()
+    );
 }
 
 #[test]
@@ -347,28 +357,33 @@ fn generation_switch_keeps_complete_old_and_new_identities() {
     });
     assert!(!std::sync::Arc::ptr_eq(&old, &slot.current().unwrap()));
     let values = data();
-    assert!(old
-        .search(
+    assert!(
+        old.search(
             QueryBatch::from_f32(&values[..104], 13).unwrap(),
             &SearchOptions::new(3, 32)
         )
-        .is_ok());
+        .is_ok()
+    );
 }
 
 #[test]
 fn array_bundle_and_explicit_store_relocation_preserve_calibration() {
     let root = tempfile::tempdir().unwrap();
     let index = mapped_index(&root.path().join("cache"), 1234, true);
-    assert!(index
-        .export_bundle(&root.path().join("invalid"), true)
-        .is_err());
+    assert!(
+        index
+            .export_bundle(&root.path().join("invalid"), true)
+            .is_err()
+    );
     assert!(!root.path().join("invalid").exists());
     let snapshot = index
         .export_bundle(&root.path().join("array-bundle"), false)
         .unwrap();
-    assert!(orion_ann::OpenOptions::default()
-        .open_bundle(&snapshot)
-        .is_err());
+    assert!(
+        orion_ann::OpenOptions::default()
+            .open_bundle(&snapshot)
+            .is_err()
+    );
     std::fs::rename(
         root.path().join("array-bundle/objects"),
         root.path().join("relocated-store"),

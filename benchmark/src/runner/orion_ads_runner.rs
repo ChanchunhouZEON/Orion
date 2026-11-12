@@ -117,7 +117,7 @@ macro_rules! search_orion_ads {
             crate::runner::cascade::RerankChoice::F32,
         )
         .expect("benchmark sidecar initialization failed");
-        $orion.search_unified::<orion_ann_core::algorithm::search::stage::NoPrefilter, _, _>(
+        $orion.search_unified::<orion_ann_core::search::cascade::stage::NoPrefilter, _, _>(
             &q,
             $k,
             $self.search_list_size,

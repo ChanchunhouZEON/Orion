@@ -18,12 +18,19 @@ impl Cascade {
             .map(R::Sidecar)
             .collect();
         let uses_base = match self.admission {
-            AdmissionChoice::NativeL2U8 => true,
+            AdmissionChoice::NativeL2U8
+            | AdmissionChoice::NativeIpU8
+            | AdmissionChoice::NativeCosineU8 => true,
             #[cfg(feature = "benchmark")]
             AdmissionChoice::AdsF32 => true,
             _ => false,
         };
-        if uses_base || matches!(self.rerank, RerankChoice::F32 | RerankChoice::IpF32) {
+        if uses_base
+            || matches!(
+                self.rerank,
+                RerankChoice::F32 | RerankChoice::IpF32 | RerankChoice::CosineF32
+            )
+        {
             result.push(R::Base);
         }
         result
@@ -37,10 +44,7 @@ impl Cascade {
     ) -> Vec<crate::sidecars::requirements::SidecarRequirement> {
         use crate::sidecars::requirements::SidecarKind as K;
         let mut kinds = Vec::new();
-        let mips = matches!(
-            self.admission,
-            AdmissionChoice::MipsI8 | AdmissionChoice::MipsI16 | AdmissionChoice::PqIp
-        );
+        let mips = self.admission.uses_inner_product();
         match self.prefilter {
             PrefilterChoice::None => {}
             PrefilterChoice::Jl => kinds.push(if mips { K::JlSparseMips } else { K::JlSparse }),
@@ -48,13 +52,17 @@ impl Cascade {
             PrefilterChoice::Rabitq => kinds.push(K::Rabitq),
         }
         match self.admission {
-            AdmissionChoice::PqL2 | AdmissionChoice::PqIp => kinds.push(K::Pq),
+            AdmissionChoice::PqL2 | AdmissionChoice::PqIp | AdmissionChoice::PqCosine => {
+                kinds.push(K::Pq)
+            }
             AdmissionChoice::L2U8 => kinds.push(K::L2U8),
             AdmissionChoice::L2U16 => kinds.push(K::L2U16),
-            AdmissionChoice::MipsI8 => kinds.push(K::MipsI8),
-            AdmissionChoice::MipsI16 => kinds.push(K::MipsI16),
+            AdmissionChoice::IpI8 | AdmissionChoice::CosineI8 => kinds.push(K::MipsI8),
+            AdmissionChoice::IpI16 | AdmissionChoice::CosineI16 => kinds.push(K::MipsI16),
             AdmissionChoice::L2Kt => kinds.push(K::L2Kt),
-            AdmissionChoice::NativeL2U8 => {}
+            AdmissionChoice::NativeL2U8
+            | AdmissionChoice::NativeIpU8
+            | AdmissionChoice::NativeCosineU8 => {}
             #[cfg(feature = "benchmark")]
             AdmissionChoice::AdsF32 => {}
         }

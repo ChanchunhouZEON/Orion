@@ -3,12 +3,26 @@
  * Licensed under the MIT License.
  */
 
+//! # Layout at a glance
+//!
+//! ```text
+//! memory: N * M u8 codes + codebook {M+1 offsets, D f32 mean, 256*D f32 centers}
+//! file:   ["ORIONPQ\0": 8 B][N/D/M: u64 each][M+1 u64 offsets]
+//!         [D f32 mean][256*D f32 centers][N*M u8 codes]
+//! ```
+//!
+//! M is the number of subspaces; each code selects one of 256 centroids.
+//! Codes are packed row-major without SIMD row padding. The query builds an
+//! M-by-256 ADC lookup table; base vectors are not materialized as f32 copies.
+//! File fields are little-endian; `codec` owns encoding and validation.
+//! Codebook pin guards are dropped before their backing allocations.
+
 use super::super::{
     PreparedQuery, QuantizedDataset, QuantizedDatasetCompute, QuantizedDatasetShape,
     ResidentMemory, sealed,
 };
 use super::{FixedChunkPQTable, PqBuildOptions, PqCodeStorage, storage::Codes};
-use crate::{Error, Result, model::dataset::rows::F32Rows};
+use crate::{Error, Result, model::dataset::rows::Rows};
 use orion_ann_platform::residency::PinGuard;
 use orion_ann_vector::{DistanceStream, PqAdcDistance};
 
@@ -49,7 +63,7 @@ impl PqDataset {
     /// # Errors
     /// Rejects invalid recipes/input and reports allocation or file I/O failures.
     pub fn build_with_storage(
-        base: &impl F32Rows,
+        base: &impl Rows,
         options: &PqBuildOptions,
         storage: &orion_ann_platform::region::RegionOptions,
     ) -> Result<Self> {
@@ -202,7 +216,7 @@ impl QuantizedDataset for PqDataset {
     fn default_build_options() -> PqBuildOptions {
         Default::default()
     }
-    fn build(base: &impl F32Rows, options: &PqBuildOptions) -> Result<Self> {
+    fn build(base: &impl Rows, options: &PqBuildOptions) -> Result<Self> {
         Self::build_with_storage(
             base,
             options,

@@ -35,6 +35,8 @@ impl UnixFileHandle {
                 .truncate(true)
                 .open(path)?,
             AccessMode::ReadWrite => OpenOptions::new()
+                // Updating a file must preserve its existing payload.
+                .truncate(false)
                 .read(true)
                 .write(true)
                 .create(true)
@@ -60,6 +62,12 @@ impl UnixFileHandle {
 }
 
 impl Default for UnixFileHandle {
+    // Default cannot return an I/O error. Preserve the legacy placeholder
+    // contract; callers needing recovery use the fallible `open` constructor.
+    #[expect(
+        clippy::expect_used,
+        reason = "infallible Default has no handle if both placeholder opens fail"
+    )]
     fn default() -> Self {
         // Create a handle to /dev/null as a default placeholder
         UnixFileHandle {

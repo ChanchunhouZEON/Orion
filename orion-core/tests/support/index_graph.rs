@@ -5,7 +5,7 @@
 
 //! Tiny graph fixtures use only Orion's public, validated import boundary.
 use orion_ann_core::CompressedIndex;
-use orion_ann_core::index::compressed_index::IndexData;
+use orion_ann_core::index::IndexData;
 
 pub struct GraphFixture {
     partitions: Vec<(Vec<u32>, Vec<u32>, Vec<u32>)>,

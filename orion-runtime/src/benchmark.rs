@@ -4,10 +4,9 @@
  */
 
 //! Explicit imports for research executables. Implementation modules stay private.
-pub use crate::data::{inspect_vector_file, query::VectorReader, LoadedDataset};
+pub use crate::data::{BaseElement, LoadedDataset, inspect_vector_file, query::VectorReader};
 pub use crate::execution::{
-    F32CascadeBackend, GroundTruthReader, NativeU8L2Backend, QuerySource, ResolvedRunConfig,
-    SearchBackend,
+    GroundTruthReader, QuerySource, ResolvedRunConfig, prepare_search, search_batch,
 };
 /// Run the same batch pipeline with convergence switching and early exit disabled.
 /// This baseline requires no calibration and still uses approximate graph search.
@@ -40,13 +39,13 @@ pub mod config {
 }
 pub mod cascade {
     pub use crate::search::cascade::{
-        build_admission, build_prefilter, build_rerank, search_batch_compose, search_compose,
-        AdmissionChoice, PrefilterChoice, RerankChoice, SearchMetric,
+        AdmissionChoice, PrefilterChoice, RerankChoice, SearchMetric, build_admission,
+        build_prefilter, build_rerank, search_batch_compose, search_compose,
     };
 }
 pub mod graph {
-    pub use crate::graph::load_index;
     pub use crate::graph::persistence::{load_working, save_working};
+    pub use crate::graph::{load_index, load_u8_index};
 }
 pub mod parlayann {
     pub use crate::graph::parlayann::load_from_staged_file;
@@ -63,13 +62,11 @@ pub mod utils {
 
 /// Dataset preparation and residency for controlled experiments.
 pub mod residency {
-    use crate::config::cascade::{
-        AdmissionChoice, Cascade, PrefilterChoice, RerankChoice, SearchMetric,
-    };
+    use crate::config::cascade::{AdmissionChoice, Cascade, PrefilterChoice, RerankChoice};
     use crate::sidecars::requirements::DatasetRequirement;
     use orion_ann_core::{
-        model::dataset::rows::{CascadeData, F32Rows},
         CompressedIndex, QuantizedDatasetShape,
+        model::dataset::rows::{CascadeData, Rows},
     };
     #[derive(Debug, Clone)]
     pub struct DatasetRequirements(Vec<DatasetRequirement>);
@@ -84,19 +81,12 @@ pub mod residency {
                 admission,
                 rerank,
             };
-            let metric = if matches!(
-                admission,
-                AdmissionChoice::MipsI8 | AdmissionChoice::MipsI16 | AdmissionChoice::PqIp
-            ) {
-                SearchMetric::InnerProduct
-            } else {
-                SearchMetric::L2
-            };
+            let metric = admission.metric();
             cascade.validate_cascade_options(metric)?;
             Ok(Self(cascade.dataset_requirements()))
         }
     }
-    pub fn prepare<D: F32Rows>(
+    pub fn prepare<D: Rows>(
         index: &CompressedIndex<D>,
         requirements: &DatasetRequirements,
     ) -> crate::Result<()> {
@@ -119,10 +109,10 @@ pub mod residency {
     ) -> crate::Result<crate::PinnedDatasets<'a>> {
         crate::residency::automatic_pin(
             index,
-            bytemuck::cast_slice(index.dataset().allocation()),
+            bytemuck::cast_slice(index.dataset().allocation_bytes()),
             QuantizedDatasetShape {
-                rows: F32Rows::len(index.dataset()),
-                dimension: F32Rows::dimension(index.dataset()),
+                rows: Rows::len(index.dataset()),
+                dimension: Rows::dimension(index.dataset()),
             },
             &requirements.0,
             enabled,
@@ -137,10 +127,10 @@ pub mod residency {
     ) -> crate::Result<crate::PinnedDatasets<'a>> {
         crate::residency::pin(
             index,
-            bytemuck::cast_slice(index.dataset().allocation()),
+            bytemuck::cast_slice(index.dataset().allocation_bytes()),
             QuantizedDatasetShape {
-                rows: F32Rows::len(index.dataset()),
-                dimension: F32Rows::dimension(index.dataset()),
+                rows: Rows::len(index.dataset()),
+                dimension: Rows::dimension(index.dataset()),
             },
             &requirements.0,
             options,

@@ -22,7 +22,8 @@ orion-ann-core = "0.1.0"
 Build directly from row-major vectors, without runtime configuration or files:
 
 ```rust
-use orion_ann_core::{BuildConfig, DynamicSearchConfig, Orion};
+use orion_ann_core::{BuildConfig, DynamicCascade, DynamicSearchConfig, Orion, ScoreMetric};
+use orion_ann_core::search::{query::QueryInput, cascade::stage::{NoPrefilter, rerank::NoRerank}};
 let base: Vec<f32> = (0..64 * 13).map(|i| (i % 251) as f32).collect();
 let index = Orion::<f32>::build_from_slice(&base, 13, BuildConfig {
     degree: 8,
@@ -31,10 +32,12 @@ let index = Orion::<f32>::build_from_slice(&base, 13, BuildConfig {
     threads: 2,
     ..Default::default()
 })?;
-let result = index.search_l2(&base[..13], DynamicSearchConfig {
+let exact = index.exact_stage(ScoreMetric::SquaredL2)?;
+let recipe = DynamicCascade { prefilter: &NoPrefilter, admission: &exact, rerank: &NoRerank };
+let result = index.search(QueryInput::F32(&base[..13]), DynamicSearchConfig {
     k: 1, search_list_size: 32, ..Default::default()
-})?;
-assert_eq!(result, vec![0]);
+}, recipe, None)?;
+assert_eq!(result.ids, vec![0]);
 # Ok::<(), orion_ann_core::Error>(())
 ```
 
@@ -42,7 +45,7 @@ assert_eq!(result, vec![0]);
 config)` takes ownership of an existing `PaddedDataset` without copying it.
 ParlayANN writes directly into the final graph slab, including extras. Builds
 return an in-memory index. Use the runtime `Index` API for persisted snapshots. Adaptive
-cascade calibration is a separate operation; full-precision `search_l2` needs none.
+cascade calibration is a separate operation; exact admission with convergence disabled needs none.
 
 ## Native u8 and batch queries
 
@@ -52,25 +55,30 @@ required. Queries are packed logical rows, without SIMD padding.
 ```rust
 # #[cfg(feature = "parlay")]
 # {
-use orion_ann_core::{BuildConfig, DynamicSearchConfig, Orion};
+use orion_ann_core::{BuildConfig, DynamicCascade, DynamicSearchConfig, Orion, ScoreMetric};
+use orion_ann_core::search::{query::QueryInput, cascade::stage::{NoPrefilter, rerank::NoRerank}};
 let base: Vec<u8> = (0..64 * 13).map(|i| (i % 251) as u8).collect();
 let index = Orion::<u8>::build_from_slice(&base, 13, BuildConfig {
     degree: 8, build_l: 24, threads: 2, ..Default::default()
 })?;
-let neighbors = index.search_batch_l2(&base[..3 * 13], DynamicSearchConfig {
+let exact = index.exact_stage(ScoreMetric::SquaredL2)?;
+let recipe = DynamicCascade { prefilter: &NoPrefilter, admission: &exact, rerank: &NoRerank };
+let neighbors = index.search_batch(QueryInput::U8(&base[..3 * 13]), DynamicSearchConfig {
     k: 3, search_list_size: 32, ..Default::default()
-})?;
+}, recipe, None)?;
 assert_eq!(neighbors.len(), 3); // One result row per query, in input order.
 assert!(neighbors.rows().all(|row| row.len() <= 3));
 # }
 # Ok::<(), orion_ann_core::Error>(())
 ```
 
-`search_l2` and `search_batch_l2` use full-precision distances, but traverse an
+`search` and `search_batch` with an exact admission stage use full-precision
+distances, but traverse an
 approximate graph: exact distance computation does not guarantee exact top-k.
 Batch methods return the owned `SearchResult` shared with the runtime: packed
 IDs, valid counts per query, and the requested k. Use `rows()` to skip padding.
-Single-query methods and diagnostic observers retain their ID-vector interface.
+`search` returns the same structure for a single row; `search_observed` returns
+an ID vector and emits diagnostic events.
 The core batch API uses the current Rayon pool. `BuildConfig::threads` controls
 construction only; use runtime `Index` when you want an owned search worker pool.
 
@@ -80,7 +88,7 @@ construction only; use runtime `Index` when you want an owned search worker pool
 use orion_ann_core::{BuildBackend, BuildConfig, BuildMetric};
 let config = BuildConfig {
     backend: BuildBackend::DiskAnn,
-    metric: BuildMetric::L2,
+    metric: BuildMetric::SquaredL2,
     degree: 32,
     build_l: 64,
     alpha: 1.2,
@@ -180,3 +188,12 @@ profiling and ablation controls, fixed-dimension constants, and the historical
 naive and async search prototypes. Environment overrides for experimental
 search tuning take effect only with this feature. Ordinary builds use the
 compiled search defaults.
+
+## Experimental partition import
+
+The default-disabled `experimental-graph` feature exposes `supplier`:
+`PartitionSpec`, `PartitionSource`, borrowed `NodePartitions`, and STAG v4
+stream codecs. `Orion::from_partition_source` writes validated rows directly to
+its final resident or mapped slab. The runtime crate `orion-ann` supplies base
+identity checks, atomic file publication and snapshot lifecycle. No supplier
+callbacks or validation occur in the search hot path.

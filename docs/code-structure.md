@@ -17,9 +17,17 @@ orion-runtime/src/          # Public orion-ann facade
   lib.rs                   # Small application-facing API and diagnostics exports
   index/                   # Owned resident session and dedicated Rayon pool
     base.rs                # File/array input identity, validation and normalization
-    prepare.rs             # Build or restore working graph and sidecar state
+    prepare/
+      mod.rs               # Ordered load lifecycle; writer lease and final publication
+      input.rs             # Base budget, original identity and graph selection
+      source.rs            # Snapshot/supplier verification and source budget checks
+      graph.rs             # Element/source dispatch into a read view
+      snapshot.rs          # Verified graph and sidecar restoration
+      working.rs           # Working graph load/build and provenance publication
+      search.rs            # Auxiliary state and saved-calibration readiness
+      identity.rs          # External ID publication and label restoration
     calibration.rs         # Per-k calibration and derived stage preparation
-    query.rs               # Borrowed QueryBatch, SearchOptions and shared search
+    query/mod.rs           # Borrowed QueryBatch, SearchOptions and shared search
     view.rs                # Resident generation, payload identities and engine
     snapshot/              # Manifest encoding, verification and publication
   config/
@@ -37,14 +45,14 @@ orion-runtime/src/          # Public orion-ann facade
     mod.rs                 # Build/import/load orchestration
     selection.rs           # Automatic or explicitly strict source selection
     cache.rs               # Working lookup records and build provenance
-    persistence.rs         # Graph encoding and verified decoding
+    persistence/mod.rs     # Graph encoding and verified decoding
     staged.rs              # STAG import and metadata validation
     parlayann.rs            # In-memory ParlayANN construction
   sidecars/                # Deduplicated requirements and working sidecar storage
   preflight/               # Memory budgets and CLI reports
   integrity.rs             # SHA-256 calculation and verified decoder streams
   storage/                 # Immutable object store and atomic publication
-  search/                  # f32/native-u8 backend and official cascade dispatch
+  search/                  # Runtime configuration adapters to core stage recipes
   benchmark.rs             # Experimental controls behind the benchmark feature
 
 orion-parlay/
@@ -67,78 +75,73 @@ orion-py/
   python/orion_ann/        # Public Index/config/result API
   tests/                   # NumPy/file/cache and CLI result consistency checks
 
-orion-core/
-  src/
-    model/
-      phased_graph.rs               # PhasedGraph: AlignedBoxWithSlice slab + 60%-by-distance
-                                    #   (origin + extras) partition + write queue
-      dataset/
-        quantized_dataset/
-          mod.rs                    # Sealed sidecar contract: shape, build, compute and memory
-          capabilities.rs           # Representation identities and cascade precision ordering
-          residency.rs              # Borrowed resident buffers, independent of cascade position
-          scalar/                   # Padded L2U8 / L2U16 / MipsI8 / MipsI16 and their specs
-          kernel_trick.rs           # i8 base + per-vector norms for squared-L2 via sdot
-          jl/sparse.rs              # Sparse JL binary signatures (L2 and MIPS)
-          jl/hadamard.rs            # HDHDHD sign-packed JL signatures
-          rabitq/binary.rs          # RaBitQ B=1 rotation/sign codes
-          rabitq/multibit.rs        # RaBitQ B=4 with per-vector correction
-          pq/                       # Independent slice-based PQ, ADC stream, code residency and codec
-          exact/                    # Borrowed exact-distance sessions; no sidecar allocation
-      neighbor/neighbor_priority_queue.rs  # NeighborPriorityQueue + pad16 buffer alignment +
-                                           #   batch_merge / batch_merge_gallop
-      scratch.rs                    # InMemSearchScratch: HashsetSeen (linear-probe, exact)
-                                    #   + dist_buffer (cap=400) + DCC + EarlyExitChecker
-    algorithm/
-      search/
-        mod.rs                      # **Shared metric machinery** — PerThreadMetrics +
-                                    #   MetricsTable + define_metric! handles
-                                    #   (VISIT_COUNT, RAW_VISIT_COUNT, NDC_I8, NDC_F32, SETUP_NS, …)
-                                    #   used by every cascade stage + the unified loop
-        in_mem_search.rs            # **Shared cascade/native-L2 traversal** — search_sessions
-                                    #   Legacy search_unified / search_batch_unified wrappers
-                                    #   are exposed only with the benchmark feature
-        utils.rs                    # Search-loop tuning constants (FLUSH_INTERVAL,
-                                    #   insert_route_mul / linear_merge_mul, dstream_la_*),
-                                    #   AlignedQuery, SearchProfile{,Stats}, search_diag /
-                                    #   search_profile diagnostics, PQ helpers
-        stage/                      # **Composable cascade trait modules**
-          prefilter/                #
-            mod.rs                  #   PrefilterStage + PrefilterSession (object-safe)
-            jl.rs                   #   JlPrefilter — JL Sparse signature filter
-            jl_hadamard.rs          #   JlHadamardPrefilter — HDHDHD-encoded filter
-            rabitq.rs               #   RabitqPrefilter — rotation-based sign code
-          admission/                #
-            mod.rs                  #   AdmissionStage + AdmissionSession (object-safe)
-            l2u8.rs                 #   L2U8Admission — direct u8 squared-L2
-            l2u16.rs                #   L2U16Admission — u16 squared-L2 (PA-quantize_bits=16)
-            l2kt.rs                 #   L2KTAdmission — i8 sdot + kernel-trick reconstruction
-            mips_i8.rs              #   MipsI8Admission — i8 sdot for unit-normalised data
-            mips_i16.rs             #   MipsI16Admission — i16 IP for high-recall band
-            ads_f32.rs              #   AdsF32Admission — ADSampling scaled-partial-sum
-                                    #     early-abort L2 (requires rotated dataset)
-          rerank/                   #
-            mod.rs                  #   RerankStage trait
-            f32_truth.rs            #   F32Rerank — full f32 base, L2 distance
-            ip_f32_truth.rs         #   IpF32Rerank — full f32 base, IP distance, query unit-norm
-            u16_truth.rs            #   U16Rerank — u16 sidecar, L2 (PA-bit-exact recipe)
-        adaptive/
-          convergence.rs            # Admission-rate sliding window (DCC)
-          early_exit.rs             # Consecutive-zero-admit countdown
-          calibrate.rs              # Auto-calibration of (threshold, early_exit_limit)
-        diagnostics/
-          metrics.rs                # Optional search counters
-    index/
-      builder.rs                    # build_diskann_index: Vamana build + partition extraction
-      compressed_index.rs           # Orion: ensure_quantized_dataset_*() accessors,
-                                    #   PhasedGraph construction, OnceLock-cached sidecars
+orion-core/src/
+  build/                            # All graph producers converge on the same slab
+    mod.rs                          # Standalone build entry points and backend selection
+    config.rs                       # Shape, metric, worker and backend capability checks
+    partitions.rs                   # Validated in-memory partition and STAG construction
+    parlay.rs                       # ParlayANN writes directly into the final slab
+    diskann.rs                      # Rust builder adapter
+    diskann_builder.rs              # Vamana graph + partition extraction
+    supplier/                       # Experimental named partition sources and staged codec
+  index/
+    mod.rs                          # Orion ownership: base, graph, entry, sidecars, scratch
+    access.rs                       # Read-only access and ownership transfer
+    graph.rs                        # Borrowed, read-only GraphView
+    codec.rs                        # Graph encoding/decoding; runtime publishes/verifies objects
+  search/
+    mod.rs                          # Execution-phase map and opt-in counters
+    query/
+      mod.rs                        # Shared padding and normalization helpers
+      input.rs                      # Typed borrowed/owned transport; scalar declaration table
+      prepared.rs                   # Per-row representations shared by cascade sessions
+      numeric.rs                    # Wide mixed-type exact arithmetic
+      controls.rs                   # Search controls and validation
+    cascade/
+      mod.rs                        # Quantized stage recipe and borrowed query plan
+      plan.rs                       # Bind preparation requirements and official stage sessions
+      execute.rs                    # Common query/session lifecycle and scheduling
+      stage/
+        prefilter/                  # Official cheap rejection stages
+        admission/                  # Official candidate scoring stages
+        rerank/                     # Official final ranking stages
+    traversal/
+      mod.rs                        # Existing beam loop and scratch-pool use
+      tuning.rs                     # Traversal/prefetch constants
+    filtered/
+      mod.rs                        # Exact allowed-ID scan; runtime resolves labels/revisions
+    output.rs                       # Original-metric scoring and validated result assembly
+    adaptive/
+      calibrate.rs                  # Statistics and parameter estimation
+      calibration.rs                # Index calibration API and sampling
+      convergence.rs                # Admission-rate sliding window
+      early_exit.rs                 # Consecutive-zero-admit countdown
+    diagnostics/
+      metrics.rs                    # Optional counters
+      analysis/                     # Retained benchmark-only neighbor/contribution analysis
+  model/
+    dataset/
+      base/                         # Base shape/placement and coordinate/metric contracts
+      native_u8.rs                  # Exact squared norms, placement and serialization
+      store/                        # Lazy sidecar ownership, accessors and storage configuration
+      quantized_dataset/
+        scalar/                     # L2U8/L2U16/MipsI8/MipsI16
+        kernel_trick.rs             # Signed codes and per-vector norms
+        jl/                         # Sparse and Hadamard binary sketches
+        rabitq/                     # Binary/multibit rotated codes
+        pq/                         # Independent slice-based PQ and ADC stream
+        exact/                      # Identity sessions borrowing the base, including native IP/cosine
+    phased_graph/mod.rs             # Aligned local/remote/extra slab; no public mutable graph
+    neighbor/                       # Candidate priority queues and merge primitives
+    scratch.rs                      # Reused query-local visited/candidate buffers
+    search_result.rs                # IDs/counts and optional original-metric scores
 
 orion-vector/
   src/
     distance_stream.rs              # DistanceStream<K>: address resolution, bounded near cursor,
                                     #   group/burst scheduling and intentional near/far overlap
     stream_kernels/                 # Runtime ISA dispatch and inlined arithmetic backends
-      compute.rs                    # Unrolled compute; prefetch credit per CACHE_LINE_BYTES,
+      compute/mod.rs                # Unrolled compute; prefetch credit per CACHE_LINE_BYTES,
                                     #   including each vector's partial final cache line
     l2_neon_distance.rs             # L2U8Distance, L2F32Distance, L2U16Distance kernels (NEON)
     ip_neon_distance.rs             # IpI8Distance, IpI16Distance, IpF32Distance kernels (NEON)
@@ -202,3 +205,42 @@ benchmark/
 DiskANN owns its optional conversion to the shared error; the error crate never
 imports DiskANN. Existing `orion_ann::Error` and `orion_ann_core::error` imports remain
 valid re-exports. No duplicate native error wrapper is introduced.
+
+## Core execution boundary
+
+`Index` in the runtime owns application policy, validation, persistence, labels and
+worker limits. The core `Orion` owns search state. Construction backends and
+experimental suppliers both produce the same validated graph partitions; supplier
+names are provenance, not search-time dispatch keys.
+
+A search call binds its query plan before entering the common executor. The plan
+prepares a query, opens official stage sessions and finalizes selected candidates.
+The executor owns scheduling and observer lifetime; `output` owns result assembly; the beam loop
+only sees prefilter/admission sessions. Native u8 uses the same cascade as f32: exact admission can skip rerank,
+while quantized admission can add an exact rerank stage. Its IP/cosine output scores
+retain wide integer accumulation, while exact L2 reuses queue distances. Quantized
+f32 recipes reuse exact rerank scores where available and otherwise score only
+selected IDs. Requesting scores never silently changes candidate selection.
+
+Prepared queries outlive all their sessions. Identity sessions remain stack values;
+quantized factories keep their existing boxed sessions. No datatype dispatch was
+added to the per-neighbor loop, and the SIMD streams, prefetch schedule, partition
+order and adaptive stopping rules are unchanged. The benchmark-only `analysis`
+module remains under search diagnostics and is not part of production execution.
+
+Search folders follow execution phases, not base datatypes. Ordinary requests
+prepare a query, bind a cascade, traverse the graph and assemble output. Filtered
+requests receive a sorted, unique internal-ID set from runtime label evaluation
+and use the exact baseline in `filtered`; labels, external IDs and label revision
+publication never enter the core traversal. `adaptive` and `diagnostics` are
+orthogonal policy/observation modules shared where their contracts apply.
+
+Complex modules use `directory/mod.rs` as their single entry point; child files
+stay beside that entry. Cascade recipes always supply all three stage handles:
+`NoPrefilter` and `NoRerank` explicitly disable optional work. The session trait owns the complete filtering operation, including shared
+threshold maintenance and work accounting. `NoPrefilter` opens a zero-sized
+session whose operation returns a constant outcome without reading or writing
+scratch. Active kernels share one default operation and keep their existing
+distance/compaction methods. Traversal invokes the same object-safe session
+method in every case, then reports its outcome through the generic observer.
+There is no optional session, dispatch macro or duplicated traversal body.

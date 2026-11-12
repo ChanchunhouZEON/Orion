@@ -7,14 +7,14 @@
 use benchmark::config::Args as RunArgs;
 use orion_ann::benchmark::cascade;
 use orion_ann::benchmark::utils;
-use orion_ann::benchmark::{graph, memory, LoadedDataset, ResolvedRunConfig};
+use orion_ann::benchmark::{LoadedDataset, ResolvedRunConfig, graph, memory};
 use orion_ann::with_supported_dimension;
 use orion_ann_core::{Error, Result};
 
 use clap::Parser;
-use orion_ann_core::algorithm::search::diagnostics::{NeighborMode, NoopObserver, SearchTrace};
+use orion_ann_core::search::diagnostics::{NeighborMode, NoopObserver, SearchTrace};
 use rayon::prelude::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{path::PathBuf, time::Instant};
 
 #[derive(Parser)]
@@ -78,7 +78,7 @@ where
         .map(|q| q.as_slice().try_into().expect("validated dimension"))
         .collect();
     let settings = &config.sweep;
-    if queries.is_empty() || settings.threads > orion_ann_core::algorithm::search::MAX_WORKERS {
+    if queries.is_empty() || settings.threads > orion_ann_core::search::MAX_WORKERS {
         return Err("Queries must be nonempty and threads must not exceed MAX_WORKERS".into());
     }
 
@@ -87,23 +87,21 @@ where
         .build()
         .map_err(Error::thread_pool)?;
 
-    let calib = pool
-        .install(|| {
-            idx.calibrate(
-                queries[..settings.calibration_samples.min(queries.len())].as_flattened(),
-                settings.calibration_l,
-                config.window_size,
-                orion_ann_core::CalibrationConfig {
-                    k: settings.k,
-                    metric: config.metric.calibration_metric(),
-                },
-            )
-        })
-        .map_err(Error::from)?;
+    let calib = pool.install(|| {
+        idx.calibrate(
+            queries[..settings.calibration_samples.min(queries.len())].as_flattened(),
+            settings.calibration_l,
+            config.window_size,
+            orion_ann_core::CalibrationConfig {
+                k: settings.k,
+                metric: config.metric.calibration_metric(),
+            },
+        )
+    })?;
 
     let pf =
         cascade::build_prefilter(&idx, config.cascade().prefilter, config.cascade().admission)?;
-    let ad = cascade::build_admission(&idx, config.cascade().admission).map_err(Error::from)?;
+    let ad = cascade::build_admission(&idx, config.cascade().admission)?;
     let rr = cascade::build_rerank(&idx, config.cascade().rerank)?;
     let count = if args.diagnostic_queries == 0 {
         queries.len()
@@ -125,13 +123,12 @@ where
                 calib.threshold,
                 // consecutive no admit tolerant
                 usize::MAX,
-                pf.as_deref(),
+                pf.as_ref(),
                 ad.as_ref(),
                 rr.as_ref(),
                 mode,
                 observer,
             )
-            .map_err(Error::from)
         };
         let mut arms = Vec::new();
         let mut discoveries = Vec::new();
@@ -145,21 +142,19 @@ where
 
                         let mut trace = SearchTrace::new(truth);
 
-                        let ids = idx
-                            .search_unified_observed(
-                                &queries[qi],
-                                settings.k,
-                                l,
-                                config.window_size,
-                                calib.threshold,
-                                usize::MAX,
-                                pf.as_deref(),
-                                ad.as_ref(),
-                                rr.as_ref(),
-                                mode,
-                                &mut trace,
-                            )
-                            .map_err(Error::from)?;
+                        let ids = idx.search_unified_observed(
+                            &queries[qi],
+                            settings.k,
+                            l,
+                            config.window_size,
+                            calib.threshold,
+                            usize::MAX,
+                            pf.as_ref(),
+                            ad.as_ref(),
+                            rr.as_ref(),
+                            mode,
+                            &mut trace,
+                        )?;
 
                         if ids != search(qi, mode, &mut NoopObserver)? {
                             return Err(Error::from(format!(

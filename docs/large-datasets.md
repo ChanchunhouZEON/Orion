@@ -80,7 +80,10 @@ Native-u8 and f32 use separate cache namespaces.
 
 The admission names are explicit: `native-l2-u8` scores original bytes exactly,
 whereas `l2-u8` scores an affine-quantized sidecar of an f32 base. Existing custom
-native-u8 configurations must change their admission to `native-l2-u8`.
+native-u8 L2 configurations use `native-l2-u8`; IP and cosine use
+`native-ip-u8` and `native-cosine-u8`. Shared service defaults select the matching
+admission automatically. Cosine budgets one u32 squared norm per row (u64 above
+66,051 dimensions), with resident or mapped backing.
 Configuration resolution produces a validated `SearchPlan` before loading:
 `orion-runtime/src/config/plan.rs` owns compatibility and storage accounting, and `orion-runtime/src/search/mod.rs`
 owns the standalone sweep's typed index/admission adapters. Both representations

@@ -28,7 +28,7 @@ impl IndexLogger {
 
     pub fn vertex_processed(&self) -> ANNResult<()> {
         let count = self.items_processed.fetch_add(1, Ordering::Relaxed);
-        if count % 100_000 == 0 {
+        if count.is_multiple_of(100_000) {
             let percentage = (100_f32 * count as f32) / (self.range as f32);
             let elapsed = self.timer.elapsed().as_secs_f32();
             log::info!(

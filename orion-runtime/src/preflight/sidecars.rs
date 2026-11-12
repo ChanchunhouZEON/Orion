@@ -88,7 +88,7 @@ fn stacked_requirements_and_phase_selection() {
         cascade::{AdmissionChoice, Cascade, PrefilterChoice, RerankChoice},
         plan::IndexPlan,
     };
-    use crate::sidecars::requirements::{estimate_sidecars, SidecarKind, SidecarRecipe};
+    use crate::sidecars::requirements::{SidecarKind, SidecarRecipe, estimate_sidecars};
     let input_shape = QuantizedDatasetShape {
         rows: 101,
         dimension: 33,
@@ -101,7 +101,7 @@ fn stacked_requirements_and_phase_selection() {
     let plan = IndexPlan::resolve(
         crate::VectorStorageKind::F32,
         33,
-        crate::SearchMetric::L2,
+        crate::SearchMetric::SquaredL2,
         crate::VectorFormat::Fbin,
         crate::VectorFormat::Fbin,
         cascade,
@@ -128,7 +128,7 @@ fn stacked_requirements_and_phase_selection() {
     let native = IndexPlan::resolve(
         crate::VectorStorageKind::U8,
         33,
-        crate::SearchMetric::L2,
+        crate::SearchMetric::SquaredL2,
         crate::VectorFormat::U8bin,
         crate::VectorFormat::U8bin,
         Cascade {
@@ -147,14 +147,63 @@ fn stacked_requirements_and_phase_selection() {
         crate::VectorFormat::Fbin,
         crate::VectorFormat::Fbin,
         Cascade {
-            admission: AdmissionChoice::MipsI8,
+            admission: AdmissionChoice::IpI8,
             rerank: RerankChoice::IpF32,
             ..cascade
         },
         crate::config::GraphSource::Rust,
     )
     .unwrap();
-    assert!(mips
-        .sidecar_requirements(false)
-        .contains(&SidecarKind::JlSparseMips.requirement()));
+    assert!(
+        mips.sidecar_requirements(false)
+            .contains(&SidecarKind::JlSparseMips.requirement())
+    );
+}
+
+#[test]
+fn native_norms_are_budgeted_including_prepare_only_and_mapped() {
+    use crate::{IndexOptions, SearchMetric, StorageMode, VectorFormat};
+    for (dimension, width) in [(128, 4u64), (66051, 4), (66052, 8)] {
+        let rows = 1000;
+        for mode in [StorageMode::Resident, StorageMode::Mapped] {
+            let mut options = IndexOptions {
+                metric: SearchMetric::Cosine,
+                ..Default::default()
+            };
+            options.storage_options.mode = mode;
+            let mut config = options
+                .resolve(
+                    "unused.u8bin".into(),
+                    VectorFormat::U8bin,
+                    dimension,
+                    rows,
+                    None,
+                )
+                .unwrap();
+            for prepare in [false, true] {
+                config.prepare_only = prepare;
+                let report = super::estimate_resident_memory(&config, rows).unwrap();
+                assert_eq!(report["native_norm_bytes"], rows as u64 * width);
+                assert_eq!(report["sidecar_bytes"], rows as u64 * width);
+                assert_eq!(
+                    report[if mode == StorageMode::Resident {
+                        "sidecar_owned_bytes"
+                    } else {
+                        "sidecar_mapped_bytes"
+                    }],
+                    rows as u64 * width
+                );
+            }
+        }
+    }
+    let config = IndexOptions {
+        metric: SearchMetric::InnerProduct,
+        ..Default::default()
+    }
+    .resolve("unused.u8bin".into(), VectorFormat::U8bin, 128, 1000, None)
+    .unwrap();
+    assert_eq!(
+        super::estimate_resident_memory(&config, 1000).unwrap()["native_norm_bytes"],
+        0
+    );
 }

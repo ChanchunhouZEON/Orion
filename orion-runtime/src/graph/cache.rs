@@ -195,7 +195,7 @@ impl CachePlan {
             graph_sha256: graph_sha256.into(),
             metadata_sha256: metadata_sha256.into(),
             namespace: config.cache_namespace.clone(),
-            num_points: num_points,
+            num_points,
             dimension: config.dimension,
 
             graph_source: config.graph_source,
@@ -264,7 +264,7 @@ fn validate_headers(
         )));
     }
 
-    let mut file = std::fs::File::open(&graph).map_err(Error::from)?;
+    let mut file = std::fs::File::open(graph).map_err(Error::from)?;
     let mut header = [0; 16];
     file.read_exact(&mut header).map_err(Error::from)?;
     let word = |i: usize| u32::from_le_bytes(header[i * 4..i * 4 + 4].try_into().unwrap());

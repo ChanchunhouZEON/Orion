@@ -6,6 +6,19 @@
  * Licensed under the MIT License.
  */
 
+//! # Layout at a glance
+//!
+//! ```text
+//! memory: [row 0: N values of T][row 1: N values of T] ... [capacity tail]
+//!         row start = data + row_id * N elements
+//! ```
+//!
+//! This const-dimensional store uses `N` as its physical row width. Active
+//! points and allocated capacity are separate. Its bin-file I/O uses a row/
+//! dimension header followed by packed logical coordinates; the loader fills
+//! the aligned destination and any required per-row padding. Runtime-shaped
+//! storage lives in `PaddedDataset<T>`.
+
 use orion_ann_vector::{FullPrecisionDistance, Metric};
 use rayon::prelude::*;
 use std::mem;
@@ -231,20 +244,6 @@ pub struct DatasetDto<'a, T> {
     pub rounded_dim: usize,
 }
 
-#[cfg(test)]
-mod large_capacity_tests {
-    use super::*;
-    #[test]
-    fn exact_capacity_above_f32_integer_precision() {
-        let n = 1_000_000_001usize;
-        assert_eq!(checked_capacity(n, 128, 1.).unwrap(), n * 128);
-        assert!(checked_capacity(n, 128, 1.1).unwrap() >= n * 128);
-        assert!(checked_capacity(usize::MAX, 128, 1.).is_err());
-        assert!(checked_capacity(1, 128, f32::NAN).is_err());
-        assert!(checked_capacity(1, 128, 0.5).is_err());
-    }
-}
-
 impl<T, const N: usize> std::fmt::Debug for InmemDataset<T, N>
 where
     [T; N]: FullPrecisionDistance<T, N>,
@@ -256,5 +255,19 @@ where
             .field("num_active_pts", &self.num_active_pts)
             .field("capacity", &self.capacity)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod large_capacity_tests {
+    use super::*;
+    #[test]
+    fn exact_capacity_above_f32_integer_precision() {
+        let n = 1_000_000_001usize;
+        assert_eq!(checked_capacity(n, 128, 1.).unwrap(), n * 128);
+        assert!(checked_capacity(n, 128, 1.1).unwrap() >= n * 128);
+        assert!(checked_capacity(usize::MAX, 128, 1.).is_err());
+        assert!(checked_capacity(1, 128, f32::NAN).is_err());
+        assert!(checked_capacity(1, 128, 0.5).is_err());
     }
 }

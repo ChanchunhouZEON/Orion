@@ -6,11 +6,11 @@
 //! Per-query prefilter trajectories. Instrumented diagnostics, never QPS timings.
 use benchmark::config::Args as RunArgs;
 use clap::Parser;
-use orion_ann::benchmark::{graph, memory, LoadedDataset, ResolvedRunConfig};
+use orion_ann::benchmark::{LoadedDataset, ResolvedRunConfig, graph, memory};
 use orion_ann::{benchmark::cascade, with_supported_dimension};
-use orion_ann_core::algorithm::search::diagnostics::{NeighborMode, NoopObserver, SearchObserver};
+use orion_ann_core::search::diagnostics::{NeighborMode, NoopObserver, SearchObserver};
 use orion_ann_core::{Error, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -95,21 +95,21 @@ where
         return Err("No queries".into());
     }
     let s = &config.sweep;
-    let calib = idx
-        .calibrate(
-            queries[..s.calibration_samples.min(queries.len())].as_flattened(),
-            s.calibration_l,
-            config.window_size,
-            orion_ann_core::CalibrationConfig {
-                k: s.k,
-                metric: config.metric.calibration_metric(),
-            },
-        )
-        .map_err(Error::from)?;
+    let calib = idx.calibrate(
+        queries[..s.calibration_samples.min(queries.len())].as_flattened(),
+        s.calibration_l,
+        config.window_size,
+        orion_ann_core::CalibrationConfig {
+            k: s.k,
+            metric: config.metric.calibration_metric(),
+        },
+    )?;
     let c = config.cascade();
-    let pf = cascade::build_prefilter(&idx, c.prefilter, c.admission)?
-        .ok_or("This experiment requires an enabled prefilter; use --prefilter jl")?;
-    let ad = cascade::build_admission(&idx, c.admission).map_err(Error::from)?;
+    if c.prefilter == cascade::PrefilterChoice::None {
+        return Err("This experiment requires an enabled prefilter; use --prefilter jl".into());
+    }
+    let pf = cascade::build_prefilter(&idx, c.prefilter, c.admission)?;
+    let ad = cascade::build_admission(&idx, c.admission)?;
     let rr = cascade::build_rerank(&idx, c.rerank)?;
     let limit = if args.disable_ee {
         usize::MAX
@@ -126,36 +126,32 @@ where
         let mut records = Vec::new();
         for qi in (0..count).map(|i| i * queries.len() / count) {
             let mut trace = Trace::default();
-            let ids = idx
-                .search_unified_observed(
-                    &queries[qi],
-                    s.k,
-                    l,
-                    config.window_size,
-                    calib.threshold,
-                    limit,
-                    Some(pf.as_ref()),
-                    ad.as_ref(),
-                    rr.as_ref(),
-                    NeighborMode::LocalExtra,
-                    &mut trace,
-                )
-                .map_err(Error::from)?;
-            let control = idx
-                .search_unified_observed(
-                    &queries[qi],
-                    s.k,
-                    l,
-                    config.window_size,
-                    calib.threshold,
-                    limit,
-                    Some(pf.as_ref()),
-                    ad.as_ref(),
-                    rr.as_ref(),
-                    NeighborMode::LocalExtra,
-                    &mut NoopObserver,
-                )
-                .map_err(Error::from)?;
+            let ids = idx.search_unified_observed(
+                &queries[qi],
+                s.k,
+                l,
+                config.window_size,
+                calib.threshold,
+                limit,
+                pf.as_ref(),
+                ad.as_ref(),
+                rr.as_ref(),
+                NeighborMode::LocalExtra,
+                &mut trace,
+            )?;
+            let control = idx.search_unified_observed(
+                &queries[qi],
+                s.k,
+                l,
+                config.window_size,
+                calib.threshold,
+                limit,
+                pf.as_ref(),
+                ad.as_ref(),
+                rr.as_ref(),
+                NeighborMode::LocalExtra,
+                &mut NoopObserver,
+            )?;
             if ids != control {
                 return Err(Error::from(format!(
                     "Observer changed results: query={qi}, L={l}"

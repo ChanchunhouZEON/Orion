@@ -65,6 +65,7 @@ impl Index {
             let mut options = self.options.clone();
             // Persist the resolved graph source. Reopening is never automatic.
             options.graph.source = match config.graph_source {
+                GraphSource::Supplied => GraphSourcePolicy::Supplied,
                 GraphSource::Rust => GraphSourcePolicy::Rust,
                 GraphSource::Parlayann => GraphSourcePolicy::Parlayann,
             };

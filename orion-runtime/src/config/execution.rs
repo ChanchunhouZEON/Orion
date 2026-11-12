@@ -42,10 +42,10 @@ pub fn validate_positive_threads(threads: usize) -> Result<()> {
 
 pub fn validate_threads(threads: usize) -> Result<()> {
     validate_positive_threads(threads)?;
-    if threads > orion_ann_core::algorithm::search::MAX_WORKERS {
+    if threads > orion_ann_core::search::MAX_WORKERS {
         return Err(
             Error::configuration("threads", "thread count exceeds MAX_WORKERS")
-                .with_detail("maximum", orion_ann_core::algorithm::search::MAX_WORKERS)
+                .with_detail("maximum", orion_ann_core::search::MAX_WORKERS)
                 .with_detail("actual", threads),
         );
     }

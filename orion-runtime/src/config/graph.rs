@@ -22,6 +22,9 @@ pub enum GraphSource {
     /// Import a ParlayANN graph or construct it with the in-memory backend.
     #[cfg_attr(feature = "cli", value(alias = "pa"))]
     Parlayann,
+    /// Imported supplier graph; construction requires the experimental API.
+    #[cfg_attr(feature = "cli", value(skip))]
+    Supplied,
 }
 
 /// User policy, kept separate from the concrete source used in cache identities.
@@ -34,6 +37,9 @@ pub enum GraphSourcePolicy {
     Rust,
     #[cfg_attr(feature = "cli", value(alias = "pa"))]
     Parlayann,
+    /// Imported supplier graph; construction requires the experimental API.
+    #[cfg_attr(feature = "cli", value(skip))]
+    Supplied,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -72,6 +78,7 @@ impl GraphSourcePolicy {
     // Auto probes the PA candidate first; filesystem selection belongs to graph/.
     pub fn candidate(self) -> GraphSource {
         match self {
+            Self::Supplied => GraphSource::Supplied,
             Self::Rust => GraphSource::Rust,
             Self::Auto | Self::Parlayann => GraphSource::Parlayann,
         }
@@ -80,10 +87,14 @@ impl GraphSourcePolicy {
 
 impl ResolvedRunConfig {
     /// Translate service policy into the independent core construction recipe.
-    /// File/cache selection stays here; the core builder has no sweep dependency.
-    pub fn build_config(&self) -> orion_ann_core::BuildConfig {
-        orion_ann_core::BuildConfig {
+    pub fn build_config(&self) -> crate::Result<orion_ann_core::BuildConfig> {
+        Ok(orion_ann_core::BuildConfig {
             backend: match self.graph_source {
+                GraphSource::Supplied => {
+                    return Err(crate::Error::invalid_state(
+                        "supplied graphs cannot invoke a builder",
+                    ));
+                }
                 GraphSource::Rust => orion_ann_core::BuildBackend::DiskAnn,
                 GraphSource::Parlayann => orion_ann_core::BuildBackend::ParlayAnn,
             },
@@ -93,8 +104,12 @@ impl ResolvedRunConfig {
                 && self.metric == SearchMetric::InnerProduct
             {
                 orion_ann_core::BuildMetric::InnerProduct
+            } else if self.storage() == crate::VectorStorageKind::U8
+                && self.metric == SearchMetric::Cosine
+            {
+                orion_ann_core::BuildMetric::Cosine
             } else {
-                orion_ann_core::BuildMetric::L2
+                orion_ann_core::BuildMetric::SquaredL2
             },
             degree: self.graph_degree,
             build_l: self.build_l,
@@ -106,6 +121,6 @@ impl ResolvedRunConfig {
             } else {
                 orion_ann_core::BuildConfig::default().local_pct
             },
-        }
+        })
     }
 }

@@ -452,7 +452,7 @@ where
         Ok(cmp)
     }
 
-    fn cleanup_graph(&mut self, visit_order: &Vec<u32>) -> ANNResult<()> {
+    fn cleanup_graph(&mut self, visit_order: &[u32]) -> ANNResult<()> {
         if self.num_active_pts > 0 {
             log::info!("Starting final cleanup..");
         }
@@ -524,7 +524,7 @@ where
 
     pub fn get_unique_neighbors(
         &self,
-        neighbors: &Vec<u32>,
+        neighbors: &[u32],
         vertex_id: u32,
     ) -> Result<Vec<Neighbor>, ANNError> {
         let vertex = self.dataset.get_vertex(vertex_id)?;
@@ -572,13 +572,13 @@ where
         vertex: &Vertex<'_, T, N>,
         dummy_pool: &mut Vec<Neighbor>,
     ) -> Result<(), ANNError> {
-        if current != vertex_id {
-            if let Vacant(entry) = dummy_visited.entry(current) {
-                let cur_nbr_vertex = self.dataset.get_vertex(current)?;
-                let dist = vertex.compare(&cur_nbr_vertex, self.configuration.dist_metric);
-                dummy_pool.push(Neighbor::new(current, dist));
-                entry.insert();
-            }
+        if current != vertex_id
+            && let Vacant(entry) = dummy_visited.entry(current)
+        {
+            let cur_nbr_vertex = self.dataset.get_vertex(current)?;
+            let dist = vertex.compare(&cur_nbr_vertex, self.configuration.dist_metric);
+            dummy_pool.push(Neighbor::new(current, dist));
+            entry.insert();
         }
 
         Ok(())
@@ -803,7 +803,7 @@ where
     pub fn extract_graph_and_candidates(
         &mut self,
         max_extra: usize,
-    ) -> ANNResult<Vec<(Vec<u32>, Vec<u32>, Vec<u32>)>>
+    ) -> ANNResult<Vec<super::ann_inmem_index::NodePartitions>>
     where
         T: bytemuck::Pod,
     {
@@ -1277,7 +1277,7 @@ where
     fn extract_graph_and_candidates(
         &mut self,
         max_extra: usize,
-    ) -> ANNResult<Vec<(Vec<u32>, Vec<u32>, Vec<u32>)>> {
+    ) -> ANNResult<Vec<super::ann_inmem_index::NodePartitions>> {
         InmemIndex::extract_graph_and_candidates(self, max_extra)
     }
 

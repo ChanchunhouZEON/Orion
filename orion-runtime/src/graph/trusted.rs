@@ -7,7 +7,7 @@
 //! The caller selects the base/recipe; core still validates shapes and edges.
 use super::cache::CachePlan;
 use crate::{Error, Result};
-use orion_ann_core::{index::compressed_index::IndexData, CompressedIndex};
+use orion_ann_core::{index::IndexData, CompressedIndex};
 use orion_ann_platform::buffered_io::FILE_WRITE_BYTES;
 use std::{
     fs::File,

@@ -7,16 +7,14 @@
 use benchmark::config::Args as RunArgs;
 use orion_ann::benchmark::cascade;
 use orion_ann::benchmark::utils;
-use orion_ann::benchmark::{graph, memory, LoadedDataset, ResolvedRunConfig};
+use orion_ann::benchmark::{LoadedDataset, ResolvedRunConfig, graph, memory};
 use orion_ann::with_supported_dimension;
 use orion_ann_core::{Error, Result};
 
 use clap::Parser;
-use orion_ann_core::algorithm::search::diagnostics::{
-    NeighborMode, NoopObserver, PhaseWork, SynergyTrace,
-};
+use orion_ann_core::search::diagnostics::{NeighborMode, NoopObserver, PhaseWork, SynergyTrace};
 use rayon::prelude::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{fs::OpenOptions, io::Write, path::PathBuf, time::Instant};
 
 #[derive(Parser)]
@@ -123,7 +121,7 @@ where
     }
 
     if settings.threads == 0
-        || settings.threads > orion_ann_core::algorithm::search::MAX_WORKERS
+        || settings.threads > orion_ann_core::search::MAX_WORKERS
         || settings.trials == 0
         || settings.search_list_sizes.is_empty()
         || settings.calibration_samples == 0
@@ -152,19 +150,17 @@ where
         .num_threads(settings.threads)
         .build()
         .map_err(Error::thread_pool)?;
-    let calib = pool
-        .install(|| {
-            idx.calibrate(
-                queries[..settings.calibration_samples.min(queries.len())].as_flattened(),
-                settings.calibration_l,
-                config.window_size,
-                orion_ann_core::CalibrationConfig {
-                    k: settings.k,
-                    metric: config.metric.calibration_metric(),
-                },
-            )
-        })
-        .map_err(Error::from)?;
+    let calib = pool.install(|| {
+        idx.calibrate(
+            queries[..settings.calibration_samples.min(queries.len())].as_flattened(),
+            settings.calibration_l,
+            config.window_size,
+            orion_ann_core::CalibrationConfig {
+                k: settings.k,
+                metric: config.metric.calibration_metric(),
+            },
+        )
+    })?;
 
     let ee_limit = args.ee_limit.unwrap_or(calib.early_exit_limit);
     log::info!(
@@ -174,7 +170,7 @@ where
 
     let pf =
         cascade::build_prefilter(&idx, config.cascade().prefilter, config.cascade().admission)?;
-    let ad = cascade::build_admission(&idx, config.cascade().admission).map_err(Error::from)?;
+    let ad = cascade::build_admission(&idx, config.cascade().admission)?;
     let rr = cascade::build_rerank(&idx, config.cascade().rerank)?;
 
     let count = if args.diagnostic_queries == 0 {
@@ -194,13 +190,12 @@ where
                 config.window_size,
                 calib.threshold,
                 if arm.ee { ee_limit } else { usize::MAX },
-                pf.as_deref(),
+                pf.as_ref(),
                 ad.as_ref(),
                 rr.as_ref(),
                 arm.mode,
                 &mut NoopObserver,
             )
-            .map_err(Error::from)
         };
         let mut arms = Vec::new();
         for arm in ARMS {
@@ -210,21 +205,19 @@ where
                     .map(|&qi| {
                         let truth = &ground_truth[qi][..settings.k];
                         let mut trace = SynergyTrace::default();
-                        let ids = idx
-                            .search_unified_observed(
-                                &queries[qi],
-                                settings.k,
-                                l,
-                                config.window_size,
-                                calib.threshold,
-                                if arm.ee { ee_limit } else { usize::MAX },
-                                pf.as_deref(),
-                                ad.as_ref(),
-                                rr.as_ref(),
-                                arm.mode,
-                                &mut trace,
-                            )
-                            .map_err(Error::from)?;
+                        let ids = idx.search_unified_observed(
+                            &queries[qi],
+                            settings.k,
+                            l,
+                            config.window_size,
+                            calib.threshold,
+                            if arm.ee { ee_limit } else { usize::MAX },
+                            pf.as_ref(),
+                            ad.as_ref(),
+                            rr.as_ref(),
+                            arm.mode,
+                            &mut trace,
+                        )?;
 
                         if ids != search(qi, arm)? {
                             return Err(Error::from(format!(

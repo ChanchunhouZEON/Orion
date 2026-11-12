@@ -11,12 +11,12 @@ use super::{Receipts, SnapshotSidecars};
 use crate::integrity::read_verified;
 #[cfg(any(test, feature = "benchmark"))]
 use crate::storage::object_dir;
-use crate::storage::{put, PendingFile};
+use crate::storage::{PendingFile, put};
 use crate::{Error, Result};
 use orion_ann_core::{
-    index::compressed_index::{DecodeSidecar, EncodeSidecar, IndexData, SidecarCache},
-    model::dataset::rows::F32Rows,
     CompressedIndex,
+    index::{DecodeSidecar, EncodeSidecar, IndexData, SidecarCache},
+    model::dataset::rows::Rows,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -60,7 +60,7 @@ pub(crate) fn track<D: IndexData>(
     derived: Option<String>,
 ) -> Receipts {
     let records = Arc::new(Mutex::new(initial));
-    if index.dataset().element_type() == "f32" {
+    {
         index.set_sidecar_cache(Box::new(WorkingCache {
             directory,
             metadata,
@@ -90,7 +90,7 @@ pub(crate) fn attach<D: IndexData>(index: &mut CompressedIndex<D>, metadata: &Pa
 impl SidecarCache for WorkingCache {
     fn load(
         &self,
-        base: &dyn F32Rows,
+        base: &dyn Rows,
         codec: &'static str,
         decode: &mut DecodeSidecar<'_>,
     ) -> Result<()> {
@@ -111,7 +111,7 @@ impl SidecarCache for WorkingCache {
 
     fn store(
         &self,
-        base: &dyn F32Rows,
+        base: &dyn Rows,
         codec: &'static str,
         encode: &EncodeSidecar<'_>,
     ) -> Result<()> {
@@ -140,7 +140,7 @@ impl SidecarCache for WorkingCache {
 }
 
 impl CacheInput {
-    fn codec_key(&self, base: &dyn F32Rows, codec: &str) -> Result<String> {
+    fn codec_key(&self, base: &dyn Rows, codec: &str) -> Result<String> {
         let slot = match self {
             Self::Authenticated(input) => {
                 // Include the codec in the identity as well as the lookup filename.
@@ -179,18 +179,19 @@ pub(crate) fn derived_key(
         config.storage(),
         config.dimension,
         points,
-        config.metric,
+        config.metric.identity_key(),
     ))?;
     Ok(Some(crate::integrity::sha256(&recipe)))
 }
 
-pub(super) fn fingerprint(dataset: &dyn F32Rows) -> Result<String> {
+pub(super) fn fingerprint(dataset: &dyn Rows) -> Result<String> {
     let mut hash = Sha256::new();
     hash.update(b"orion-sidecar-base-v1");
     hash.update((dataset.dimension() as u64).to_le_bytes());
     hash.update((dataset.len() as u64).to_le_bytes());
+    let mut scratch = Vec::new();
     for id in 0..dataset.len() {
-        let row = dataset.row(id);
+        let row = dataset.row_f32(id, &mut scratch);
         if row.len() != dataset.dimension() {
             return Err(Error::dimension(
                 "sidecar row",

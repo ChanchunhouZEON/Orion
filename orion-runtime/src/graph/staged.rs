@@ -184,7 +184,7 @@ pub(super) fn import_staged_graph<T: BaseElement>(
     )
     .map_err(|e| {
         let message = format!("ParlayANN import failed: {}", e.message());
-        Error::from(e).with_message(message)
+        e.with_message(message)
     })?;
     Ok((
         index,

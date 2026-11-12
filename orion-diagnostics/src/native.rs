@@ -5,8 +5,8 @@
 
 //! Adapter from the production observer hooks to the portable trace schema.
 use crate::{Candidate, Phase, SearchTrace, TraceEvent, TraceLimits, TraceMetadata, TraceRecorder};
-use orion_ann_core::algorithm::search::diagnostics::SearchObserver;
 use orion_ann_core::model::Neighbor;
+use orion_ann_core::search::diagnostics::SearchObserver;
 
 pub struct RecordingObserver {
     recorder: TraceRecorder,

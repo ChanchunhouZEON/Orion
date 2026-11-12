@@ -8,8 +8,8 @@ pub(crate) mod requirements;
 #[cfg(feature = "benchmark")]
 pub(crate) mod trusted;
 mod working;
-use crate::{integrity::read_verified, Error, Result};
-use orion_ann_core::{index::compressed_index::IndexData, CompressedIndex};
+use crate::{Error, Result, integrity::read_verified};
+use orion_ann_core::{CompressedIndex, index::IndexData};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -45,9 +45,6 @@ pub(crate) fn restore_snapshot<D: IndexData>(
     directory: &Path,
     records: &SnapshotSidecars,
 ) -> Result<()> {
-    if !records.is_empty() && index.dataset().element_type() != "f32" {
-        return Err(Error::cache("snapshot sidecars require an f32 base"));
-    }
     for (codec, (bytes, digest)) in records {
         // Core resolves the codec against its closed registry before this name
         // is used as a file extension. Verify on the handle used to decode it.

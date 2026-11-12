@@ -36,7 +36,8 @@ See the [CLI guide](cli.md) for explicit file inputs and offline preflight.
 
 `SearchPlan` validates storage, input encodings, metric and cascade together.
 Serialized `vector_storage` and `cascade` are derived from it. Native u8 requires
-L2, byte base/query input, and `none/native-l2-u8/none` with PA. Dimensions
+byte inputs and native admission matching L2, IP or cosine, with no prefilter or
+rerank. It uses ParlayANN or the experimental supplier path. Dimensions
 are inferred at runtime, with internal row padding for the selected SIMD kernel.
 It does not silently quantize f32 input or fall back to a Rust build.
 
@@ -131,3 +132,13 @@ not improve performance. The recent f32 sweeps also set `ORION_RERANK_FACTOR=2`.
 For cache keys, provenance and source selection, use
 [Graph sources](graph-sources.md); for memory-budget limits, use
 [Large datasets](large-datasets.md).
+
+### Cosine dispatch
+
+For f32 `metric=cosine`, the default cascade is
+`none → cosine-i8 → cosine-f32`. Base and query rows are L2-normalized; the
+implementation then reuses i8/f32 IP kernels. `cosine-i16` and `pq-cosine` are
+explicit alternatives. Quantized-vector norms are not corrected in these arms.
+For raw inner product, use `ip-i8`/`ip-i16`/`pq-ip` and `ip-f32` instead.
+Stage/metric mismatches are rejected. The CLI preflight table explains this
+preparation and dispatch; requested result scores use the original metric.

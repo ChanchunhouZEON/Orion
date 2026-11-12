@@ -157,8 +157,10 @@ print(result.ids[0, :result.counts[0]])
 ```
 
 Use `metric="cosine"` for embeddings that need normalization, or `metric="ip"`
-for raw inner product. C-contiguous `float32` and `uint8` arrays are accepted;
-native bytes use L2. Python copies inputs before releasing the GIL, and
+for raw inner product. Base arrays accept C-contiguous `float32` or `uint8`;
+both support squared L2, inner product and cosine. Queries additionally accept
+`int8`, `uint16` and `uint32`, independently of base dtype. Python copies inputs
+before releasing the GIL, and
 concurrent searches share the configured Rust worker pool.
 
 ### Load files and keep a calibrated snapshot
@@ -179,16 +181,26 @@ external base and object store with the manifest; base vectors are not embedded
 in the snapshot. Rust offers the same `Index::save` / `Index::open` workflow.
 [Persistence guide](orion-runtime/src/guide/cache.md) · [Python guide](orion-py/README.md).
 
+### Bring your own graph — experimental
+
+Import your supplier’s named, ordered `local / remote / extra` partitions from memory or a portable STAG file. Orion validates IDs, capacities and partition disjointness, preserves the supplied entry, and uses its existing search engine. Enable `experimental-graph`; the default builder is unchanged. Calibrate, search and save through the ordinary `Index` API. Snapshots reopen without the supplier feature.
+
+```toml
+orion-ann = { path = "orion-runtime", features = ["experimental-graph"] }
+```
+
+[Import guide](orion-runtime/src/guide/supplier.md) · [Staged format](docs/supplier-staged.md)
+
 ## Support
 
 | Capability | Available today |
 |---|---|
 | Native CI matrix | Linux and macOS × x86-64 and ARM64; [validation status](docs/platforms.md#native-ci-matrix) |
 | APIs | Rust `Index`; Python 3.9+ / NumPy; standalone CLI |
-| Metrics | f32 L2, cosine and inner product; native-u8 L2 |
+| Metrics | Squared L2, cosine and inner product for both f32 and native u8 |
 | Dimensions | Runtime dimensions with automatic row padding |
 | SIMD | Automatic scalar, NEON/dot-product, AVX2/FMA and AVX-512 selection, subject to CPU support and row layout |
-| Graph construction | Bundled in-memory ParlayANN by default; f32 Rust DiskANN builder; STAG import |
+| Graph construction | Bundled in-memory ParlayANN by default; f32 Rust DiskANN builder; STAG import; opt-in third-party partition suppliers |
 | Inputs | Packed Rust slices, NumPy arrays, `fvecs`, `bvecs`, `fbin`, `u8bin`; CLI query streams |
 | Persistence | SHA-256-verified graph/sidecar objects and calibrated snapshots |
 | Error handling | Shared error codes and details across Rust, Python and CLI; Python converts unwinding panics into exceptions |

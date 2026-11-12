@@ -137,8 +137,9 @@ fn f32_u8_padded_rows_match_original_staged_and_thread_counts() {
                     max_extra: options.max_extra as usize,
                     threads: threads as usize,
                     metric: match metric {
-                        Metric::L2 => crate::BuildMetric::L2,
+                        Metric::L2 => crate::BuildMetric::SquaredL2,
                         Metric::InnerProduct => crate::BuildMetric::InnerProduct,
+                        Metric::Cosine => crate::BuildMetric::Cosine,
                     },
                     ..Default::default()
                 },
@@ -153,34 +154,38 @@ fn f32_u8_padded_rows_match_original_staged_and_thread_counts() {
             }
         }
     }
-    let mut expected = None;
-    for threads in [1, 4] {
-        let options = BuildOptions {
-            degree: 12,
-            build_l: 24,
-            max_extra: 8,
-            threads,
-            ..BuildOptions::default()
-        };
-        let result = compare(
-            Builder::u8(&bytes, n, dim, stride, options).unwrap(),
-            n,
-            options,
-        );
-        let direct = PhasedGraph::try_build_with(
-            n,
-            options.degree,
-            options.max_extra as usize,
-            |slab, ss| {
-                Builder::u8_into(&bytes, n, dim, stride, options, slab, ss).map_err(convert_error)
-            },
-        )
-        .unwrap();
-        assert_eq!(direct.buffer_bytes(), result);
-        if let Some(expected) = &expected {
-            assert_eq!(&result, expected);
-        } else {
-            expected = Some(result);
+    for metric in [Metric::L2, Metric::InnerProduct, Metric::Cosine] {
+        let mut expected = None;
+        for threads in [1, 4] {
+            let options = BuildOptions {
+                degree: 12,
+                build_l: 24,
+                max_extra: 8,
+                threads,
+                metric,
+                ..BuildOptions::default()
+            };
+            let result = compare(
+                Builder::u8(&bytes, n, dim, stride, options).unwrap(),
+                n,
+                options,
+            );
+            let direct = PhasedGraph::try_build_with(
+                n,
+                options.degree,
+                options.max_extra as usize,
+                |slab, ss| {
+                    Builder::u8_into(&bytes, n, dim, stride, options, slab, ss)
+                        .map_err(convert_error)
+                },
+            )
+            .unwrap();
+            assert_eq!(direct.buffer_bytes(), result);
+            if let Some(expected) = &expected {
+                assert_eq!(&result, expected);
+            } else {
+                expected = Some(result);
+            }
         }
     }
 }

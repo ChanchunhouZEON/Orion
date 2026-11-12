@@ -171,7 +171,7 @@ impl FixedChunkPQTable {
             .enumerate()
             .for_each(|(p, code_row)| {
                 let point = &centered[p * self.dim..(p + 1) * self.dim];
-                for chunk_idx in 0..self.num_pq_chunks {
+                for (chunk_idx, code) in code_row.iter_mut().enumerate() {
                     let start_dim = self.chunk_offsets[chunk_idx];
                     let end_dim = self.chunk_offsets[chunk_idx + 1];
                     let sub_vec = &point[start_dim..end_dim];
@@ -190,7 +190,7 @@ impl FixedChunkPQTable {
                             best_idx = c as u8;
                         }
                     }
-                    code_row[chunk_idx] = best_idx;
+                    *code = best_idx;
                 }
             });
 
@@ -281,7 +281,7 @@ impl FixedChunkPQTable {
             .with_fixed_int_encoding()
             .with_little_endian();
         bincode::serde::encode_into_std_write(self, &mut file, config)
-            .map_err(|err| ANNError::log_serialize_error(err))?;
+            .map_err(ANNError::log_serialize_error)?;
         Ok(())
     }
 
@@ -292,7 +292,7 @@ impl FixedChunkPQTable {
             .with_fixed_int_encoding()
             .with_little_endian();
         let table: Self = bincode::serde::decode_from_std_read(&mut file, config)
-            .map_err(|err| ANNError::log_deserialize_error(err))?;
+            .map_err(ANNError::log_deserialize_error)?;
         Ok(table)
     }
 }
@@ -454,6 +454,16 @@ fn run_kmeans_flat(
 // Tests
 // ======================================================================
 
+impl std::fmt::Debug for FixedChunkPQTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FixedChunkPQTable")
+            .field("dimension", &self.dim)
+            .field("num_pq_chunks", &self.num_pq_chunks)
+            .field("table_elements", &self.pq_table.len())
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,15 +536,5 @@ mod tests {
         assert_eq!(pq.get_num_chunks(), loaded.get_num_chunks());
         assert_eq!(pq.pq_table.len(), loaded.pq_table.len());
         let _ = std::fs::remove_file(&path);
-    }
-}
-
-impl std::fmt::Debug for FixedChunkPQTable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FixedChunkPQTable")
-            .field("dimension", &self.dim)
-            .field("num_pq_chunks", &self.num_pq_chunks)
-            .field("table_elements", &self.pq_table.len())
-            .finish_non_exhaustive()
     }
 }

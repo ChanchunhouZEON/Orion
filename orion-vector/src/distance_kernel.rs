@@ -134,6 +134,9 @@ pub trait DistanceKernelBackend {
 /// `reduce` time.
 pub struct L2U8Distance;
 
+/// Negative unsigned-byte inner product, with widened u64 accumulation.
+pub struct IpU8Distance;
+
 /// Squared-L2 over u16 storage. Used as the precise (per-dim ~256×
 /// finer than u8) tier of the L2 cascade — PA's `quantize_bits 16`
 /// pattern: u8 filter for cheap rejection, u16 distance for PQ
@@ -328,6 +331,7 @@ macro_rules! public_kernel {
     };
 }
 public_kernel!(L2U8Distance, run_l2u8distance);
+public_kernel!(IpU8Distance, run_ipu8distance);
 public_kernel!(L2U16Distance, run_l2u16distance);
 public_kernel!(
     JLHammingDistance,

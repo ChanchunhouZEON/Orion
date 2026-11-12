@@ -72,3 +72,5 @@ core.*
 
 # Website source and curated measurements live on the independent pages branch.
 /orion-site/
+
+rust-analyzer.toml

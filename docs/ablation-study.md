@@ -31,7 +31,7 @@ A clean **2×2 factorial** on the two convergence-side knobs (extras × early-st
 | **No early-stop**  | on  | off | marginal value of extras alone |
 | **Full**           | on  | on  | both knobs (production) |
 
-Extras off = the post-convergence branch falls back to walking `local + remote` (the same nav-mode path) instead of switching to `local + extra`; flag plumbed through `algorithm::search::INCLUDE_EXTRAS`. Early-stop off = `early_exit_limit = usize::MAX`; the beam runs to PQ exhaustion. Both flags are pure search-time — no graph rebuild — so every variant calls the same `search_compose` on the same graph with only two booleans changed.
+Extras off = the post-convergence branch falls back to walking `local + remote` (the same nav-mode path) instead of switching to `local + extra`; flag plumbed through `search::INCLUDE_EXTRAS`. Early-stop off = `early_exit_limit = usize::MAX`; the beam runs to PQ exhaustion. Both flags are pure search-time — no graph rebuild — so every variant calls the same `search_compose` on the same graph with only two booleans changed.
 
 **Earlier versions of this panel had two conflations** that are worth flagging because the conclusions shifted twice:
 - v1 used Microsoft Vamana as origin — conflated "no cascade backbone" with "no convergence machinery," producing a 4-10× gap that read as a convergence-side win but was really the cascade kernels.

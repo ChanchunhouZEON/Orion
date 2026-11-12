@@ -49,7 +49,7 @@ A `InMemScratchPool` allocates `num_threads` `InMemSearchScratch` buffers up fro
 
 #### 2. Warm-up — 3-hop loop peeling
 
-The first three hops run a dedicated **`expand_peeled_hop_l2`** (one variant per admission tier) that skips convergence / flush / 3-way merge bookkeeping. During hops 0..=2 the PQ transitions empty → partial → just-full, so none of that machinery can fire — but in the main loop it lives behind branches and pollutes the icache. Peeling them out strips ~10 instructions / vertex from the warm-up window and saves the branch-predictor's first warm-up misses. **+1.2 – 2.3× low-`L` QPS.** [`orion-core/src/algorithm/search/in_mem_search_l2.rs:65–261`]
+The first three hops run a dedicated **`expand_peeled_hop_l2`** (one variant per admission tier) that skips convergence / flush / 3-way merge bookkeeping. During hops 0..=2 the PQ transitions empty → partial → just-full, so none of that machinery can fire — but in the main loop it lives behind branches and pollutes the icache. Peeling them out strips ~10 instructions / vertex from the warm-up window and saves the branch-predictor's first warm-up misses. **+1.2 – 2.3× low-`L` QPS.** [`orion-core/src/search/in_mem_search_l2.rs:65–261`]
 
 #### 3. Prefilter tier (`--prefilter`)
 
@@ -59,10 +59,10 @@ After warm-up, every neighbour fetched off the graph hits the prefilter first (i
 |---|---|---|---|---|
 | `none` | — | — | low/mid-D, hop ≤ 4 lines | — |
 | `jl` | 1024-bit JL Sparse (NZ=9) + `‖v‖` (MIPS only) | popcount (L2) / popcount × `‖v‖` (MIPS) | high-D L2 / cosine (GIST, Wiki-ada) | `orion-core/src/model/dataset/jl_sparse_dataset.rs:115`, `:376` (MIPS) |
-| `jl-hadamard` | 1024-bit FWHT sign sketch | popcount | dense-D where JL Sparse plateaus | `orion-core/src/algorithm/search/stage/prefilter/jl_hadamard.rs` |
-| `rabitq` | RaBitQ B=1 / B=4 rotated sign-pack | popcount | sub-bit discrimination; GIST high-recall | `orion-core/src/algorithm/search/stage/prefilter/rabitq.rs` |
+| `jl-hadamard` | 1024-bit FWHT sign sketch | popcount | dense-D where JL Sparse plateaus | `orion-core/src/search/cascade/stage/prefilter/jl_hadamard.rs` |
+| `rabitq` | RaBitQ B=1 / B=4 rotated sign-pack | popcount | sub-bit discrimination; GIST high-recall | `orion-core/src/search/cascade/stage/prefilter/rabitq.rs` |
 
-L2 / MIPS split lives in the type — `JLSparseDataset` (no norms) vs `JLSparseDatasetMips` (norms slab cache-aligned next to codes), separate so L2 pays nothing for an unused norms slab. NZ tunables are per-dataset (L2=9, MIPS=9 in the GLM-vivid sweep). [`orion-core/src/algorithm/search/stage/prefilter/jl.rs:35–117`, `:119–200`]
+L2 / MIPS split lives in the type — `JLSparseDataset` (no norms) vs `JLSparseDatasetMips` (norms slab cache-aligned next to codes), separate so L2 pays nothing for an unused norms slab. NZ tunables are per-dataset (L2=9, MIPS=9 in the GLM-vivid sweep). [`orion-core/src/search/cascade/stage/prefilter/jl.rs:35–117`, `:119–200`]
 
 A u8-as-L2-proxy prefilter was tried and discarded for angular: on unit-norm vectors the L2² range collapses to `[0, 4]`, so 256 quantisation levels coarsen to where everything passes — bit-sign sketches are what pays.
 
@@ -84,15 +84,15 @@ The **L2-kernel-trick** (`l2-kt`) is the headline admission optimisation on high
 
 **(b) Per-hop cadence — admit, flush, merge.** Each hop runs `admit → flush → merge` against the shared scratch:
 
-- **Branch-free admission via cmov-compact.** Per-hop kernel writes every `(id, dist)` into `dist_buffer` and advances the write pointer conditionally (`w += (dist < pq_worst) as usize`). Kills the 50/50 mispredict at mid-`L`. [`orion-core/src/algorithm/search/unified.rs:411–424`]
-- **Flush cadence: `FLUSH_INTERVAL = [1, 4]`.** Pre-convergence flush every hop, post-convergence every 4 — amortises the merge fixed cost when admissions thin out. [`orion-core/src/algorithm/search/in_mem_search.rs:266–270`]
+- **Branch-free admission via cmov-compact.** Per-hop kernel writes every `(id, dist)` into `dist_buffer` and advances the write pointer conditionally (`w += (dist < pq_worst) as usize`). Kills the 50/50 mispredict at mid-`L`. [`orion-core/src/search/unified.rs:411–424`]
+- **Flush cadence: `FLUSH_INTERVAL = [1, 4]`.** Pre-convergence flush every hop, post-convergence every 4 — amortises the merge fixed cost when admissions thin out. [`orion-core/src/search/traversal/mod.rs:266–270`]
 - **3-way merge routing** at flush time, picked by `K` (admits) vs `L` (PQ capacity):
   - `K · 8 < L` → per-element `pq.insert` (cache-friendly small-K, no scratch swap)
   - `L / 8 ≤ K ≤ L · 0.67` → `pq.batch_merge_gallop` (`partition_point` + bulk memcpy, +10–30 ns)
   - `K · 1.5 > L` → linear `pq.batch_merge` (two-way set-union, near-capacity admits)
 
-  Comparisons lower to pure shifts (`K << 3`, `K + (K >> 1)`). [`orion-core/src/algorithm/search/in_mem_search.rs:97–110`]
-- **Reversible convergence + early exit.** Single converged hop doesn't lock out navigation — protects against false-trigger recall loss. Once stably converged, `EarlyExitChecker` terminates on N consecutive zero-admission hops. GIST-960 L=200: cuts ~20 % of distance calls for < 0.4 pp recall loss. [`orion-core/src/algorithm/search/adaptive/convergence.rs`, `early_exit.rs`]
+  Comparisons lower to pure shifts (`K << 3`, `K + (K >> 1)`). [`orion-core/src/search/traversal/mod.rs:97–110`]
+- **Reversible convergence + early exit.** Single converged hop doesn't lock out navigation — protects against false-trigger recall loss. Once stably converged, `EarlyExitChecker` terminates on N consecutive zero-admission hops. GIST-960 L=200: cuts ~20 % of distance calls for < 0.4 pp recall loss. [`orion-core/src/search/adaptive/convergence.rs`, `early_exit.rs`]
 
 #### 5. Rerank tier (`--rerank`)
 
@@ -132,7 +132,7 @@ Three pieces used by every stage above:
 
 What makes the cascade compose:
 
-- **Metric-agnostic auto-calibration.** `calibrate()` derives `(threshold, early_exit_limit)` from admit-rate topology, not the distance function — same output drives every metric. [`orion-core/src/algorithm/search/adaptive/calibrate.rs`]
+- **Metric-agnostic auto-calibration.** `calibrate()` derives `(threshold, early_exit_limit)` from admit-rate topology, not the distance function — same output drives every metric. [`orion-core/src/search/adaptive/calibrate.rs`]
 - **No normalize at load.** Earlier MIPS paths L2-normalised at load, silently converting raw MIPS → cosine and breaking `msmarco_bert_1M` against its raw-dot-product GT. The whole `normalize_all` infrastructure was removed; admission tiers either consume unit-norm-by-construction input (glove, wiki-ada) or raw vectors (msmarco_bert).
 - **PA 2-pass base graph default.** Every entry in `sweep.yaml` points at `${PA_ROOT}/data/<ds>/<stub>.staged` (PA `-num_passes 2` refine; ~10 % matched-recall lift over a 1-pass build; ~3 s one-time import). [`benchmark/src/runner/parlayann_bridge.rs`]
 - **Cascade-uniform machinery.** Adding a new admission tier means writing one `QuantSpec` impl — the preparation, peeled warm-up, per-hop cadence, rerank, and shared kernels are reused unchanged.

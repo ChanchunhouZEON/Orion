@@ -70,7 +70,7 @@ mod tests {
         let a = Neighbor::new(0, 1.0);
         let b = Neighbor::new(1, 2.0);
         assert!(a < b);
-        assert!(!(b < a));
+        assert!(b >= a);
     }
 
     #[test]
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_sort_neighbors() {
-        let mut v = vec![
+        let mut v = [
             Neighbor::new(3, 5.0),
             Neighbor::new(1, 1.0),
             Neighbor::new(2, 3.0),

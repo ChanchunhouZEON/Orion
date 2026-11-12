@@ -279,6 +279,14 @@ jobs:
         run: |
           python orion-py/tests/run.py
           python orion-py/tests/run.py --profile python
+      - name: Experimental graph suppliers and cross-interface consistency
+        run: |
+          cargo test --locked -p orion-ann-core -p orion-ann --features experimental-graph --test supplier
+          cargo test --locked -p orion-ann-cli --features experimental-graph
+          python orion-py/tests/run.py --experimental-graph
+          export ORION_SUPPLIER_RESTORE_DIR="$RUNNER_TEMP/supplier-restore"
+          cargo test --locked -p orion-ann --features experimental-graph --test supplier_restore -- --ignored
+          cargo test --locked -p orion-ann --no-default-features --test supplier_restore -- --ignored
 
   portable-api:
     name: Native API / ${{ matrix.os }} / ${{ matrix.arch }}

@@ -65,7 +65,7 @@ fn default_preserves_top10_l2() {
         CalibrationConfig::default(),
         CalibrationConfig {
             k: 10,
-            metric: CalibrationMetric::L2,
+            metric: CalibrationMetric::SquaredL2,
         }
     );
     let (index, queries) = fixture();
@@ -79,7 +79,7 @@ fn default_preserves_top10_l2() {
             5,
             CalibrationConfig {
                 k: 10,
-                metric: CalibrationMetric::L2,
+                metric: CalibrationMetric::SquaredL2,
             },
         )
         .unwrap();
@@ -126,7 +126,7 @@ fn inner_product_uses_raw_vector_norms() {
             .calibrate_with_diagnostics(&queries, POINTS, 5, CalibrationConfig { k: 1, metric })
             .unwrap()
     };
-    let l2 = run(CalibrationMetric::L2);
+    let l2 = run(CalibrationMetric::SquaredL2);
     let ip = run(CalibrationMetric::InnerProduct);
     assert_eq!(l2.topk_coverage_by_step[0], 1.0);
     assert_eq!(ip.topk_coverage_by_step[0], 0.0);
@@ -140,7 +140,7 @@ fn inner_product_uses_raw_vector_norms() {
 fn diagnostics_and_regular_calibration_agree() {
     let (index, queries) = fixture();
     for metric in [
-        CalibrationMetric::L2,
+        CalibrationMetric::SquaredL2,
         CalibrationMetric::InnerProduct,
         CalibrationMetric::Cosine,
     ] {

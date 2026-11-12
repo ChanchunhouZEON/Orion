@@ -38,9 +38,12 @@ assert_eq!(restored.threads, 8);
 - Supplying `staged_file` selects PA; combining it with `Rust` is an error.
 - Dimensions and row counts come from input. Row padding is internal and does
   not change the logical dimension exposed by the API.
-- `storage=None` follows input dtype. Native u8 supports exact L2 with the
-  `none / native-l2-u8 / none` cascade. Other metric/storage/cascade combinations
-  are checked together. Explicit cascade strings use the CLI vocabulary.
+- `storage=None` follows input dtype. Native u8 supports L2, inner product and
+  cosine without expanding the base. Defaults select `native-l2-u8`, `native-ip-u8`
+  or `native-cosine-u8`, with no prefilter/rerank. Cosine rejects zero vectors and
+  keeps squared norms: 4 bytes/vector through dimension 66,051; 8 bytes above it.
+  Norms participate in memory planning, mmap and SHA-256 snapshot verification.
+  Explicit cascade strings use the CLI vocabulary.
 - `threads` must be positive and at most the compiled worker limit; each index
   owns its pool. `window_size` is in `1..=64`. `degree > 0`, `build_l >= degree`,
   and finite `alpha >= 1` are required. `max_points=0` is invalid.
@@ -158,3 +161,72 @@ faults and memory events alongside QPS. Do not use an address-space limit:
 virtual mappings must remain large enough to cover the index. Construction and
 query scratch remain ordinary bounded or workload-dependent allocations;
 this storage policy does not turn the graph builder into an external-memory algorithm.
+
+## Cascade names describe the search objective
+
+`metric` selects the objective and input preparation. Cascade arms make that
+choice explicit; sharing a SIMD kernel does not make the objectives interchangeable.
+
+| Metric | Scalar admission | Exact rerank | Preparation and computation |
+|---|---|---|---|
+| `l2` | `l2-u8`, `l2-u16`, `l2-kt` | `l2-f32` | Coordinates unchanged; squared L2 |
+| `inner-product` | `ip-i8`, `ip-i16` | `ip-f32` | Coordinates unchanged; negative IP internally |
+| `cosine` | `cosine-i8`, `cosine-i16` | `cosine-f32` | Normalize base/query rows; negative IP internally |
+
+The f32 cosine default is `none → cosine-i8 → cosine-f32`. Its scalar codes
+share the IP representation and runtime-dispatched SIMD streams. Quantization
+can change vector norms; these existing arms **do not** add a quantized-norm
+correction. Final requested scores use cosine similarity, higher is better,
+not the integer admission score. Exact scores of returned candidates do not
+imply exact global top-k. Zero-norm cosine inputs are rejected.
+
+PQ uses `pq-l2`, `pq-ip`, or `pq-cosine`, with the corresponding exact rerank.
+`none` disables reranking without changing the metric of explicitly requested
+result scores. `jl` automatically selects the existing objective-compatible
+adapter; unsupported prefilter combinations fail validation.
+
+```rust
+use orion_ann::{CascadeConfig, IndexOptions, SearchMetric};
+let options = IndexOptions {
+    metric: SearchMetric::Cosine,
+    cascade: CascadeConfig {
+        admission: Some("cosine-i8".into()),
+        rerank: Some("cosine-f32".into()),
+        ..Default::default()
+    },
+    ..Default::default()
+};
+```
+
+Rust, Python `CascadeConfig`, and CLI `--admission`/`--rerank` accept the same
+names. `mips-i8`/`mips-i16` remain aliases of `ip-i8`/`ip-i16` for inner product;
+`f32`/`u16` remain L2 aliases. A cosine configuration must use cosine arms,
+not IP aliases. Mismatched explicit choices return a configuration error before
+building. Preflight and `Index::info()` (Python `index.info`) report preparation,
+admission kernel and score direction.
+
+
+### Byte storage and cascades
+
+Native `u8` is a base representation, not a separate search engine. Its default
+uses exact byte admission without a quantized copy or rerank. An explicit
+`CascadeConfig` can instead select JL filtering, PQ or scalar admission, and
+exact reranking under the same metric and precision-order checks as f32 input.
+The historical `l2-f32`, `ip-f32` and `cosine-f32` rerank names select exact base
+reranking; with byte storage they read the original byte rows.
+
+Sidecars convert logical rows into bounded reusable f32 scratch during fitting;
+they do not require a second f32 base dataset. Cosine fits from unit-normalized
+row views while preserving the original bytes and exact squared norms. Query
+preparation applies the same transformation. Cache identity includes the input
+representation and metric; snapshot restoration restores this context before
+loading sidecars. Requested result scores always refer to the original metric,
+not the quantized admission score.
+
+### Squared L2 naming
+
+Use `SearchMetric::SquaredL2` in Rust and `squared-l2` in CLI/Python configuration.
+The input aliases `l2` and `squared_l2` resolve to the same objective. Returned
+scores are labeled `squared_l2`: they are sums of squared coordinate differences,
+without a square root, and smaller values are better. Renaming the public option
+does not change persisted graph/sidecar identities or snapshot signatures.

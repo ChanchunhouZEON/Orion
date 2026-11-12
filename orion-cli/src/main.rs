@@ -15,8 +15,8 @@ mod resolve;
 use args::Args;
 
 use orion_ann::execution::{
-    open_queries, open_snapshot_queries, resources, GroundTruthReader, QuerySource,
-    ResolvedRunConfig,
+    GroundTruthReader, QuerySource, ResolvedRunConfig, open_queries, open_snapshot_queries,
+    resources,
 };
 use orion_ann::{Error, Result};
 use std::{
@@ -45,6 +45,10 @@ struct Command {
             "prepare_only"
         ]
     )]
+    #[cfg_attr(
+        feature = "experimental-graph",
+        arg(conflicts_with = "supplier_staged")
+    )]
     snapshot: Option<PathBuf>,
 
     /// Relocate snapshot objects; all payload hashes are still verified.
@@ -67,6 +71,10 @@ struct Command {
 
     /// JSON array of unique u64 business IDs, one per indexed row.
     #[arg(long, conflicts_with = "snapshot")]
+    #[cfg_attr(
+        feature = "experimental-graph",
+        arg(conflicts_with = "supplier_staged")
+    )]
     external_ids: Option<PathBuf>,
 
     /// JSON LabelFilter for exact subset search of a saved label revision.
@@ -104,7 +112,24 @@ fn run(config: &ResolvedRunConfig, command: &Command) -> Result<()> {
 
     let input = orion_ann::BaseInput::from_file(&config.base);
     let options = command.run.index_options();
-    let mut index = if let Some(path) = &command.external_ids {
+    #[cfg(feature = "experimental-graph")]
+    let supplied = command
+        .run
+        .supplier_staged
+        .as_ref()
+        .map(|path| {
+            orion_ann::Index::from_staged(
+                orion_ann::BaseInput::from_file(&config.base),
+                path,
+                options.clone(),
+            )
+        })
+        .transpose()?;
+    #[cfg(not(feature = "experimental-graph"))]
+    let supplied: Option<orion_ann::Index> = None;
+    let mut index = if let Some(index) = supplied {
+        index
+    } else if let Some(path) = &command.external_ids {
         let ids: Vec<u64> = serde_json::from_reader(BufReader::new(
             std::fs::File::open(path).map_err(|e| Error::io("open external IDs", path, e))?,
         ))?;
@@ -133,15 +158,15 @@ fn run(config: &ResolvedRunConfig, command: &Command) -> Result<()> {
     //
     // The queries are therefore retained and searched below rather than read
     // again after calibration.
-    let mut decoded = Vec::new();
-    query_source.read_batch(&mut decoded, config.sweep.calibration_samples)?;
+    let mut decoded = orion_ann::QueryBuffer::default();
+    query_source.read_typed_batch(&mut decoded, config.sweep.calibration_samples)?;
 
     if decoded.is_empty() {
         return Err("query source is empty".into());
     }
 
-    let calibration = index.calibrate(
-        decoded.clone(),
+    let calibration = index.calibrate_batch(
+        orion_ann::QueryBatch::from_input(decoded.as_input(), index.dimension())?,
         config.sweep.k,
         Some(config.sweep.calibration_l),
     )?;
@@ -166,7 +191,7 @@ fn run(config: &ResolvedRunConfig, command: &Command) -> Result<()> {
         summary,
         |decoded| {
             index.search(
-                orion_ann::QueryBatch::from_f32(decoded, index.dimension())?,
+                orion_ann::QueryBatch::from_input(decoded, index.dimension())?,
                 &orion_ann::SearchOptions::new(config.sweep.k, config.sweep.search_list_sizes[0])
                     .with_scores(command.scores),
             )
@@ -204,13 +229,13 @@ struct RunSummary<'a> {
 
 fn stream_results(
     source: &mut dyn QuerySource,
-    mut decoded: Vec<f32>,
+    mut decoded: orion_ann::QueryBuffer,
     mut gt: Option<GroundTruthReader<BufReader<std::fs::File>>>,
     mut writer: Box<dyn Write>,
     summary: RunSummary<'_>,
-    search: impl Fn(&[f32]) -> Result<orion_ann::SearchResult>,
+    search: impl Fn(orion_ann::QueryInput<'_>) -> Result<orion_ann::SearchResult>,
 ) -> Result<()> {
-    use orion_ann_core::algorithm::search::take_search_counts;
+    use orion_ann_core::search::take_search_counts;
     take_search_counts();
     let (mut count, mut recall_sum, mut search_seconds) = (0usize, 0.0, 0.0);
 
@@ -223,7 +248,7 @@ fn stream_results(
     loop {
         let started = Instant::now();
 
-        let results = search(&decoded)?;
+        let results = search(decoded.as_input())?;
         search_seconds += started.elapsed().as_secs_f64();
         for (row_index, ids) in results.rows().enumerate() {
             // Ground truth is consumed in lockstep with the query stream.
@@ -262,7 +287,7 @@ fn stream_results(
         writer.flush().map_err(Error::from)?;
 
         // Refill the reusable decode buffer. A zero-length batch marks EOF.
-        if source.read_batch(&mut decoded, summary.batch_size)? == 0 {
+        if source.read_typed_batch(&mut decoded, summary.batch_size)? == 0 {
             break;
         }
     }
@@ -370,8 +395,8 @@ fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
     let mut source = open_snapshot_queries(query, format, index.dimension(), index.storage())?;
     let gt = open_truth(args.groundtruth.as_deref())?
         .map(|f| GroundTruthReader::new(BufReader::new(f), k, index.len()));
-    let mut decoded = Vec::new();
-    if source.read_batch(&mut decoded, args.query_batch_size)? == 0 {
+    let mut decoded = orion_ann::QueryBuffer::default();
+    if source.read_typed_batch(&mut decoded, args.query_batch_size)? == 0 {
         return Err("query source is empty".into());
     }
     stream_results(
@@ -384,7 +409,7 @@ fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
             if let Some(filter) = &filter {
                 return Ok(index
                     .search_filtered(
-                        orion_ann::QueryBatch::from_f32(batch, index.dimension())?,
+                        orion_ann::QueryBatch::from_input(batch, index.dimension())?,
                         filter,
                         &orion_ann::FilterSearchOptions {
                             k,
@@ -395,7 +420,7 @@ fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
                     .result);
             }
             index.search(
-                orion_ann::QueryBatch::from_f32(batch, index.dimension())?,
+                orion_ann::QueryBatch::from_input(batch, index.dimension())?,
                 &orion_ann::SearchOptions::new(k, beam).with_scores(command.scores),
             )
         },

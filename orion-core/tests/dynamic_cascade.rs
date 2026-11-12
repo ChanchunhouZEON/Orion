@@ -13,10 +13,10 @@ mod sidecar_file;
 use graph_fixture::{GraphFixture, from_fixture_graph};
 #[cfg(feature = "benchmark")]
 use orion_ann_core::CalibrationDiagnostics;
-use orion_ann_core::algorithm::search::{
+use orion_ann_core::model::dataset::*;
+use orion_ann_core::search::{
     adaptive::calibrate::CalibrationMetric,
-    diagnostics::NeighborMode,
-    stage::{
+    cascade::stage::{
         Admission, Prefilter, Rerank,
         admission::*,
         prefilter::{
@@ -26,8 +26,8 @@ use orion_ann_core::algorithm::search::{
         },
         rerank::{DynamicF32Rerank, F32Rerank, IpF32Rerank, NoRerank, U16Rerank},
     },
+    diagnostics::NeighborMode,
 };
-use orion_ann_core::model::dataset::*;
 use orion_ann_core::{CalibrationConfig, DynamicCascade, DynamicSearchConfig, Orion, StaticOrion};
 use orion_ann_diskann::model::{InmemDataset, PaddedDataset};
 use orion_ann_vector::{IpF32Distance, L2F32Distance, L2U8Distance, PaddedLayout};
@@ -70,7 +70,7 @@ fn typed<const N: usize>() -> StaticOrion<N, f32> {
 #[derive(Default, Debug, PartialEq)]
 struct Traversal(Vec<(bool, Vec<u32>)>);
 #[cfg(not(feature = "benchmark"))]
-impl orion_ann_core::algorithm::search::diagnostics::SearchObserver for Traversal {
+impl orion_ann_core::search::diagnostics::SearchObserver for Traversal {
     fn expansion(&mut self, converged: bool, ids: &[u32]) {
         self.0.push((converged, ids.to_vec()));
     }
@@ -78,13 +78,17 @@ impl orion_ann_core::algorithm::search::diagnostics::SearchObserver for Traversa
         self.0.push((false, beam.iter().map(|n| n.id).collect()));
     }
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compare the same three stages on both index implementations"
+)]
 fn compare<const N: usize>(
     old: &StaticOrion<N, f32>,
     new: &Orion,
     a: &Admission<'_>,
     b: &Admission<'_>,
-    pa: Option<&Prefilter<'_>>,
-    pb: Option<&Prefilter<'_>>,
+    pa: &Prefilter<'_>,
+    pb: &Prefilter<'_>,
     ra: &Rerank<'_>,
     rb: &Rerank<'_>,
 ) {
@@ -109,15 +113,15 @@ fn compare<const N: usize>(
                     let (mut x, mut y) = (Traversal::default(), Traversal::default());
                     #[cfg(feature = "benchmark")]
                     let (mut x, mut y) = {
-                        use orion_ann_core::algorithm::search::diagnostics::SearchTrace;
+                        use orion_ann_core::search::diagnostics::SearchTrace;
                         (
                             SearchTrace::new(&[0, 17, 47]),
                             SearchTrace::new(&[0, 17, 47]),
                         )
                     };
                     let expected = old
-                        .search_cascade_observed(
-                            &q,
+                        .search_observed(
+                            orion_ann_core::search::query::QueryInput::F32(&q),
                             cfg,
                             DynamicCascade {
                                 prefilter: pa,
@@ -129,8 +133,8 @@ fn compare<const N: usize>(
                         )
                         .unwrap();
                     let result = new
-                        .search_cascade_observed(
-                            &q,
+                        .search_observed(
+                            orion_ann_core::search::query::QueryInput::F32(&q),
                             cfg,
                             DynamicCascade {
                                 prefilter: pb,
@@ -156,14 +160,23 @@ fn typed_and_dynamic_cascades_preserve_ids_and_traversal() {
     let na = L2U8Admission::new(new.ensure_quantized_dataset());
     let of = F32Rerank::new(old.dataset());
     let nf = DynamicF32Rerank::<L2F32Distance>::new(new.dataset());
-    compare(&old, &new, &oa, &na, None, None, &of, &nf);
+    compare(
+        &old,
+        &new,
+        &oa,
+        &na,
+        &orion_ann_core::search::cascade::stage::NoPrefilter,
+        &orion_ann_core::search::cascade::stage::NoPrefilter,
+        &of,
+        &nf,
+    );
     compare(
         &old,
         &new,
         &L2U16Admission::new(old.ensure_quantized_dataset_l2_u16()),
         &L2U16Admission::new(new.ensure_quantized_dataset_l2_u16()),
-        None,
-        None,
+        &orion_ann_core::search::cascade::stage::NoPrefilter,
+        &orion_ann_core::search::cascade::stage::NoPrefilter,
         &U16Rerank::new(old.ensure_quantized_dataset_l2_u16()),
         &U16Rerank::new(new.ensure_quantized_dataset_l2_u16()),
     );
@@ -172,8 +185,8 @@ fn typed_and_dynamic_cascades_preserve_ids_and_traversal() {
         &new,
         &L2KTAdmission::new(old.ensure_quantized_dataset_l2_kt()),
         &L2KTAdmission::new(new.ensure_quantized_dataset_l2_kt()),
-        None,
-        None,
+        &orion_ann_core::search::cascade::stage::NoPrefilter,
+        &orion_ann_core::search::cascade::stage::NoPrefilter,
         &of,
         &nf,
     );
@@ -182,8 +195,8 @@ fn typed_and_dynamic_cascades_preserve_ids_and_traversal() {
         &new,
         &oa,
         &na,
-        Some(&JlPrefilter::new(old.ensure_quantized_dataset_jl())),
-        Some(&JlPrefilter::new(new.ensure_quantized_dataset_jl())),
+        &JlPrefilter::new(old.ensure_quantized_dataset_jl()),
+        &JlPrefilter::new(new.ensure_quantized_dataset_jl()),
         &of,
         &nf,
     );
@@ -192,12 +205,8 @@ fn typed_and_dynamic_cascades_preserve_ids_and_traversal() {
         &new,
         &oa,
         &na,
-        Some(&JlHadamardPrefilter::new(
-            old.ensure_quantized_dataset_jl_hadamard(),
-        )),
-        Some(&JlHadamardPrefilter::new(
-            new.ensure_quantized_dataset_jl_hadamard(),
-        )),
+        &JlHadamardPrefilter::new(old.ensure_quantized_dataset_jl_hadamard()),
+        &JlHadamardPrefilter::new(new.ensure_quantized_dataset_jl_hadamard()),
         &of,
         &nf,
     );
@@ -206,8 +215,8 @@ fn typed_and_dynamic_cascades_preserve_ids_and_traversal() {
         &new,
         &oa,
         &na,
-        Some(&RabitqPrefilter::new(old.ensure_quantized_dataset_rabitq())),
-        Some(&RabitqPrefilter::new(new.ensure_quantized_dataset_rabitq())),
+        &RabitqPrefilter::new(old.ensure_quantized_dataset_rabitq()),
+        &RabitqPrefilter::new(new.ensure_quantized_dataset_rabitq()),
         &of,
         &nf,
     );
@@ -218,12 +227,8 @@ fn typed_and_dynamic_cascades_preserve_ids_and_traversal() {
         &new,
         &MipsI8Admission::new(old.ensure_quantized_dataset_mips()),
         &MipsI8Admission::new(new.ensure_quantized_dataset_mips()),
-        Some(&JlMipsPrefilter::new(
-            old.ensure_quantized_dataset_jl_mips(),
-        )),
-        Some(&JlMipsPrefilter::new(
-            new.ensure_quantized_dataset_jl_mips(),
-        )),
+        &JlMipsPrefilter::new(old.ensure_quantized_dataset_jl_mips()),
+        &JlMipsPrefilter::new(new.ensure_quantized_dataset_jl_mips()),
         &oi,
         &ni,
     );
@@ -232,8 +237,8 @@ fn typed_and_dynamic_cascades_preserve_ids_and_traversal() {
         &new,
         &MipsI16Admission::new(old.ensure_quantized_dataset_mips_i16()),
         &MipsI16Admission::new(new.ensure_quantized_dataset_mips_i16()),
-        None,
-        None,
+        &orion_ann_core::search::cascade::stage::NoPrefilter,
+        &orion_ann_core::search::cascade::stage::NoPrefilter,
         &oi,
         &ni,
     );
@@ -255,7 +260,7 @@ fn calibration<const N: usize>() {
         .collect();
     let packed: Vec<_> = queries.iter().flatten().copied().collect();
     for metric in [
-        CalibrationMetric::L2,
+        CalibrationMetric::SquaredL2,
         CalibrationMetric::InnerProduct,
         CalibrationMetric::Cosine,
     ] {
@@ -317,18 +322,13 @@ fn native_u8_calibration_and_errors() {
         &old.calibrate_with_diagnostics(&qs, 16, 3, cfg).unwrap(),
         &new.calibrate_with_diagnostics(&flat, 16, 3, cfg).unwrap(),
     );
-    assert!(
-        new.calibrate(
-            &flat,
-            16,
-            3,
-            CalibrationConfig {
-                metric: CalibrationMetric::Cosine,
-                ..cfg
-            }
-        )
-        .is_err()
-    );
+    for metric in [CalibrationMetric::InnerProduct, CalibrationMetric::Cosine] {
+        assert!(
+            new.calibrate(&flat, 16, 3, CalibrationConfig { metric, ..cfg })
+                .is_ok()
+        );
+    }
+    assert!(new.calibrate(&[0.5; 33], 16, 3, cfg).is_ok());
     assert!(new.calibrate(&flat[..32], 16, 3, cfg).is_err());
     assert!(new.calibrate(&[f32::NAN; 33], 16, 3, cfg).is_err());
     assert!(new.calibrate(&flat, 16, 0, cfg).is_err());
@@ -406,7 +406,7 @@ fn odd_dimensions_cascade_batch_cache_and_padding() {
         let filter = JlPrefilter::new(&jl);
         let rerank = DynamicF32Rerank::<L2F32Distance>::new(index.dataset());
         let recipe = DynamicCascade {
-            prefilter: Some(&filter),
+            prefilter: &filter,
             admission: &admission,
             rerank: &rerank,
         };
@@ -416,19 +416,48 @@ fn odd_dimensions_cascade_batch_cache_and_padding() {
             ..Default::default()
         };
         let qs = &values(dim)[..dim * 4];
-        let batch = index.search_batch_cascade(qs, cfg, recipe).unwrap();
+        let batch = index
+            .search_batch(
+                orion_ann_core::search::query::QueryInput::F32(qs),
+                cfg,
+                recipe,
+                None,
+            )
+            .unwrap();
         for (q, ids) in qs.chunks_exact(dim).zip(batch.rows()) {
-            assert_eq!(index.search_cascade(q, cfg, recipe).unwrap(), ids);
+            assert_eq!(
+                index
+                    .search_observed(
+                        orion_ann_core::search::query::QueryInput::F32(q),
+                        cfg,
+                        recipe,
+                        orion_ann_core::search::diagnostics::NeighborMode::default(),
+                        &mut orion_ann_core::search::diagnostics::NoopObserver
+                    )
+                    .unwrap(),
+                ids
+            );
         }
         assert!(
             index
-                .search_batch_cascade(&[], cfg, recipe)
+                .search_batch(
+                    orion_ann_core::search::query::QueryInput::F32(&[]),
+                    cfg,
+                    recipe,
+                    None
+                )
                 .unwrap()
                 .is_empty()
         );
         assert!(
             index
-                .search_cascade(&vec![0.; dim + 1], cfg, recipe)
+                .search_observed(
+                    orion_ann_core::search::query::QueryInput::F32(&vec![0.; dim + 1]),
+                    cfg,
+                    recipe,
+                    orion_ann_core::search::diagnostics::NeighborMode::default(),
+                    &mut orion_ann_core::search::diagnostics::NoopObserver
+                )
                 .is_err()
         );
         // A foreign sidecar is rejected before opening a session or streaming.
@@ -436,14 +465,16 @@ fn odd_dimensions_cascade_batch_cache_and_padding() {
         let bad = L2U8Admission::new(foreign.ensure_quantized_dataset());
         assert!(
             index
-                .search_cascade(
-                    &qs[..dim],
+                .search_observed(
+                    orion_ann_core::search::query::QueryInput::F32(&qs[..dim]),
                     cfg,
                     DynamicCascade {
                         admission: &bad,
                         rerank: &NoRerank,
-                        prefilter: None
-                    }
+                        prefilter: &orion_ann_core::search::cascade::stage::NoPrefilter
+                    },
+                    orion_ann_core::search::diagnostics::NeighborMode::default(),
+                    &mut orion_ann_core::search::diagnostics::NoopObserver
                 )
                 .is_err()
         );
@@ -563,6 +594,13 @@ fn sidecar_stream_rejects_bad_headers() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "benchmark"),
+    expect(
+        clippy::single_element_loop,
+        reason = "the benchmark feature adds another invalid cascade case"
+    )
+)]
 fn invalid_precision_is_rejected_by_the_core_search_boundary() {
     let index = dynamic(32);
     #[cfg(feature = "benchmark")]
@@ -575,25 +613,27 @@ fn invalid_precision_is_rejected_by_the_core_search_boundary() {
     for cascade in [
         #[cfg(feature = "benchmark")]
         DynamicCascade {
-            prefilter: None,
+            prefilter: &orion_ann_core::search::cascade::stage::NoPrefilter,
             admission: &exact,
             rerank: &high_rerank,
         },
         DynamicCascade {
-            prefilter: Some(&mixed),
+            prefilter: &mixed,
             admission: &low,
             rerank: &no_rerank,
         },
     ] {
         let error = index
-            .search_cascade(
-                &values(32)[..32],
+            .search_observed(
+                orion_ann_core::search::query::QueryInput::F32(&values(32)[..32]),
                 DynamicSearchConfig {
                     k: 3,
                     search_list_size: 8,
                     ..Default::default()
                 },
                 cascade,
+                orion_ann_core::search::diagnostics::NeighborMode::default(),
+                &mut orion_ann_core::search::diagnostics::NoopObserver,
             )
             .unwrap_err();
         assert_eq!(error.code(), orion_ann_core::ErrorCode::InvalidArgument);

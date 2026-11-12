@@ -57,7 +57,7 @@ pub fn pread_aligned(fd: RawFd, buf: &mut [u8], offset: u64) -> io::Result<usize
 /// Check if a value is aligned to the disk I/O alignment boundary.
 #[inline]
 pub fn is_sector_aligned(val: u64) -> bool {
-    val % (DISK_IO_ALIGNMENT as u64) == 0
+    val.is_multiple_of(DISK_IO_ALIGNMENT as u64)
 }
 
 /// Round up a value to the next sector-aligned boundary.

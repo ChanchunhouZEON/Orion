@@ -57,6 +57,10 @@ impl Ord for Neighbor {
     }
 }
 
+#[expect(
+    clippy::non_canonical_partial_ord_impl,
+    reason = "Preserve the legacy eq/lt-only comparison contract and its explicit partial_cmp rejection."
+)]
 impl PartialOrd for Neighbor {
     #[inline]
     fn lt(&self, other: &Self) -> bool {

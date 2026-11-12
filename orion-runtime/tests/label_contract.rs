@@ -63,7 +63,7 @@ fn search(index: &Index, label: &str) -> orion_ann::FilteredSearchResult {
 #[test]
 fn batches_are_atomic_idempotent_and_conflicts_or_invalid_inputs_roll_back() {
     let dir = tempfile::tempdir().unwrap();
-    let index = index(dir.path(), SearchMetric::L2, false, false);
+    let index = index(dir.path(), SearchMetric::SquaredL2, false, false);
     assert_eq!(index.label_revision().unwrap(), 0);
     assert_eq!(
         index
@@ -128,7 +128,7 @@ fn batches_are_atomic_idempotent_and_conflicts_or_invalid_inputs_roll_back() {
 #[test]
 fn boolean_filters_empty_sets_and_budgets_have_explicit_semantics() {
     let dir = tempfile::tempdir().unwrap();
-    let index = index(dir.path(), SearchMetric::L2, false, false);
+    let index = index(dir.path(), SearchMetric::SquaredL2, false, false);
     index
         .update_labels(
             0,
@@ -170,9 +170,11 @@ fn boolean_filters_empty_sets_and_budgets_have_explicit_semantics() {
     let mut limited = opts;
     limited.max_candidates = 2;
     assert!(index.search_filtered(q, &filter("a"), &limited).is_err());
-    assert!(index
-        .search_filtered(q, &LabelFilter::default(), &limited)
-        .is_err());
+    assert!(
+        index
+            .search_filtered(q, &LabelFilter::default(), &limited)
+            .is_err()
+    );
     assert_eq!(
         index
             .search_filtered(q, &filter("unknown"), &limited)
@@ -181,36 +183,44 @@ fn boolean_filters_empty_sets_and_budgets_have_explicit_semantics() {
             .counts,
         [0]
     );
-    assert!(index
-        .search_filtered(
-            QueryBatch::from_f32(&[f32::NAN, 0., 0.], 3).unwrap(),
-            &filter("unknown"),
-            &opts
-        )
-        .is_err());
-    assert!(index
-        .search_filtered(
-            QueryBatch::from_f32(&[1., 2.], 2).unwrap(),
-            &filter("a"),
-            &opts
-        )
-        .is_err());
-    assert!(index
-        .search_filtered(q, &filter("a"), &FilterSearchOptions::new(0))
-        .is_err());
-    assert!(index
-        .search_filtered(QueryBatch::from_f32(&[], 3).unwrap(), &filter("a"), &opts)
-        .unwrap()
-        .result
-        .is_empty());
+    assert!(
+        index
+            .search_filtered(
+                QueryBatch::from_f32(&[f32::NAN, 0., 0.], 3).unwrap(),
+                &filter("unknown"),
+                &opts
+            )
+            .is_err()
+    );
+    assert!(
+        index
+            .search_filtered(
+                QueryBatch::from_f32(&[1., 2.], 2).unwrap(),
+                &filter("a"),
+                &opts
+            )
+            .is_err()
+    );
+    assert!(
+        index
+            .search_filtered(q, &filter("a"), &FilterSearchOptions::new(0))
+            .is_err()
+    );
+    assert!(
+        index
+            .search_filtered(QueryBatch::from_f32(&[], 3).unwrap(), &filter("a"), &opts)
+            .unwrap()
+            .result
+            .is_empty()
+    );
 }
 #[test]
 fn exhaustive_filter_scores_match_reference_for_all_metrics_and_storage() {
     for (metric, native, mapped) in [
-        (SearchMetric::L2, false, false),
+        (SearchMetric::SquaredL2, false, false),
         (SearchMetric::InnerProduct, false, false),
         (SearchMetric::Cosine, false, true),
-        (SearchMetric::L2, true, true),
+        (SearchMetric::SquaredL2, true, true),
     ] {
         if native && !cfg!(feature = "parlay") {
             continue;
@@ -235,7 +245,7 @@ fn exhaustive_filter_scores_match_reference_for_all_metrics_and_storage() {
                 let row = &data[id as usize * 3..id as usize * 3 + 3];
                 let dot: f64 = q.iter().zip(row).map(|(&a, &b)| a as f64 * b as f64).sum();
                 let score = match metric {
-                    SearchMetric::L2 => q
+                    SearchMetric::SquaredL2 => q
                         .iter()
                         .zip(row)
                         .map(|(&a, &b)| (a as f64 - b as f64).powi(2))
@@ -251,7 +261,7 @@ fn exhaustive_filter_scores_match_reference_for_all_metrics_and_storage() {
             .collect();
         expected.sort_by(|a, b| {
             let c = a.1.total_cmp(&b.1);
-            if metric == SearchMetric::L2 {
+            if metric == SearchMetric::SquaredL2 {
                 c
             } else {
                 c.reverse()
@@ -270,7 +280,7 @@ fn exhaustive_filter_scores_match_reference_for_all_metrics_and_storage() {
 #[test]
 fn concurrent_queries_hold_one_revision_and_writers_have_compare_and_publish() {
     let dir = tempfile::tempdir().unwrap();
-    let index = Arc::new(index(dir.path(), SearchMetric::L2, false, false));
+    let index = Arc::new(index(dir.path(), SearchMetric::SquaredL2, false, false));
     index
         .update_labels(0, &[change("a", &[0, 1, 2], &[])])
         .unwrap();
@@ -330,7 +340,7 @@ fn concurrent_queries_hold_one_revision_and_writers_have_compare_and_publish() {
 #[test]
 fn snapshots_bundles_failure_and_corruption_preserve_label_contract() {
     let dir = tempfile::tempdir().unwrap();
-    let index = index(dir.path(), SearchMetric::L2, false, false);
+    let index = index(dir.path(), SearchMetric::SquaredL2, false, false);
     index
         .update_labels(0, &[change("a", &[2, 3, 9], &[])])
         .unwrap();
@@ -384,7 +394,7 @@ fn snapshots_bundles_failure_and_corruption_preserve_label_contract() {
 #[test]
 fn labels_are_bound_to_business_mapping_and_failed_save_leaves_no_manifest() {
     let dir = tempfile::tempdir().unwrap();
-    let idx = index(dir.path(), SearchMetric::L2, false, false);
+    let idx = index(dir.path(), SearchMetric::SquaredL2, false, false);
     idx.update_labels(0, &[change("a", &[2, 3, 9], &[])])
         .unwrap();
     let first = idx.save(&dir.path().join("first")).unwrap();
@@ -443,7 +453,7 @@ fn labels_are_bound_to_business_mapping_and_failed_save_leaves_no_manifest() {
 #[test]
 fn multi_label_batches_and_concurrent_checkpoints_never_mix_memberships() {
     let dir = tempfile::tempdir().unwrap();
-    let idx = index(dir.path(), SearchMetric::L2, false, false);
+    let idx = index(dir.path(), SearchMetric::SquaredL2, false, false);
     idx.update_labels(
         0,
         &[change("a", &[0, 1, 2], &[]), change("b", &[9, 10, 11], &[])],

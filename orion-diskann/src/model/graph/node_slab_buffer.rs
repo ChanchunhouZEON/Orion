@@ -189,6 +189,11 @@ impl NodeSlabBuffer {
 
     /// Write raw u32 values at a specific offset within a node slot.
     /// Build-phase only (no concurrent readers).
+    ///
+    /// # Safety
+    /// `node` must identify an allocated slot and `offset + values.len()` must
+    /// fit within that slot. No other thread may read or write the destination
+    /// range, and `values` must not overlap it.
     pub unsafe fn write_raw(&self, node: usize, offset: usize, values: &[u32]) {
         unsafe {
             let base = node * self.stride_u32 + offset;

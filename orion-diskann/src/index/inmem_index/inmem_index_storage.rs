@@ -189,14 +189,14 @@ where
     }
 
     pub fn save_data(&mut self, data_file: &str) -> ANNResult<usize> {
-        Ok(save_data_in_base_dimensions(
+        save_data_in_base_dimensions(
             data_file,
             &mut self.dataset.data,
             self.num_active_pts + self.configuration.num_frozen_pts,
             self.configuration.dim,
             self.configuration.aligned_dim,
             0,
-        )?)
+        )
     }
 
     pub fn save_delete_list(&mut self, delete_list_file: &str) -> ANNResult<usize> {
@@ -260,8 +260,8 @@ where
     ///   - file_size:  u64  (total bytes excluding this field itself... actually total data size)
     ///   - num_points: u64
     ///   - Per node:
-    ///       num_candidates: u32
-    ///       candidate_ids:  [u32; num_candidates]
+    ///     num_candidates: u32
+    ///     candidate_ids:  [u32; num_candidates]
     #[cfg(feature = "orion")]
     pub fn save_candidate_sets(&mut self, candidate_sets_file: &str) -> ANNResult<u64> {
         let candidate_sets = self.extract_candidate_sets()?;

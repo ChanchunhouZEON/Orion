@@ -7,7 +7,7 @@ use crate::report::table::BuildTiming;
 use crate::runner::cascade::{AdmissionChoice, PrefilterChoice, RerankChoice};
 use crate::runner::common::{AlgorithmRunner, SearchResult};
 use orion_ann_core::{
-    build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_784, DIM_960,
+    DIM_32, DIM_100, DIM_128, DIM_768, DIM_784, DIM_960, DIM_1536, StaticOrion, build_diskann_index,
 };
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -133,7 +133,7 @@ macro_rules! search_orion {
             ws,
             eps,
             ee,
-            pf.as_deref(),
+            pf.precision().map(|_| pf.as_ref()),
             ad.as_ref(),
             rr.as_ref(),
         )
@@ -173,7 +173,7 @@ macro_rules! search_batch_orion {
 /// Prepare requirements, then hold their RAM residency across the sweep.
 macro_rules! pin_orion_hot {
     ($idx:ident, $self:ident) => {{
-        use orion_ann::benchmark::residency::{auto_pin, prepare, DatasetRequirements};
+        use orion_ann::benchmark::residency::{DatasetRequirements, auto_pin, prepare};
         let requirements =
             DatasetRequirements::from_cascade($self.prefilter, $self.admission, $self.rerank)
                 .expect("dataset requirements");
@@ -249,6 +249,10 @@ impl OrionRunner {
         (self.epsilon, self.early_exit_limit)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "keep the existing benchmark controls and call sites explicit"
+    )]
     pub fn new(
         name: &'static str,
         alpha: f32,

@@ -4,10 +4,17 @@
  */
 
 //! Thin ownership/GIL boundary. Search behavior lives in orion-runtime.
+// PyO3 0.22 emits PyErr-to-PyErr conversions in wrappers outside the impl;
+// an impl-level lint attribute cannot reach those generated items.
+#![expect(
+    clippy::useless_conversion,
+    reason = "PyO3-generated method wrappers convert PyErr to itself"
+)]
+
 #[cfg(panic = "abort")]
 compile_error!("orion-py requires panic=unwind; build with --profile python");
 mod errors;
-use errors::{boundary, to_python, OrionError};
+use errors::{OrionError, boundary, to_python};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods};
 use orion_ann::{BaseInput, Index, IndexOptions};
 use orion_ann::{Error, Result};
@@ -16,8 +23,8 @@ use pyo3::prelude::*;
 use std::{
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
         RwLock,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -81,71 +88,57 @@ fn array_queries(
     py: Python<'_>,
     array: &Bound<'_, PyAny>,
     dimension: usize,
-    storage: VectorStorageKind,
-) -> PyResult<OwnedQueries> {
-    if let Ok(values) = array.extract::<PyReadonlyArray2<'_, u8>>() {
-        if values.shape()[1] != dimension {
-            return Err(to_python(
-                py,
-                Error::dimension("queries.dimension", dimension, values.shape()[1])
-                    .at("read_queries"),
-            ));
-        }
-        if !values.is_c_contiguous() {
-            return Err(to_python(
-                py,
-                Error::invalid_argument("queries must be C-contiguous"),
-            ));
-        }
-        return Ok(OwnedQueries::U8(values.as_slice()?.to_vec()));
+    _storage: VectorStorageKind,
+) -> PyResult<orion_ann::QueryBuffer> {
+    if let Some(q) = copy_queries::<f32>(py, array, dimension)? {
+        return Ok(q);
     }
-    if storage == VectorStorageKind::F32 {
-        if let Ok(values) = array.extract::<PyReadonlyArray2<'_, f32>>() {
-            if values.shape()[1] != dimension {
-                return Err(to_python(
-                    py,
-                    Error::dimension("queries.dimension", dimension, values.shape()[1])
-                        .at("read_queries"),
-                ));
-            }
-            if !values.is_c_contiguous() {
-                return Err(to_python(
-                    py,
-                    Error::invalid_argument("queries must be C-contiguous"),
-                ));
-            }
-            return Ok(OwnedQueries::F32(values.as_slice()?.to_vec()));
-        }
+    if let Some(q) = copy_queries::<u8>(py, array, dimension)? {
+        return Ok(q);
+    }
+    if let Some(q) = copy_queries::<i8>(py, array, dimension)? {
+        return Ok(q);
+    }
+    if let Some(q) = copy_queries::<u16>(py, array, dimension)? {
+        return Ok(q);
+    }
+    if let Some(q) = copy_queries::<u32>(py, array, dimension)? {
+        return Ok(q);
     }
     Err(to_python(
         py,
         Error::invalid_argument(
-            "queries must be a 2-D uint8 array for native-u8 storage, or float32/uint8 for f32 storage",
+            "queries must be a 2-D native float32, uint8, int8, uint16 or uint32 array",
         ),
     ))
 }
 
-enum OwnedQueries {
-    F32(Vec<f32>),
-    U8(Vec<u8>),
-}
-impl OwnedQueries {
-    fn batch(&self, dimension: usize) -> Result<orion_ann::QueryBatch<'_>> {
-        match self {
-            Self::F32(values) => orion_ann::QueryBatch::from_f32(values, dimension),
-            Self::U8(values) => orion_ann::QueryBatch::from_u8(values, dimension),
-        }
+/// One checked copy while holding the GIL, shared by every supported dtype.
+fn copy_queries<T: numpy::Element + orion_ann::QueryElement>(
+    py: Python<'_>,
+    array: &Bound<'_, PyAny>,
+    dimension: usize,
+) -> PyResult<Option<orion_ann::QueryBuffer>> {
+    let Ok(values) = array.extract::<PyReadonlyArray2<'_, T>>() else {
+        return Ok(None);
+    };
+    if values.shape()[1] != dimension {
+        return Err(to_python(
+            py,
+            Error::dimension("queries.dimension", dimension, values.shape()[1]).at("read_queries"),
+        ));
     }
-    fn into_f32(self) -> Vec<f32> {
-        match self {
-            Self::F32(values) => values,
-            Self::U8(values) => values.into_iter().map(f32::from).collect(),
-        }
+    if !values.is_c_contiguous() {
+        return Err(to_python(
+            py,
+            Error::invalid_argument("queries must be C-contiguous"),
+        ));
     }
+    Ok(Some(T::owned(values.as_slice()?.to_vec())))
 }
 
 enum Queries {
-    Array(OwnedQueries),
+    Array(orion_ann::QueryBuffer),
     File(PathBuf, Option<VectorFormat>),
 }
 impl Queries {
@@ -177,12 +170,10 @@ impl Queries {
         Ok(Self::Array(array_queries(py, value, dimension, storage)?))
     }
 
-    fn read(self, dimension: usize, storage: VectorStorageKind) -> Result<OwnedQueries> {
+    fn read(self, dimension: usize, _storage: VectorStorageKind) -> Result<orion_ann::QueryBuffer> {
         match self {
             Self::Array(values) => Ok(values),
-            Self::File(path, format) => {
-                orion_ann::read_query_file(&path, format, dimension, storage).map(OwnedQueries::F32)
-            }
+            Self::File(path, format) => orion_ann::read_query_buffer(&path, format, dimension),
         }
     }
 }
@@ -289,6 +280,26 @@ impl PyIndex {
         })
     }
 
+    #[cfg(feature = "experimental-graph")]
+    #[staticmethod]
+    fn from_staged(
+        py: Python<'_>,
+        base: &Bound<'_, PyAny>,
+        staged: String,
+        options_json: &str,
+    ) -> PyResult<Self> {
+        boundary(py, "import_graph", || {
+            let options = errors::result(py, options(options_json))?;
+            let input = match base.extract::<String>() {
+                Ok(path) => BaseInput::from_file(path),
+                Err(_) => array_base(py, base)?,
+            };
+            py.allow_threads(move || Index::from_staged(input, staged, options))
+                .map(Self::wrap)
+                .map_err(|e| to_python(py, e))
+        })
+    }
+
     #[staticmethod]
     #[pyo3(signature = (reference, base, options_json="{}"))]
     fn open(
@@ -337,8 +348,8 @@ impl PyIndex {
                 // Lock only after releasing the GIL. Otherwise a second Python
                 // thread can block the first thread from reacquiring it on return.
                 self.with_write(|index| {
-                    serde_json::to_string(&index.calibrate(
-                        values.into_f32(),
+                    serde_json::to_string(&index.calibrate_batch(
+                        orion_ann::QueryBatch::from_input(values.as_input(), self.dimension)?,
                         k,
                         search_list_size,
                     )?)
@@ -367,7 +378,7 @@ impl PyIndex {
                     let values = queries.read(self.dimension, self.storage)?;
                     self.with_read(|index| {
                         index.search(
-                            values.batch(self.dimension)?,
+                            orion_ann::QueryBatch::from_input(values.as_input(), self.dimension)?,
                             &orion_ann::SearchOptions::new(k, search_list_size).with_scores(scores),
                         )
                     })
@@ -463,7 +474,11 @@ impl PyIndex {
                 .allow_threads(move || {
                     let values = queries.read(self.dimension, self.storage)?;
                     self.with_read(|index| {
-                        index.search_filtered(values.batch(self.dimension)?, &filter, &options)
+                        index.search_filtered(
+                            orion_ann::QueryBatch::from_input(values.as_input(), self.dimension)?,
+                            &filter,
+                            &options,
+                        )
                     })
                 })
                 .map_err(|e| to_python(py, e))?;
@@ -486,8 +501,8 @@ impl PyIndex {
             py.allow_threads(move || {
                 let values = queries.read(self.dimension, self.storage)?;
                 self.with_write(|index| {
-                    serde_json::to_string(&index.calibrate_many(
-                        values.into_f32(),
+                    serde_json::to_string(&index.calibrate_many_batches(
+                        orion_ann::QueryBatch::from_input(values.as_input(), self.dimension)?,
                         &ks,
                         search_list_size,
                     )?)

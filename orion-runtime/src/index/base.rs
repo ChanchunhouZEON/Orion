@@ -98,7 +98,8 @@ impl PreparedBase {
     /// Array fingerprints and snapshot checks use the original coordinates, so
     /// this in-place transformation must follow those checks. It changes only
     /// our owned copy, excluding SIMD padding. File inputs have already applied
-    /// this policy during decoding; native u8 is restricted to L2 and stays exact.
+    /// this policy during decoding. Native u8 stays exact for every metric;
+    /// cosine validates nonzero rows and stores squared norms separately.
     /// Queries apply the same metric policy during calibration and search.
     pub(super) fn validate_and_normalize_array(
         &mut self,
@@ -113,6 +114,20 @@ impl PreparedBase {
                 .chunks_exact_mut(data.layout.stride_elements())
             {
                 f32::normalize(&mut row[..dim], dim, config.metric)?;
+            }
+        }
+        if let (None, Rows::U8(data)) = (&self.file, &mut self.rows) {
+            for row in data
+                .base
+                .as_mut()
+                .ok_or("missing base")?
+                .chunks_exact_mut(data.layout.stride_elements())
+            {
+                u8::normalize(
+                    &mut row[..config.dimension],
+                    config.dimension,
+                    config.metric,
+                )?;
             }
         }
         if self.file.is_none() {
@@ -226,7 +241,7 @@ fn prepare_array(
 }
 
 fn read_file_base<T: BaseElement>(config: &ResolvedRunConfig) -> Result<(LoadedBase<T>, String)> {
-    let layout = orion_ann_vector::PaddedLayout::for_kernel::<T::Kernel>(config.dimension)?;
+    let layout = orion_ann_vector::PaddedLayout::for_kernel::<T::LayoutKernel>(config.dimension)?;
     let (dataset, digest) = data::padded::load_hashed::<T>(
         &config.base,
         config.base_format,
@@ -257,14 +272,14 @@ fn read_file_base<T: BaseElement>(config: &ResolvedRunConfig) -> Result<(LoadedB
 }
 
 fn copy_array<T: BaseElement>(values: &[T], dimension: usize) -> Result<LoadedBase<T>> {
-    if dimension == 0 || values.is_empty() || values.len() % dimension != 0 {
+    if dimension == 0 || values.is_empty() || !values.len().is_multiple_of(dimension) {
         return Err("base must be a nonempty rectangular matrix".into());
     }
     let count = values.len() / dimension;
     if count >= u32::MAX as usize {
         return Err("base point count exceeds u32 IDs".into());
     }
-    let layout = orion_ann_vector::PaddedLayout::for_kernel::<T::Kernel>(dimension)?;
+    let layout = orion_ann_vector::PaddedLayout::for_kernel::<T::LayoutKernel>(dimension)?;
     let base = orion_ann_diskann::model::PaddedDataset::from_packed(values, layout)?;
     Ok(LoadedBase {
         base: Some(base.into_allocation()),

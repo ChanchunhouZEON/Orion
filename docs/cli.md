@@ -45,9 +45,10 @@ cargo build --release -p orion-ann-cli --bin orion
 Metric defaults to L2; dimension comes from the base header. A supplied dimension
 must agree with that header. Resident storage follows the input format: bvecs
 and u8bin retain native bytes, while fvecs and fbin use f32. Use
-`--vector-storage f32` to expand bytes explicitly. Native-u8 search requires L2
-and a ParlayANN graph, and automatically selects exact byte admission without
-reranking. The f32 cascade is selected from dimension and metric.
+`--vector-storage f32` to expand bytes explicitly. Native-u8 search supports L2, IP and cosine
+and automatically selects matching native byte admission without reranking.
+Cosine retains raw bytes and stores exact squared norms separately; zero vectors
+are rejected. Norm storage follows the same budget/mmap/snapshot policy. The f32 cascade is selected from dimension and metric.
 
 Graph defaults come from `BuildConfig`, cache files default to `cache/orion-ann`,
 and explicit CLI options override the shared service defaults. Both cached and

@@ -3,7 +3,7 @@
  * Licensed under the MIT License.
  */
 use super::*;
-use crate::sidecars::requirements::{prepare, SidecarKind as K, SidecarRequirement as S};
+use crate::sidecars::requirements::{SidecarKind as K, SidecarRequirement as S, prepare};
 use orion_ann_core::{Orion, PaddedDataset, PaddedLayout};
 
 fn index() -> Orion {
@@ -29,7 +29,7 @@ fn shape() -> QuantizedDatasetShape {
 
 #[test]
 fn search_preparation_checks_budget_then_automatically_pins() {
-    use crate::search::{F32CascadeBackend, SearchBackend};
+    use crate::search;
     let index = index();
     // Resident preparation must not open input/cache files or require a CLI feature.
     let directory = std::env::temp_dir().join(format!(
@@ -61,12 +61,12 @@ fn search_preparation_checks_budget_then_automatically_pins() {
         )
         .unwrap();
     config.prepare_only = false;
-    let error = F32CascadeBackend::prepare_search(&index, &config).unwrap_err();
+    let error = search::prepare_search(&index, &config).unwrap_err();
     assert_eq!(error.code(), crate::ErrorCode::ResourceExhausted);
     assert!(index.resident_sidecar_regions(K::L2U8).is_err());
 
     config.memory_budget_gib = Some(1.);
-    let guard = F32CascadeBackend::prepare_search(&index, &config).unwrap();
+    let guard = search::prepare_search(&index, &config).unwrap();
     let report = guard.report();
     assert!(report.requested_datasets > 0);
     assert_eq!(
@@ -80,7 +80,7 @@ fn search_preparation_checks_budget_then_automatically_pins() {
     config.graph_source = crate::config::GraphSource::Parlayann;
     config.staged_file_explicit = true;
     config.staged_file = Some(directory.join("missing.staged"));
-    let off = F32CascadeBackend::prepare_search(&index, &config).unwrap();
+    let off = search::prepare_search(&index, &config).unwrap();
     assert_eq!(off.pinned_bytes(), 0);
     assert_eq!(off.report().automatic.as_ref().unwrap()["enabled"], false);
     assert!(index.resident_sidecar_regions(K::L2U8).is_ok());
@@ -204,28 +204,32 @@ fn policies_are_bounded_selective_and_do_not_require_lock_privilege() {
     assert_eq!(pinned.report().pinned_datasets, 0);
     assert_eq!(pinned.report().skipped.len(), 1);
     assert_eq!(pinned.pinned_bytes(), 0);
-    assert!(pin(
-        &index,
-        base,
-        shape(),
-        &requirements,
-        &PinOptions {
-            mode: PinMode::Required,
-            ..options.clone()
-        }
-    )
-    .is_err());
-    assert!(pin(
-        &index,
-        base,
-        shape(),
-        &requirements,
-        &PinOptions {
-            datasets: Some(vec![DatasetPin::Quantized(K::MipsI8)]),
-            ..options.clone()
-        }
-    )
-    .is_err());
+    assert!(
+        pin(
+            &index,
+            base,
+            shape(),
+            &requirements,
+            &PinOptions {
+                mode: PinMode::Required,
+                ..options.clone()
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        pin(
+            &index,
+            base,
+            shape(),
+            &requirements,
+            &PinOptions {
+                datasets: Some(vec![DatasetPin::Quantized(K::MipsI8)]),
+                ..options.clone()
+            }
+        )
+        .is_err()
+    );
     let empty = pin(
         &index,
         base,
@@ -247,13 +251,15 @@ fn different_transform_recipe_cannot_pin_the_canonical_slot() {
     let S::JlSparse(seed) = K::JlSparse.requirement() else {
         unreachable!()
     };
-    assert!(hints(
-        &index,
-        &[],
-        shape(),
-        &[DatasetRequirement::Sidecar(S::JlSparse(seed + 1))]
-    )
-    .is_err());
+    assert!(
+        hints(
+            &index,
+            &[],
+            shape(),
+            &[DatasetRequirement::Sidecar(S::JlSparse(seed + 1))]
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -301,23 +307,27 @@ fn os_lock_denial_falls_back_without_changing_prepared_storage() {
     assert_eq!(calls, 1);
     assert_eq!(result.pinned_bytes(), 0);
     assert_eq!(result.report().skipped[0].0, DatasetPin::Base);
-    assert!(result.report().skipped[0]
-        .1
-        .contains("test memlock refusal"));
+    assert!(
+        result.report().skipped[0]
+            .1
+            .contains("test memlock refusal")
+    );
     assert_eq!(
         base,
         bytemuck::cast_slice::<_, u8>(index.dataset().as_slice())
     );
-    assert!(pin_with(
-        &index,
-        base,
-        shape(),
-        &requirements,
-        &PinOptions {
-            mode: PinMode::Required,
-            ..options
-        },
-        |_, _, _| Err(std::io::Error::other("denied"))
-    )
-    .is_err());
+    assert!(
+        pin_with(
+            &index,
+            base,
+            shape(),
+            &requirements,
+            &PinOptions {
+                mode: PinMode::Required,
+                ..options
+            },
+            |_, _, _| Err(std::io::Error::other("denied"))
+        )
+        .is_err()
+    );
 }

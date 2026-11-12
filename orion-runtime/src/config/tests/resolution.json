@@ -20,12 +20,12 @@
       },
       "max_points": null,
       "memory_budget_gib": null,
-      "metric": "l2",
+      "metric": "squared-l2",
       "storage": null,
       "threads": 8,
       "window_size": 5
     },
-    "options_wire_sha256": "618317a7202a199527f3ad0e44f7992bba19904eec460618bdfe0e192ecc420e",
+    "options_wire_sha256": "7f407a00dd172e1e4fd9bcfc398210c97f07121b5a1d6d993115a0ccabcb000c",
     "resolved": {
       "alpha": 1.2000000476837158,
       "auto_pin": true,
@@ -50,7 +50,7 @@
       "max_extra": 16,
       "max_points": 1000,
       "memory_budget_gib": null,
-      "metric": "l2",
+      "metric": "squared-l2",
       "num_points": 1000,
       "num_queries": null,
       "prepare_only": true,
@@ -73,7 +73,7 @@
       "vector_storage": "f32",
       "window_size": 5
     },
-    "resolved_wire_sha256": "58430f2e1308a79f5391f0e3f9b21c43ccb434d7ca6cf3dc3a800c57ef216b19"
+    "resolved_wire_sha256": "0e04f069f7e87768e6899cfae256cf6d17782b7fecfe85cad3d035e960f976e2"
   },
   {
     "execution_signature": "05e92f459c195448290f0f1424bdf2fa9e3b1ddd967ff95ed983f4bd22b67420",
@@ -96,12 +96,12 @@
       },
       "max_points": null,
       "memory_budget_gib": null,
-      "metric": "l2",
+      "metric": "squared-l2",
       "storage": null,
       "threads": 8,
       "window_size": 5
     },
-    "options_wire_sha256": "618317a7202a199527f3ad0e44f7992bba19904eec460618bdfe0e192ecc420e",
+    "options_wire_sha256": "7f407a00dd172e1e4fd9bcfc398210c97f07121b5a1d6d993115a0ccabcb000c",
     "resolved": {
       "alpha": 1.2000000476837158,
       "auto_pin": true,
@@ -126,7 +126,7 @@
       "max_extra": 16,
       "max_points": 1000,
       "memory_budget_gib": null,
-      "metric": "l2",
+      "metric": "squared-l2",
       "num_points": 1000,
       "num_queries": null,
       "prepare_only": true,
@@ -149,7 +149,7 @@
       "vector_storage": "f32",
       "window_size": 5
     },
-    "resolved_wire_sha256": "d7dde79b5ceaab0fd8765eec1d1e3861c704c79dd3216d8b9ecbde2f5818e7b1"
+    "resolved_wire_sha256": "c30d4f78986481c1b31eb577bd5d3a8440d10a5035ae126194e11354d000e165"
   },
   {
     "execution_signature": "572d6783f2be17081fc6f6328d5e6ad5581eb0a475599af7f75ac15c1ab8935f",
@@ -172,12 +172,12 @@
       },
       "max_points": null,
       "memory_budget_gib": null,
-      "metric": "l2",
+      "metric": "squared-l2",
       "storage": "u8",
       "threads": 8,
       "window_size": 5
     },
-    "options_wire_sha256": "124fa73de3b9814af9af0369b2f8f8ec9f2fe6c5de0d7cf23bab479f4fe0bc4a",
+    "options_wire_sha256": "e9048146c35fab0f443963214f1908d44e4840e0a15f9e7ba0b5e16aaf0fbfe1",
     "resolved": {
       "alpha": 1.2000000476837158,
       "auto_pin": true,
@@ -202,7 +202,7 @@
       "max_extra": 16,
       "max_points": 1000,
       "memory_budget_gib": null,
-      "metric": "l2",
+      "metric": "squared-l2",
       "num_points": 1000,
       "num_queries": null,
       "prepare_only": true,
@@ -225,10 +225,10 @@
       "vector_storage": "u8",
       "window_size": 5
     },
-    "resolved_wire_sha256": "ff6d502f9b78f503b1dda31f9f685edeb3e65f5360766016b5e12165eaa94ad2"
+    "resolved_wire_sha256": "eb720899ed1cb6255053ee9372fed01547820d4e31c994f14bb0f164b4fd14fe"
   },
   {
-    "execution_signature": "ce7f27638fd826ca04d838c95409e6bf76a16b18296b0364e13144625088d911",
+    "execution_signature": "35200d210955b37573a708cd10252ff4afe07381533b08ebae2aaac18fcb1e1a",
     "options": {
       "auto_pin": true,
       "base_format": null,
@@ -264,7 +264,7 @@
       "cache_dir": "cache/orion-ann",
       "cache_namespace": "856f83d0867e95d979e54a9b63e6794e1187da15b4333534d7d0f49270832ed3",
       "cascade": {
-        "admission": "MipsI8",
+        "admission": "IpI8",
         "prefilter": "None",
         "rerank": "IpF32"
       },
@@ -301,10 +301,10 @@
       "vector_storage": "f32",
       "window_size": 5
     },
-    "resolved_wire_sha256": "fddac77cd0eb2b2dbfc084ee5501c3211ae23fb53f6e0430d3e7e555102af493"
+    "resolved_wire_sha256": "0c2c0aa1ff5f11f837e8d5d2fbd1a666fb46da850c71275907ef4c7f625b5b27"
   },
   {
-    "execution_signature": "73c3d0bf5e29509827af7c1bdf351d7ad47a2d7f2efe1c54fabad41568d749f9",
+    "execution_signature": "4513f52de496aa5840d48a7b789f98fddeed2df3d10f9c15385d3297f8a15a11",
     "options": {
       "auto_pin": true,
       "base_format": null,
@@ -340,9 +340,9 @@
       "cache_dir": "cache/orion-ann",
       "cache_namespace": "e4fba3a2ae803a95dc63fe52c97748a508310cc2e3e942ae9f1e240da1f91d43",
       "cascade": {
-        "admission": "MipsI8",
+        "admission": "CosineI8",
         "prefilter": "None",
-        "rerank": "IpF32"
+        "rerank": "CosineF32"
       },
       "dataset": "anonymous",
       "dimension": 1536,
@@ -377,6 +377,6 @@
       "vector_storage": "f32",
       "window_size": 5
     },
-    "resolved_wire_sha256": "c6e32f382fb97d525d18ce2e4e56f800779b3b28e12c5db29e1ada6c56823f88"
+    "resolved_wire_sha256": "5448e5f33f164c3a0664374dfdfe899472cfb8679cfab8fe63314047d01b0921"
   }
 ]

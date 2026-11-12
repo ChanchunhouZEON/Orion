@@ -12,10 +12,10 @@
 //! # Source reading order
 //!
 //! Start with `config/options.rs` for caller inputs, then `index/mod.rs` for
-//! session ownership and `index/prepare.rs` for the load/build orchestration.
+//! session ownership and `index/prepare/mod.rs` for the load/build orchestration.
 //! Follow `index/base.rs` for input validation and `graph/mod.rs` for graph
-//! preparation. Once resident, `index/calibration.rs` and `index/query.rs`
-//! dispatch through `index/view.rs`; `index/snapshot.rs` opens saved sessions.
+//! preparation. Once resident, `index/calibration.rs` and `index/query/mod.rs`
+//! dispatch through `index/view.rs`; `index/snapshot/mod.rs` opens saved sessions.
 //! The `sidecars`, `storage`, and `integrity` modules supply persistence services
 //! to these operations. Types stay with the module that owns their invariants.
 //!
@@ -103,9 +103,9 @@ pub mod benchmark;
 pub mod execution;
 pub use config::options::{CascadeConfig, GraphConfig, IndexOptions};
 pub use config::{GraphSourcePolicy, VectorStorageKind};
-#[cfg(feature = "file-queries")]
-pub use data::query::read_query_file;
 pub use data::VectorFormat;
+#[cfg(feature = "file-queries")]
+pub use data::query::{read_query_buffer, read_query_file};
 pub use index::{
     BaseInput, Calibration, Index, IndexSlot, OpenOptions, QueryBatch, SearchOptions, SearchResult,
     SnapshotRef, SnapshotSource,
@@ -123,3 +123,17 @@ pub mod diagnostics {
 
 /// Deployment policy for independently pageable product-quantization codes.
 pub use orion_ann_core::model::dataset::quantized_dataset::pq::PqCodeStorage;
+
+/// Experimental graph suppliers, disabled by default. Importing an index needs
+/// this feature; restoring its ordinary snapshot does not.
+#[cfg(feature = "experimental-graph")]
+pub mod supplier {
+    pub use crate::index::supplier::write_staged_file;
+    pub use orion_ann_core::build::supplier::{
+        NodePartitions, OwnedPartitions, PartitionElement, PartitionMetric, PartitionOrigin,
+        PartitionSource, PartitionSpec, SlicePartitions, StagedReader,
+    };
+}
+
+/// Typed query transport shared by Rust, stream readers and language bindings.
+pub use orion_ann_core::search::query::{QueryBuffer, QueryElement, QueryInput};

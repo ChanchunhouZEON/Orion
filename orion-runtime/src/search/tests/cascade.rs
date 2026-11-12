@@ -66,12 +66,12 @@ fn every_official_recipe_agrees_between_single_and_batch_search() {
         ),
         (
             PrefilterChoice::Jl,
-            AdmissionChoice::MipsI8,
+            AdmissionChoice::IpI8,
             RerankChoice::IpF32,
         ),
         (
             PrefilterChoice::None,
-            AdmissionChoice::MipsI16,
+            AdmissionChoice::IpI16,
             RerankChoice::None,
         ),
         (
@@ -138,4 +138,65 @@ fn every_official_recipe_agrees_between_single_and_batch_search() {
         );
     }
     assert!(build_admission(&index, AdmissionChoice::NativeL2U8).is_err());
+}
+
+#[test]
+fn cosine_arms_preserve_existing_ip_stream_results_on_normalized_rows() {
+    let dimension = 33;
+    let count = 32;
+    let mut flat: Vec<f32> = (0..count * dimension)
+        .map(|i| ((i * 13 + i / dimension * 7) % 101) as f32 - 50.)
+        .collect();
+    crate::data::validate_and_normalize_vectors(&mut flat, dimension, SearchMetric::Cosine)
+        .unwrap();
+    let base = PaddedDataset::from_packed(
+        &flat,
+        PaddedLayout::for_kernel::<L2F32Distance>(dimension).unwrap(),
+    )
+    .unwrap();
+    let parts: Vec<_> = (0..count as u32)
+        .map(|i| {
+            (
+                (0..count as u32).filter(|j| *j != i).collect(),
+                vec![],
+                vec![],
+            )
+        })
+        .collect();
+    let index = Orion::from_graph_partitions(base, &parts, 0, count as u32, 0).unwrap();
+    for (old, new) in [
+        (AdmissionChoice::IpI8, AdmissionChoice::CosineI8),
+        (AdmissionChoice::IpI16, AdmissionChoice::CosineI16),
+        (AdmissionChoice::PqIp, AdmissionChoice::PqCosine),
+    ] {
+        for pf in [PrefilterChoice::None, PrefilterChoice::Jl] {
+            let run = |ad, rr| {
+                search_batch_compose(
+                    &index,
+                    &flat[..dimension * 4],
+                    5,
+                    32,
+                    2,
+                    0.,
+                    usize::MAX,
+                    pf,
+                    ad,
+                    rr,
+                )
+                .unwrap()
+            };
+            assert_eq!(
+                run(old, RerankChoice::IpF32),
+                run(new, RerankChoice::CosineF32)
+            );
+            assert_eq!(run(old, RerankChoice::None), run(new, RerankChoice::None));
+            let old_session = build_admission(&index, old).unwrap();
+            let new_session = build_admission(&index, new).unwrap();
+            let a = old_session.open(&flat[..dimension]);
+            let b = new_session.open(&flat[..dimension]);
+            for id in 0..count as u32 {
+                assert_eq!(a.entry_distance(id), b.entry_distance(id));
+            }
+        }
+    }
 }

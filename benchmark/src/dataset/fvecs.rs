@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn test_fvecs_empty_file() {
         let tmp = std::env::temp_dir().join("test_empty.fvecs");
-        std::fs::write(&tmp, &[]).unwrap();
+        std::fs::write(&tmp, []).unwrap();
 
         let loaded = read_fvecs(&tmp).unwrap();
         assert!(loaded.is_empty());
@@ -165,13 +165,13 @@ mod tests {
 
     #[test]
     fn test_fvecs_single_vector() {
-        let vectors = vec![vec![3.14f32]];
+        let vectors = vec![vec![1.25f32]];
         let tmp = std::env::temp_dir().join("test_single.fvecs");
         write_fvecs(&tmp, &vectors).unwrap();
 
         let loaded = read_fvecs(&tmp).unwrap();
         assert_eq!(loaded.len(), 1);
-        assert!((loaded[0][0] - 3.14).abs() < 1e-6);
+        assert!((loaded[0][0] - 1.25).abs() < 1e-6);
 
         std::fs::remove_file(&tmp).ok();
     }

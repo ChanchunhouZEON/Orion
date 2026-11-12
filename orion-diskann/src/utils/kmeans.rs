@@ -72,8 +72,12 @@ fn lloyds_iter(
     if compute_residual {
         let buf_pad: usize = 32;
         let chunk_size: usize = 2 * 8192;
-        let nchunks =
-            num_points / chunk_size + (if num_points % chunk_size == 0 { 0 } else { 1 } as usize);
+        let nchunks = num_points / chunk_size
+            + (if num_points.is_multiple_of(chunk_size) {
+                0
+            } else {
+                1
+            } as usize);
 
         let mut residuals: Vec<f32> = vec![0.0; nchunks * buf_pad];
 

@@ -3,7 +3,7 @@
  * Licensed under the MIT License.
  */
 #![cfg(feature = "benchmark")]
-use orion_ann_core::algorithm::analysis::*;
+use orion_ann_core::search::diagnostics::analysis::*;
 
 #[test]
 fn cliff_rank_summary_reports_a_known_top_k_boundary() {

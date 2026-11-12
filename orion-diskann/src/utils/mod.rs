@@ -43,13 +43,11 @@ pub fn mem_usage() -> String {
         if let Ok(out) = Command::new("ps")
             .args(["-o", "rss=", "-p", &pid.to_string()])
             .output()
+            && let Ok(s) = std::str::from_utf8(&out.stdout)
+            && let Ok(kb) = s.trim().parse::<u64>()
         {
-            if let Ok(s) = std::str::from_utf8(&out.stdout) {
-                if let Ok(kb) = s.trim().parse::<u64>() {
-                    let mb = kb as f64 / 1024.0;
-                    return format!("{:.1} MB (RSS)", mb);
-                }
-            }
+            let mb = kb as f64 / 1024.0;
+            return format!("{:.1} MB (RSS)", mb);
         }
         "unknown".to_string()
     }

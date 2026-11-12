@@ -13,6 +13,11 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Parser)]
 #[command(name = "orion", about = "Shared Orion input and search configuration")]
 pub struct Args {
+    /// Experimental supplier STAG v4 graph; preserves its entry and partitions.
+    #[cfg(feature = "experimental-graph")]
+    #[arg(long, conflicts_with_all = ["staged_file", "graph_source", "graph_degree", "build_l", "alpha", "max_extra"])]
+    pub supplier_staged: Option<PathBuf>,
+
     #[arg(long)]
     pub base: Option<PathBuf>,
     #[arg(long)]
@@ -66,8 +71,10 @@ pub struct Args {
     pub metric: Option<SearchMetric>,
     #[arg(long)]
     pub prefilter: Option<String>,
+    /// Metric-specific admission: l2-u8/l2-kt, ip-i8/ip-i16, cosine-i8/cosine-i16, or pq-l2/pq-ip/pq-cosine.
     #[arg(long)]
     pub admission: Option<String>,
+    /// Final stage: l2-f32, ip-f32, cosine-f32, l2-u16, or none.
     #[arg(long)]
     pub rerank: Option<String>,
     #[arg(long)]

@@ -8,7 +8,7 @@ use crate::{
     sidecars::requirements::{estimate_sidecars, SidecarKind, SidecarRecipe, SidecarRequirement},
     Error, Result,
 };
-use orion_ann_core::{index::compressed_index::IndexData, CompressedIndex, QuantizedDatasetShape};
+use orion_ann_core::{index::IndexData, CompressedIndex, QuantizedDatasetShape};
 use orion_ann_platform::{
     region::{Placement, RegionOptions},
     resources::MemoryResources,
@@ -101,12 +101,16 @@ fn plan_objects(
     existing_mapping: bool,
 ) -> Result<StoragePlan> {
     let estimates = estimate_sidecars(shape, requirements)?;
-    let total = extra
-        .iter()
-        .try_fold(estimates.total_bytes() as u64, |sum, (_, bytes)| {
+    let norm_bytes = native_norm_bytes(config, shape.rows)?;
+    let total = extra.iter().try_fold(
+        (estimates.total_bytes() as u64)
+            .checked_add(norm_bytes)
+            .ok_or_else(|| Error::invalid_argument("storage size overflow"))?,
+        |sum, (_, bytes)| {
             sum.checked_add(*bytes)
                 .ok_or_else(|| Error::invalid_argument("storage size overflow"))
-        })?;
+        },
+    )?;
     let mut result = StoragePlan {
         options: BTreeMap::new(),
         resident_bytes: total,
@@ -135,6 +139,12 @@ fn plan_objects(
         if bytes != 0 {
             candidates.push((codec(item.requirement.kind()), bytes));
         }
+    }
+    if norm_bytes != 0 {
+        candidates.push((
+            orion_ann_core::model::dataset::native_u8::NORM_CODEC,
+            norm_bytes,
+        ));
     }
     candidates.extend(extra.iter().copied());
     // Largest allocations first gives a deterministic, stage-independent policy.
@@ -186,6 +196,12 @@ pub(crate) fn configure<D: IndexData>(
     let mut requirements = config.index_plan().sidecar_requirements(false);
     // Snapshots may contain prepared sidecars outside the active cascade.
     for name in extra_codecs {
+        if name == orion_ann_core::model::dataset::native_u8::NORM_CODEC {
+            if native_norm_bytes(config, shape.rows)? == 0 {
+                return Err(Error::cache("native norm object requires u8 cosine"));
+            }
+            continue;
+        }
         let kind = [
             SidecarKind::L2U8,
             SidecarKind::L2U16,
@@ -205,7 +221,7 @@ pub(crate) fn configure<D: IndexData>(
         requirements.push(kind.requirement());
     }
     let layout = if index.dataset().element_type() == "u8" {
-        orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::L2U8Distance>(
+        orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::IpU8Distance>(
             shape.dimension,
         )?
     } else {
@@ -297,7 +313,7 @@ fn enforce(plan: &StoragePlan, fixed: u64) -> Result<()> {
 }
 fn base_size(config: &ResolvedRunConfig, rows: usize) -> Result<u64> {
     let layout = if config.storage() == crate::config::VectorStorageKind::U8 {
-        orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::L2U8Distance>(
+        orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::IpU8Distance>(
             config.dimension,
         )?
     } else {
@@ -359,6 +375,22 @@ pub(crate) fn graph_options<D: IndexData>(
     )?;
     enforce(&plan, fixed)?;
     Ok(plan.options.get("graph").cloned().unwrap_or_default())
+}
+
+/// Native cosine normalization is a base auxiliary object, not a quantizer.
+pub(crate) fn native_norm_bytes(config: &ResolvedRunConfig, rows: usize) -> Result<u64> {
+    if config.storage() == crate::VectorStorageKind::U8
+        && config.metric == crate::SearchMetric::Cosine
+    {
+        Ok(
+            orion_ann_core::model::dataset::native_u8::NativeU8Norms::estimated_bytes(
+                rows,
+                config.dimension,
+            )? as u64,
+        )
+    } else {
+        Ok(0)
+    }
 }
 
 #[cfg(test)]

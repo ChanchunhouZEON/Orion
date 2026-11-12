@@ -67,8 +67,10 @@ mod tests {
 
     #[test]
     fn cache_line_bytes_is_power_of_two() {
-        assert!(CACHE_LINE_BYTES.is_power_of_two());
-        assert!(CACHE_LINE_BYTES >= 64);
+        const {
+            assert!(CACHE_LINE_BYTES.is_power_of_two());
+            assert!(CACHE_LINE_BYTES >= 64);
+        }
     }
 
     #[test]

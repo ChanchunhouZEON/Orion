@@ -3,6 +3,14 @@
  * Licensed under the MIT License.
  */
 
+#[cfg(feature = "parlay")]
+use orion_ann_core::DynamicCascade;
+#[cfg(feature = "parlay")]
+use orion_ann_core::ScoreMetric;
+#[cfg(feature = "parlay")]
+use orion_ann_core::search::cascade::stage::rerank::NoRerank;
+#[cfg(feature = "parlay")]
+use orion_ann_core::search::query::QueryInput;
 use orion_ann_core::{
     BuildBackend, BuildConfig, BuildMetric, ErrorCode, Orion, PaddedDataset, PaddedLayout,
 };
@@ -183,14 +191,21 @@ fn default_u8_builder_preserves_allocation_extras_and_thread_independence() {
     assert_eq!(index.entry_point(), other.entry_point());
     // Return a usable exact-search index without silently calibrating a cascade.
     let ids = index
-        .search_l2(
-            &values[..13],
+        .search(
+            QueryInput::U8(&values[..13]),
             orion_ann_core::DynamicSearchConfig {
                 k: 1,
                 search_list_size: 32,
                 ..Default::default()
             },
+            DynamicCascade {
+                prefilter: &orion_ann_core::search::cascade::stage::NoPrefilter,
+                admission: &index.exact_stage(ScoreMetric::SquaredL2).unwrap(),
+                rerank: &NoRerank,
+            },
+            None,
         )
+        .map(|result| result.ids)
         .unwrap();
     assert_eq!(ids, vec![0]);
 }

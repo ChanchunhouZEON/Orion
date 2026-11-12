@@ -41,6 +41,9 @@ const SIMD_ALIGNMENT_BYTES: usize = 64;
 ///   - [`VectorFormat::Bvecs`] and [`VectorFormat::U8bin`] store coordinates as
 ///     `u8`.
 ///
+/// Query-only `i8bin`, `u16bin` and `u32bin` use the same global header and
+/// signed-byte / little-endian integer payloads. They are rejected for bases.
+///
 /// This distinction determines both shape inspection and how vectors are
 /// decoded into the resident storage representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -51,6 +54,12 @@ pub enum VectorFormat {
     Bvecs,
     Fbin,
     U8bin,
+    /// Query-only signed-byte binary rows.
+    I8bin,
+    /// Query-only little-endian u16 binary rows.
+    U16bin,
+    /// Query-only little-endian u32 binary rows.
+    U32bin,
 }
 
 impl VectorFormat {
@@ -64,6 +73,9 @@ impl VectorFormat {
             Some("bvecs") => Ok(Self::Bvecs),
             Some("fbin") => Ok(Self::Fbin),
             Some("u8bin") => Ok(Self::U8bin),
+            Some("i8bin") => Ok(Self::I8bin),
+            Some("u16bin") => Ok(Self::U16bin),
+            Some("u32bin") => Ok(Self::U32bin),
             _ => Err(Error::from(format!(
                 "unknown vector format for {}; specify --base-format/--query-format",
                 path.display()
@@ -73,11 +85,20 @@ impl VectorFormat {
 
     /// Encoded bytes occupied by one coordinate in this format.
     fn coordinate_bytes(self) -> usize {
-        if matches!(self, Self::Bvecs | Self::U8bin) {
-            1
-        } else {
-            4
+        match self {
+            Self::Bvecs | Self::U8bin | Self::I8bin => 1,
+            Self::U16bin => 2,
+            _ => 4,
         }
+    }
+
+    pub(crate) fn validate_base(self) -> Result<()> {
+        if matches!(self, Self::I8bin | Self::U16bin | Self::U32bin) {
+            return Err(Error::unsupported(
+                "i8bin/u16bin/u32bin are query-only formats; base storage remains f32/u8",
+            ));
+        }
+        Ok(())
     }
 
     /// Returns whether shape metadata is stored once at file scope.
@@ -85,7 +106,7 @@ impl VectorFormat {
     /// `fbin` and `u8bin` begin with `[count, dimension]`. In contrast,
     /// `fvecs` and `bvecs` encode the dimension separately for every row.
     fn has_file_header(self) -> bool {
-        matches!(self, Self::Fbin | Self::U8bin)
+        !matches!(self, Self::Fvecs | Self::Bvecs)
     }
 }
 
@@ -188,7 +209,7 @@ pub fn inspect_vector_file(path: &Path, format: VectorFormat) -> Result<VectorHe
 /// - whether encoded `f32` coordinates are accepted,
 /// - what post-load normalization is required by the search metric.
 pub trait BaseElement:
-    Default + Copy + Send + Sync + Into<f32> + orion_ann_core::index::compressed_index::DynamicElement
+    Default + Copy + Send + Sync + Into<f32> + orion_ann_core::index::DynamicElement
 {
     /// Resident storage representation selected by this element type.
     #[cfg(any(feature = "cli", feature = "benchmark"))]
@@ -246,9 +267,14 @@ impl BaseElement for u8 {
         Err("native u8 loader does not quantize f32 input".into())
     }
 
-    fn normalize(_data: &mut [Self], _dimension: usize, metric: SearchMetric) -> Result<()> {
-        if metric != SearchMetric::L2 {
-            return Err("native u8 requires L2".into());
+    fn normalize(data: &mut [Self], dimension: usize, metric: SearchMetric) -> Result<()> {
+        // Preserve native coordinates. Cosine normalizes scores using squared norms.
+        if metric == SearchMetric::Cosine
+            && data
+                .chunks(dimension)
+                .any(|row| row.iter().all(|&v| v == 0))
+        {
+            return Err("cosine requires nonzero base vectors".into());
         }
         Ok(())
     }
@@ -269,7 +295,7 @@ fn read_vectors_into<T: BaseElement>(
     dimension: usize,
     output: &mut [T],
 ) -> Result<()> {
-    if dimension == 0 || output.len() % dimension != 0 {
+    if dimension == 0 || !output.len().is_multiple_of(dimension) {
         return Err("invalid output vector shape".into());
     }
     let mut file = std::fs::File::open(path).map_err(|e| Error::io("open", path, e))?;
@@ -313,6 +339,7 @@ fn read_vector_row<T: BaseElement, R: Read>(
     encoded_row: &mut [u8],
     values: &mut [T],
 ) -> Result<()> {
+    format.validate_base()?;
     if !format.has_file_header() {
         // Vecs formats repeat the dimension before every record.
         //
@@ -475,7 +502,7 @@ impl<T: BaseElement> LoadedBase<T> {
 
         crate::preflight::check_memory_budget(config, num_points)?;
 
-        let layout = orion_ann_vector::PaddedLayout::for_kernel::<T::Kernel>(dimension)?;
+        let layout = orion_ann_vector::PaddedLayout::for_kernel::<T::LayoutKernel>(dimension)?;
         let dataset = padded::load_with_storage::<T>(
             &config.base,
             config.base_format,
@@ -677,18 +704,18 @@ mod tests {
                 .unwrap();
         assert_eq!((read, d), (vec![1.0, 2.0], 2));
         let invalid = bytes(&[(2, [1.0, 2.0]), (3, [3.0, 4.0])]);
-        assert!(read_dimensioned_records(
-            &mut Cursor::new(invalid),
-            usize::MAX,
-            f32::from_le_bytes
-        )
-        .is_err());
-        assert!(read_dimensioned_records(
-            &mut Cursor::new(&data[..data.len() - 1]),
-            usize::MAX,
-            f32::from_le_bytes
-        )
-        .is_err());
+        assert!(
+            read_dimensioned_records(&mut Cursor::new(invalid), usize::MAX, f32::from_le_bytes)
+                .is_err()
+        );
+        assert!(
+            read_dimensioned_records(
+                &mut Cursor::new(&data[..data.len() - 1]),
+                usize::MAX,
+                f32::from_le_bytes
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -700,7 +727,10 @@ mod tests {
         validate_and_normalize_vectors(&mut raw, 2, SearchMetric::Cosine).unwrap();
         assert_eq!(raw, [0.6, 0.8, 0.6, 0.8]);
         assert!(validate_and_normalize_vectors(&mut [0.0, 0.0], 2, SearchMetric::Cosine).is_err());
-        assert!(validate_and_normalize_vectors(&mut [f32::NAN, 0.0], 2, SearchMetric::L2).is_err());
+        assert!(
+            validate_and_normalize_vectors(&mut [f32::NAN, 0.0], 2, SearchMetric::SquaredL2)
+                .is_err()
+        );
     }
 }
 

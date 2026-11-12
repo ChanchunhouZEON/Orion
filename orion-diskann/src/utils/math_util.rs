@@ -31,6 +31,10 @@ struct PivotContainer {
     piv_dist: f32,
 }
 
+#[expect(
+    clippy::non_canonical_partial_ord_impl,
+    reason = "Partial comparison preserves NaN as unordered; heap ordering uses its existing fallback."
+)]
 impl PartialOrd for PivotContainer {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         other.piv_dist.partial_cmp(&self.piv_dist)
@@ -194,7 +198,7 @@ pub fn compute_closest_centers(
     compute_vecs_l2sq(&mut pivs_norms_squared, pivot_data, num_centers, dim);
 
     let par_block_size = num_points;
-    let n_blocks = if num_points % par_block_size == 0 {
+    let n_blocks = if num_points.is_multiple_of(par_block_size) {
         num_points / par_block_size
     } else {
         num_points / par_block_size + 1
@@ -306,7 +310,7 @@ mod math_util_test {
 
         compute_vecs_l2sq(&mut vecs_l2sq, &data, num_points, dim);
 
-        let expected = vec![14.0, 77.0];
+        let expected = [14.0, 77.0];
 
         assert_eq!(vecs_l2sq.len(), num_points);
         assert_abs_diff_eq!(vecs_l2sq[0], expected[0], epsilon = 1e-6);

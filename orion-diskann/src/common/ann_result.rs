@@ -130,68 +130,57 @@ impl From<LogError> for ANNError {
 impl ANNError {
     #[inline]
     pub fn log_index_error(err: String) -> Self {
-        let ann_err = ANNError::IndexError { err };
-        ann_err
+        ANNError::IndexError { err }
     }
 
     #[inline]
     pub fn log_index_config_error(parameter: String, err: String) -> Self {
-        let ann_err = ANNError::IndexConfigError { parameter, err };
-        ann_err
+        ANNError::IndexConfigError { parameter, err }
     }
 
     #[inline]
     pub fn log_try_from_int_error(err: TryFromIntError) -> Self {
-        let ann_err = ANNError::TryFromIntError { err };
-        ann_err
+        ANNError::TryFromIntError { err }
     }
 
     #[inline]
     pub fn log_io_error(err: io::Error) -> Self {
-        let ann_err = ANNError::IOError { err };
-        ann_err
+        ANNError::IOError { err }
     }
 
     #[inline]
     pub fn log_disk_io_request_alignment_error(err: String) -> Self {
-        let ann_err = ANNError::DiskIOAlignmentError { err };
-        ann_err
+        ANNError::DiskIOAlignmentError { err }
     }
 
     #[inline]
     pub fn log_mem_alloc_layout_error(err: LayoutError) -> Self {
-        let ann_err = ANNError::MemoryAllocLayoutError { err };
-        ann_err
+        ANNError::MemoryAllocLayoutError { err }
     }
 
     #[inline]
     pub fn log_lock_poison_error(err: String) -> Self {
-        let ann_err = ANNError::LockPoisonError { err };
-        ann_err
+        ANNError::LockPoisonError { err }
     }
 
     #[inline]
     pub fn log_pq_error(err: String) -> Self {
-        let ann_err = ANNError::PQError { err };
-        ann_err
+        ANNError::PQError { err }
     }
 
     #[inline]
     pub fn log_try_from_slice_error(err: TryFromSliceError) -> Self {
-        let ann_err = ANNError::TryFromSliceError { err };
-        ann_err
+        ANNError::TryFromSliceError { err }
     }
 
     #[inline]
     pub fn log_serialize_error(err: bincode::error::EncodeError) -> Self {
-        let ann_err = ANNError::SerializeError { err };
-        ann_err
+        ANNError::SerializeError { err }
     }
 
     #[inline]
     pub fn log_deserialize_error(err: bincode::error::DecodeError) -> Self {
-        let ann_err = ANNError::DeserializeError { err };
-        ann_err
+        ANNError::DeserializeError { err }
     }
 }
 

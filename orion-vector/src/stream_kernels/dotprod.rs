@@ -61,3 +61,5 @@ impl DistanceKernelBackend for IpI8Distance {
         unsafe { *into = vaddq_s32(*into, src) }
     }
 }
+
+pub use super::neon::IpU8Distance;
