@@ -6,13 +6,13 @@
 //! Snapshot wire format and validation of manifest fields and small records.
 //! Snapshot is the serialized input, Payloads names its immutable objects, and
 //! CheckedManifest is the validated result passed to resident preparation.
-use crate::index::{Calibration, query::validate_search};
+use crate::index::{query::validate_search, Calibration};
 use crate::{
-    Error, IndexOptions, Result,
     config::ResolvedRunConfig,
     integrity::check,
     sidecars::SnapshotSidecars,
     storage::{object, read_record},
+    Error, IndexOptions, Result,
 };
 use serde::{Deserialize, Serialize};
 use std::{

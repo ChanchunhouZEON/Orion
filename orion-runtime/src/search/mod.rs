@@ -9,11 +9,11 @@
 //! These adapters only bind runtime options to core stages; timing, persistence,
 //! calibration and residency remain outside query execution.
 
-use crate::{Result, config::ResolvedRunConfig, data::BaseElement};
+use crate::{config::ResolvedRunConfig, data::BaseElement, Result};
 use orion_ann_core::{
-    Orion,
     model::dataset::rows::CascadeData,
     search::{diagnostics::SearchObserver, query::QueryInput},
+    Orion,
 };
 use orion_ann_diskann::model::PaddedDataset;
 pub mod cascade;

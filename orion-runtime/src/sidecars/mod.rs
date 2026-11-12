@@ -8,8 +8,8 @@ pub(crate) mod requirements;
 #[cfg(feature = "benchmark")]
 pub(crate) mod trusted;
 mod working;
-use crate::{Error, Result, integrity::read_verified};
-use orion_ann_core::{CompressedIndex, index::IndexData};
+use crate::{integrity::read_verified, Error, Result};
+use orion_ann_core::{index::IndexData, CompressedIndex};
 use std::{
     path::Path,
     sync::{Arc, Mutex},

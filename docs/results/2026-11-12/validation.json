@@ -1,0 +1,92 @@
+{
+  "date": "2026-11-12",
+  "source_commit": "0a4fddd0dca7274bf011f1efda9424b3b351a254",
+  "source_state": "Includes the CI fixes accompanying this validation snapshot.",
+  "platform": "macOS AArch64",
+  "rust": "1.92",
+  "cargo_llvm_cov": "0.6.21",
+  "rust_tests": {
+    "passed": 580,
+    "failed": 0,
+    "ignored": 5
+  },
+  "doctests": {
+    "passed": 52,
+    "failed": 0,
+    "ignored": 1
+  },
+  "line_coverage": {
+    "percent": 90.09224764945894,
+    "covered_lines": 30471,
+    "lines": 33822,
+    "files": 266,
+    "scope": "Rust workspace, all features, excluding orion-ann-python; test/example/vendor paths excluded. Native AArch64; no doctest, Python, C++ or uncompiled x86 coverage. Inline unit tests are included.",
+    "by_module": {
+      "adsampling": {
+        "lines": 97,
+        "covered_lines": 95,
+        "percent": 97.9381443298969
+      },
+      "orion-cli": {
+        "lines": 591,
+        "covered_lines": 508,
+        "percent": 85.95600676818951
+      },
+      "orion-core": {
+        "lines": 13433,
+        "covered_lines": 12117,
+        "percent": 90.20323084940073
+      },
+      "orion-diagnostics": {
+        "lines": 281,
+        "covered_lines": 273,
+        "percent": 97.15302491103203
+      },
+      "orion-diskann": {
+        "lines": 6273,
+        "covered_lines": 5416,
+        "percent": 86.33827514745735
+      },
+      "orion-error": {
+        "lines": 189,
+        "covered_lines": 167,
+        "percent": 88.35978835978835
+      },
+      "orion-logger": {
+        "lines": 30,
+        "covered_lines": 16,
+        "percent": 53.333333333333336
+      },
+      "orion-parlay": {
+        "lines": 315,
+        "covered_lines": 309,
+        "percent": 98.0952380952381
+      },
+      "orion-platform": {
+        "lines": 1312,
+        "covered_lines": 1129,
+        "percent": 86.05182926829268
+      },
+      "orion-runtime": {
+        "lines": 8841,
+        "covered_lines": 8147,
+        "percent": 92.15020925234703
+      },
+      "orion-vector": {
+        "lines": 2423,
+        "covered_lines": 2294,
+        "percent": 94.67602146099877
+      },
+      "orion-wasm": {
+        "lines": 37,
+        "covered_lines": 0,
+        "percent": 0.0
+      }
+    }
+  },
+  "evidence_sha256": {
+    "native-workspace.log": "d461a3e997aa1041747bf6f72475d4376f7f7c7fcee234648769874f3beafa49",
+    "coverage.json": "53ca7fc8b98b3a61fa1d95db5a406f67dc8e31694df43d3d6e0087fb2171bb65",
+    "coverage.log": "33b9e45c0693c26105760d332f25068a35a5bbcd2a3b75b3b4b6b66bbcddda68"
+  }
+}

@@ -895,17 +895,30 @@ mod tests {
         use crate::model::dataset::rows::RowTransform;
         use orion_ann_diskann::model::PaddedDataset;
         use orion_ann_vector::PaddedLayout;
-        let base=PaddedDataset::from_packed(&[3u8,4,0,5],PaddedLayout::new::<u8>(2,32).unwrap()).unwrap();
-        let parts=vec![(vec![1],vec![],vec![]),(vec![0],vec![],vec![])];
-        let index=crate::Orion::from_graph_partitions(base,&parts,0,1,0).unwrap();
-        index.set_sidecar_row_transform(RowTransform::UnitL2).unwrap();
-        let sidecar=index.try_ensure_quantized_dataset_mips().unwrap();
-        let data=sidecar.data().to_vec();
-        assert!(index.set_sidecar_row_transform(RowTransform::Identity).is_err());
-        assert_eq!(index.try_ensure_quantized_dataset_mips().unwrap().data(),data);
-        assert_eq!(index.dataset().row(0).unwrap(),&[3,4]);
+        let base =
+            PaddedDataset::from_packed(&[3u8, 4, 0, 5], PaddedLayout::new::<u8>(2, 32).unwrap())
+                .unwrap();
+        let parts = vec![(vec![1], vec![], vec![]), (vec![0], vec![], vec![])];
+        let index = crate::Orion::from_graph_partitions(base, &parts, 0, 1, 0).unwrap();
+        index
+            .set_sidecar_row_transform(RowTransform::UnitL2)
+            .unwrap();
+        let sidecar = index.try_ensure_quantized_dataset_mips().unwrap();
+        let data = sidecar.data().to_vec();
+        assert!(
+            index
+                .set_sidecar_row_transform(RowTransform::Identity)
+                .is_err()
+        );
+        assert_eq!(
+            index.try_ensure_quantized_dataset_mips().unwrap().data(),
+            data
+        );
+        assert_eq!(index.dataset().row(0).unwrap(), &[3, 4]);
         // Rebinding the same transform is safe and does not rebuild the object.
-        index.set_sidecar_row_transform(RowTransform::UnitL2).unwrap();
+        index
+            .set_sidecar_row_transform(RowTransform::UnitL2)
+            .unwrap();
     }
 
     #[test]

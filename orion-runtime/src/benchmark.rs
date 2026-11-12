@@ -4,9 +4,9 @@
  */
 
 //! Explicit imports for research executables. Implementation modules stay private.
-pub use crate::data::{BaseElement, LoadedDataset, inspect_vector_file, query::VectorReader};
+pub use crate::data::{inspect_vector_file, query::VectorReader, BaseElement, LoadedDataset};
 pub use crate::execution::{
-    GroundTruthReader, QuerySource, ResolvedRunConfig, prepare_search, search_batch,
+    prepare_search, search_batch, GroundTruthReader, QuerySource, ResolvedRunConfig,
 };
 /// Run the same batch pipeline with convergence switching and early exit disabled.
 /// This baseline requires no calibration and still uses approximate graph search.
@@ -39,8 +39,8 @@ pub mod config {
 }
 pub mod cascade {
     pub use crate::search::cascade::{
-        AdmissionChoice, PrefilterChoice, RerankChoice, SearchMetric, build_admission,
-        build_prefilter, build_rerank, search_batch_compose, search_compose,
+        build_admission, build_prefilter, build_rerank, search_batch_compose, search_compose,
+        AdmissionChoice, PrefilterChoice, RerankChoice, SearchMetric,
     };
 }
 pub mod graph {
@@ -65,8 +65,8 @@ pub mod residency {
     use crate::config::cascade::{AdmissionChoice, Cascade, PrefilterChoice, RerankChoice};
     use crate::sidecars::requirements::DatasetRequirement;
     use orion_ann_core::{
-        CompressedIndex, QuantizedDatasetShape,
         model::dataset::rows::{CascadeData, Rows},
+        CompressedIndex, QuantizedDatasetShape,
     };
     #[derive(Debug, Clone)]
     pub struct DatasetRequirements(Vec<DatasetRequirement>);

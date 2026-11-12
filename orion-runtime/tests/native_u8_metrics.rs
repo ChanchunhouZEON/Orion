@@ -91,11 +91,9 @@ fn native_metrics_snapshot_mmap_and_concurrent_search() {
             assert!(Index::open(&snapshot, input()).is_err());
             std::fs::remove_file(object).unwrap();
             let zero = [0u8; 33];
-            assert!(
-                mapped
-                    .search(QueryBatch::from_u8(&zero, 33).unwrap(), &search)
-                    .is_err()
-            );
+            assert!(mapped
+                .search(QueryBatch::from_u8(&zero, 33).unwrap(), &search)
+                .is_err());
         }
         // Restored mappings own their backing independently of cache paths.
         std::thread::scope(|scope| {
@@ -135,13 +133,11 @@ fn high_dimension_u64_norms_and_zero_rejection() {
     }
     let mut bad = base.clone();
     bad[..dimension].fill(0);
-    assert!(
-        Index::new(
-            BaseInput::from_u8(&bad, dimension).unwrap(),
-            options(d.path(), SearchMetric::Cosine, StorageMode::Resident)
-        )
-        .is_err()
-    );
+    assert!(Index::new(
+        BaseInput::from_u8(&bad, dimension).unwrap(),
+        options(d.path(), SearchMetric::Cosine, StorageMode::Resident)
+    )
+    .is_err());
 }
 
 #[test]

@@ -704,18 +704,18 @@ mod tests {
                 .unwrap();
         assert_eq!((read, d), (vec![1.0, 2.0], 2));
         let invalid = bytes(&[(2, [1.0, 2.0]), (3, [3.0, 4.0])]);
-        assert!(
-            read_dimensioned_records(&mut Cursor::new(invalid), usize::MAX, f32::from_le_bytes)
-                .is_err()
-        );
-        assert!(
-            read_dimensioned_records(
-                &mut Cursor::new(&data[..data.len() - 1]),
-                usize::MAX,
-                f32::from_le_bytes
-            )
-            .is_err()
-        );
+        assert!(read_dimensioned_records(
+            &mut Cursor::new(invalid),
+            usize::MAX,
+            f32::from_le_bytes
+        )
+        .is_err());
+        assert!(read_dimensioned_records(
+            &mut Cursor::new(&data[..data.len() - 1]),
+            usize::MAX,
+            f32::from_le_bytes
+        )
+        .is_err());
     }
 
     #[test]

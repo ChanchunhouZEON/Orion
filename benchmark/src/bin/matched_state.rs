@@ -6,17 +6,17 @@
 //! Deterministic-prefix replay and local geometric audits; no timing claims.
 use benchmark::config::Args as RunArgs;
 use orion_ann::benchmark::cascade;
-use orion_ann::benchmark::{LoadedDataset, ResolvedRunConfig, graph, memory};
+use orion_ann::benchmark::{graph, memory, LoadedDataset, ResolvedRunConfig};
 use orion_ann::with_supported_dimension;
 use orion_ann_core::{Error, Result};
 
 use clap::{Parser, ValueEnum};
 use orion_ann_core::search::cascade::stage::admission::ExactAdmission;
 use orion_ann_core::search::{
-    cascade::stage::{Admission, AdmissionQuery, Prefilter, Rerank, rerank::NoRerank},
+    cascade::stage::{rerank::NoRerank, Admission, AdmissionQuery, Prefilter, Rerank},
     diagnostics::{Checkpoint, MatchedStateTrace, NeighborMode, NoopObserver},
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{collections::BTreeSet, fs::OpenOptions, io::Write, path::PathBuf};
 
 #[derive(Clone, Copy, ValueEnum)]

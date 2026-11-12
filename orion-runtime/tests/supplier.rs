@@ -4,7 +4,7 @@
  */
 #![cfg(feature = "experimental-graph")]
 use orion_ann::{
-    BaseInput, Index, IndexOptions, QueryBatch, SearchOptions, StorageMode, supplier::*,
+    supplier::*, BaseInput, Index, IndexOptions, QueryBatch, SearchOptions, StorageMode,
 };
 fn spec() -> PartitionSpec {
     PartitionSpec {
@@ -104,13 +104,11 @@ fn duplicate_failure_never_publishes_and_writer_never_overwrites() {
     let failed = d.path().join("bad.staged");
     assert!(write_staged_file(&failed, &s, &mut SlicePartitions::new(&invalid)).is_err());
     assert!(!failed.exists());
-    assert!(
-        !std::fs::read_dir(d.path()).unwrap().any(|p| p
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .ends_with(".tmp"))
-    );
+    assert!(!std::fs::read_dir(d.path()).unwrap().any(|p| p
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .ends_with(".tmp")));
 }
 #[test]
 fn names_do_not_change_topology_identity_and_base_binding_is_checked() {
@@ -132,14 +130,12 @@ fn names_do_not_change_topology_identity_and_base_binding_is_checked() {
     s.base_sha256 = Some("0".repeat(64));
     let bad = d.path().join("mismatch.staged");
     write_staged_file(&bad, &s, &mut SlicePartitions::new(&rows())).unwrap();
-    assert!(
-        Index::from_staged(
-            base(false),
-            bad,
-            options(&d.path().join("othercache"), false)
-        )
-        .is_err()
-    );
+    assert!(Index::from_staged(
+        base(false),
+        bad,
+        options(&d.path().join("othercache"), false)
+    )
+    .is_err());
     let mut low = options(&d.path().join("tinycache"), false);
     low.memory_budget_gib = Some(1e-12);
     assert!(Index::from_staged(base(false), &path, low).is_err());
@@ -148,8 +144,8 @@ fn names_do_not_change_topology_identity_and_base_binding_is_checked() {
 #[test]
 fn memory_path_matches_staged_and_supplier_failure_releases_source() {
     use std::sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
+        Arc,
     };
     struct Failing {
         dropped: Arc<AtomicBool>,
@@ -193,17 +189,15 @@ fn memory_path_matches_staged_and_supplier_failure_releases_source() {
         .unwrap()
         .count();
     let dropped = Arc::new(AtomicBool::new(false));
-    assert!(
-        Index::from_partitions(
-            base(false),
-            spec(),
-            Failing {
-                dropped: dropped.clone()
-            },
-            options(&d.path().join("cache"), true)
-        )
-        .is_err()
-    );
+    assert!(Index::from_partitions(
+        base(false),
+        spec(),
+        Failing {
+            dropped: dropped.clone()
+        },
+        options(&d.path().join("cache"), true)
+    )
+    .is_err());
     assert!(dropped.load(Ordering::SeqCst));
     assert_eq!(
         count,

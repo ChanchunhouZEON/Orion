@@ -3,8 +3,8 @@
  * Licensed under the MIT License.
  */
 
+use crate::data::{padded, VectorFormat};
 use crate::SearchMetric;
-use crate::data::{VectorFormat, padded};
 use orion_ann_vector::{L2F32Distance, L2U8Distance, PaddedLayout};
 
 struct Temp(std::path::PathBuf);
@@ -69,13 +69,18 @@ fn formats_and_arrays_share_padded_layout() {
                 prefix.as_slice(),
                 &array.as_slice()[..2 * layout.stride_elements()]
             );
-            assert!(
-                padded::load::<f32>(&f.0, format, layout, rows, SearchMetric::SquaredL2, Some(1))
-                    .err()
-                    .unwrap()
-                    .to_string()
-                    .contains("padding")
-            );
+            assert!(padded::load::<f32>(
+                &f.0,
+                format,
+                layout,
+                rows,
+                SearchMetric::SquaredL2,
+                Some(1)
+            )
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("padding"));
             if !float {
                 let u8layout = PaddedLayout::for_kernel::<L2U8Distance>(dim).unwrap();
                 let loaded =
@@ -95,31 +100,27 @@ fn formats_and_arrays_share_padded_layout() {
                 let header_offset = 4 + dim * if float { 4 } else { 1 };
                 bytes[header_offset..header_offset + 4].copy_from_slice(&7u32.to_le_bytes());
                 let bad = file(&bytes);
-                assert!(
-                    padded::load::<f32>(
-                        &bad.0,
-                        format,
-                        layout,
-                        rows,
-                        SearchMetric::SquaredL2,
-                        None
-                    )
-                    .is_err()
-                );
-            }
-            bytes.pop();
-            let truncated = file(&bytes);
-            assert!(
-                padded::load::<f32>(
-                    &truncated.0,
+                assert!(padded::load::<f32>(
+                    &bad.0,
                     format,
                     layout,
                     rows,
                     SearchMetric::SquaredL2,
                     None
                 )
-                .is_err()
-            );
+                .is_err());
+            }
+            bytes.pop();
+            let truncated = file(&bytes);
+            assert!(padded::load::<f32>(
+                &truncated.0,
+                format,
+                layout,
+                rows,
+                SearchMetric::SquaredL2,
+                None
+            )
+            .is_err());
         }
     }
 }

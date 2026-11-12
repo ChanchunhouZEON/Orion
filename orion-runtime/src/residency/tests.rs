@@ -3,7 +3,7 @@
  * Licensed under the MIT License.
  */
 use super::*;
-use crate::sidecars::requirements::{SidecarKind as K, SidecarRequirement as S, prepare};
+use crate::sidecars::requirements::{prepare, SidecarKind as K, SidecarRequirement as S};
 use orion_ann_core::{Orion, PaddedDataset, PaddedLayout};
 
 fn index() -> Orion {
@@ -204,32 +204,28 @@ fn policies_are_bounded_selective_and_do_not_require_lock_privilege() {
     assert_eq!(pinned.report().pinned_datasets, 0);
     assert_eq!(pinned.report().skipped.len(), 1);
     assert_eq!(pinned.pinned_bytes(), 0);
-    assert!(
-        pin(
-            &index,
-            base,
-            shape(),
-            &requirements,
-            &PinOptions {
-                mode: PinMode::Required,
-                ..options.clone()
-            }
-        )
-        .is_err()
-    );
-    assert!(
-        pin(
-            &index,
-            base,
-            shape(),
-            &requirements,
-            &PinOptions {
-                datasets: Some(vec![DatasetPin::Quantized(K::MipsI8)]),
-                ..options.clone()
-            }
-        )
-        .is_err()
-    );
+    assert!(pin(
+        &index,
+        base,
+        shape(),
+        &requirements,
+        &PinOptions {
+            mode: PinMode::Required,
+            ..options.clone()
+        }
+    )
+    .is_err());
+    assert!(pin(
+        &index,
+        base,
+        shape(),
+        &requirements,
+        &PinOptions {
+            datasets: Some(vec![DatasetPin::Quantized(K::MipsI8)]),
+            ..options.clone()
+        }
+    )
+    .is_err());
     let empty = pin(
         &index,
         base,
@@ -251,15 +247,13 @@ fn different_transform_recipe_cannot_pin_the_canonical_slot() {
     let S::JlSparse(seed) = K::JlSparse.requirement() else {
         unreachable!()
     };
-    assert!(
-        hints(
-            &index,
-            &[],
-            shape(),
-            &[DatasetRequirement::Sidecar(S::JlSparse(seed + 1))]
-        )
-        .is_err()
-    );
+    assert!(hints(
+        &index,
+        &[],
+        shape(),
+        &[DatasetRequirement::Sidecar(S::JlSparse(seed + 1))]
+    )
+    .is_err());
 }
 
 #[test]
@@ -307,27 +301,23 @@ fn os_lock_denial_falls_back_without_changing_prepared_storage() {
     assert_eq!(calls, 1);
     assert_eq!(result.pinned_bytes(), 0);
     assert_eq!(result.report().skipped[0].0, DatasetPin::Base);
-    assert!(
-        result.report().skipped[0]
-            .1
-            .contains("test memlock refusal")
-    );
+    assert!(result.report().skipped[0]
+        .1
+        .contains("test memlock refusal"));
     assert_eq!(
         base,
         bytemuck::cast_slice::<_, u8>(index.dataset().as_slice())
     );
-    assert!(
-        pin_with(
-            &index,
-            base,
-            shape(),
-            &requirements,
-            &PinOptions {
-                mode: PinMode::Required,
-                ..options
-            },
-            |_, _, _| Err(std::io::Error::other("denied"))
-        )
-        .is_err()
-    );
+    assert!(pin_with(
+        &index,
+        base,
+        shape(),
+        &requirements,
+        &PinOptions {
+            mode: PinMode::Required,
+            ..options
+        },
+        |_, _, _| Err(std::io::Error::other("denied"))
+    )
+    .is_err());
 }

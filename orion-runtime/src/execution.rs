@@ -7,8 +7,9 @@
 //! Ordinary Rust applications use IndexOptions and Index directly.
 pub use crate::config::{PreflightFormat, ResolvedRunConfig};
 pub use crate::data::{
-    LoadedBase, VectorFormat, inspect_vector_file,
-    query::{GroundTruthReader, QuerySource, open_queries, open_snapshot_queries},
+    inspect_vector_file,
+    query::{open_queries, open_snapshot_queries, GroundTruthReader, QuerySource},
+    LoadedBase, VectorFormat,
 };
 pub mod resources {
     pub use crate::preflight::{enforce_budget, preflight_report, print_report};

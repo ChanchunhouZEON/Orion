@@ -103,9 +103,9 @@ pub mod benchmark;
 pub mod execution;
 pub use config::options::{CascadeConfig, GraphConfig, IndexOptions};
 pub use config::{GraphSourcePolicy, VectorStorageKind};
-pub use data::VectorFormat;
 #[cfg(feature = "file-queries")]
 pub use data::query::{read_query_buffer, read_query_file};
+pub use data::VectorFormat;
 pub use index::{
     BaseInput, Calibration, Index, IndexSlot, OpenOptions, QueryBatch, SearchOptions, SearchResult,
     SnapshotRef, SnapshotSource,

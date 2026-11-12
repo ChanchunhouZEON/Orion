@@ -5,12 +5,12 @@
 
 //! Benchmark-owned sidecars: decode legacy files or CAS objects without hashing.
 //! This service deliberately produces no verification receipts for snapshots.
-use super::working::{Identity, metadata_path};
+use super::working::{metadata_path, Identity};
 use crate::{Error, Result};
 use orion_ann_core::{
-    CompressedIndex,
     index::{DecodeSidecar, EncodeSidecar, IndexData, SidecarCache},
     model::dataset::rows::Rows,
+    CompressedIndex,
 };
 use orion_ann_platform::buffered_io::FILE_WRITE_BYTES;
 use std::{
@@ -133,11 +133,9 @@ mod tests {
         )
         .unwrap();
         cache.load(&base, "qds", &mut read).unwrap();
-        assert!(
-            cache
-                .load(&base, "qds", &mut |_, _| Err(Error::cache("invalid shape")))
-                .is_err()
-        );
+        assert!(cache
+            .load(&base, "qds", &mut |_, _| Err(Error::cache("invalid shape")))
+            .is_err());
         assert!(
             cache.load(&base, "qds", &mut |_, _| Ok(())).is_err(),
             "trailing bytes must fail"

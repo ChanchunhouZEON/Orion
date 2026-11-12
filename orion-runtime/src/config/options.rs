@@ -7,11 +7,11 @@
 //! IndexOptions aggregates property-specific controls and resolves service input.
 //! Graph and cascade definitions live beside their own defaults and rules.
 use super::{
-    GraphSourcePolicy, ResolvedRunConfig, ResolvedSweep, VectorStorageKind,
     cascade::{Cascade, SearchMetric},
     plan::IndexPlan,
+    GraphSourcePolicy, ResolvedRunConfig, ResolvedSweep, VectorStorageKind,
 };
-use crate::{Result, data::VectorFormat};
+use crate::{data::VectorFormat, Result};
 
 // Preserve existing public paths while each property owns its implementation.
 pub use super::cascade::CascadeConfig;

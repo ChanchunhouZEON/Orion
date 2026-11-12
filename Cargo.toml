@@ -118,3 +118,6 @@ codegen-units = 4
 [profile.python]
 inherits = "release"
 panic = "unwind"
+# Rust 1.92 symbol stripping can misalign Mach-O LINKEDIT tables and make
+# otherwise valid Python extensions unloadable on macOS (rust-lang/rust#157750).
+strip = "none"

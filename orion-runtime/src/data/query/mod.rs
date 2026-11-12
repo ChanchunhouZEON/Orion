@@ -12,7 +12,7 @@
 //! request f32 transport; production preparation is per query and base agnostic.
 
 use crate::config::cascade::SearchMetric;
-use crate::data::{VectorFormat, validate_and_normalize_vectors};
+use crate::data::{validate_and_normalize_vectors, VectorFormat};
 use crate::{Error, QueryBuffer, Result};
 mod encoding;
 use std::io::Read;

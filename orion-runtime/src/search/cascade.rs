@@ -13,7 +13,7 @@ use crate::{Error, Result};
 use orion_ann_core::index::CompressedIndex;
 use orion_ann_core::model::dataset::rows::CascadeData;
 use orion_ann_core::search::cascade::stage::admission::{
-    L2KTAdmission, L2U8Admission, L2U16Admission, MipsI8Admission, MipsI16Admission,
+    L2KTAdmission, L2U16Admission, L2U8Admission, MipsI16Admission, MipsI8Admission,
 };
 use orion_ann_core::search::cascade::stage::prefilter::{
     JlHadamardPrefilter, JlMipsPrefilter, JlPrefilter, NoPrefilter, RabitqPrefilter,

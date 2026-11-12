@@ -58,15 +58,13 @@ fn typed_calibration_search_snapshot_and_concurrency_share_one_path() {
                 index.calibrate_batch(batch, 3, Some(24)).unwrap();
                 let expected = index.search(batch, &controls).unwrap();
                 assert_eq!(expected.counts, [3, 3]);
-                assert!(
-                    expected
-                        .scores
-                        .as_ref()
-                        .unwrap()
-                        .values
-                        .iter()
-                        .all(|s| s.is_finite())
-                );
+                assert!(expected
+                    .scores
+                    .as_ref()
+                    .unwrap()
+                    .values
+                    .iter()
+                    .all(|s| s.is_finite()));
                 std::thread::scope(|scope| {
                     let a = scope.spawn(|| index.search(batch, &controls).unwrap());
                     let b = scope.spawn(|| index.search(batch, &controls).unwrap());
@@ -91,21 +89,17 @@ fn typed_calibration_search_snapshot_and_concurrency_share_one_path() {
                     restored.search(batch, &controls).unwrap()
                 );
             }
-            assert!(
-                index
-                    .calibrate_batch(
-                        QueryBatch::from_f32(&[f32::NAN; 13], 13).unwrap(),
-                        3,
-                        Some(24)
-                    )
-                    .is_err()
-            );
+            assert!(index
+                .calibrate_batch(
+                    QueryBatch::from_f32(&[f32::NAN; 13], 13).unwrap(),
+                    3,
+                    Some(24)
+                )
+                .is_err());
             if metric == SearchMetric::Cosine {
-                assert!(
-                    index
-                        .search(QueryBatch::from_u32(&[0; 13], 13).unwrap(), &controls)
-                        .is_err()
-                );
+                assert!(index
+                    .search(QueryBatch::from_u32(&[0; 13], 13).unwrap(), &controls)
+                    .is_err());
             }
         }
     }

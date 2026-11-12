@@ -28,7 +28,7 @@ fn snapshot_needs_no_supplier_feature() {
         };
         #[cfg(feature = "experimental-graph")]
         {
-            use orion_ann::{IndexOptions, supplier::*};
+            use orion_ann::{supplier::*, IndexOptions};
             std::fs::create_dir_all(&path).unwrap();
             let spec = PartitionSpec {
                 origin: PartitionOrigin {

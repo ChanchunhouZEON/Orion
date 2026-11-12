@@ -14,7 +14,7 @@
 #[cfg(panic = "abort")]
 compile_error!("orion-py requires panic=unwind; build with --profile python");
 mod errors;
-use errors::{OrionError, boundary, to_python};
+use errors::{boundary, to_python, OrionError};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods};
 use orion_ann::{BaseInput, Index, IndexOptions};
 use orion_ann::{Error, Result};
@@ -23,8 +23,8 @@ use pyo3::prelude::*;
 use std::{
     path::PathBuf,
     sync::{
-        RwLock,
         atomic::{AtomicBool, Ordering},
+        RwLock,
     },
 };
 

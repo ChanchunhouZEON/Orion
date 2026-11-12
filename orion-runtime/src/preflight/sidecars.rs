@@ -88,7 +88,7 @@ fn stacked_requirements_and_phase_selection() {
         cascade::{AdmissionChoice, Cascade, PrefilterChoice, RerankChoice},
         plan::IndexPlan,
     };
-    use crate::sidecars::requirements::{SidecarKind, SidecarRecipe, estimate_sidecars};
+    use crate::sidecars::requirements::{estimate_sidecars, SidecarKind, SidecarRecipe};
     let input_shape = QuantizedDatasetShape {
         rows: 101,
         dimension: 33,
@@ -154,15 +154,20 @@ fn stacked_requirements_and_phase_selection() {
         crate::config::GraphSource::Rust,
     )
     .unwrap();
-    assert!(
-        mips.sidecar_requirements(false)
-            .contains(&SidecarKind::JlSparseMips.requirement())
-    );
+    assert!(mips
+        .sidecar_requirements(false)
+        .contains(&SidecarKind::JlSparseMips.requirement()));
 }
 
 #[test]
 fn native_norms_are_budgeted_including_prepare_only_and_mapped() {
     use crate::{IndexOptions, SearchMetric, StorageMode, VectorFormat};
+    // Budget arithmetic must also work without a graph builder installed.
+    // Resolve offline metadata: this test does not import or construct a graph.
+    let estimate = |config: &crate::config::ResolvedRunConfig, rows| {
+        let input = super::resolve_memory_inputs(config, rows, true, "configuration").unwrap();
+        super::calculate_memory(config, input).unwrap()
+    };
     for (dimension, width) in [(128, 4u64), (66051, 4), (66052, 8)] {
         let rows = 1000;
         for mode in [StorageMode::Resident, StorageMode::Mapped] {
@@ -182,7 +187,7 @@ fn native_norms_are_budgeted_including_prepare_only_and_mapped() {
                 .unwrap();
             for prepare in [false, true] {
                 config.prepare_only = prepare;
-                let report = super::estimate_resident_memory(&config, rows).unwrap();
+                let report = estimate(&config, rows);
                 assert_eq!(report["native_norm_bytes"], rows as u64 * width);
                 assert_eq!(report["sidecar_bytes"], rows as u64 * width);
                 assert_eq!(
@@ -202,8 +207,5 @@ fn native_norms_are_budgeted_including_prepare_only_and_mapped() {
     }
     .resolve("unused.u8bin".into(), VectorFormat::U8bin, 128, 1000, None)
     .unwrap();
-    assert_eq!(
-        super::estimate_resident_memory(&config, 1000).unwrap()["native_norm_bytes"],
-        0
-    );
+    assert_eq!(estimate(&config, 1000)["native_norm_bytes"], 0);
 }

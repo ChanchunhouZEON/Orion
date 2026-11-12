@@ -15,8 +15,8 @@ mod resolve;
 use args::Args;
 
 use orion_ann::execution::{
-    GroundTruthReader, QuerySource, ResolvedRunConfig, open_queries, open_snapshot_queries,
-    resources,
+    open_queries, open_snapshot_queries, resources, GroundTruthReader, QuerySource,
+    ResolvedRunConfig,
 };
 use orion_ann::{Error, Result};
 use std::{

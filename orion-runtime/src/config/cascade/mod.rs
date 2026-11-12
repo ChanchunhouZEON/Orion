@@ -212,13 +212,11 @@ mod selector_tests {
                 admission,
                 rerank: RerankChoice::U16,
             };
-            assert!(
-                cascade
-                    .validate_cascade_options(SearchMetric::SquaredL2)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("precision")
-            );
+            assert!(cascade
+                .validate_cascade_options(SearchMetric::SquaredL2)
+                .unwrap_err()
+                .to_string()
+                .contains("precision"));
         }
         let shared = Cascade {
             prefilter: PrefilterChoice::None,
@@ -271,13 +269,11 @@ mod selector_tests {
             );
             c.validate_cascade_options(metric).unwrap();
         }
-        assert!(
-            low.validate_cascade_options(SearchMetric::InnerProduct)
-                .is_err()
-        );
-        assert!(
-            high.validate_cascade_options(SearchMetric::SquaredL2)
-                .is_ok()
-        );
+        assert!(low
+            .validate_cascade_options(SearchMetric::InnerProduct)
+            .is_err());
+        assert!(high
+            .validate_cascade_options(SearchMetric::SquaredL2)
+            .is_ok());
     }
 }

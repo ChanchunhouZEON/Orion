@@ -63,8 +63,8 @@ impl Cascade {
             ));
         }
         use orion_ann_core::model::dataset::quantized_dataset::{
+            capabilities::{validate_precision, Precision as P},
             QuantizedKind as K,
-            capabilities::{Precision as P, validate_precision},
         };
         let prefilter = match self.prefilter {
             PrefilterChoice::None => None,

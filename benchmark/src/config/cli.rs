@@ -21,8 +21,8 @@
 //! The resulting configuration also derives the graph-cache identity used to distinguish
 //! graphs built from different datasets or construction parameters.
 use crate::config::presets::{
-    RawBaseGraph, RawOrionOverride, RawRoot, SweepOverrides, try_load_root,
-    try_resolve_placeholders,
+    try_load_root, try_resolve_placeholders, RawBaseGraph, RawOrionOverride, RawRoot,
+    SweepOverrides,
 };
 use clap::Parser;
 use orion_ann::benchmark::config::{
@@ -673,27 +673,26 @@ mod tests {
         .unwrap();
         assert_ne!(native.cache_namespace, float.cache_namespace);
         assert_eq!(native.storage(), VectorStorageKind::U8);
-        assert_eq!(native.cascade(), native.cascade());
-        assert_eq!(float.cascade(), float.cascade());
-        assert!(
-            resolve(&["orion", "sift10m", "--vector-storage", "f32"])
-                .unwrap_err()
-                .to_string()
-                .contains("native admission requires --vector-storage u8")
-        );
-        assert!(resolve(&["orion", "sift10m", "--admission", "l2-u8"])
+        assert_eq!(native.cascade().admission, AdmissionChoice::NativeL2U8);
+        assert_eq!(float.cascade().admission, AdmissionChoice::L2U8);
+        assert!(resolve(&["orion", "sift10m", "--vector-storage", "f32"])
             .unwrap_err()
             .to_string()
-            .contains(
-                "native u8 requires no prefilter/rerank and a native admission matching its metric"
-            ));
-        assert_eq!(native.storage(), VectorStorageKind::U8);
+            .contains("native admission requires --vector-storage u8"));
         assert_eq!(float.storage(), VectorStorageKind::F32);
 
-        assert!(resolve(&["orion", "sift10m", "--rerank", "f32"]).is_err());
-        assert!(resolve(&["orion", "sift10m", "--admission", "l2-u16"]).is_err());
-        assert!(resolve(&["orion", "sift10m", "--prefilter", "jl"]).is_err());
-        assert!(resolve(&["orion", "sift10m", "--query", "query.fvecs"]).is_err());
+        // Base storage and cascade selection are independent. Native u8 can
+        // use quantized sidecars, exact reranking, and non-byte queries.
+        for args in [
+            ["--admission", "l2-u8"],
+            ["--admission", "l2-u16"],
+            ["--rerank", "f32"],
+            ["--prefilter", "jl"],
+            ["--query", "query.fvecs"],
+        ] {
+            let config = resolve(&["orion", "sift10m", args[0], args[1]]).unwrap();
+            assert_eq!(config.storage(), VectorStorageKind::U8);
+        }
         assert!(resolve(&["orion", "sift10m", "--base", "base.fbin"]).is_err());
         assert!(resolve(&["orion", "sift10m", "--graph-source", "rust"]).is_err());
         assert!(resolve(&["orion", "sift10m", "--dimension", "33"]).is_ok());
@@ -929,13 +928,11 @@ mod tests {
             .resolve_with(&root(), &LegacyEnvironment::default())
             .unwrap();
         assert_eq!(default.graph_source, GraphSource::Parlayann);
-        assert!(
-            default
-                .staged_file
-                .as_ref()
-                .unwrap()
-                .starts_with("../ParlayANN")
-        );
+        assert!(default
+            .staged_file
+            .as_ref()
+            .unwrap()
+            .starts_with("../ParlayANN"));
         let elsewhere = args
             .resolve_with(
                 &root(),
@@ -978,11 +975,9 @@ mod tests {
     fn graph_recipe_has_a_full_sha256_name() {
         let config = resolve(&["orion", "sift"]).unwrap();
         assert_eq!(config.cache_namespace.len(), 64);
-        assert!(
-            config
-                .cache_namespace
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit())
-        );
+        assert!(config
+            .cache_namespace
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit()));
     }
 }

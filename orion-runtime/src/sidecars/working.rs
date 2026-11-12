@@ -11,12 +11,12 @@ use super::{Receipts, SnapshotSidecars};
 use crate::integrity::read_verified;
 #[cfg(any(test, feature = "benchmark"))]
 use crate::storage::object_dir;
-use crate::storage::{PendingFile, put};
+use crate::storage::{put, PendingFile};
 use crate::{Error, Result};
 use orion_ann_core::{
-    CompressedIndex,
     index::{DecodeSidecar, EncodeSidecar, IndexData, SidecarCache},
     model::dataset::rows::Rows,
+    CompressedIndex,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

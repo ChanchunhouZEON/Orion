@@ -5,19 +5,19 @@
 
 //! Experimental construction boundary; shared lifecycle remains in prepare/mod.rs.
 use super::{
-    BaseInput, Index,
     snapshot::Payloads,
     view::{DynamicEngine, ReadView},
+    BaseInput, Index,
 };
 use crate::{
-    Error, IndexOptions, Result, SearchMetric,
     config::{GraphSourcePolicy, ResolvedRunConfig},
     data::BaseElement,
     data::LoadedBase,
+    Error, IndexOptions, Result, SearchMetric,
 };
 use orion_ann_core::{
-    CompressedIndex,
     supplier::{PartitionElement, PartitionMetric, PartitionSource, PartitionSpec, StagedReader},
+    CompressedIndex,
 };
 use std::{
     collections::BTreeMap,

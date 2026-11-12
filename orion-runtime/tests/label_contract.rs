@@ -170,11 +170,9 @@ fn boolean_filters_empty_sets_and_budgets_have_explicit_semantics() {
     let mut limited = opts;
     limited.max_candidates = 2;
     assert!(index.search_filtered(q, &filter("a"), &limited).is_err());
-    assert!(
-        index
-            .search_filtered(q, &LabelFilter::default(), &limited)
-            .is_err()
-    );
+    assert!(index
+        .search_filtered(q, &LabelFilter::default(), &limited)
+        .is_err());
     assert_eq!(
         index
             .search_filtered(q, &filter("unknown"), &limited)
@@ -183,36 +181,28 @@ fn boolean_filters_empty_sets_and_budgets_have_explicit_semantics() {
             .counts,
         [0]
     );
-    assert!(
-        index
-            .search_filtered(
-                QueryBatch::from_f32(&[f32::NAN, 0., 0.], 3).unwrap(),
-                &filter("unknown"),
-                &opts
-            )
-            .is_err()
-    );
-    assert!(
-        index
-            .search_filtered(
-                QueryBatch::from_f32(&[1., 2.], 2).unwrap(),
-                &filter("a"),
-                &opts
-            )
-            .is_err()
-    );
-    assert!(
-        index
-            .search_filtered(q, &filter("a"), &FilterSearchOptions::new(0))
-            .is_err()
-    );
-    assert!(
-        index
-            .search_filtered(QueryBatch::from_f32(&[], 3).unwrap(), &filter("a"), &opts)
-            .unwrap()
-            .result
-            .is_empty()
-    );
+    assert!(index
+        .search_filtered(
+            QueryBatch::from_f32(&[f32::NAN, 0., 0.], 3).unwrap(),
+            &filter("unknown"),
+            &opts
+        )
+        .is_err());
+    assert!(index
+        .search_filtered(
+            QueryBatch::from_f32(&[1., 2.], 2).unwrap(),
+            &filter("a"),
+            &opts
+        )
+        .is_err());
+    assert!(index
+        .search_filtered(q, &filter("a"), &FilterSearchOptions::new(0))
+        .is_err());
+    assert!(index
+        .search_filtered(QueryBatch::from_f32(&[], 3).unwrap(), &filter("a"), &opts)
+        .unwrap()
+        .result
+        .is_empty());
 }
 #[test]
 fn exhaustive_filter_scores_match_reference_for_all_metrics_and_storage() {

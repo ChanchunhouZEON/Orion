@@ -6,7 +6,7 @@
 //! Bounded-memory input preparation for the f32 DiskANN baseline.
 use orion_ann::benchmark::cascade::SearchMetric;
 use orion_ann::benchmark::{GroundTruthReader, QuerySource, VectorReader};
-use orion_ann::{VectorFormat, benchmark::inspect_vector_file};
+use orion_ann::{benchmark::inspect_vector_file, VectorFormat};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};

@@ -12,7 +12,7 @@ use std::time::Instant;
 use benchmark::config::Args;
 use clap::Parser;
 use orion_ann::benchmark::{
-    BaseElement, LoadedDataset, ResolvedRunConfig, memory, prepare_search, search_batch, utils,
+    memory, prepare_search, search_batch, utils, BaseElement, LoadedDataset, ResolvedRunConfig,
 };
 
 /// Promote the calling thread to the highest QoS tier (`USER_INTERACTIVE`,

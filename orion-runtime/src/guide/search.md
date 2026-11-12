@@ -67,7 +67,7 @@ CLI streaming and Python loading. Alongside fvecs/fbin and bvecs/u8bin, the quer
 formats `i8bin`, `u16bin`, and `u32bin` have a little-endian `(rows: u32, dimension:
 u32)` header followed by packed little-endian coordinates. These three formats
 are query-only. `calibrate_many_batches` prepares multiple k values from the same
-borrowed batch; the existing Vec<f32> calibration methods remain convenience APIs.
+borrowed batch; the existing `Vec<f32>` calibration methods remain convenience APIs.
 
 ## Serve cosine queries in batches
 

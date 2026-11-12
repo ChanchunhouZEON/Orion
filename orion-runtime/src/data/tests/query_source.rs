@@ -4,11 +4,11 @@
  */
 
 use crate::{
-    SearchMetric,
     data::{
-        VectorFormat,
         query::{QuerySource, VectorReader},
+        VectorFormat,
     },
+    SearchMetric,
 };
 use std::io::{self, Cursor, Read};
 
@@ -109,15 +109,13 @@ fn query_headers_and_batch_sizes_fail_with_context() {
             2,
         ),
     ] {
-        assert!(
-            VectorReader::new(
-                Cursor::new(bytes),
-                format,
-                dimension,
-                SearchMetric::SquaredL2
-            )
-            .is_err()
-        );
+        assert!(VectorReader::new(
+            Cursor::new(bytes),
+            format,
+            dimension,
+            SearchMetric::SquaredL2
+        )
+        .is_err());
     }
     let mut reader = VectorReader::new(
         Cursor::new([2u32.to_le_bytes().as_slice(), &[3, 4]].concat()),
@@ -238,8 +236,8 @@ fn ground_truth_truncates_to_k_and_validates_every_id_and_width() {
 #[cfg(feature = "file-queries")]
 #[test]
 fn file_queries_cross_decode_batches_and_validate_format_policy() {
-    use crate::VectorStorageKind;
     use crate::data::query::read_query_file;
+    use crate::VectorStorageKind;
     let path = std::env::temp_dir().join(format!("orion-query-file-{}.bvecs", std::process::id()));
     let mut bytes = vec![];
     let mut expected = vec![];
@@ -262,15 +260,13 @@ fn file_queries_cross_decode_batches_and_validate_format_policy() {
     assert!(read_query_file(&path, None, 3, VectorStorageKind::F32).is_err());
     std::fs::remove_file(&path).unwrap();
     assert!(read_query_file(&path, None, 2, VectorStorageKind::U8).is_err());
-    assert!(
-        read_query_file(
-            &path.with_extension("unknown"),
-            None,
-            2,
-            VectorStorageKind::F32
-        )
-        .is_err()
-    );
+    assert!(read_query_file(
+        &path.with_extension("unknown"),
+        None,
+        2,
+        VectorStorageKind::F32
+    )
+    .is_err());
 }
 
 #[test]

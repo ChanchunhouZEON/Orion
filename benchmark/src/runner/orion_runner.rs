@@ -7,7 +7,7 @@ use crate::report::table::BuildTiming;
 use crate::runner::cascade::{AdmissionChoice, PrefilterChoice, RerankChoice};
 use crate::runner::common::{AlgorithmRunner, SearchResult};
 use orion_ann_core::{
-    DIM_32, DIM_100, DIM_128, DIM_768, DIM_784, DIM_960, DIM_1536, StaticOrion, build_diskann_index,
+    build_diskann_index, StaticOrion, DIM_100, DIM_128, DIM_1536, DIM_32, DIM_768, DIM_784, DIM_960,
 };
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -173,7 +173,7 @@ macro_rules! search_batch_orion {
 /// Prepare requirements, then hold their RAM residency across the sweep.
 macro_rules! pin_orion_hot {
     ($idx:ident, $self:ident) => {{
-        use orion_ann::benchmark::residency::{DatasetRequirements, auto_pin, prepare};
+        use orion_ann::benchmark::residency::{auto_pin, prepare, DatasetRequirements};
         let requirements =
             DatasetRequirements::from_cascade($self.prefilter, $self.admission, $self.rerank)
                 .expect("dataset requirements");

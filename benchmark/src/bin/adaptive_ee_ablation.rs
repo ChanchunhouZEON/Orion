@@ -7,14 +7,14 @@
 use benchmark::config::Args as RunArgs;
 use orion_ann::benchmark::cascade;
 use orion_ann::benchmark::utils;
-use orion_ann::benchmark::{LoadedDataset, ResolvedRunConfig, graph, memory};
+use orion_ann::benchmark::{graph, memory, LoadedDataset, ResolvedRunConfig};
 use orion_ann::with_supported_dimension;
 use orion_ann_core::{Error, Result};
 
 use clap::Parser;
 use orion_ann_core::search::diagnostics::{NeighborMode, NoopObserver, PhaseWork, SynergyTrace};
 use rayon::prelude::*;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{fs::OpenOptions, io::Write, path::PathBuf, time::Instant};
 
 #[derive(Parser)]

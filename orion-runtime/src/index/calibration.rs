@@ -4,7 +4,7 @@
  */
 
 //! Per-k calibration for a resident index.
-use super::{Index, query::validate_search};
+use super::{query::validate_search, Index};
 use crate::Result;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -40,27 +40,24 @@ compile as evidence that an unsupported instruction path executed.
 
 ## README validation snapshot
 
-The test-count, doctest and line-coverage badges describe the **2026-11-05**
-local macOS/AArch64 run on Rust 1.92, including the coverage changes on top of
-`97fe271`, including removal of the unused distance buffer. They are dated
-measurements; the separate GitHub Actions badges show live `main`-branch status.
+The test-count, doctest and line-coverage badges describe the **2026-11-12**
+local macOS/AArch64 run on Rust 1.92, based on `0a4fddd` plus the accompanying CI
+fixes. They are dated measurements; the separate GitHub Actions badges show
+live `main`-branch status.
 
 | Check | Result | Scope |
 |---|---:|---|
-| Rust tests | 504 passed, 4 ignored | Workspace, all features, excluding the Python extension |
-| Doctests | 42 passed, 1 ignored | Same workspace; counted separately from Rust tests |
-| Rust line coverage | 90.20% (24,931 / 27,640 lines) | 204 compiled Rust files; test/example/vendor paths excluded |
+| Rust tests | 580 passed, 5 ignored | Workspace, all features, excluding the Python extension |
+| Doctests | 52 passed, 1 ignored | Same workspace; counted separately from Rust tests |
+| Rust line coverage | 90.09% (30,471 / 33,822 lines) | 266 compiled Rust files; test/example/vendor paths excluded |
 
-The final change adds **42 tests**, removes five unit tests belonging to the
-unused distance buffer, and raises coverage from **81.17% to 90.20%**. All
-504 tests and 42 doctests pass; four ordinary tests and one doctest remain
-explicitly ignored. Default-feature tests and all 63 remaining vector release
-tests also pass, with no compiler warnings.
-
-Before removing the legacy module, coverage was 90.17% across 27,785 lines.
-The module and its dedicated integration test were removed after confirming
-that production search and benchmarks do not use them. No coverage exclusion
-was added; the reporting scope and 90% CI gate remain unchanged.
+The same 90% coverage gate and reporting exclusions remain in effect. Counts do
+not add together repeated debug/release, feature-variant or coverage runs.
+Separately, local validation checks minimal features, benchmark regressions,
+Python/CLI parity, Miri, randomized safety, native/WASM replay, strict Clippy and
+documentation, and clean crate/wheel/sdist installation. AVX2, AVX-512 and
+AVX-512-popcount cross-checks validate compilation, not x86 runtime behavior;
+that still requires the corresponding CI hosts.
 
 Coverage uses `cargo-llvm-cov 0.6.21`. It includes the Rust DiskANN code and
 inline unit tests within source files, but not C++, Python, doctest execution or
@@ -81,7 +78,7 @@ RUSTFLAGS='' CARGO_ENCODED_RUSTFLAGS='' cargo +1.92 llvm-cov \
   --fail-under-lines 90 --output-path coverage.json
 ```
 
-[Machine-readable results, per-module coverage and evidence hashes](results/2026-11-05/validation.json).
+[Machine-readable results, per-module coverage and evidence hashes](results/2026-11-12/validation.json).
 Refresh the numeric badges and this snapshot together when rerunning the same
 scope. Compiler/platform changes or a different feature set can change counts.
 Benchmark timing regressions require controlled repeated experiments separately.
@@ -92,7 +89,7 @@ coverage and retains the JSON report with a per-module job summary. The native
 OS/CPU matrix also runs DiskANN integration and platform I/O tests. These checks do not
 shrink the reporting scope to meet the threshold.
 
-The coverage expansion adds small-data lifecycle and contract tests for:
+The [earlier coverage expansion](results/2026-11-05/validation.json) added small-data lifecycle and contract tests for:
 
 - DiskANN file/memory builds, insertion, deletion, search, mmap exports and
   graph/candidate cache round trips;

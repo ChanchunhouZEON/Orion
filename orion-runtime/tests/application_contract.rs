@@ -62,16 +62,12 @@ fn exact_scores_preserve_ids_for_all_metrics_and_native_bytes() {
             .unwrap();
         assert_eq!(index.calibrated_ks().collect::<Vec<_>>(), [3, 5]);
         let before = index.calibration(3).unwrap().clone();
-        assert!(
-            index
-                .calibrate_many(queries.to_vec(), &[3, 0], Some(32))
-                .is_err()
-        );
-        assert!(
-            index
-                .calibrate_many(queries.to_vec(), &[3, 3], Some(32))
-                .is_err()
-        );
+        assert!(index
+            .calibrate_many(queries.to_vec(), &[3, 0], Some(32))
+            .is_err());
+        assert!(index
+            .calibrate_many(queries.to_vec(), &[3, 3], Some(32))
+            .is_err());
         assert_eq!(index.calibration(3).unwrap(), &before);
         let plain = SearchOptions::new(3, 32);
         let ids = index
@@ -306,16 +302,12 @@ fn portable_bundle_survives_move_and_rejects_version_or_content_changes() {
         serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
     value["format_version"] = 999.into();
     std::fs::write(&manifest, serde_json::to_vec(&value).unwrap()).unwrap();
-    assert!(
-        orion_ann::OpenOptions::default()
-            .open_bundle(relocated.path())
-            .is_err()
-    );
-    assert!(
-        orion_ann::OpenOptions::default()
-            .open_bundle(&relocated)
-            .is_err()
-    );
+    assert!(orion_ann::OpenOptions::default()
+        .open_bundle(relocated.path())
+        .is_err());
+    assert!(orion_ann::OpenOptions::default()
+        .open_bundle(&relocated)
+        .is_err());
 }
 
 #[test]
@@ -357,33 +349,28 @@ fn generation_switch_keeps_complete_old_and_new_identities() {
     });
     assert!(!std::sync::Arc::ptr_eq(&old, &slot.current().unwrap()));
     let values = data();
-    assert!(
-        old.search(
+    assert!(old
+        .search(
             QueryBatch::from_f32(&values[..104], 13).unwrap(),
             &SearchOptions::new(3, 32)
         )
-        .is_ok()
-    );
+        .is_ok());
 }
 
 #[test]
 fn array_bundle_and_explicit_store_relocation_preserve_calibration() {
     let root = tempfile::tempdir().unwrap();
     let index = mapped_index(&root.path().join("cache"), 1234, true);
-    assert!(
-        index
-            .export_bundle(&root.path().join("invalid"), true)
-            .is_err()
-    );
+    assert!(index
+        .export_bundle(&root.path().join("invalid"), true)
+        .is_err());
     assert!(!root.path().join("invalid").exists());
     let snapshot = index
         .export_bundle(&root.path().join("array-bundle"), false)
         .unwrap();
-    assert!(
-        orion_ann::OpenOptions::default()
-            .open_bundle(&snapshot)
-            .is_err()
-    );
+    assert!(orion_ann::OpenOptions::default()
+        .open_bundle(&snapshot)
+        .is_err());
     std::fs::rename(
         root.path().join("array-bundle/objects"),
         root.path().join("relocated-store"),

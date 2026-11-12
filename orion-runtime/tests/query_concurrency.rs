@@ -214,12 +214,10 @@ fn borrowed_queries_and_mixed_requests_share_one_index() {
             std::fs::read(first.path().join("index.json")).unwrap(),
             std::fs::read(after.path().join("index.json")).unwrap()
         );
-        assert!(
-            index
-                .search(QueryBatch::from_f32(&[], DIM).unwrap(), &controls[0])
-                .unwrap()
-                .is_empty()
-        );
+        assert!(index
+            .search(QueryBatch::from_f32(&[], DIM).unwrap(), &controls[0])
+            .unwrap()
+            .is_empty());
         assert_eq!(
             index
                 .search(
@@ -248,33 +246,27 @@ fn borrowed_queries_and_mixed_requests_share_one_index() {
             );
         }
         for value in [f32::NAN, f32::INFINITY] {
-            assert!(
-                index
+            assert!(index
+                .search(
+                    QueryBatch::from_f32(&[value; DIM], DIM).unwrap(),
+                    &controls[0]
+                )
+                .is_err());
+        }
+        if native {
+            for value in [-1., 256., 1.5] {
+                assert!(index
                     .search(
                         QueryBatch::from_f32(&[value; DIM], DIM).unwrap(),
                         &controls[0]
                     )
-                    .is_err()
-            );
-        }
-        if native {
-            for value in [-1., 256., 1.5] {
-                assert!(
-                    index
-                        .search(
-                            QueryBatch::from_f32(&[value; DIM], DIM).unwrap(),
-                            &controls[0]
-                        )
-                        .is_ok()
-                );
+                    .is_ok());
             }
         }
         if metric == SearchMetric::Cosine {
-            assert!(
-                index
-                    .search(QueryBatch::from_u8(&[0; DIM], DIM).unwrap(), &controls[0])
-                    .is_err()
-            );
+            assert!(index
+                .search(QueryBatch::from_u8(&[0; DIM], DIM).unwrap(), &controls[0])
+                .is_err());
         }
         assert_eq!(index.search(batch, &controls[0]).unwrap(), expected[0]);
     }
