@@ -73,6 +73,10 @@ use orion_ann::benchmark::utils::flush_cache;
 //! ```
 #![warn(missing_debug_implementations)]
 
+mod filter;
+mod labels;
+pub use filter::{FilterSearchOptions, FilteredSearchResult, LabelFilter};
+pub use labels::{ExternalLabelUpdate, LabelKey, LabelUpdate};
 mod config;
 mod data;
 mod graph;

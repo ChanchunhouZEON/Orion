@@ -211,6 +211,8 @@ jobs:
           cargo test --locked -p orion-ann-vector --features benchmark --test dynamic_ads
           cargo test --locked -p adsampling --features benchmark
           cargo test --locked -p orion-ann-core --features benchmark --tests
+      - name: Label publication, filtering and snapshot contracts
+        run: cargo test --locked -p orion-ann --test label_contract
       - name: Native ParlayANN FFI and service regressions
         run: cargo test --locked -p orion-ann-parlay -p orion-ann -p orion-ann-cli
       - name: Standalone Rust construction without ParlayANN

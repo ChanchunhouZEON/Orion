@@ -373,32 +373,101 @@ impl PyIndex {
                     })
                 })
                 .map_err(|e| to_python(py, e))?;
-            let shape = (result.counts.len(), result.k);
-            let metric = result.scores.as_ref().map(|s| s.metric.as_str().to_owned());
-            let scores = result
-                .scores
-                .map(|s| {
-                    ndarray::Array2::from_shape_vec(shape, s.values)
-                        .map(|v| v.into_pyarray_bound(py))
+            search_output(py, result)
+        })
+    }
+
+    fn label_revision(&self, py: Python<'_>) -> PyResult<u64> {
+        boundary(py, "labels", || {
+            py.allow_threads(|| self.with_read(Index::label_revision))
+                .map_err(|e| to_python(py, e))
+        })
+    }
+
+    fn update_labels(
+        &self,
+        py: Python<'_>,
+        expected_revision: u64,
+        changes_json: &str,
+    ) -> PyResult<u64> {
+        boundary(py, "update_labels", || {
+            let changes: Vec<orion_ann::LabelUpdate> =
+                serde_json::from_str(changes_json).map_err(|e| {
+                    to_python(
+                        py,
+                        Error::invalid_argument(format!("invalid label batch: {e}")),
+                    )
+                })?;
+            py.allow_threads(|| {
+                self.with_read(|index| index.update_labels(expected_revision, &changes))
+            })
+            .map_err(|e| to_python(py, e))
+        })
+    }
+
+    fn update_labels_external(
+        &self,
+        py: Python<'_>,
+        expected_revision: u64,
+        changes_json: &str,
+    ) -> PyResult<u64> {
+        boundary(py, "update_labels_external", || {
+            let changes: Vec<orion_ann::ExternalLabelUpdate> = serde_json::from_str(changes_json)
+                .map_err(|e| {
+                to_python(
+                    py,
+                    Error::invalid_argument(format!("invalid external label batch: {e}")),
+                )
+            })?;
+            py.allow_threads(|| {
+                self.with_read(|index| index.update_labels_external(expected_revision, &changes))
+            })
+            .map_err(|e| to_python(py, e))
+        })
+    }
+
+    fn resolve_external_ids(&self, py: Python<'_>, ids: Vec<u64>) -> PyResult<Vec<u32>> {
+        boundary(py, "labels", || {
+            py.allow_threads(|| self.with_read(|index| index.resolve_external_ids(&ids)))
+                .map_err(|e| to_python(py, e))
+        })
+    }
+
+    #[pyo3(signature = (queries, filter_json, options_json, query_format=None))]
+    fn search_filtered<'py>(
+        &self,
+        py: Python<'py>,
+        queries: &Bound<'py, PyAny>,
+        filter_json: &str,
+        options_json: &str,
+        query_format: Option<&str>,
+    ) -> PyResult<(PySearchOutput<'py>, u64)> {
+        boundary(py, "search_filtered", || {
+            let filter: orion_ann::LabelFilter =
+                serde_json::from_str(filter_json).map_err(|e| {
+                    to_python(
+                        py,
+                        Error::invalid_argument(format!("invalid label filter: {e}")),
+                    )
+                })?;
+            let options: orion_ann::FilterSearchOptions = serde_json::from_str(options_json)
+                .map_err(|e| {
+                    to_python(
+                        py,
+                        Error::invalid_argument(format!("invalid filter options: {e}")),
+                    )
+                })?;
+            let queries =
+                Queries::extract(py, queries, query_format, self.dimension, self.storage)?;
+            let result = py
+                .allow_threads(move || {
+                    let values = queries.read(self.dimension, self.storage)?;
+                    self.with_read(|index| {
+                        index.search_filtered(values.batch(self.dimension)?, &filter, &options)
+                    })
                 })
-                .transpose()
-                .map_err(|e| to_python(py, Error::internal(e.to_string()).with_source(e)))?;
-            let external_ids = result
-                .external_ids
-                .map(|values| {
-                    ndarray::Array2::from_shape_vec(shape, values).map(|v| v.into_pyarray_bound(py))
-                })
-                .transpose()
-                .map_err(|e| to_python(py, Error::internal(e.to_string()).with_source(e)))?;
-            let ids = ndarray::Array2::from_shape_vec(shape, result.ids)
-                .map_err(|e| to_python(py, Error::internal(e.to_string()).with_source(e)))?;
-            Ok((
-                ids.into_pyarray_bound(py),
-                result.counts.into_pyarray_bound(py),
-                scores,
-                metric,
-                external_ids,
-            ))
+                .map_err(|e| to_python(py, e))?;
+            Ok((search_output(py, result.result)?, result.label_revision))
         })
     }
 
@@ -470,4 +539,33 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyIndex>()?;
     m.add("OrionError", m.py().get_type_bound::<OrionError>())?;
     Ok(())
+}
+
+fn search_output<'py>(
+    py: Python<'py>,
+    result: orion_ann::SearchResult,
+) -> PyResult<PySearchOutput<'py>> {
+    let shape = (result.counts.len(), result.k);
+    let metric = result.scores.as_ref().map(|s| s.metric.as_str().to_owned());
+    let scores = result
+        .scores
+        .map(|s| ndarray::Array2::from_shape_vec(shape, s.values).map(|v| v.into_pyarray_bound(py)))
+        .transpose()
+        .map_err(|e| to_python(py, Error::internal(e.to_string()).with_source(e)))?;
+    let external_ids = result
+        .external_ids
+        .map(|values| {
+            ndarray::Array2::from_shape_vec(shape, values).map(|v| v.into_pyarray_bound(py))
+        })
+        .transpose()
+        .map_err(|e| to_python(py, Error::internal(e.to_string()).with_source(e)))?;
+    let ids = ndarray::Array2::from_shape_vec(shape, result.ids)
+        .map_err(|e| to_python(py, Error::internal(e.to_string()).with_source(e)))?;
+    Ok((
+        ids.into_pyarray_bound(py),
+        result.counts.into_pyarray_bound(py),
+        scores,
+        metric,
+        external_ids,
+    ))
 }

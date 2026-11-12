@@ -54,6 +54,7 @@ mod dynamic;
 pub mod graph;
 mod native_graph;
 mod sidecars;
+mod subset;
 pub use cascade::DynamicCascade;
 pub use data::IndexData;
 pub use dynamic::{DynamicElement, DynamicSearchConfig};

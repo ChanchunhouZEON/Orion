@@ -69,6 +69,14 @@ struct Command {
     #[arg(long, conflicts_with = "snapshot")]
     external_ids: Option<PathBuf>,
 
+    /// JSON LabelFilter for exact subset search of a saved label revision.
+    #[arg(long, requires = "snapshot", conflicts_with = "search_l")]
+    label_filter: Option<PathBuf>,
+
+    /// Maximum matching rows evaluated by the filtered exact baseline.
+    #[arg(long, requires = "label_filter")]
+    filter_max_candidates: Option<usize>,
+
     /// Structured errors on stderr for services; success output is unchanged.
     #[arg(long, value_enum, default_value = "text")]
     error_format: ErrorFormat,
@@ -141,6 +149,7 @@ fn run(config: &ResolvedRunConfig, command: &Command) -> Result<()> {
     let k = config.sweep.k;
     let summary = RunSummary {
         dataset: &config.dataset,
+        label_revision: None,
         k,
         batch_size: config.query_batch_size,
         residency: index.info()["residency"].clone(),
@@ -189,6 +198,7 @@ struct RunSummary<'a> {
     k: usize,
     batch_size: usize,
     calibration: serde_json::Value,
+    label_revision: Option<u64>,
     residency: serde_json::Value,
 }
 
@@ -228,6 +238,9 @@ fn stream_results(
             }
 
             let mut record = serde_json::json!({ "type": "result", "query_id": count, "ids": ids });
+            if let Some(revision) = summary.label_revision {
+                record["label_revision"] = revision.into();
+            }
             if let Some(scores) = &results.scores {
                 let start = row_index * results.k;
                 record["scores"] = serde_json::json!(&scores.values[start..start + ids.len()]);
@@ -270,6 +283,8 @@ fn stream_results(
         serde_json::json!({
             "type": "summary",
             "dataset": summary.dataset,
+            "label_revision": summary.label_revision,
+            "search_mode": if summary.label_revision.is_some() { "filtered_exact" } else { "adaptive_ann" },
             "queries": count,
             "recall": recall,
             "k": summary.k,
@@ -313,15 +328,39 @@ fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
         Some(base) => options.open(directory, orion_ann::BaseInput::from_file(base))?,
         None => options.open_bundle(directory)?,
     };
-    let calibration = index.calibration(k).ok_or_else(|| {
-        Error::invalid_state(format!("snapshot has no saved calibration for k={k}"))
-    })?;
-    // Snapshot open already applies the same automatic residency policy as Rust/Python.
+    let filter: Option<orion_ann::LabelFilter> = command
+        .label_filter
+        .as_ref()
+        .map(|path| {
+            use std::io::Read;
+            let file =
+                std::fs::File::open(path).map_err(|e| Error::io("open label filter", path, e))?;
+            let mut bytes = Vec::new();
+            file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
+            if bytes.len() > 1024 * 1024 {
+                return Err(Error::invalid_argument("label filter JSON exceeds 1 MiB"));
+            }
+            serde_json::from_slice(&bytes)
+                .map_err(|e| Error::invalid_argument(format!("invalid label filter JSON: {e}")))
+        })
+        .transpose()?;
+    let calibration = if filter.is_some() {
+        serde_json::Value::Null
+    } else {
+        serde_json::to_value(index.calibration(k).ok_or_else(|| {
+            Error::invalid_state(format!("snapshot has no saved calibration for k={k}"))
+        })?)?
+    };
     let summary = RunSummary {
         dataset: "snapshot",
         k,
         batch_size: args.query_batch_size,
-        calibration: serde_json::to_value(calibration)?,
+        calibration,
+        label_revision: if filter.is_some() {
+            Some(index.label_revision()?)
+        } else {
+            None
+        },
         residency: index.info()["residency"].clone(),
     };
     let format = match args.query_format {
@@ -342,6 +381,19 @@ fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
         open_output(command.output.as_ref())?,
         summary,
         |batch| {
+            if let Some(filter) = &filter {
+                return Ok(index
+                    .search_filtered(
+                        orion_ann::QueryBatch::from_f32(batch, index.dimension())?,
+                        filter,
+                        &orion_ann::FilterSearchOptions {
+                            k,
+                            scores: command.scores,
+                            max_candidates: command.filter_max_candidates.unwrap_or(100_000),
+                        },
+                    )?
+                    .result);
+            }
             index.search(
                 orion_ann::QueryBatch::from_f32(batch, index.dimension())?,
                 &orion_ann::SearchOptions::new(k, beam).with_scores(command.scores),

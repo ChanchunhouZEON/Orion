@@ -45,12 +45,12 @@ impl SearchOptions {
 
 // An allocation is required only for representation conversion or normalization.
 // The original caller's coordinates are never modified, including for cosine.
-enum PreparedQueries<'a> {
+pub(super) enum PreparedQueries<'a> {
     Borrowed(QueryBatch<'a>),
     Converted(Vec<f32>, usize),
 }
 impl PreparedQueries<'_> {
-    fn batch(&self) -> QueryBatch<'_> {
+    pub(super) fn batch(&self) -> QueryBatch<'_> {
         match self {
             Self::Borrowed(batch) => *batch,
             Self::Converted(values, dimension) => QueryBatch {
@@ -142,6 +142,11 @@ impl Index {
                     .search(queries.batch(), &self.config, options, params)
             })?
             .into();
+        self.attach_external_ids(&mut result);
+        Ok(result)
+    }
+
+    pub(super) fn attach_external_ids(&self, result: &mut SearchResult) {
         if let Some(mapping) = &self.external_ids {
             let mut ids = vec![u64::MAX; result.ids.len()];
             for (row, &count) in result.counts.iter().enumerate() {
@@ -152,10 +157,9 @@ impl Index {
             }
             result.external_ids = Some(ids);
         }
-        Ok(result)
     }
 
-    fn prepare_queries<'a>(&self, batch: QueryBatch<'a>) -> Result<PreparedQueries<'a>> {
+    pub(super) fn prepare_queries<'a>(&self, batch: QueryBatch<'a>) -> Result<PreparedQueries<'a>> {
         if batch.dimension != self.dimension() {
             return Err(
                 Error::dimension("queries.dimension", self.dimension(), batch.dimension)

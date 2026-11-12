@@ -11,7 +11,7 @@ import tempfile
 import unittest
 
 import numpy as np
-from orion_ann import Index, SnapshotRef, GraphConfig, CascadeConfig, OrionError, StorageOptions
+from orion_ann import Index, SnapshotRef, GraphConfig, CascadeConfig, OrionError, StorageOptions, LabelKey, LabelUpdate, ExternalLabelUpdate, LabelFilter
 
 
 def write_vectors(path, values):
@@ -73,6 +73,131 @@ class IndexTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         records = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
         return [v["ids"] for v in records if v.get("type") == "result"], next(v for v in records if v.get("type") == "summary")
+
+    def test_labels_python_cli_snapshot_and_exact_reference(self):
+        for dtype, metric in [(np.float32, "l2"), (np.float32, "cosine"),
+                              (np.float32, "inner-product"), (np.uint8, "l2")]:
+            with self.subTest(dtype=dtype, metric=metric):
+                base, queries = self.arrays(dtype=dtype, dimension=13)
+                suffix = ".u8bin" if dtype == np.uint8 else ".fbin"
+                name = metric + ("-byte" if dtype == np.uint8 else "-float")
+                bp, qp = self.root / (name+suffix), self.root / (name+"-queries"+suffix)
+                write_vectors(bp, base); write_vectors(qp, queries)
+                business = list(range(1000, 1064))
+                index = Index.from_file(bp, metric=metric, graph=self.graph, threads=2,
+                    cache_dir=self.root / (name+"-cache"), external_ids=business, auto_pin=False)
+                label = LabelKey("category", "book")
+                ids = index.resolve_external_ids([1000, 1002, 1007, 1009])
+                self.assertEqual(ids, [0, 2, 7, 9])
+                self.assertEqual(index.update_labels_external(0, [ExternalLabelUpdate(label, (1000, 1002, 1007, 1009))]), 1)
+                filt = LabelFilter(all=(label,))
+                before = queries.copy()
+                result = index.search_filtered(queries, filt, k=3, scores=True)
+                self.assertEqual(result.label_revision, 1)
+                self.assertEqual(index.calibrated_ks, [])
+                np.testing.assert_array_equal(queries, before)
+                q, x = queries.astype(np.float64), base[ids].astype(np.float64)
+                if metric == "l2":
+                    values = ((q[:,None,:]-x[None,:,:])**2).sum(axis=2)
+                    order = np.argsort(values, axis=1, kind="stable")[:,:3]
+                else:
+                    values = q @ x.T
+                    if metric == "cosine":
+                        values /= np.linalg.norm(q,axis=1)[:,None]*np.linalg.norm(x,axis=1)[None,:]
+                    order = np.argsort(-values, axis=1, kind="stable")[:,:3]
+                np.testing.assert_array_equal(result.result.ids, np.asarray(ids)[order])
+                np.testing.assert_allclose(result.result.scores, np.take_along_axis(values,order,axis=1), rtol=1e-5, atol=1e-5)
+                saved = index.save(self.root / (name+"-saved"))
+                restored = Index.open(saved, base=bp)
+                self.assertEqual(restored.label_revision, 1)
+                self.assert_results(result.result, restored.search_filtered(queries, filt, k=3).result)
+                fp = self.root / (name+"-filter.json")
+                fp.write_text(json.dumps({"all":[{"namespace":"category","value":"book"}]}))
+                proc = subprocess.run([os.environ["ORION_TEST_CLI"], "--snapshot", saved.path,
+                    "--base", str(bp), "--query", str(qp), "--k", "3", "--label-filter", str(fp), "--scores"],
+                    capture_output=True,text=True)
+                self.assertEqual(proc.returncode,0,proc.stderr)
+                rows=[json.loads(line) for line in proc.stdout.splitlines() if line.startswith("{")]
+                records=[row for row in rows if row["type"]=="result"]
+                np.testing.assert_array_equal([r["ids"] for r in records], result.result.ids)
+                np.testing.assert_allclose([r["scores"] for r in records], result.result.scores)
+                np.testing.assert_array_equal([r["external_ids"] for r in records], result.result.external_ids)
+                self.assertTrue(all(r["label_revision"] == 1 for r in records))
+                self.assertEqual(rows[-1]["search_mode"], "filtered_exact")
+
+    def test_external_label_batch_rollback_u64_and_restoration(self):
+        base, queries = self.arrays(dimension=13)
+        business = [(1 << 64) - 1 - i * 3 for i in range(len(base))]
+        bp = self.root / "external-labels.fbin"
+        write_vectors(bp, base)
+        index = Index.from_file(bp, graph=self.graph, threads=2,
+            cache_dir=self.root / "external-labels-cache", external_ids=business, auto_pin=False)
+        label, other = LabelKey("kind", "book"), LabelKey("kind", "movie")
+        filt = LabelFilter(all=(label,))
+        update = index.update_labels_external
+        self.assertEqual(update(0, []), 0)
+        self.assertEqual(update(0, [ExternalLabelUpdate(label, (business[2], business[0], business[2]))]), 1)
+        before = index.search_filtered(queries, filt, k=2, scores=True).result
+        self.assertEqual(set(before.ids[0]), {0, 2})
+        self.assertEqual(set(before.external_ids[0]), {business[0], business[2]})
+        self.assertEqual(update(1, [ExternalLabelUpdate(label, (business[0],))]), 1)
+        for invalid in [
+            ExternalLabelUpdate(other, (0,)),
+            ExternalLabelUpdate(other, (), (0,)),
+            ExternalLabelUpdate(other, (business[2],), (business[2],)),
+            ExternalLabelUpdate(label, (business[2],)),
+            ExternalLabelUpdate(LabelKey("", "bad"), (business[2],)),
+            ExternalLabelUpdate(other, (-1,)),
+            ExternalLabelUpdate(other, (1 << 64,)),
+        ]:
+            with self.assertRaises(OrionError) as err:
+                update(1, [ExternalLabelUpdate(label, (business[1],)), invalid])
+            self.assertEqual(err.exception.code, "ORION_INVALID_ARGUMENT")
+            self.assertEqual(index.label_revision, 1)
+            self.assert_results(before, index.search_filtered(queries, filt, k=2, scores=True).result)
+            self.assertTrue(np.all(index.search_filtered(queries, LabelFilter(all=(other,)), k=2).result.counts == 0))
+        with self.assertRaises(OrionError) as err:
+            update(0, [ExternalLabelUpdate(label, (business[1],))])
+        self.assertEqual(err.exception.code, "ORION_INVALID_STATE")
+        self.assertEqual(update(1, [ExternalLabelUpdate(label, (), (business[0], business[2])),
+                                   ExternalLabelUpdate(other, (business[0], business[2]))]), 2)
+        self.assertTrue(np.all(index.search_filtered(queries, filt, k=2).result.counts == 0))
+        saved = index.save(self.root / "external-label-saved")
+        restored = Index.open(saved, base=bp)
+        self.assertEqual(restored.label_revision, 2)
+        self.assert_results(before, restored.search_filtered(queries, LabelFilter(all=(other,)), k=2, scores=True).result)
+        self.assertEqual(restored.update_labels_external(2, [ExternalLabelUpdate(other, (business[1],))]), 3)
+        without_ids = self.make(base)
+        for batch in [[], [ExternalLabelUpdate(label, (0,))]]:
+            with self.assertRaises(OrionError) as err:
+                without_ids.update_labels_external(0, batch)
+            self.assertEqual(err.exception.code, "ORION_INVALID_STATE")
+            self.assertEqual(without_ids.label_revision, 0)
+
+    def test_label_updates_conflicts_and_concurrent_query_snapshots(self):
+        base, queries = self.arrays(dimension=13)
+        index = self.make(base)
+        label = LabelKey("category", "book")
+        filt = LabelFilter(all=(label,))
+        index.update_labels(0, [LabelUpdate(label, (0,1,2))])
+        with self.assertRaises(OrionError) as err:
+            index.update_labels(0, [LabelUpdate(label, (3,))])
+        self.assertEqual(err.exception.code,"ORION_INVALID_STATE")
+        with self.assertRaises(OrionError):
+            index.update_labels(1, [LabelUpdate(label, (3,)), LabelUpdate(LabelKey("x","y"),(999,))])
+        self.assertEqual(index.label_revision,1)
+        def writer():
+            for rev in range(1,21):
+                add, remove = ((3,4,5),(0,1,2)) if rev%2 else ((0,1,2),(3,4,5))
+                index.update_labels(rev,[LabelUpdate(label,add,remove)])
+        def reader():
+            for _ in range(20):
+                result=index.search_filtered(queries,filt,k=3)
+                expected=[0,1,2] if result.label_revision%2 else [3,4,5]
+                np.testing.assert_array_equal(np.sort(result.result.ids,axis=1),np.tile(expected,(len(queries),1)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futures=[pool.submit(writer)]+[pool.submit(reader) for _ in range(3)]
+            for future in futures: future.result()
 
     def test_mapped_scalar_snapshot_matches_cli_and_owned(self):
         base, queries = self.arrays(dimension=25)

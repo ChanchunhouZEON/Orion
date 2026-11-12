@@ -45,6 +45,8 @@ pub(in crate::index) struct Payloads {
     pub base_sha256: String,
     pub sidecars: SnapshotSidecars,
     pub external_ids: Option<ExternalIdObject>,
+    #[serde(default)]
+    pub labels: Option<crate::labels::LabelObject>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -54,7 +56,7 @@ pub(in crate::index) struct ExternalIdObject {
     pub points: usize,
 }
 
-pub(in crate::index) const FORMAT_VERSION: u32 = 1;
+pub(in crate::index) const FORMAT_VERSION: u32 = 2;
 
 /// Manifest records checked before engine creation. Graph and sidecar bytes
 /// are verified by their decoders when the resident index is constructed.

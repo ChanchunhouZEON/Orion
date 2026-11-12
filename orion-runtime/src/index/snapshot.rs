@@ -124,7 +124,11 @@ fn read_manifest(source: SnapshotSource) -> Result<(PathBuf, Snapshot)> {
         )?;
     }
     let envelope: serde_json::Value = serde_json::from_slice(&bytes)?;
-    if envelope["format_version"].as_u64() != Some(manifest::FORMAT_VERSION as u64) {
+    let version = envelope["format_version"].as_u64();
+    // V1 predates labels. A labelled manifest must use V2 so old readers reject
+    // it instead of silently restoring an index without its filtering state.
+    let legacy = version == Some(1) && envelope["payloads"]["labels"].is_null();
+    if !legacy && version != Some(manifest::FORMAT_VERSION as u64) {
         return Err(Error::cache(
             "unsupported snapshot format version; export with a compatible reader",
         )

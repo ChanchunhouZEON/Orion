@@ -15,6 +15,18 @@ unreleased development baseline, not a dated release announcement.
 
 ### Added
 
+- Versioned label membership with atomic batch publication, optimistic revision
+  checks, immutable query views and rollback on validation/conflict failures.
+  Rust and Python accept distinct internal-u32 and external-u64 update batches;
+  runtime resolves business IDs once and publishes only after complete validation.
+- Exact filtered-search baseline across Rust/Python and CLI snapshot reads, with
+  explicit candidate budgets, original-metric scores and business-ID resolution.
+  Existing ANN SIMD, prefetch and adaptive search behavior is unchanged.
+- SHA-256-bound label snapshots and relocatable bundles. New manifests use v2;
+  unlabelled v1 snapshots remain readable. Updates become durable only on save.
+- Label concurrency, failed publication, corruption, identity and cross-interface
+  tests, plus an end-to-end `label_updates` example and lifecycle guide.
+
 - Optional exact candidate scores with explicit squared-L2, inner-product and
   cosine semantics across Rust, Python and CLI; IDs-only remains the default.
 - Explicit multi-k calibration and calibration inspection, with missing-k errors
@@ -27,7 +39,7 @@ unreleased development baseline, not a dated release announcement.
   snapshot publication. Prepared whole-index generation switching keeps ongoing
   requests on their original index and validates each replacement's contract.
 - Application-contract, corruption, relocation, concurrent generation and
-  Rust/Python/CLI consistency tests; filtering remains outside this update.
+  Rust/Python/CLI consistency tests.
 - Core result models live under `model`; calibration, convergence and early-exit
   policies are grouped under `search::adaptive`, and counters under search
   diagnostics. Crate-root type exports and SIMD/prefetch scheduling are retained.

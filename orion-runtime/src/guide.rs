@@ -11,6 +11,7 @@
 //! | Select a metric, graph source or memory budget | [Configuration](configuration) |
 //! | Index a file of byte vectors or import an existing STAG graph | [Construction](build) |
 //! | Search embeddings in batches and calibrate for multiple values of `k` | [Search](search) |
+//! | Update labels and search a versioned subset | [Labels and filtering](labels) |
 //! | Restart a service with saved calibration and a different worker count | [Working caches and snapshots](cache) |
 #[doc = include_str!("guide/configuration.md")]
 pub mod configuration {}
@@ -24,3 +25,6 @@ pub mod search {}
 /// End-to-end service usage from the package README.
 #[doc = include_str!("../README.md")]
 pub mod quick_start {}
+
+#[doc = include_str!("guide/labels.md")]
+pub mod labels {}

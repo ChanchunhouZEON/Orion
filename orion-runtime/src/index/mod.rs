@@ -14,6 +14,7 @@ mod base;
 mod calibration;
 mod generation;
 mod ids;
+mod labels;
 pub use generation::IndexSlot;
 mod prepare;
 mod query;
@@ -45,6 +46,7 @@ pub struct Index {
     calibrations: BTreeMap<usize, Calibration>,
     external_ids: Option<ids::IdMap>,
     working_directory: Option<PathBuf>,
+    labels: crate::labels::LabelStore,
 }
 
 impl Index {

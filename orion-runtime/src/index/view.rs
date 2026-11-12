@@ -50,6 +50,14 @@ pub(super) trait Engine: Send + Sync {
         options: &SearchOptions,
         params: orion_ann_core::CalibratedParams,
     ) -> Result<orion_ann_core::SearchResult>;
+    fn search_subset(
+        &self,
+        queries: QueryBatch<'_>,
+        ids: &[u32],
+        metric: crate::SearchMetric,
+        k: usize,
+        scores: bool,
+    ) -> Result<orion_ann_core::SearchResult>;
     fn search_observed(
         &self,
         query: &[f32],
@@ -208,6 +216,29 @@ impl<B: SearchBackend> Engine for DynamicEngine<B> {
                 options.search_list_size,
                 params,
             ),
+        }
+    }
+    fn search_subset(
+        &self,
+        q: QueryBatch<'_>,
+        ids: &[u32],
+        metric: crate::SearchMetric,
+        k: usize,
+        scores: bool,
+    ) -> Result<orion_ann_core::SearchResult> {
+        let metric = match metric {
+            crate::SearchMetric::L2 => crate::ScoreMetric::SquaredL2,
+            crate::SearchMetric::InnerProduct => crate::ScoreMetric::InnerProduct,
+            crate::SearchMetric::Cosine => crate::ScoreMetric::CosineSimilarity,
+        };
+        match q.values {
+            QueryValues::F32(values) => self
+                .index
+                .search_subset_exact(values, ids, k, metric, scores),
+            QueryValues::U8(values) => {
+                let q: Vec<f32> = values.iter().map(|&v| f32::from(v)).collect();
+                self.index.search_subset_exact(&q, ids, k, metric, scores)
+            }
         }
     }
     fn search_observed(

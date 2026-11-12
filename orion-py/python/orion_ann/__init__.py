@@ -12,7 +12,45 @@ from ._native import _Index, OrionError
 
 PathLike = Union[str, os.PathLike]
 Input = Union[PathLike, np.ndarray]
-__all__ = ["Index", "GraphConfig", "CascadeConfig", "StorageOptions", "Calibration", "SearchResult", "SnapshotRef", "OrionError"]
+__all__ = ["Index", "GraphConfig", "CascadeConfig", "StorageOptions", "Calibration", "SearchResult", "SnapshotRef", "OrionError", "LabelKey", "LabelUpdate", "ExternalLabelUpdate", "LabelFilter", "FilteredSearchResult"]
+
+
+@dataclass(frozen=True)
+class LabelKey:
+    """Exact case-sensitive namespace/value pair; Rust validates input limits."""
+    namespace: str
+    value: str
+
+
+@dataclass(frozen=True)
+class LabelUpdate:
+    """Add/remove internal row IDs atomically with the other changes in a batch."""
+    label: LabelKey
+    add: tuple[int, ...] = ()
+    remove: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class ExternalLabelUpdate:
+    """Add/remove u64 business IDs; runtime converts the entire batch atomically."""
+    label: LabelKey
+    add: tuple[int, ...] = ()
+    remove: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class LabelFilter:
+    """ALL(all) AND ANY(any) AND NOT ANY(none); empty any means unrestricted."""
+    all: tuple[LabelKey, ...] = ()
+    any: tuple[LabelKey, ...] = ()
+    none: tuple[LabelKey, ...] = ()
+
+
+@dataclass(frozen=True)
+class FilteredSearchResult:
+    """One immutable label revision for the complete query batch."""
+    result: "SearchResult"
+    label_revision: int
 
 
 @dataclass(frozen=True)
@@ -202,6 +240,49 @@ class Index:
     def calibration(self, k: int) -> Optional[Calibration]:
         record = self.info["calibrations"].get(str(k))
         return None if record is None else Calibration(**record)
+
+    @property
+    def label_revision(self) -> int:
+        return self._handle.label_revision()
+
+    def update_labels(self, expected_revision: int, changes: list[LabelUpdate]) -> int:
+        """Atomically publish a batch; stale revisions or invalid IDs publish nothing.
+
+        Success is in-memory visibility. Save a snapshot for durability. Limits:
+        4096 labels and 1M memberships; at most 1M supplied row IDs per batch.
+        Duplicate IDs are idempotent; overlapping add/remove sets are rejected.
+        """
+        return self._handle.update_labels(expected_revision, json.dumps([asdict(c) for c in changes]))
+
+    def resolve_external_ids(self, ids: list[int]) -> list[int]:
+        """Resolve business IDs in input order; performs one scan of the ID mapping."""
+        return self._handle.resolve_external_ids(ids)
+
+    def update_labels_external(self, expected_revision: int,
+                               changes: list[ExternalLabelUpdate]) -> int:
+        """Resolve business IDs and atomically publish all label changes in Rust.
+
+        Requires an external-ID mapping, even for an empty batch. Unknown add or
+        remove IDs, invalid changes and revision conflicts publish nothing. The
+        entire batch scans the mapping once; no permanent reverse map is kept.
+        Budgets, duplicate handling and explicit-save durability match update_labels.
+        """
+        return self._handle.update_labels_external(
+            expected_revision, json.dumps([asdict(c) for c in changes]))
+
+    def search_filtered(self, queries: Input, filter: LabelFilter, *, k=10,
+                        scores=False, max_candidates=100_000, query_format=None) -> FilteredSearchResult:
+        """Exact subset scan, without adaptive calibration. Unknown labels match nothing.
+
+        One label snapshot is held for all query rows. Rejects matching sets above
+        max_candidates before vector evaluation. Original metric scores, count
+        prefixes and partial-result padding follow search(). Input arrays are copied.
+        This first implementation is an exact baseline, not a filtered ANN path.
+        """
+        values, revision = self._handle.search_filtered(
+            _input(queries), json.dumps(asdict(filter)),
+            json.dumps(dict(k=k, scores=scores, max_candidates=max_candidates)), query_format)
+        return FilteredSearchResult(SearchResult(*values), revision)
 
     def search(self, queries: Input, *, k=10, search_list_size=64,
                query_format=None, scores=False) -> SearchResult:

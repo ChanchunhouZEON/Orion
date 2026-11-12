@@ -44,6 +44,9 @@ impl Index {
             if let Some(ids) = &files.external_ids {
                 objects.push(("ids-u64-le", &ids.sha256));
             }
+            if let Some(labels) = &files.labels {
+                objects.push(("labels.json", &labels.sha256));
+            }
             for (codec, digest) in objects {
                 let source = crate::storage::object(&self.view.object_store, digest, codec)?;
                 let (_, copied) = crate::storage::put(&store, codec, |writer| {

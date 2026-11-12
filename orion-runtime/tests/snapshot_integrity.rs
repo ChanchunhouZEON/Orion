@@ -195,7 +195,7 @@ fn snapshots_bind_every_consumed_payload() {
         fs::hard_link(&file, legacy.join(file.file_name().unwrap())).unwrap();
     }
     assert!(Index::open(&legacy, input()).is_err());
-    old["format_version"] = 1.into();
+    old["format_version"] = 2.into();
     old["object_store"] = ".".into();
     fs::write(legacy.join("index.json"), serde_json::to_vec(&old).unwrap()).unwrap();
     assert_eq!(

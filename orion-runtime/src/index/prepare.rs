@@ -138,7 +138,26 @@ impl Index {
                 });
             }
         }
+        let identity = crate::labels::identity(
+            &view.payloads.base_sha256,
+            points,
+            view.payloads
+                .external_ids
+                .as_ref()
+                .map(|ids| ids.sha256.as_str()),
+        );
+        let labels = if let Some(object) = &view.payloads.labels {
+            crate::labels::LabelStore::from_snapshot(crate::labels::LabelSnapshot::load(
+                &view.object_store,
+                object,
+                &identity,
+                points,
+            )?)
+        } else {
+            crate::labels::LabelStore::empty(identity, points)
+        };
         Ok(Self {
+            labels,
             view,
             pool,
             config,
@@ -218,6 +237,7 @@ fn prepare<B: SearchBackend + 'static>(
                 base_sha256: base_sha256.to_owned(),
                 sidecars: BTreeMap::new(),
                 external_ids: None,
+                labels: None,
             };
             let receipts = crate::sidecars::track(
                 &mut graph.index,

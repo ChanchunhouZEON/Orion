@@ -39,10 +39,16 @@ impl Index {
                 );
             }
         }
+        let label_snapshot = self.labels.snapshot()?;
         crate::storage::publish(&path, |staging| {
             let config = &self.config;
             let mut files = self.view.payloads.clone();
             files.sidecars = self.view.engine.sidecars()?;
+            files.labels = if label_snapshot.revision == 0 {
+                None
+            } else {
+                Some(label_snapshot.save(&self.view.object_store)?)
+            };
             check_lengths(
                 &self.view.object_store,
                 &files,
