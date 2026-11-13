@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# Code Structure
+# <img src="../orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Code Structure
 
 The runtime is grouped by responsibility and shared directly by CLI, Python and
 benchmark callers. `orion-cli` is binary-only: it has no library or forwarding

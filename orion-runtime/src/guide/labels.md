@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# Labels and filtered search
+# <img src="https://raw.githubusercontent.com/ChanchunhouZEON/Orion/main/orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Labels and filtered search
 
 Labels are the first independently mutable metadata in an `Index`. They do not
 modify vectors, graph edges, quantized sidecars or calibration. The initial

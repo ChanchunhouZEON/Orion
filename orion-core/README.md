@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-<h1><img src="assets/orion-astraeus.png" alt="" width="64" align="center" /> Orion Astraeus · orion-ann-core</h1>
+<h1><img src="https://raw.githubusercontent.com/ChanchunhouZEON/Orion/main/orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Orion Astraeus · orion-ann-core</h1>
 
 Adaptive graph search for approximate nearest neighbors.
 

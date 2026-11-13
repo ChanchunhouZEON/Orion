@@ -1,5 +1,5 @@
 <!-- Copyright (c) Chanchunhou. All rights reserved. Licensed under the MIT License. -->
-# Request latency
+# <img src="../orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Request latency
 
 `latency-sweep` is an unpublished benchmark executable. It calls the public
 `Index::search` on borrowed **single-row** queries. Production APIs, SIMD kernels,

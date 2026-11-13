@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# orion-ann-cli
+# <img src="https://raw.githubusercontent.com/ChanchunhouZEON/Orion/main/orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> orion-ann-cli
 
 Command-line interface for Orion ANN.
 

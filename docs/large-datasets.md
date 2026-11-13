@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# Large datasets on the in-memory Orion path
+# <img src="../orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Large datasets on the in-memory Orion path
 
 The standalone `orion` executable (from the `orion-cli` crate) supports a native-u8 search path for SIFT.
 The `sift10m`, `sift100m`, and `sift1b` presets store original byte coordinates

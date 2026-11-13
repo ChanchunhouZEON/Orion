@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# Orion Python interface
+# <img src="https://raw.githubusercontent.com/ChanchunhouZEON/Orion/main/orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Orion Python interface
 
 The distribution `orion-ann` exposes `orion-ann` through PyO3 and NumPy.
 Import it as `orion_ann`; the extension `orion_ann._native` is private.

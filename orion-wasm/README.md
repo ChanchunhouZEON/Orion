@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# orion-ann-wasm
+# <img src="https://raw.githubusercontent.com/ChanchunhouZEON/Orion/main/orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> orion-ann-wasm
 
 Initial browser interface for replaying native Orion search traces. This stage
 loads diagnostics; it does not load graph caches, construct indexes, or execute

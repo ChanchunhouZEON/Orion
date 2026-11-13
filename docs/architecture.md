@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# Architecture
+# <img src="../orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Architecture
 
 [← Back to main README](../README.md)
 

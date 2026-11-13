@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# Benchmark configuration
+# <img src="../orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Benchmark configuration
 
 [README](../README.md) · [CLI](cli.md) · [Graph sources](graph-sources.md)
 

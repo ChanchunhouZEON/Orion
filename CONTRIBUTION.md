@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# Contributing to Orion
+# <img src="orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Contributing to Orion
 
 Orion Astraeus welcomes reproducible bug reports, tests, documentation and
 implementation improvements. Start with a small change whose behavior and

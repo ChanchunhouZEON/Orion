@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# Bring your own partitioned graph
+# <img src="https://raw.githubusercontent.com/ChanchunhouZEON/Orion/main/orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Bring your own partitioned graph
 
 Enable `experimental-graph` on `orion-ann` to import a graph prepared by your own
 supplier. This is an experimental extension contract, not a new default builder.

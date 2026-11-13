@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# Benchmark scripts
+# <img src="../../orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Benchmark scripts
 
 Run wrappers from any working directory. Relative data, configuration and output
 paths are resolved against the Orion repository root. `BUILD_DIR` (or

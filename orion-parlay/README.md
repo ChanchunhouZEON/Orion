@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# orion-ann-parlay
+# <img src="https://raw.githubusercontent.com/ChanchunhouZEON/Orion/main/orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> orion-ann-parlay
 
 In-memory ParlayANN Vamana construction for Orion. The runtime enables this
 backend by default; Python and CLI use the same runtime. Nothing is downloaded

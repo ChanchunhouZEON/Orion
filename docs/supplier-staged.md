@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# Experimental supplier STAG v4
+# <img src="../orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Experimental supplier STAG v4
 
 The format is deliberately independent of Orion's native slab alignment. Every
 integer in the binary envelope/rows is unsigned little-endian u32. No padding,

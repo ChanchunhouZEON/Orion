@@ -3,6 +3,8 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
+# <img src="https://raw.githubusercontent.com/ChanchunhouZEON/Orion/main/orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Build an index
+
 [`crate::Index::new`] is the recommended owned construction interface. It
 loads/builds the graph and base; it does not require a query set or ground truth.
 

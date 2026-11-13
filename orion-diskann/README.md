@@ -1,4 +1,4 @@
-# orion-ann-diskann
+# <img src="https://raw.githubusercontent.com/ChanchunhouZEON/Orion/main/orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> orion-ann-diskann
 
 Orion ANN fork of DiskANN graph construction and storage.
 

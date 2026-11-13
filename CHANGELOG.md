@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# Changelog
+# <img src="orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Changelog
 
 User-visible changes to Orion Astraeus. Entries are grouped by behavior rather
 than by commit. The manifests currently use `0.1.0`; the entries below are an

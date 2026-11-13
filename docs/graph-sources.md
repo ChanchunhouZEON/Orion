@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# Graph sources and cache provenance
+# <img src="../orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Graph sources and cache provenance
 
 [README](../README.md) · [Configuration](configuration.md)
 

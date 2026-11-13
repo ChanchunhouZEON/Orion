@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# orion-ann-diagnostics
+# <img src="https://raw.githubusercontent.com/ChanchunhouZEON/Orion/main/orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> orion-ann-diagnostics
 
 Opt-in diagnostics for Orion's production search loop. The default `native`
 feature provides `RecordingObserver` and depends on `orion-ann-core`. Orion itself

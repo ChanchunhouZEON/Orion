@@ -1,4 +1,4 @@
-# Documentation result snapshots
+# <img src="../../../orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Documentation result snapshots
 
 These small JSON files are derived from completed experiments and support
 [the benchmark guide](../../benchmarks.md). They do not modify the original

@@ -1,4 +1,4 @@
-<h1 align="center"><img src="orion-core/assets/orion-astraeus.png" alt="" width="64" align="center" /> 獵戶·阿斯特俄斯：面向候選准入嘅圖搜尋</h1>
+<h1 align="center"><img src="orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> 獵戶·阿斯特俄斯：面向候選准入嘅圖搜尋</h1>
 
 <p align="center"><a href="README.md" lang="en">English</a> · <a href="README.zh-CN.md" lang="zh-CN">简体中文</a> · <strong lang="yue">粵語</strong></p>
 

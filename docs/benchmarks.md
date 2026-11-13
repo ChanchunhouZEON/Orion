@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# Benchmark evidence
+# <img src="../orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Benchmark evidence
 
 [README](../README.md) · [Historical figures](historical-benchmarks.md)
 

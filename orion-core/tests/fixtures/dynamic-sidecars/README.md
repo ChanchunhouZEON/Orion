@@ -3,7 +3,7 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
-# Pre-migration sidecar reference
+# <img src="../../../assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Pre-migration sidecar reference
 
 These immutable files were captured on Apple Silicon before the sidecar and
 calibration migration, using the working tree based on `20babdbdcf910f123d077004c8e850b59323a705`

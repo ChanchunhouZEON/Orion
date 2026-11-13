@@ -1,4 +1,4 @@
-<h1 align="center"><img src="orion-core/assets/orion-astraeus.png" alt="" width="64" align="center" /> Orion Astraeus: Admission-Aware Graph Search</h1>
+<h1 align="center"><img src="orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Orion Astraeus: Admission-Aware Graph Search</h1>
 
 <p align="center"><strong>English</strong> · <a href="README.zh-CN.md" lang="zh-CN">简体中文</a> · <a href="README.yue.md" lang="yue">粵語</a></p>
 

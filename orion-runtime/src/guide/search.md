@@ -3,6 +3,8 @@ Copyright (c) Chanchunhou. All rights reserved.
 Licensed under the MIT License.
 -->
 
+# <img src="https://raw.githubusercontent.com/ChanchunhouZEON/Orion/main/orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Search and calibration
+
 Search with packed logical rows; internal padding is not part of the input.
 The library returns IDs and counts, with optional exact candidate scores. It
 does not calculate recall unless an application supplies its own ground truth.
