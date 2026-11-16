@@ -55,3 +55,8 @@ executable to enable native-byte/ParlayANN integration fixtures. Wrapper tests
 use temporary fake executables; they cover command arguments, paths containing
 spaces, build-directory overrides, process failures and log parsing. On macOS,
 resource-timing tests require permission for `/usr/bin/time -l` to read sysctl.
+
+Request-latency benchmarks live in [`../latency_baselines`](../latency_baselines/README.md).
+The [native Rust protocol](../latency_baselines/rust-request-latency.md) and
+Python all-engine protocol use separate timing boundaries. From the repository
+root, run `python -m benchmark.latency_baselines --help`.

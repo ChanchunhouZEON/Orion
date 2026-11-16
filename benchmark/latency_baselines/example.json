@@ -1,0 +1,141 @@
+{
+  "k": 10,
+  "threads": 8,
+  "protocol": {
+    "concurrency": [
+      1,
+      8
+    ],
+    "rounds": 3
+  },
+  "recall_targets": [
+    0.9,
+    0.95,
+    0.98,
+    0.99
+  ],
+  "datasets": [
+    {
+      "name": "sift",
+      "metric": "squared-l2",
+      "base": "data/base.fbin",
+      "query": "data/query.fbin",
+      "groundtruth": "data/gt.ibin",
+      "engines": {
+        "orion": {
+          "snapshot": "data/orion-snapshot",
+          "efforts": [
+            16,
+            32,
+            64,
+            128,
+            256
+          ]
+        },
+        "parlayann": {
+          "library": "native/liblatency_parlay.so",
+          "base_fbin": "data/base.fbin",
+          "graph": "data/pa.graph",
+          "quantize_bits": 8,
+          "quantize_mode": 0,
+          "rerank_factor": 10,
+          "efforts": [
+            16,
+            32,
+            64,
+            128,
+            256
+          ]
+        },
+        "diskann": {
+          "library": "native/cargo/release/libbaseline_latency_diskann.so",
+          "index": "data/diskann.bin",
+          "efforts": [
+            16,
+            32,
+            64,
+            128,
+            256
+          ]
+        },
+        "hnswlib": {
+          "cache": "cache/hnswlib",
+          "efforts": [
+            16,
+            32,
+            64,
+            128,
+            256
+          ]
+        },
+        "usearch": {
+          "cache": "cache/usearch",
+          "efforts": [
+            16,
+            32,
+            64,
+            128,
+            256
+          ]
+        },
+        "lancedb": {
+          "cache": "cache/lancedb",
+          "efforts": [
+            16,
+            32,
+            64,
+            128,
+            256
+          ]
+        },
+        "faiss-hnsw-sq8": {
+          "cache": "cache/faiss-hnsw-sq8",
+          "efforts": [
+            16,
+            32,
+            64,
+            128,
+            256
+          ]
+        },
+        "faiss-ivf-flat": {
+          "cache": "cache/faiss-ivf-flat",
+          "efforts": [
+            1,
+            2,
+            4,
+            8,
+            16,
+            32,
+            64,
+            128,
+            256
+          ]
+        },
+        "faiss-ivf-pq": {
+          "cache": "cache/faiss-ivf-pq",
+          "efforts": [
+            1,
+            2,
+            4,
+            8,
+            16,
+            32,
+            64,
+            128,
+            256
+          ]
+        },
+        "annoy": {
+          "cache": "cache/annoy",
+          "efforts": [
+            100,
+            1000,
+            10000,
+            100000
+          ]
+        }
+      }
+    }
+  ]
+}

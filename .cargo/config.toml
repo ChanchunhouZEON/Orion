@@ -12,4 +12,4 @@ rustflags = ["-C", "target-feature=+avx2,+fma"]
 # all M1/M2/M3 Apple Silicon, gives a 4× reduction in NEON op count
 # for the i8 IP kernel vs the legacy `vmull + vpadalq` chain.
 [target.aarch64-apple-darwin]
-rustflags = ["-C", "link-arg=-fuse-ld=lld", "-C", "target-feature=+dotprod"]
+rustflags = ["-C", "target-feature=+dotprod"]

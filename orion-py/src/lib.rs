@@ -14,12 +14,22 @@
 #[cfg(panic = "abort")]
 compile_error!("orion-py requires panic=unwind; build with --profile python");
 mod errors;
+mod search_entry;
+#[cfg(feature = "search-timing")]
+mod search_timing;
 use errors::{boundary, to_python, OrionError};
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods};
+use numpy::{
+    IntoPyArray, PyArray1, PyArray2, PyArrayDescrMethods, PyReadonlyArray2, PyUntypedArray,
+    PyUntypedArrayMethods,
+};
 use orion_ann::{BaseInput, Index, IndexOptions};
 use orion_ann::{Error, Result};
 use orion_ann::{VectorFormat, VectorStorageKind};
-use pyo3::prelude::*;
+use pyo3::{
+    intern,
+    prelude::*,
+    types::{PyDict, PyString, PyType},
+};
 use std::{
     path::PathBuf,
     sync::{
@@ -43,6 +53,8 @@ struct PyIndex {
     invalidated: AtomicBool,
     dimension: usize,
     storage: VectorStorageKind,
+    // Set once by the facade, outside the query path. Keep the public dataclass.
+    result_type: std::sync::OnceLock<Py<PyType>>,
 }
 
 fn options(json: &str) -> Result<IndexOptions> {
@@ -90,27 +102,34 @@ fn array_queries(
     dimension: usize,
     _storage: VectorStorageKind,
 ) -> PyResult<orion_ann::QueryBuffer> {
-    if let Some(q) = copy_queries::<f32>(py, array, dimension)? {
-        return Ok(q);
+    let array_view = array
+        .downcast::<PyUntypedArray>()
+        .map_err(|_| unsupported_query(py))?;
+    let dtype = array_view.dtype();
+    // Inspect the descriptor once, then acquire exactly one typed readonly view.
+    // Equivalence preserves native byte order and platform-specific dtype aliases.
+    if dtype.is_equiv_to(&numpy::dtype_bound::<f32>(py)) {
+        copy_queries::<f32>(py, array, dimension)
+    } else if dtype.is_equiv_to(&numpy::dtype_bound::<u8>(py)) {
+        copy_queries::<u8>(py, array, dimension)
+    } else if dtype.is_equiv_to(&numpy::dtype_bound::<i8>(py)) {
+        copy_queries::<i8>(py, array, dimension)
+    } else if dtype.is_equiv_to(&numpy::dtype_bound::<u16>(py)) {
+        copy_queries::<u16>(py, array, dimension)
+    } else if dtype.is_equiv_to(&numpy::dtype_bound::<u32>(py)) {
+        copy_queries::<u32>(py, array, dimension)
+    } else {
+        Err(unsupported_query(py))
     }
-    if let Some(q) = copy_queries::<u8>(py, array, dimension)? {
-        return Ok(q);
-    }
-    if let Some(q) = copy_queries::<i8>(py, array, dimension)? {
-        return Ok(q);
-    }
-    if let Some(q) = copy_queries::<u16>(py, array, dimension)? {
-        return Ok(q);
-    }
-    if let Some(q) = copy_queries::<u32>(py, array, dimension)? {
-        return Ok(q);
-    }
-    Err(to_python(
+}
+
+fn unsupported_query(py: Python<'_>) -> PyErr {
+    to_python(
         py,
         Error::invalid_argument(
             "queries must be a 2-D native float32, uint8, int8, uint16 or uint32 array",
         ),
-    ))
+    )
 }
 
 /// One checked copy while holding the GIL, shared by every supported dtype.
@@ -118,10 +137,10 @@ fn copy_queries<T: numpy::Element + orion_ann::QueryElement>(
     py: Python<'_>,
     array: &Bound<'_, PyAny>,
     dimension: usize,
-) -> PyResult<Option<orion_ann::QueryBuffer>> {
-    let Ok(values) = array.extract::<PyReadonlyArray2<'_, T>>() else {
-        return Ok(None);
-    };
+) -> PyResult<orion_ann::QueryBuffer> {
+    let values = array
+        .extract::<PyReadonlyArray2<'_, T>>()
+        .map_err(|_| unsupported_query(py))?;
     if values.shape()[1] != dimension {
         return Err(to_python(
             py,
@@ -134,7 +153,7 @@ fn copy_queries<T: numpy::Element + orion_ann::QueryElement>(
             Error::invalid_argument("queries must be C-contiguous"),
         ));
     }
-    Ok(Some(T::owned(values.as_slice()?.to_vec())))
+    Ok(T::owned(values.as_slice()?.to_vec()))
 }
 
 enum Queries {
@@ -149,7 +168,22 @@ impl Queries {
         dimension: usize,
         storage: VectorStorageKind,
     ) -> PyResult<Self> {
-        if let Ok(path) = value.extract::<String>() {
+        // The common exact-ndarray path performs no Python PathLike check.
+        // Subclasses keep the facade's original __fspath__ precedence.
+        let converted;
+        let value = if !value.is_exact_instance_of::<PyUntypedArray>()
+            && !value.is_instance_of::<PyString>()
+            && value.is_instance(&PyModule::import_bound(py, "os")?.getattr("PathLike")?)?
+        {
+            converted = PyModule::import_bound(py, "os")?
+                .getattr("fspath")?
+                .call1((value,))?;
+            &converted
+        } else {
+            value
+        };
+        if value.is_instance_of::<PyString>() {
+            let path = value.extract::<String>()?;
             let format = format
                 .map(|s| serde_json::from_value(serde_json::Value::String(s.into())))
                 .transpose()
@@ -213,12 +247,29 @@ impl PyIndex {
             storage: index.storage(),
             inner: RwLock::new(index),
             invalidated: AtomicBool::new(false),
+            result_type: std::sync::OnceLock::new(),
         }
     }
 }
 
 #[pymethods]
 impl PyIndex {
+    // The registered Python result class is an owned reference. Expose it to
+    // cyclic GC rather than hiding a potential class/handle reference cycle.
+    fn __traverse__(
+        &self,
+        visit: pyo3::PyVisit<'_>,
+    ) -> std::result::Result<(), pyo3::PyTraverseError> {
+        if let Some(result_type) = self.result_type.get() {
+            visit.call(result_type)?;
+        }
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        self.result_type.take();
+    }
+
     #[cfg(feature = "test-hooks")]
     fn _test_panic(&self, py: Python<'_>) -> PyResult<()> {
         boundary(py, "test_panic", || {
@@ -360,7 +411,9 @@ impl PyIndex {
         })
     }
 
-    #[pyo3(signature = (queries, k, search_list_size, *, query_format=None, scores=false))]
+    // Keep the public options flat; the last argument is a private result factory.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (queries, k, search_list_size, *, query_format=None, scores=false, _result_type=None))]
     fn search<'py>(
         &self,
         py: Python<'py>,
@@ -369,23 +422,79 @@ impl PyIndex {
         search_list_size: usize,
         query_format: Option<&str>,
         scores: bool,
-    ) -> PyResult<PySearchOutput<'py>> {
-        boundary(py, "search", || {
-            let queries =
-                Queries::extract(py, queries, query_format, self.dimension, self.storage)?;
-            let result = py
-                .allow_threads(move || {
-                    let values = queries.read(self.dimension, self.storage)?;
-                    self.with_read(|index| {
-                        index.search(
-                            orion_ann::QueryBatch::from_input(values.as_input(), self.dimension)?,
-                            &orion_ann::SearchOptions::new(k, search_list_size).with_scores(scores),
-                        )
-                    })
-                })
-                .map_err(|e| to_python(py, e))?;
-            search_output(py, result)
-        })
+        _result_type: Option<&Bound<'py, PyType>>,
+    ) -> PyResult<PyObject> {
+        self.search_impl(
+            py,
+            queries,
+            k,
+            search_list_size,
+            query_format,
+            scores,
+            _result_type,
+        )
+    }
+
+    #[doc = include_str!("search_contract.md")]
+    #[pyo3(signature = (queries, *, k=10, search_list_size=64, query_format=None, scores=false))]
+    fn _search_public<'py>(
+        &self,
+        py: Python<'py>,
+        queries: &Bound<'py, PyAny>,
+        k: usize,
+        search_list_size: usize,
+        query_format: Option<&str>,
+        scores: bool,
+    ) -> PyResult<PyObject> {
+        let result_type = self.result_type.get().ok_or_else(|| {
+            to_python(
+                py,
+                Error::invalid_state("construct the public Index before searching"),
+            )
+        })?;
+        self.search_impl(
+            py,
+            queries,
+            k,
+            search_list_size,
+            query_format,
+            scores,
+            Some(result_type.bind(py)),
+        )
+    }
+
+    fn _register_search_result(
+        &self,
+        py: Python<'_>,
+        result_type: &Bound<'_, PyType>,
+    ) -> PyResult<()> {
+        if let Some(existing) = self.result_type.get() {
+            if !existing.bind(py).is(result_type) {
+                return Err(to_python(
+                    py,
+                    Error::invalid_state("search result type already registered"),
+                ));
+            }
+            return Ok(());
+        }
+        self.result_type
+            .set(result_type.clone().unbind())
+            .map_err(|_| {
+                to_python(
+                    py,
+                    Error::invalid_state("search result type already registered"),
+                )
+            })
+    }
+
+    #[cfg(feature = "search-timing")]
+    fn _start_search_timing(&self, capacity: usize) {
+        search_timing::start(capacity);
+    }
+
+    #[cfg(feature = "search-timing")]
+    fn _finish_search_timing(&self) -> Vec<search_timing::Sample> {
+        search_timing::finish()
     }
 
     fn label_revision(&self, py: Python<'_>) -> PyResult<u64> {
@@ -552,6 +661,7 @@ impl PyIndex {
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyIndex>()?;
+    m.add_class::<search_entry::SearchDescriptor>()?;
     m.add("OrionError", m.py().get_type_bound::<OrionError>())?;
     Ok(())
 }
@@ -583,4 +693,32 @@ fn search_output<'py>(
         metric,
         external_ids,
     ))
+}
+
+/// The facade supplies its existing frozen dataclass, avoiding a Python tuple
+/// and helper call. Plain native callers retain the tuple representation.
+/// No constructor/attribute override is invoked: like the prior Python helper,
+/// initialize only a fresh object's dictionary, retaining owned NumPy buffers.
+fn wrap_search_output(
+    py: Python<'_>,
+    values: PySearchOutput<'_>,
+    result_type: Option<&Bound<'_, PyType>>,
+) -> PyResult<PyObject> {
+    let Some(result_type) = result_type else {
+        return Ok(values.into_py(py));
+    };
+    let object = py
+        .get_type_bound::<PyAny>()
+        .getattr(intern!(py, "__new__"))?
+        .call1((result_type,))?;
+    let attributes = object
+        .getattr(intern!(py, "__dict__"))?
+        .downcast_into::<PyDict>()?;
+    let (ids, counts, scores, metric, external_ids) = values;
+    attributes.set_item(intern!(py, "ids"), ids)?;
+    attributes.set_item(intern!(py, "counts"), counts)?;
+    attributes.set_item(intern!(py, "scores"), scores)?;
+    attributes.set_item(intern!(py, "score_metric"), metric)?;
+    attributes.set_item(intern!(py, "external_ids"), external_ids)?;
+    Ok(object.unbind())
 }

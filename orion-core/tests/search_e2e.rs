@@ -151,6 +151,7 @@ fn search_pipeline_e2e() {
                     window_size: 5,
                     epsilon: 0.0,
                     early_exit_limit: usize::MAX,
+                    ..Default::default()
                 },
                 DynamicCascade {
                     prefilter: no_pf,
@@ -196,6 +197,7 @@ fn search_pipeline_e2e() {
                     window_size: 5,
                     epsilon: 0.0,
                     early_exit_limit: usize::MAX,
+                    ..Default::default()
                 },
                 DynamicCascade {
                     prefilter: no_pf,
@@ -217,6 +219,7 @@ fn search_pipeline_e2e() {
                 window_size: 5,
                 epsilon: 0.0,
                 early_exit_limit: usize::MAX,
+                ..Default::default()
             },
             DynamicCascade {
                 prefilter: no_pf,
@@ -245,6 +248,7 @@ fn search_pipeline_e2e() {
                 window_size: 5,
                 epsilon: 0.15,
                 early_exit_limit: 10,
+                ..Default::default()
             },
             DynamicCascade {
                 prefilter: no_pf,
@@ -268,6 +272,7 @@ fn search_pipeline_e2e() {
                 window_size: 5,
                 epsilon: 0.0,
                 early_exit_limit: usize::MAX,
+                ..Default::default()
             },
             DynamicCascade {
                 prefilter: no_pf,
@@ -287,6 +292,7 @@ fn search_pipeline_e2e() {
                 window_size: 5,
                 epsilon: 0.0,
                 early_exit_limit: usize::MAX,
+                ..Default::default()
             },
             DynamicCascade {
                 prefilter: no_pf,
@@ -320,6 +326,7 @@ fn search_pipeline_e2e() {
                     window_size: 5,
                     epsilon: 0.0,
                     early_exit_limit: usize::MAX,
+                    ..Default::default()
                 },
                 DynamicCascade {
                     prefilter: no_pf,
@@ -346,6 +353,7 @@ fn search_pipeline_e2e() {
                     window_size: 5,
                     epsilon: 0.0,
                     early_exit_limit: usize::MAX,
+                    ..Default::default()
                 },
                 DynamicCascade {
                     prefilter: no_pf,
@@ -378,6 +386,7 @@ fn search_pipeline_e2e() {
                     window_size: 5,
                     epsilon: 0.0,
                     early_exit_limit: usize::MAX,
+                    ..Default::default()
                 },
                 DynamicCascade {
                     prefilter: filter,
@@ -408,6 +417,7 @@ fn search_pipeline_e2e() {
                     window_size: 5,
                     epsilon: 0.0,
                     early_exit_limit: usize::MAX,
+                    ..Default::default()
                 },
                 DynamicCascade {
                     prefilter: no_pf,
@@ -436,6 +446,7 @@ fn search_pipeline_e2e() {
                     window_size: 5,
                     epsilon: 0.0,
                     early_exit_limit: usize::MAX,
+                    ..Default::default()
                 },
                 DynamicCascade {
                     prefilter: filter,
@@ -464,6 +475,7 @@ fn search_pipeline_e2e() {
                     window_size: 5,
                     epsilon: 0.0,
                     early_exit_limit: usize::MAX,
+                    ..Default::default()
                 },
                 DynamicCascade {
                     prefilter: filter,
@@ -607,6 +619,7 @@ fn search_pipeline_e2e() {
                     window_size: 5,
                     epsilon: 0.0,
                     early_exit_limit: usize::MAX,
+                    ..Default::default()
                 },
                 DynamicCascade {
                     prefilter: no_pf,
@@ -687,6 +700,7 @@ fn search_pipeline_e2e() {
                     window_size: 5,
                     epsilon: 0.0,
                     early_exit_limit: usize::MAX,
+                    ..Default::default()
                 },
                 DynamicCascade {
                     prefilter: no_pf,
@@ -721,6 +735,7 @@ fn search_pipeline_e2e() {
                     window_size: 5,
                     epsilon: 0.0,
                     early_exit_limit: usize::MAX,
+                    ..Default::default()
                 },
                 DynamicCascade {
                     prefilter: filter,
@@ -763,6 +778,7 @@ fn search_pipeline_e2e() {
                     window_size: 5,
                     epsilon: 0.0,
                     early_exit_limit: usize::MAX,
+                    ..Default::default()
                 },
                 DynamicCascade {
                     prefilter: no_pf,
@@ -785,6 +801,7 @@ fn search_pipeline_e2e() {
                     window_size: 5,
                     epsilon: 0.0,
                     early_exit_limit: usize::MAX,
+                    ..Default::default()
                 },
                 DynamicCascade {
                     prefilter: no_pf,
@@ -856,6 +873,7 @@ fn search_pipeline_e2e() {
                         window_size: 5,
                         epsilon: 0.0,
                         early_exit_limit: usize::MAX,
+                        ..Default::default()
                     },
                     DynamicCascade {
                         prefilter: no_pf,
@@ -880,6 +898,7 @@ fn search_pipeline_e2e() {
                     window_size: 5,
                     epsilon: 0.20,
                     early_exit_limit: 5,
+                    ..Default::default()
                 },
                 DynamicCascade {
                     prefilter: no_pf,

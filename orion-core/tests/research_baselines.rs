@@ -144,6 +144,7 @@ fn benchmark_compatibility_search_matches_validated_cascade() {
         window_size: 2,
         epsilon: 0.,
         early_exit_limit: usize::MAX,
+        ..Default::default()
     };
     let expected = index
         .search_observed(

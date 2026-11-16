@@ -63,6 +63,22 @@ SIFT1B 运行于 Intel Xeon Platinum 8358P（Linux/AVX-512）；其余七个数�
 「未测试」表示没有保留对应测量结果；「—」表示实测曲线未达到目标召回率，或结果不可比。Microsoft Vamana 指 DiskANN 的内存实现，其 MS-MARCO 结果因距离度量不一致而未纳入比较。FAISS IVF-PQ 在前六个数据集上的 recall 均低于 0.62，故未列入。**粗体用于突出 Orion 的结果。**
 [实验方法](docs/benchmarks.md) · [SIFT1B 资源规划](docs/large-datasets.md)。
 
+### 请求延迟
+
+以下为 **Recall@10 ≥ 0.95** 时的请求延迟对比。数值为共同数据集上
+**baseline 延迟 / Orion 延迟**的几何平均；大于 1 表示 Orion 延迟更低。
+各行覆盖的数据集不同，不能据此对 baseline 排名。
+
+| Baseline | 数据集数 · 1 并发 | P50 / P95 / P99 | 数据集数 · 8 并发 | P50 / P95 / P99 |
+|---|---:|---:|---:|---:|
+| ParlayANN | 6 | 1.18× / 1.19× / 1.25× | 6 | 1.49× / 1.62× / 1.72× |
+| DiskANN / Vamana | 6 | 3.41× / 3.64× / 3.66× | 6 | 3.57× / 3.86× / 3.97× |
+| hnswlib | 6 | 5.28× / 5.24× / 5.15× | 7 | 4.65× / 4.00× / 3.75× |
+| USearch native (no GIL) | 3 | 5.71× / 5.64× / 5.56× | 3 | 4.05× / 3.46× / 3.29× |
+
+Apple M4 Max · k=10 · 三轮 · 1 或 8 个并发客户端。
+详细延迟数据和测量方法见[主页](https://chanchunhouzeon.github.io/Orion/#latency)。
+
 ## 使用示例
 
 源码构建需要 **Rust 1.92 和 C++17 编译器**；后者用于内置的图构建器。

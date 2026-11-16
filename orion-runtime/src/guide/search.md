@@ -9,6 +9,13 @@ Search with packed logical rows; internal padding is not part of the input.
 The library returns IDs and counts, with optional exact candidate scores. It
 does not calculate recall unless an application supplies its own ground truth.
 
+A one-row request executes on the calling thread; multi-row requests use the
+index's configured Rayon pool. Both use the same search computation and result
+shape. The thread setting controls internal batch parallelism, not the number of
+concurrent external callers; applications should bound their own concurrency.
+Python keeps its owned input copy and releases the GIL during native search,
+then reacquires it to return the result.
+
 ```rust
 use orion_ann::{BaseInput, GraphConfig, Index, IndexOptions, QueryBatch, SearchOptions, Result};
 use orion_ann::GraphSourcePolicy;
@@ -136,8 +143,9 @@ ID. Equal-distance order is not promised as a cross-platform tie-break rule.
 
 Rust `Index::search` borrows `&self`. Share one calibrated index through `Arc`
 (or scoped thread borrows); every request supplies its own `SearchOptions`.
-Concurrent batches use the same bounded Rayon pool and independently checked-out
-scratch. Calibration still requires `&mut Index`, preventing overlap with search.
+Batches of at most two rows execute serially on the caller; larger
+batches use the bounded Rayon pool. Both paths independently check out scratch.
+The batch thread setting does not cap external request concurrency. Calibration still requires `&mut Index`, preventing overlap with search.
 Python searches take a shared read lock and release the GIL; calibration takes
 an exclusive write lock. NumPy input is copied while holding the GIL before any
 worker reads it. Do not mutate an array concurrently with that initial copy.

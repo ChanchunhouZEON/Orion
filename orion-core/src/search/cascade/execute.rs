@@ -87,20 +87,29 @@ impl<D: IndexData + Sync> CompressedIndex<D> {
                 queries.len(),
             ));
         }
-        let rows = (0..queries.len() / dimension)
-            .into_par_iter()
-            .map(|row| {
-                let query = queries.slice(row * dimension..(row + 1) * dimension);
-                self.execute_row(
-                    query,
-                    config,
-                    plan,
-                    scores,
-                    NeighborMode::default(),
-                    &mut NoopObserver,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let execute = |row| {
+            let query = queries.slice(row * dimension..(row + 1) * dimension);
+            self.execute_row(
+                query,
+                config,
+                plan,
+                scores,
+                NeighborMode::default(),
+                &mut NoopObserver,
+            )
+        };
+        let query_count = queries.len() / dimension;
+        // Runtime may bypass its pool for a small batch. Respect its explicit
+        // limit here too: using a parallel iterator would enter the global pool.
+        // Both schedules share the same per-row kernels and output assembly.
+        let rows = if query_count <= config.serial_batch_limit.max(1) {
+            (0..query_count).map(execute).collect::<Result<Vec<_>>>()?
+        } else {
+            (0..query_count)
+                .into_par_iter()
+                .map(execute)
+                .collect::<Result<Vec<_>>>()?
+        };
         crate::search::output::assemble(rows, config.k, self.num_nodes, scores)
     }
 

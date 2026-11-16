@@ -5,10 +5,10 @@
 from dataclasses import asdict, dataclass
 import json
 import os
-from typing import Optional, Union
+from typing import TYPE_CHECKING, Optional, Union
 
 import numpy as np
-from ._native import _Index, OrionError
+from ._native import _Index, OrionError, _SearchDescriptor
 
 PathLike = Union[str, os.PathLike]
 Input = Union[PathLike, np.ndarray]
@@ -122,7 +122,28 @@ class SearchResult:
     external_ids: Optional[np.ndarray] = None
 
 
+def _search_result(values):
+    """Wrap the native five-field tuple without per-field frozen initialization.
+
+    The public constructor and dataclass behavior stay unchanged. This private
+    path only installs already-created native outputs into a fresh instance;
+    arrays retain their ownership and no query/input validation is bypassed.
+    Keep the field set identical to SearchResult (covered by contract tests).
+    """
+    ids, counts, scores, metric, external = values
+    result = object.__new__(SearchResult)
+    result.__dict__.update(
+        ids=ids, counts=counts, scores=scores, score_metric=metric, external_ids=external,
+    )
+    return result
+
+
 def _input(value: Input):
+    # Avoid PathLike's ABC check for the usual ndarray. Subclasses deliberately
+    # retain the existing path conversion behavior, including custom __fspath__.
+    # Rust still takes the same checked, owned copy before releasing the GIL.
+    if type(value) is np.ndarray:
+        return value
     return os.fspath(value) if isinstance(value, (str, os.PathLike)) else value
 
 
@@ -167,6 +188,7 @@ class Index:
     def __init__(self, handle):
         if not isinstance(handle, _Index):
             raise TypeError("use Index.from_file, Index.from_array or Index.open")
+        handle._register_search_result(SearchResult)
         self._handle = handle
 
     @classmethod
@@ -247,13 +269,13 @@ class Index:
         Raises OrionError for empty/malformed input, invalid k/beam or backend
         failures. Successful records for other k values are retained.
         """
-        record = self._handle.calibrate(_input(queries), k, search_list_size, query_format)
+        record = self._handle.calibrate(queries, k, search_list_size, query_format)
         return Calibration(**json.loads(record))
 
     def calibrate_many(self, queries: Input, *, ks, search_list_size=None,
                        query_format=None) -> list[Calibration]:
         """Explicitly prepare all requested k values; publish records together."""
-        records = self._handle.calibrate_many(_input(queries), list(ks), search_list_size, query_format)
+        records = self._handle.calibrate_many(queries, list(ks), search_list_size, query_format)
         return [Calibration(**value) for value in json.loads(records)]
 
     @property
@@ -304,36 +326,15 @@ class Index:
         This first implementation is an exact baseline, not a filtered ANN path.
         """
         values, revision = self._handle.search_filtered(
-            _input(queries), json.dumps(asdict(filter)),
+            queries, json.dumps(asdict(filter)),
             json.dumps(dict(k=k, scores=scores, max_candidates=max_candidates)), query_format)
-        return FilteredSearchResult(SearchResult(*values), revision)
+        return FilteredSearchResult(_search_result(values), revision)
 
-    def search(self, queries: Input, *, k=10, search_list_size=64,
-               query_format=None, scores=False) -> SearchResult:
-        """Search a batch. Search uses the calibration for this k.
-
-        Files are decoded as a complete batch. For bounded memory, pass separate
-        ndarray batches. No recall evaluation or cache flushing occurs here.
-        Require 1 <= k <= point_count and k <= search_list_size <= u32::MAX/4.
-        Query dtype is independent of base dtype. Float coordinates must be finite;
-        cosine rows must be nonzero. Wide integers retain their original values
-        for exact scoring (the output scores are still float32). Returned
-        uint32 IDs preserve row order; use counts to exclude UINT32_MAX padding.
-        Empty batches are supported after control/calibration validation.
-
-        scores=True adds float32 scores of the returned candidates and a
-        score_metric label. Squared L2 is lower-is-better; inner product and
-        cosine similarity are higher-is-better. Scores preserve result order
-        and do not imply exact global top-k. Ignore NaN padding using counts.
-
-        Raises OrionError: missing calibration is ORION_INVALID_STATE; shape,
-        value and backend failures carry structured reports. Ordinary invalid
-        input can be corrected and retried. An unexpected Rust unwind instead
-        invalidates the native handle: reopen it before further operations.
-        """
-        ids, counts, values, metric, external = self._handle.search(_input(queries), k, search_list_size,
-                                         query_format=query_format, scores=scores)
-        return SearchResult(ids, counts, values, metric, external)
+    if TYPE_CHECKING:
+        def search(self, queries: Input, *, k=10, search_list_size=64,
+                   query_format=None, scores=False) -> SearchResult: ...
+    else:
+        search = _SearchDescriptor()
 
     def export_bundle(self, destination: PathLike, *, include_base=False) -> SnapshotRef:
         """Copy verified objects into a relocatable bundle.

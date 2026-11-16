@@ -180,6 +180,7 @@ pub fn search_compose<D: CascadeData>(
             window_size,
             epsilon,
             early_exit_limit,
+            ..Default::default()
         },
         DynamicCascade {
             prefilter: pf.as_ref(),
@@ -230,6 +231,7 @@ pub fn search_batch_compose<D: CascadeData>(
             window_size,
             epsilon,
             early_exit_limit,
+            ..Default::default()
         },
         DynamicCascade {
             prefilter: pf.as_ref(),

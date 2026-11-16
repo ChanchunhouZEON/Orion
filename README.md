@@ -83,6 +83,24 @@ is the DiskANN in-memory implementation; its MS-MARCO result is excluded for
 metric mismatch. FAISS IVF-PQ stays below 0.62 recall on the six-dataset panel
 and is omitted. **Bold highlights Orion.** [Experiment protocols](docs/benchmarks.md) · [SIFT1B resource planning](docs/large-datasets.md).
 
+### Request latency
+
+At **Recall@10 ≥ 0.95**, Orion's request latency relative to these baselines is
+summarized below. Values are geometric means of **baseline / Orion latency**;
+above 1 means lower latency for Orion. Dataset counts differ, so the rows are
+not a ranking across baselines.
+
+| Baseline | Datasets · 1 client | P50 / P95 / P99 | Datasets · 8 clients | P50 / P95 / P99 |
+|---|---:|---:|---:|---:|
+| ParlayANN | 6 | 1.18× / 1.19× / 1.25× | 6 | 1.49× / 1.62× / 1.72× |
+| DiskANN / Vamana | 6 | 3.41× / 3.64× / 3.66× | 6 | 3.57× / 3.86× / 3.97× |
+| hnswlib | 6 | 5.28× / 5.24× / 5.15× | 7 | 4.65× / 4.00× / 3.75× |
+| USearch native (no GIL) | 3 | 5.71× / 5.64× / 5.56× | 3 | 4.05× / 3.46× / 3.29× |
+
+Apple M4 Max · k=10 · three rounds · 1 or 8 concurrent clients.
+See the [homepage](https://chanchunhouzeon.github.io/Orion/#latency)
+for detailed latency measurements and methodology.
+
 ## Examples
 
 Source builds require **Rust 1.92 and a C++17 compiler** for the bundled graph

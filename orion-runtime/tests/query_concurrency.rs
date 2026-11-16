@@ -157,6 +157,7 @@ fn borrowed_queries_and_mixed_requests_share_one_index() {
                         window_size: 5,
                         epsilon: calibration.threshold,
                         early_exit_limit: calibration.early_exit_limit,
+                        ..Default::default()
                     },
                     orion_ann_core::DynamicCascade {
                         prefilter: &orion_ann_core::search::cascade::stage::NoPrefilter,
@@ -357,5 +358,211 @@ fn pq_snapshot_and_code_placement_preserve_all_metric_searches() {
             .set_pq_code_storage(PqCodeStorage::Resident)
             .unwrap();
         assert_eq!(restored.search(queries, &options).unwrap(), expected);
+    }
+}
+
+#[test]
+fn single_rows_match_batches_with_scores_ids_and_concurrent_callers() {
+    const DIM: usize = 13;
+    let bytes: Vec<u8> = (0..96 * DIM).map(|i| (i * 31 % 251 + 1) as u8).collect();
+    let floats: Vec<f32> = bytes.iter().map(|&v| f32::from(v)).collect();
+    for native in [false, true] {
+        for metric in [
+            SearchMetric::SquaredL2,
+            SearchMetric::InnerProduct,
+            SearchMetric::Cosine,
+        ] {
+            let fixture = Fixture::new("single-row");
+            let base = if native {
+                BaseInput::from_u8(&bytes, DIM)
+            } else {
+                BaseInput::from_f32(&floats, DIM)
+            }
+            .unwrap();
+            let mut index = Index::new_with_ids(
+                base,
+                IndexOptions {
+                    metric,
+                    threads: 2,
+                    auto_pin: false,
+                    cache_dir: fixture.0.join("cache"),
+                    graph: GraphConfig {
+                        source: GraphSourcePolicy::Parlayann,
+                        staged_file: Some(fixture.staged(96)),
+                        degree: 12,
+                        max_extra: 4,
+                        build_l: 24,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                (0..96).map(|i| u64::MAX - i).collect(),
+            )
+            .unwrap();
+            let queries = &floats[..8 * DIM];
+            index.calibrate(queries.to_vec(), 5, Some(24)).unwrap();
+            for scores in [false, true] {
+                let options = SearchOptions::new(5, 24).with_scores(scores);
+                let expected = index
+                    .search(QueryBatch::from_f32(queries, DIM).unwrap(), &options)
+                    .unwrap();
+                let barrier = Barrier::new(8);
+                std::thread::scope(|scope| {
+                    for caller in 0..8 {
+                        let (index, expected, barrier) = (&index, &expected, &barrier);
+                        scope.spawn(move || {
+                            barrier.wait();
+                            for repeat in 0..8 {
+                                let row = (caller + repeat) % 8;
+                                // Mix caller-thread requests and pool batches with more
+                                // external callers than pool workers, using the same scratch pool.
+                                if repeat % 2 == 0 {
+                                    let single = index
+                                        .search(
+                                            QueryBatch::from_u8(
+                                                &bytes_for_row(queries, row, DIM),
+                                                DIM,
+                                            )
+                                            .unwrap(),
+                                            &options,
+                                        )
+                                        .unwrap();
+                                    let slots = row * options.k..(row + 1) * options.k;
+                                    assert_eq!(single.counts, [expected.counts[row]]);
+                                    assert_eq!(single.ids, expected.ids[slots.clone()]);
+                                    assert_eq!(
+                                        single.external_ids.as_ref().unwrap(),
+                                        &expected.external_ids.as_ref().unwrap()[slots.clone()]
+                                    );
+                                    match (&single.scores, &expected.scores) {
+                                        (Some(a), Some(b)) => {
+                                            assert_eq!(a.metric, b.metric);
+                                            assert_eq!(
+                                                a.values
+                                                    .iter()
+                                                    .map(|x| x.to_bits())
+                                                    .collect::<Vec<_>>(),
+                                                b.values[slots]
+                                                    .iter()
+                                                    .map(|x| x.to_bits())
+                                                    .collect::<Vec<_>>()
+                                            );
+                                        }
+                                        (None, None) => {}
+                                        _ => panic!("score presence changed"),
+                                    }
+                                } else {
+                                    let batch = index
+                                        .search(
+                                            QueryBatch::from_f32(queries, DIM).unwrap(),
+                                            &options,
+                                        )
+                                        .unwrap();
+                                    assert_eq!(batch.ids, expected.ids);
+                                    assert_eq!(batch.counts, expected.counts);
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+        }
+    }
+}
+
+fn bytes_for_row(queries: &[f32], row: usize, dimension: usize) -> Vec<u8> {
+    queries[row * dimension..(row + 1) * dimension]
+        .iter()
+        .map(|&v| v as u8)
+        .collect()
+}
+
+#[test]
+fn small_batch_boundary_preserves_scores_and_external_ids() {
+    const DIM: usize = 13;
+    let bytes: Vec<u8> = (0..96 * DIM).map(|i| (i * 31 % 251 + 1) as u8).collect();
+    let floats: Vec<f32> = bytes.iter().map(|&v| f32::from(v)).collect();
+    for native in [false, true] {
+        for metric in [
+            SearchMetric::SquaredL2,
+            SearchMetric::InnerProduct,
+            SearchMetric::Cosine,
+        ] {
+            let fixture = Fixture::new("small-batch");
+            let base = if native {
+                BaseInput::from_u8(&bytes, DIM)
+            } else {
+                BaseInput::from_f32(&floats, DIM)
+            }
+            .unwrap();
+            let mut index = Index::new_with_ids(
+                base,
+                IndexOptions {
+                    metric,
+                    threads: 2,
+                    auto_pin: false,
+                    cache_dir: fixture.0.join("cache"),
+                    graph: GraphConfig {
+                        source: GraphSourcePolicy::Parlayann,
+                        staged_file: Some(fixture.staged(96)),
+                        degree: 12,
+                        max_extra: 4,
+                        build_l: 24,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                (0..96).map(|i| u64::MAX - i).collect(),
+            )
+            .unwrap();
+            let queries = &floats[..16 * DIM];
+            index.calibrate(queries.to_vec(), 5, Some(24)).unwrap();
+            for scored in [false, true] {
+                let options = SearchOptions::new(5, 24).with_scores(scored);
+                // 16 rows run in parallel; 2 is the inclusive serial boundary.
+                let expected = index
+                    .search(QueryBatch::from_f32(queries, DIM).unwrap(), &options)
+                    .unwrap();
+                let barrier = Barrier::new(8);
+                std::thread::scope(|scope| {
+                    for count in [0, 1, 2, 3, 4, 7, 8, 16] {
+                        let (index, options, expected, barrier, bytes) =
+                            (&index, &options, &expected, &barrier, &bytes);
+                        scope.spawn(move || {
+                            barrier.wait();
+                            let result = index
+                                .search(
+                                    QueryBatch::from_u8(&bytes[..count * DIM], DIM).unwrap(),
+                                    options,
+                                )
+                                .unwrap();
+                            assert_eq!(result.ids, expected.ids[..count * options.k]);
+                            assert_eq!(result.counts, expected.counts[..count]);
+                            assert_eq!(
+                                result.external_ids.as_deref().unwrap(),
+                                &expected.external_ids.as_ref().unwrap()[..count * options.k]
+                            );
+                            if let Some(scores) = result.scores {
+                                let reference = expected.scores.as_ref().unwrap();
+                                assert_eq!(scores.metric, reference.metric);
+                                assert_eq!(
+                                    scores
+                                        .values
+                                        .iter()
+                                        .map(|v| v.to_bits())
+                                        .collect::<Vec<_>>(),
+                                    reference.values[..count * options.k]
+                                        .iter()
+                                        .map(|v| v.to_bits())
+                                        .collect::<Vec<_>>()
+                                );
+                            } else {
+                                assert!(expected.scores.is_none());
+                            }
+                        });
+                    }
+                });
+            }
+        }
     }
 }

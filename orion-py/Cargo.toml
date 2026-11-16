@@ -19,6 +19,8 @@ test = false
 [features]
 experimental-graph = ["orion-ann/experimental-graph"]
 test-hooks = []
+# Optional per-request clocks for controlled Python-boundary experiments.
+search-timing = []
 
 [dependencies]
 orion-ann = { version = "0.1.0", path = "../orion-runtime", features = ["file-queries"] }

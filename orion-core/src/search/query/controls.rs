@@ -12,6 +12,10 @@ pub struct DynamicSearchConfig {
     pub window_size: usize,
     pub epsilon: f32,
     pub early_exit_limit: usize,
+    /// Maximum batch size executed serially on the caller. One row is always
+    /// serial; larger batches use Rayon. Runtime sets this explicitly before bypassing its pool,
+    /// rather than consulting an unrelated global Rayon pool on the caller.
+    pub serial_batch_limit: usize,
 }
 impl Default for DynamicSearchConfig {
     fn default() -> Self {
@@ -21,6 +25,7 @@ impl Default for DynamicSearchConfig {
             window_size: 3,
             epsilon: 0.,
             early_exit_limit: usize::MAX,
+            serial_batch_limit: 1,
         }
     }
 }

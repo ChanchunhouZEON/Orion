@@ -670,6 +670,36 @@ class IndexTests(unittest.TestCase):
                 np.testing.assert_array_equal(queries, original_queries)
                 self.assertEqual(index.info, before)
 
+    def test_single_rows_match_batches_under_mixed_concurrency(self):
+        for dtype in (np.float32, np.uint8):
+            for metric in ("squared-l2", "inner-product", "cosine"):
+                with self.subTest(dtype=dtype, metric=metric):
+                    base, queries = self.arrays(dtype=dtype, dimension=13)
+                    original = queries.copy()
+                    index = self.make(base, metric=metric, external_ids=np.arange(64, dtype=np.uint64) + 1000)
+                    index.calibrate(queries, k=5, search_list_size=24)
+                    for scores in (False, True):
+                        expected = index.search(queries, k=5, search_list_size=24, scores=scores)
+                        def request(i):
+                            # Exercise both sides of the fixed 2-row serial cutoff.
+                            count = (0, 1, 2, 3, 4, 8, 16, 24)[i % 8]
+                            start = i % (len(queries) - count + 1)
+                            stop = start + count
+                            result = index.search(queries[start:stop], k=5, search_list_size=24, scores=scores)
+                            np.testing.assert_array_equal(result.ids, expected.ids[start:stop])
+                            np.testing.assert_array_equal(result.counts, expected.counts[start:stop])
+                            np.testing.assert_array_equal(result.external_ids, expected.external_ids[start:stop])
+                            self.assertEqual(result.score_metric, expected.score_metric)
+                            if scores:
+                                np.testing.assert_array_equal(result.scores, expected.scores[start:stop])
+                            else:
+                                self.assertIsNone(result.scores)
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                            futures = [executor.submit(request, i) for i in range(32)]
+                            for future in futures:
+                                future.result(timeout=20)
+                    np.testing.assert_array_equal(queries, original)
+
     def test_native_u8_constraints_and_array_roundtrip(self):
         base, queries = self.arrays(np.uint8, 128)
         with self.assertRaises(OrionError):

@@ -266,6 +266,7 @@ mod large_input_tests {
                         window_size: 2,
                         epsilon: 1.,
                         early_exit_limit: 100,
+                        ..Default::default()
                     },
                     orion_ann_core::DynamicCascade {
                         prefilter: &orion_ann_core::search::cascade::stage::NoPrefilter,

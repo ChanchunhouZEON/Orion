@@ -129,6 +129,7 @@ impl CompressedIndex<orion_ann_diskann::model::PaddedDataset<f32>> {
                 window_size,
                 epsilon,
                 early_exit_limit,
+                ..Default::default()
             },
             DynamicCascade {
                 prefilter,

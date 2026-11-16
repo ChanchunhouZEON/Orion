@@ -47,6 +47,9 @@ impl Index {
     ///
     /// Search packed row-major queries, preserving input order in the results.
     /// Calibration for this `k` is required, including for empty batches.
+    /// Small batches (at most two rows) execute synchronously on the
+    /// caller; larger batches use the index's Rayon pool. External request
+    /// concurrency is controlled by the caller, not capped by the batch pool.
     ///
     /// # Errors
     /// Returns `InvalidState` if calibration is missing, `DimensionMismatch`
@@ -138,14 +141,20 @@ impl Index {
         validate_search(self.len(), options.k, options.search_list_size)?;
         let queries = self.prepare_queries(queries)?;
         let params = self.search_params(options.k, adaptive)?;
-        let mut result: SearchResult = self
-            .pool
-            .install(|| {
-                self.view
-                    .engine
-                    .search(queries, &self.config, options, params)
-            })?
-            .into();
+        let search = || {
+            self.view
+                .engine
+                .search(queries, &self.config, options, params)
+        };
+        // Avoid a worker handoff for small batches. The same explicit limit is
+        // passed to core so serial execution cannot enter the global Rayon pool.
+        let serial_limit = crate::search::SERIAL_BATCH_LIMIT;
+        let mut result: SearchResult = if queries.len() <= serial_limit {
+            search()
+        } else {
+            self.pool.install(search)
+        }?
+        .into();
         self.attach_external_ids(&mut result);
         Ok(result)
     }
@@ -223,4 +232,61 @@ pub(super) fn validate_search(points: usize, k: usize, beam: usize) -> Result<()
         .with_detail("search_list_size", beam));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BaseInput, GraphConfig, GraphSourcePolicy, IndexOptions};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn small_batch_completes_while_batch_worker_is_occupied() {
+        let directory = tempfile::tempdir().unwrap();
+        let base: Vec<f32> = (0..96).map(|i| (i + 1) as f32).collect();
+        let mut index = Index::new(
+            BaseInput::from_f32(&base, 3).unwrap(),
+            IndexOptions {
+                threads: 1,
+                auto_pin: false,
+                cache_dir: directory.path().join("cache"),
+                graph: GraphConfig {
+                    source: GraphSourcePolicy::Rust,
+                    degree: 4,
+                    build_l: 8,
+                    max_extra: 2,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        index.calibrate(base[..12].to_vec(), 2, Some(8)).unwrap();
+        let query = QueryBatch::from_f32(&base[..6], 3).unwrap();
+        let options = SearchOptions::new(2, 8);
+        let expected = index.search(query, &options).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        index.pool.spawn(move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        });
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        std::thread::scope(|scope| {
+            let (done_tx, done_rx) = mpsc::channel();
+            let index = &index;
+            scope.spawn(move || {
+                let _ = done_tx.send(index.search(query, &options));
+            });
+            let completed = done_rx.recv_timeout(Duration::from_secs(5));
+            release_tx.send(()).unwrap();
+            assert_eq!(
+                completed
+                    .expect("small batch waited for the batch worker")
+                    .unwrap(),
+                expected
+            );
+        });
+    }
 }

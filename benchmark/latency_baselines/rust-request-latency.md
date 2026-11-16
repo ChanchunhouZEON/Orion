@@ -1,5 +1,5 @@
 <!-- Copyright (c) Chanchunhou. All rights reserved. Licensed under the MIT License. -->
-# <img src="../orion-core/assets/orion-astraeus-heading.svg" alt="" width="72" align="middle" /> Request latency
+# Request latency
 
 `latency-sweep` is an unpublished benchmark executable. It calls the public
 `Index::search` on borrowed **single-row** queries. Production APIs, SIMD kernels,
@@ -95,3 +95,9 @@ claim or confidence interval is inferred from these short repeated runs.
 
 Tests run with `cargo test --manifest-path benchmark/Cargo.toml --lib --test latency`.
 CI checks correctness and statistics, not machine-dependent latency thresholds.
+
+## Baseline comparison
+
+See [baseline request latency](README.md) for the all-engine
+runner. It remeasures Orion through the same Python adapter boundary as the
+baselines; its percentiles must not be merged with this native Rust timer.

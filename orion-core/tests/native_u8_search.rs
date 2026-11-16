@@ -128,6 +128,7 @@ fn native_storage_preserves_calibration_search_and_local_extra_expansion() {
         window_size: 1,
         epsilon: 1.0,
         early_exit_limit: usize::MAX,
+        ..Default::default()
     };
     assert_eq!(NeighborMode::default(), NeighborMode::LocalExtra);
     let mut had_post_expansion = false;

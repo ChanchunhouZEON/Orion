@@ -158,6 +158,10 @@ where
     )
 }
 
+/// Share the synchronous caller-thread cutoff with the core executor.
+/// This counts rows in one request; independent requests are never coalesced.
+pub(crate) const SERIAL_BATCH_LIMIT: usize = 2;
+
 fn search_config(
     config: &ResolvedRunConfig,
     k: usize,
@@ -170,6 +174,7 @@ fn search_config(
         window_size: config.window_size,
         epsilon: calibration.threshold,
         early_exit_limit: calibration.early_exit_limit,
+        serial_batch_limit: SERIAL_BATCH_LIMIT,
     }
 }
 
