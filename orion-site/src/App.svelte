@@ -20,6 +20,20 @@
   import "./home/home.css";
   let atlas = $state<AtlasState | null>(null);
   let error = $state("");
+  // Keep the latency archive in its own chunk; the explanatory landing page
+  // does not need to download every measured setting before it can render.
+  let LatencySection = $state<
+    typeof import("./latency/LatencySection.svelte").default | null
+  >(null);
+  let latencyError = $state("");
+  onMount(async () => {
+    try {
+      LatencySection = (await import("./latency/LatencySection.svelte"))
+        .default;
+    } catch (e) {
+      latencyError = e instanceof Error ? e.message : String(e);
+    }
+  });
   onMount(async () => {
     try {
       const { catalog, datasets } = await loadAtlas(import.meta.env.BASE_URL);
@@ -67,4 +81,10 @@
       {:else}<ThreadsSection {atlas} />{/if}
     {/if}
   </section>
+  {#if LatencySection}<LatencySection />
+  {:else}<section id="latency" class="home-section">
+      <h2>Request latency</h2>
+      {#if latencyError}<p role="alert">{latencyError}. Reload to try again.</p>
+      {:else}<p role="status">Loading latency measurements…</p>{/if}
+    </section>{/if}
 </PageShell>

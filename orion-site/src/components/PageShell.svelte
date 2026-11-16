@@ -12,7 +12,9 @@
     /><span>ORION <span class="brand-sub">ASTRAEUS</span></span></a
   >
   <nav aria-label="Project">
-    <a href="#graph-search">Method</a><a href="#atlas">Benchmarks</a>
+    <a href="#graph-search">Method</a><a href="#atlas">Benchmarks</a><a
+      href="#latency">Latency</a
+    >
     <a href="https://github.com/ChanchunhouZEON/Orion">Source ↗</a><a
       href="https://github.com/ChanchunhouZEON/Orion-Explorer">Explorer ↗</a
     >
