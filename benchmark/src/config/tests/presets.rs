@@ -92,8 +92,8 @@ base_graph:
 #[test]
 fn placeholder_paths_preserve_unicode_and_reject_incomplete_substitutions() {
     assert_eq!(
-        try_resolve_placeholders("数据/图.staged"),
-        Some("数据/图.staged".into())
+        try_resolve_placeholders("données/gráph.staged"),
+        Some("données/gráph.staged".into())
     );
     assert_eq!(
         try_resolve_placeholders("a${ORION_TEST_VARIABLE_THAT_DOES_NOT_EXIST_20261105}"),

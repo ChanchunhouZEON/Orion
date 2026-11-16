@@ -36,20 +36,25 @@ pub(crate) fn bind_rows<T: BaseElement>(
     )
 }
 
-pub fn prepare_datasets<T: BaseElement>(index: &Orion<T>, config: &ResolvedRunConfig) -> Result<()>
+pub(crate) fn prepare_datasets<T: BaseElement>(
+    index: &Orion<T>,
+    config: &ResolvedRunConfig,
+) -> Result<()>
 where
     PaddedDataset<T>: CascadeData,
 {
     bind_rows(index, config)?;
-    crate::placement::configure(index, config, std::iter::empty())?;
     if config.storage() == crate::VectorStorageKind::U8
         && config.metric == crate::SearchMetric::Cosine
     {
         index.exact_stage(orion_ann_core::ScoreMetric::CosineSimilarity)?;
     }
-    crate::sidecars::requirements::prepare(index, &config.index_plan().sidecar_requirements(false))
+    crate::sidecars::requirements::prepare(
+        index,
+        &crate::placement::ordered_sidecar_requirements(config),
+    )
 }
-pub fn prepare_search<'a, T: BaseElement>(
+pub(crate) fn prepare_search<'a, T: BaseElement>(
     index: &'a Orion<T>,
     config: &ResolvedRunConfig,
 ) -> Result<crate::PinnedDatasets<'a>>
@@ -66,7 +71,7 @@ where
         config.memory_budget_gib,
     )
 }
-pub fn pin_search_storage<'a, T: BaseElement>(
+pub(crate) fn pin_search_storage<'a, T: BaseElement>(
     index: &'a Orion<T>,
     config: &ResolvedRunConfig,
     options: &crate::PinOptions,
@@ -79,7 +84,7 @@ pub fn pin_search_storage<'a, T: BaseElement>(
         options,
     )
 }
-pub fn pin_hints<T: BaseElement>(
+pub(crate) fn pin_hints<T: BaseElement>(
     index: &Orion<T>,
     config: &ResolvedRunConfig,
 ) -> Result<Vec<crate::PinHint>> {

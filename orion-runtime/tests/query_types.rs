@@ -77,6 +77,7 @@ fn typed_calibration_search_snapshot_and_concurrency_share_one_path() {
                 storage_options: Some(StorageOptions {
                     mode: StorageMode::Mapped,
                     directory: Some(dir.path().to_owned()),
+                    ..Default::default()
                 }),
                 ..Default::default()
             }

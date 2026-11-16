@@ -11,6 +11,7 @@ fn mapped_slab_build_import_decode_preserve_partitions_and_lifetime() {
     let storage = RegionOptions {
         placement: Placement::Mapped,
         directory: Some(dir.path().into()),
+        accounting: None,
     };
     let mut staged = Vec::new();
     for word in [0x53544147u32, 3, 4, 2, 1, 0] {

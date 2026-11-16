@@ -7,6 +7,7 @@
 //! A view owns its backing through Arc. Construction is exclusive; publishing a
 //! view removes all writable access. File mappings only cover private temporary
 //! files: callers cannot invalidate a slice by overwriting an external cache.
+use crate::allocation_budget::{AllocationAccount, AllocationLease};
 use bytemuck::Pod;
 use std::{
     alloc::{dealloc, Layout},
@@ -32,6 +33,8 @@ pub enum Placement {
 pub struct RegionOptions {
     pub placement: Placement,
     pub directory: Option<PathBuf>,
+    /// Optional domain/object account. Each actual backing reserves its own lease.
+    pub accounting: Option<AllocationAccount>,
 }
 
 struct Allocation {
@@ -88,6 +91,8 @@ pub struct MutableRegion {
     ptr: NonNull<u8>,
     len: usize,
     backing: MutableBacking,
+    // Field order frees/unmaps storage before returning its budget.
+    lease: Option<AllocationLease>,
 }
 enum MutableBacking {
     Owned(Allocation),
@@ -112,6 +117,16 @@ impl MutableRegion {
     /// Rejects invalid layouts and reports allocation, filesystem or mapping failures.
     pub fn new(bytes: usize, alignment: usize, options: &RegionOptions) -> io::Result<Self> {
         Layout::from_size_align(bytes, alignment).map_err(|_| invalid("invalid region layout"))?;
+        let actual = if bytes == 0 {
+            Placement::Resident
+        } else {
+            options.placement
+        };
+        let lease = options
+            .accounting
+            .as_ref()
+            .map(|a| a.reserve(bytes, actual))
+            .transpose()?;
         let backing = if options.placement == Placement::Resident || bytes == 0 {
             MutableBacking::Owned(Allocation::new(bytes, alignment)?)
         } else {
@@ -146,6 +161,7 @@ impl MutableRegion {
             ptr,
             len: bytes,
             backing,
+            lease,
         })
     }
     #[inline(always)]
@@ -165,6 +181,19 @@ impl MutableRegion {
             MutableBacking::Mapped(_) => Placement::Mapped,
         }
     }
+    /// Adopt an existing uniquely owned buffer into a budget without copying it.
+    /// Repeating the same adoption is harmless; changing accounting domains is rejected.
+    pub fn account_storage(&mut self, account: &AllocationAccount) -> io::Result<()> {
+        if let Some(lease) = &self.lease {
+            return if lease.account() == account {
+                Ok(())
+            } else {
+                Err(invalid("buffer already belongs to another account"))
+            };
+        }
+        self.lease = Some(account.reserve(self.len, self.placement())?);
+        Ok(())
+    }
     /// Finish construction without copying, dropping all writable access.
     pub fn freeze(self) -> io::Result<ReadRegion> {
         let backing = match self.backing {
@@ -173,7 +202,11 @@ impl MutableRegion {
             MutableBacking::Mapped(m) => Backing::Mapped(m.make_read_only()?),
         };
         Ok(ReadRegion {
-            backing: Arc::new(backing),
+            backing: Arc::new(AccountedBacking {
+                len: self.len,
+                backing,
+                lease: self.lease,
+            }),
             offset: 0,
             len: self.len,
         })
@@ -254,10 +287,16 @@ impl Backing {
     }
 }
 
+// Every clone/section shares this owner, so the lease survives the parent view.
+struct AccountedBacking {
+    len: usize,
+    backing: Backing,
+    lease: Option<AllocationLease>,
+}
 /// An immutable byte range owning the backing, including after its parent drops.
 #[derive(Clone)]
 pub struct ReadRegion {
-    backing: Arc<Backing>,
+    backing: Arc<AccountedBacking>,
     offset: usize,
     len: usize,
 }
@@ -272,10 +311,29 @@ impl std::fmt::Debug for ReadRegion {
 impl ReadRegion {
     pub fn as_bytes(&self) -> &[u8] {
         // SAFETY: constructors/range validate length, backing lives with the view.
-        unsafe { std::slice::from_raw_parts(self.backing.ptr().add(self.offset), self.len) }
+        unsafe { std::slice::from_raw_parts(self.backing.backing.ptr().add(self.offset), self.len) }
     }
     pub fn placement(&self) -> Placement {
-        self.backing.placement()
+        self.backing.backing.placement()
+    }
+    /// Return the original account for replacement allocations, without a new charge.
+    pub fn accounting(&self) -> Option<AllocationAccount> {
+        self.backing.lease.as_ref().map(|l| l.account().clone())
+    }
+    /// Account a freshly constructed, uniquely owned region (for example a fitted codebook).
+    /// An already-accounted shared view can be checked without charging it again.
+    pub fn account_storage(&mut self, account: &AllocationAccount) -> io::Result<()> {
+        if let Some(lease) = &self.backing.lease {
+            return if lease.account() == account {
+                Ok(())
+            } else {
+                Err(invalid("region already belongs to another account"))
+            };
+        }
+        let owner = Arc::get_mut(&mut self.backing)
+            .ok_or_else(|| invalid("cannot adopt an unaccounted shared region"))?;
+        owner.lease = Some(account.reserve(owner.len, owner.backing.placement())?);
+        Ok(())
     }
     /// Borrow a section without copying; malformed ranges return InvalidInput.
     pub fn section(&self, range: Range<usize>) -> io::Result<Self> {
@@ -354,6 +412,10 @@ impl<T: Pod> ArrayView<T> {
     pub fn placement(&self) -> Placement {
         self.region.placement()
     }
+    /// Bind a freshly constructed array to its allocation account without copying.
+    pub fn account_storage(&mut self, account: &AllocationAccount) -> io::Result<()> {
+        self.region.account_storage(account)
+    }
     /// Initialize rows before publication. Mapped placement uses a bounded block
     /// and writes to a private file; no full-sized heap or mutable mmap is made.
     /// `fill` receives the first row index and zero-initialized complete rows.
@@ -375,6 +437,11 @@ impl<T: Pod> ArrayView<T> {
             .filter(|n| *n <= isize::MAX as usize)
             .ok_or_else(|| invalid("region length overflow"))?;
         let alignment = alignment.max(align_of::<T>());
+        let lease = options
+            .accounting
+            .as_ref()
+            .map(|a| a.reserve(bytes, options.placement))
+            .transpose()?;
         let backing = match options.placement {
             Placement::Resident => {
                 let mut owned = Allocation::new(bytes, alignment)?;
@@ -430,7 +497,11 @@ impl<T: Pod> ArrayView<T> {
             }
         };
         let region = ReadRegion {
-            backing: Arc::new(backing),
+            backing: Arc::new(AccountedBacking {
+                len: bytes,
+                backing,
+                lease,
+            }),
             offset: 0,
             len: bytes,
         };

@@ -22,6 +22,7 @@ pub(super) struct ReadView {
 }
 
 pub(super) trait Engine: Send + Sync {
+    fn storage_accounting(&self) -> serde_json::Value;
     fn prepare_auxiliary(
         &mut self,
         config: &ResolvedRunConfig,
@@ -82,12 +83,17 @@ pub(super) struct DynamicEngine<T: BaseElement> {
     pub(super) pin_report: crate::PinReport,
     pub(super) receipts: crate::sidecars::Receipts,
     pub(super) index: orion_ann_core::Orion<T>,
+    // Observer only: leases live inside the underlying buffers, not this handle.
+    resources: orion_ann_platform::allocation_budget::AllocationBudget,
 }
 
 impl<T: BaseElement> Engine for DynamicEngine<T>
 where
     orion_ann_diskann::model::PaddedDataset<T>: orion_ann_core::model::dataset::rows::CascadeData,
 {
+    fn storage_accounting(&self) -> serde_json::Value {
+        crate::placement::report(&self.resources)
+    }
     fn prepare_auxiliary(
         &mut self,
         config: &ResolvedRunConfig,
@@ -96,7 +102,6 @@ where
         if crate::placement::native_norm_bytes(config, self.index.len())? == 0 {
             return Ok(());
         }
-        crate::placement::configure(&self.index, config, std::iter::empty())?;
         crate::search::prepare_datasets(&self.index, config)?;
         let mut receipts = self
             .receipts
@@ -179,6 +184,9 @@ where
     }
     fn set_pq_code_storage(&mut self, policy: crate::PqCodeStorage) -> Result<()> {
         self.release_auto_pin();
+        if self.index.prepared_pq_code_storage() == Some(policy) {
+            return Ok(());
+        }
         self.index.set_pq_code_storage(policy)
     }
     fn pin<'a>(
@@ -257,5 +265,33 @@ where
     }
     fn sidecars(&self) -> Result<crate::sidecars::SnapshotSidecars> {
         crate::sidecars::materialized(&self.index, &self.receipts)
+    }
+}
+
+impl<T: BaseElement> DynamicEngine<T>
+where
+    orion_ann_diskann::model::PaddedDataset<T>: orion_ann_core::model::dataset::rows::CascadeData,
+{
+    pub(super) fn new(
+        index: orion_ann_core::Orion<T>,
+        receipts: crate::sidecars::Receipts,
+        config: &ResolvedRunConfig,
+    ) -> Result<Self> {
+        let resources = crate::placement::budget(config, 0).clone();
+        Ok(Self {
+            auto_pin: Default::default(),
+            pin_report: Default::default(),
+            receipts,
+            index,
+            resources,
+        })
+    }
+
+    pub(super) fn restore_snapshot(
+        &mut self,
+        store: &std::path::Path,
+        records: &crate::sidecars::SnapshotSidecars,
+    ) -> Result<()> {
+        crate::sidecars::restore_snapshot(&mut self.index, store, records)
     }
 }

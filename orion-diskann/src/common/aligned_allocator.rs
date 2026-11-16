@@ -68,6 +68,15 @@ impl<T> AlignedBoxWithSlice<T> {
         })
     }
 
+    /// Attach accounting to an already-owned input copy; ownership is unchanged.
+    pub fn account_storage(
+        &mut self,
+        account: &orion_ann_platform::allocation_budget::AllocationAccount,
+    ) -> ANNResult<()> {
+        self.region.account_storage(account)?;
+        Ok(())
+    }
+
     pub fn placement(&self) -> orion_ann_platform::region::Placement {
         self.region.placement()
     }

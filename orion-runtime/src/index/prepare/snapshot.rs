@@ -40,9 +40,8 @@ where
         &storage,
     )?;
     let mut index = graph.value;
+    super::storage::configure_object_storage(&index, config, files.sidecars.keys().cloned())?;
     crate::search::bind_rows(&index, config)?;
-    crate::placement::configure(&index, config, files.sidecars.keys().cloned())?;
-    crate::sidecars::restore_snapshot(&mut index, &saved.store, &files.sidecars)?;
     let receipts = crate::sidecars::track(
         &mut index,
         saved.store.clone(),
@@ -50,13 +49,10 @@ where
         files.sidecars.clone(),
         None,
     );
+    let mut engine = DynamicEngine::<T>::new(index, receipts, config)?;
+    engine.restore_snapshot(&saved.store, &files.sidecars)?;
     Ok(ReadView {
-        engine: Box::new(DynamicEngine::<T> {
-            index,
-            receipts,
-            auto_pin: Default::default(),
-            pin_report: Default::default(),
-        }),
+        engine: Box::new(engine),
         object_store: saved.store,
         payloads: files,
         graph_bytes: graph.bytes,

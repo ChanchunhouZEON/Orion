@@ -212,6 +212,7 @@ mod tests {
                 let options = RegionOptions {
                     placement,
                     directory: None,
+                    accounting: None,
                 };
                 let norms = NativeU8Norms::build(&base, &options).unwrap();
                 assert_eq!(

@@ -214,6 +214,9 @@ mod public_error {
                 {
                     ErrorCode::InvalidData
                 }
+                A::IOError { err } if err.kind() == std::io::ErrorKind::OutOfMemory => {
+                    ErrorCode::ResourceExhausted
+                }
                 A::IOError { .. } => ErrorCode::Io,
                 A::LockPoisonError { .. } => ErrorCode::InvalidState,
                 A::MemoryAllocLayoutError { .. } => ErrorCode::ResourceExhausted,

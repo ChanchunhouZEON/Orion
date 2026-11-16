@@ -25,6 +25,7 @@ for manifest, experimental in [("Cargo.toml", False), ("benchmark/Cargo.toml", T
     # DiskANN/Python dependency and must not leak back into the core API.
     assert all(d["name"] != "ndarray" for d in packages["orion-ann-core"]["dependencies"]), manifest
 
-    # Production configuration must not acquire dataset shortcuts or YAML parsing.
+    # Generic YAML decoding is shared; dataset presets remain benchmark-only.
+    assert any(d["name"] == "serde-saphyr" for d in packages["orion-ann"]["dependencies"]), manifest
     assert all(d["name"] != "serde_yaml" for d in packages["orion-ann"]["dependencies"]), manifest
     assert not Path("orion-runtime/configs/sweep.yaml").exists()

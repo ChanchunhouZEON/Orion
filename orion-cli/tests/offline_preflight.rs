@@ -220,7 +220,7 @@ fn default_auto_maps_the_graph_to_fit_an_offline_budget() {
     let report = fixture.report(&args);
     assert_eq!(report["budget_exceeded"], false);
     assert_eq!(report["resident_lower_bound_bytes"], 128_000_000_000u64);
-    assert_eq!(report["mapping_reserve_bytes"], 64 * 1024 * 1024);
+    assert!(report.get("mapping_reserve_bytes").is_none());
     let graph = report["components"]
         .as_array()
         .unwrap()
@@ -239,13 +239,14 @@ fn default_auto_maps_the_graph_to_fit_an_offline_budget() {
     assert!(table.status.success());
     let text = String::from_utf8(table.stdout).unwrap();
     assert!(text.contains("mapped"));
+    assert!(!text.contains("Mapping working-set reserve"));
     assert!(text.contains("known components within budget"));
     // Offline planning must not allocate a mapping or require the source files.
     assert!(!fixture.0.join("cache").exists());
 }
 
 #[test]
-fn mapped_mode_accounts_for_reserve_and_rejects_insufficient_budgets() {
+fn mapped_mode_budgets_real_working_buffers_without_fixed_allowance() {
     let fixture = Fixture::new();
     let report = fixture.report(&[
         "--preflight",
@@ -255,17 +256,46 @@ fn mapped_mode_accounts_for_reserve_and_rejects_insufficient_budgets() {
         "1",
     ]);
     assert_eq!(report["resident_lower_bound_bytes"], 0);
-    assert!(report["accounted_lower_bound_bytes"].as_u64().unwrap() >= 64 * 1024 * 1024);
+    assert!(report.get("mapping_reserve_bytes").is_none());
+    let working_bytes: u64 = report["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|part| {
+            matches!(
+                part["name"].as_str(),
+                Some("query buffers" | "result IDs" | "ground truth IDs")
+            )
+        })
+        .map(|part| part["bytes"].as_u64().unwrap())
+        .sum();
+    assert!(working_bytes > 0);
+    assert_eq!(report["accounted_lower_bound_bytes"], working_bytes);
+    let insufficient_budget = ((working_bytes - 1) as f64 / (1u64 << 30) as f64).to_string();
     for mode in ["auto", "mapped"] {
         for format in ["json", "table"] {
-            // Even mapping every payload cannot fit the 64 MiB reserve plus
-            // query buffers into this budget. Mappings are not free memory.
-            let output = fixture.run(&[
+            // A budget below the old allowance can now succeed. Known query
+            // buffers still count, even when every persistent payload is mapped.
+            let enough = fixture.run(&[
                 "--preflight",
                 "--storage-mode",
                 mode,
                 "--memory-budget-gib",
                 "0.01",
+                "--preflight-format",
+                format,
+            ]);
+            assert!(
+                enough.status.success(),
+                "{mode}/{format}: {}",
+                String::from_utf8_lossy(&enough.stderr)
+            );
+            let output = fixture.run(&[
+                "--preflight",
+                "--storage-mode",
+                mode,
+                "--memory-budget-gib",
+                &insufficient_budget,
                 "--preflight-format",
                 format,
             ]);
@@ -280,4 +310,189 @@ fn mapped_mode_accounts_for_reserve_and_rejects_insufficient_budgets() {
             }
         }
     }
+}
+
+#[test]
+fn dataset_name_labels_preflight_without_changing_cache_identity() {
+    let fixture = Fixture::new();
+    let anonymous = fixture.report(&["--preflight"]);
+    let named = fixture.report(&["--preflight", "--dataset-name", "SIFT 1B"]);
+    assert_eq!(anonymous["dataset"], "anonymous");
+    assert_eq!(named["dataset"], "SIFT 1B");
+    let original_config = fixture.report(&["--preflight", "--print-config"]);
+    let named_config =
+        fixture.report(&["--preflight", "--print-config", "--dataset-name", "SIFT 1B"]);
+    assert_eq!(
+        original_config["cache_namespace"],
+        named_config["cache_namespace"]
+    );
+    assert!(named_config["cache_namespace"].is_string());
+    let table = fixture.run(&[
+        "--preflight",
+        "--preflight-format",
+        "table",
+        "--dataset-name",
+        "SIFT 1B",
+    ]);
+    assert!(table.status.success());
+    assert!(String::from_utf8_lossy(&table.stdout).contains("Memory preflight — SIFT 1B"));
+    let invalid = fixture.run(&["--preflight", "--dataset-name", "   "]);
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("dataset_name"));
+}
+
+#[test]
+fn object_overrides_have_visible_decisions_and_reject_invalid_input() {
+    let fixture = Fixture::new();
+    let report = fixture.report(&[
+        "--preflight",
+        "--storage-mode",
+        "mapped",
+        "--object-storage",
+        "graph=resident",
+        "--object-storage",
+        "pq=mapped",
+    ]);
+    let objects = report["placement_objects"].as_array().unwrap();
+    let graph = objects.iter().find(|o| o["object"] == "graph").unwrap();
+    assert_eq!(graph["placement"], "resident");
+    assert_eq!(graph["overridden"], true);
+    assert_eq!(report["base_mapped"], true);
+    assert_eq!(
+        report["inactive_placement_overrides"],
+        serde_json::json!(["pq"])
+    );
+    let low = fixture.run(&[
+        "--preflight",
+        "--storage-mode",
+        "mapped",
+        "--object-storage",
+        "graph=resident",
+        "--memory-budget-gib",
+        "0.1",
+    ]);
+    assert!(!low.status.success());
+    let budget: Value = serde_json::from_slice(&low.stdout).unwrap();
+    assert_eq!(budget["budget_exceeded"], true);
+    for args in [
+        vec!["--object-storage", "graph=unknown"],
+        vec!["--object-storage", "unknown=resident"],
+        vec!["--object-storage", "graph"],
+        vec![
+            "--object-storage",
+            "graph=resident",
+            "--object-storage",
+            "graph=mapped",
+        ],
+        vec!["--object-storage", "labels=mapped"],
+    ] {
+        let mut input = vec!["--preflight"];
+        input.extend(args);
+        assert!(!fixture.run(&input).status.success());
+    }
+    let table = fixture.run(&[
+        "--preflight",
+        "--preflight-format",
+        "table",
+        "--object-storage",
+        "graph=resident",
+    ]);
+    assert!(table.status.success());
+    assert!(String::from_utf8_lossy(&table.stdout).contains("Storage placement"));
+}
+
+#[test]
+fn partial_placement_and_phase_reports_distinguish_ram_from_mapping_capacity() {
+    let fixture = Fixture::new();
+    let args = [
+        "--preflight",
+        "--max-points",
+        "1000000",
+        "--vector-storage",
+        "f32",
+        "--prefilter",
+        "none",
+        "--admission",
+        "l2-u8",
+        "--rerank",
+        "none",
+        "--memory-budget-gib",
+        "0.4",
+        "--storage-mode",
+        "auto",
+        "--object-storage",
+        "graph=resident",
+    ];
+    let report = fixture.report(&args);
+    assert_eq!(report["planned_phase"], "search-ready");
+    assert_eq!(report["budget_exceeded"], false);
+    assert_eq!(report["graph_mapped"], false);
+    assert_eq!(report["base_mapped"], true);
+    assert!(report["mapped_bytes"].as_u64().unwrap() > 0);
+    assert!(report["validation_scope"]["mmap_backing_capacity"]
+        .as_str()
+        .unwrap()
+        .contains("not checked"));
+    let mut build_args = args.to_vec();
+    build_args.push("--prepare-only");
+    let graph_only = fixture.report(&build_args);
+    assert_eq!(graph_only["planned_phase"], "graph-only");
+    assert_eq!(graph_only["sidecar_bytes"], 0);
+    assert!(report["sidecar_bytes"].as_u64().unwrap() > 0);
+    assert!(
+        graph_only["mapped_bytes"].as_u64().unwrap() < report["mapped_bytes"].as_u64().unwrap()
+    );
+    let mut table_args = args.to_vec();
+    table_args.extend(["--preflight-format", "table"]);
+    let output = fixture.run(&table_args);
+    assert!(output.status.success());
+    let table = String::from_utf8(output.stdout).unwrap();
+    assert!(table.contains("Planned phase: search-ready"));
+    assert!(table.contains("Mapped payload limit: not configured"));
+    assert!(table.contains("not a peak-RSS guarantee"));
+}
+
+#[test]
+fn yaml_preflight_matches_flags_and_reports_config_errors() {
+    let f = Fixture::new();
+    std::fs::write(f.0.join("config.yaml"),
+        "dataset_name: demo\nthreads: 8\nmemory_budget_gib: 0.4\nstorage_options: {mode: auto, objects: {graph: resident, base: mapped}}\n"
+    ).unwrap();
+    let yaml = f.report(&[
+        "--config",
+        "config.yaml",
+        "--preflight",
+        "--max-points",
+        "1000000",
+    ]);
+    let flags = f.report(&[
+        "--dataset-name",
+        "demo",
+        "--threads",
+        "8",
+        "--memory-budget-gib",
+        "0.4",
+        "--storage-mode",
+        "auto",
+        "--object-storage",
+        "graph=resident",
+        "--object-storage",
+        "base=mapped",
+        "--preflight",
+        "--max-points",
+        "1000000",
+    ]);
+    assert_eq!(yaml, flags);
+    std::fs::write(f.0.join("config.yaml"), "threads: [8]").unwrap();
+    let output = f.run(&[
+        "--config",
+        "config.yaml",
+        "--preflight",
+        "--error-format",
+        "json",
+    ]);
+    assert!(!output.status.success());
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["operation"], "parse_config");
+    assert_eq!(error["details"]["path"], "config.yaml");
 }

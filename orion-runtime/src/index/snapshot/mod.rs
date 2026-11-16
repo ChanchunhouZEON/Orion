@@ -62,10 +62,12 @@ impl From<&SnapshotRef> for SnapshotSource {
     }
 }
 
-/// Resource overrides for reopening a snapshot. Defaults use the saved settings.
+/// Display and resource overrides for reopening a snapshot. Defaults use the saved settings.
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OpenOptions {
+    /// Override the saved display name without changing payload or calibration identity.
+    pub dataset_name: Option<String>,
     /// Explicit relocation of the immutable object store. Hash verification is unchanged.
     pub object_store: Option<PathBuf>,
     pub threads: Option<usize>,
@@ -92,6 +94,9 @@ impl OpenOptions {
         .map_err(Error::from)?;
         let mut options = snapshot.options.clone();
         options.cache_dir = path.canonicalize().map_err(Error::from)?;
+        if self.dataset_name.is_some() {
+            options.dataset_name = self.dataset_name;
+        }
         if let Some(n) = self.threads {
             options.threads = n;
         }

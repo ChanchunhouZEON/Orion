@@ -46,6 +46,105 @@ class IndexTests(unittest.TestCase):
         self.graph = GraphConfig(source="parlayann", staged_file=self.staged,
                                  degree=8, build_l=32, alpha=1.2, max_extra=4)
 
+    def test_object_placement_preflight_search_and_snapshot_parity(self):
+        base, queries = self.arrays()
+        bp, qp = self.root / "base.fbin", self.root / "query.fbin"
+        write_vectors(bp, base)
+        write_vectors(qp, queries)
+        overrides = {"base": "mapped", "graph": "resident", "l2-u8": "mapped", "pq": "resident"}
+        storage = StorageOptions(mode="resident", directory=self.root, objects=overrides)
+        index = Index.from_file(bp, graph=self.graph, cache_dir=self.root / "mixed-cache",
+                                threads=2, auto_pin=False, storage_options=storage)
+        index.calibrate(queries, k=3, search_list_size=48)
+        expected = index.search(queries, k=3, search_list_size=24)
+        actual = {entry["object"]: entry for entry in index.info["storage_accounting"]["objects"]}
+        self.assertGreater(actual["base"]["mapped_bytes"], 0)
+        self.assertGreater(actual["graph"]["resident_bytes"], 0)
+        self.assertGreater(actual["l2-u8"]["mapped_bytes"], 0)
+        self.assertNotIn("pq", actual)
+        command = [os.environ["ORION_TEST_CLI"], "--base", str(bp), "--query", str(qp),
+                   "--staged-file", str(self.staged), "--graph-degree", "8", "--build-l", "32",
+                   "--alpha", "1.2", "--max-extra", "4", "--threads", "2", "--k", "3",
+                   "--search-l", "24", "--cache-dir", str(self.root / "mixed-cache"),
+                   "--storage-mode", "resident", "--mmap-dir", str(self.root), "--no-auto-pin"]
+        for key, mode in overrides.items():
+            command += ["--object-storage", f"{key}={mode}"]
+        probe = subprocess.run(command + ["--preflight"], text=True, capture_output=True)
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        forecast = json.loads(probe.stdout)
+        self.assertEqual(forecast["inactive_placement_overrides"], ["pq"])
+        for decision in forecast["placement_objects"]:
+            usage = actual[decision["object"]]
+            self.assertEqual(decision["bytes"], usage["resident_bytes"] + usage["mapped_bytes"])
+            self.assertEqual(decision["placement"], "mapped" if usage["mapped_bytes"] else "resident")
+        run = subprocess.run(command + ["--no-groundtruth"], text=True, capture_output=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        records = [json.loads(line) for line in run.stdout.splitlines() if line.startswith("{")]
+        self.assertEqual([row["ids"] for row in records if row.get("type") == "result"],
+                         [ids[:n].tolist() for ids, n in zip(expected.ids, expected.counts)])
+        ref = index.save(self.root / "mixed-snapshot")
+        inherited = Index.open(ref, base=bp)
+        self.assertEqual(inherited.info["storage_options"], index.info["storage_options"])
+        self.assert_results(expected, inherited.search(queries, k=3, search_list_size=24))
+        swapped_policy = StorageOptions(mode="mapped", directory=self.root, objects={"l2-u8": "resident"})
+        swapped = Index.open(ref, base=bp, storage_options=swapped_policy)
+        self.assertEqual(swapped.info["mapped_sidecar_bytes"], 0)
+        self.assert_results(expected, swapped.search(queries, k=3, search_list_size=24))
+        snapshot_run = subprocess.run([os.environ["ORION_TEST_CLI"], "--snapshot", ref.path,
+            "--base", str(bp), "--query", str(qp), "--k", "3", "--search-l", "24",
+            "--storage-mode", "mapped", "--object-storage", "l2-u8=resident",
+            "--mmap-dir", str(self.root)], text=True, capture_output=True)
+        self.assertEqual(snapshot_run.returncode, 0, snapshot_run.stderr)
+        records = [json.loads(line) for line in snapshot_run.stdout.splitlines() if line.startswith("{")]
+        self.assertEqual([row["ids"] for row in records if row.get("type") == "result"],
+                         [ids[:n].tolist() for ids, n in zip(expected.ids, expected.counts)])
+        for objects in [{"labels": "mapped"}, {"unknown": "resident"}, {"base": "unknown"}]:
+            with self.assertRaises(OrionError):
+                self.make(base, storage_options=StorageOptions(objects=objects))
+
+    def test_dataset_name_cache_snapshot_and_cli(self):
+        base, queries = self.arrays()
+        anonymous = self.make(base)
+        self.assertEqual(anonymous.info["dataset_name"], "anonymous")
+        named = self.make(base, dataset_name="application-vectors")
+        self.assertEqual(named.info["cache_namespace"], anonymous.info["cache_namespace"])
+        self.assertEqual(named.info["dataset_name"], "application-vectors")
+        bp, qp = self.root / "base.fbin", self.root / "query.fbin"
+        write_vectors(bp, base)
+        write_vectors(qp, queries)
+        file_index = Index.from_file(bp, graph=self.graph, cache_dir=self.root / "file-cache",
+                                     threads=2, dataset_name="file-vectors")
+        self.assertEqual(file_index.info["dataset_name"], "file-vectors")
+        named.calibrate(queries, k=3, search_list_size=24)
+        expected = named.search(queries, k=3, search_list_size=24)
+        saved = named.save(self.root / "named-snapshot")
+        restored = Index.open(saved, base=base)
+        self.assertEqual(restored.info["dataset_name"], "application-vectors")
+        renamed = Index.open(saved, base=base, dataset_name="deployed-vectors")
+        self.assertEqual(renamed.info["dataset_name"], "deployed-vectors")
+        self.assert_results(expected, renamed.search(queries, k=3, search_list_size=24))
+        # Snapshot base identity binds representation: use the same NumPy base
+        # for Python, and a file-backed snapshot for the CLI roundtrip.
+        file_index.calibrate(queries, k=3, search_list_size=24)
+        file_ref = file_index.save(self.root / "file-snapshot")
+        for override, label in [(None, "file-vectors"), ("cli-vectors", "cli-vectors")]:
+            command = [os.environ["ORION_TEST_CLI"], "--snapshot", file_ref.path,
+                       "--base", str(bp), "--query", str(qp), "--no-groundtruth",
+                       "--k", "3", "--search-l", "24"]
+            if override is not None:
+                command += ["--dataset-name", override]
+            run = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            records = [json.loads(line) for line in run.stdout.splitlines() if line.startswith("{")]
+            summary = next(row for row in records if row.get("type") == "summary")
+            self.assertEqual(summary["dataset"], label)
+            result = file_index.search(queries, k=3, search_list_size=24)
+            self.assertEqual([row["ids"] for row in records if row.get("type") == "result"],
+                             [ids[:n].tolist() for ids, n in zip(result.ids, result.counts)])
+        for name in ["", "  ", "bad\nname"]:
+            with self.assertRaises(OrionError):
+                self.make(base, dataset_name=name)
+
     def arrays(self, dtype=np.float32, dimension=32):
         base = self.rng.integers(0, 240, (64, dimension)).astype(dtype)
         queries = self.rng.integers(0, 240, (24, dimension)).astype(dtype)
@@ -630,7 +729,7 @@ class IndexTests(unittest.TestCase):
         broken = base.copy(); broken[0, 0] = np.nan
         with self.assertRaisesRegex(OrionError, "non-finite"): self.make(broken)
         with self.assertRaisesRegex(OrionError, "budget"):
-            self.make(base, memory_budget_gib=1e-10)
+            self.make(base, memory_budget_gib=1e-10, storage_options=StorageOptions(mode="resident"))
         with self.assertRaises(OrionError) as invalid_threads:
             Index.from_array(base, threads=0, graph=self.graph, cache_dir=self.root / "bad")
         self.assertEqual(invalid_threads.exception.details["field"], "threads")

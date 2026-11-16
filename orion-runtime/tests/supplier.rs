@@ -138,7 +138,22 @@ fn names_do_not_change_topology_identity_and_base_binding_is_checked() {
     .is_err());
     let mut low = options(&d.path().join("tinycache"), false);
     low.memory_budget_gib = Some(1e-12);
-    assert!(Index::from_staged(base(false), &path, low).is_err());
+    // An explicit resident request still fails when real payloads cannot fit.
+    low.storage_options.mode = orion_ann::StorageMode::Resident;
+    assert!(Index::from_staged(base(false), &path, low.clone()).is_err());
+    // Auto can map every payload without charging a synthetic mmap allowance.
+    low.storage_options.mode = orion_ann::StorageMode::Auto;
+    let mapped = Index::from_staged(base(false), &path, low).unwrap();
+    assert_eq!(
+        mapped.info()["storage_accounting"]["resident_payload_bytes"],
+        0
+    );
+    assert!(
+        mapped.info()["storage_accounting"]["mapped_payload_bytes"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
 }
 
 #[test]

@@ -50,6 +50,7 @@ fn memory_and_staged_preserve_order_entry_and_native_bytes() {
         let options = RegionOptions {
             placement,
             directory: None,
+            accounting: None,
         };
         let memory =
             Orion::from_partition_source(data(), &s, &mut SlicePartitions::new(&r), &options)

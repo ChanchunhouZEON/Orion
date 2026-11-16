@@ -148,16 +148,12 @@ impl IndexPlan {
         self.search
     }
 
-    /// Resolve auxiliary allocations for the run phase from the validated recipe.
-    /// The same list drives preparation and preflight; storage arithmetic stays
-    /// with the quantized dataset implementation.
-    pub(crate) fn sidecar_requirements(
+    /// Describe the search recipe's sidecars, independently of the run phase.
+    /// Stage selection belongs to RunPhase; allocation arithmetic remains with
+    /// the quantized dataset implementation.
+    pub(crate) fn search_sidecar_requirements(
         self,
-        prepare_only: bool,
     ) -> Vec<crate::sidecars::requirements::SidecarRequirement> {
-        if prepare_only {
-            return Vec::new();
-        }
         self.search.sidecar_requirements()
     }
 }

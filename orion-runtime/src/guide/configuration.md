@@ -13,6 +13,7 @@ created/opened, not when a struct is constructed or deserialized.
 use orion_ann::{GraphConfig, IndexOptions};
 use orion_ann::GraphSourcePolicy;
 let options = IndexOptions {
+    dataset_name: Some("my-vectors".into()),
     threads: 8,
     graph: GraphConfig {
         source: GraphSourcePolicy::Rust,
@@ -29,6 +30,14 @@ let restored: IndexOptions = serde_json::from_str(&serde_json::to_string(&option
 assert_eq!(restored.threads, 8);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+`dataset_name` is display metadata: Rust uses `IndexOptions::dataset_name`,
+Python accepts `Index.from_file(..., dataset_name="my-vectors")` (also arrays),
+and the CLI accepts `--dataset-name my-vectors`. The default is `anonymous`.
+Names persist in snapshots; `OpenOptions::dataset_name`, Python `open` and CLI
+`--snapshot --dataset-name` can override them. Names do not select presets or
+change graph/cache/calibration identities. Empty, whitespace-only and control-character
+names are rejected before loading the base payload.
 
 ## Selection and validation
 
@@ -106,7 +115,9 @@ new generation, and dropping the index releases its remaining locks. Inspect
 
 `IndexOptions::storage_options` controls physical storage independently of the
 cascade. `Auto` (default) keeps payloads owned when budget/headroom permits,
-otherwise maps the largest arrays before allocation. `Resident` disables this
+otherwise prioritizes graph and admission storage, followed by prefilter storage,
+then rerank-only or inactive payloads. Objects that do not fit are mapped; a
+smaller lower-priority object may still use the remaining capacity. `Resident` disables this
 fallback; `Mapped` maps base vectors, graph adjacency and extras, and all
 quantized payloads (including norms, projection parameters and PQ codebooks).
 File loading, normalization, STAG import and ParlayANN slab construction write
@@ -122,6 +133,7 @@ let mut index = Index::new(BaseInput::from_file("base.fbin"), IndexOptions {
     storage_options: StorageOptions {
         mode: StorageMode::Auto,
         directory: Some("/local-ssd/orion-tmp".into()),
+        ..Default::default()
     },
     ..Default::default()
 })?;
@@ -129,14 +141,76 @@ let mut index = Index::new(BaseInput::from_file("base.fbin"), IndexOptions {
 # Ok::<(), orion_ann::Error>(())
 ```
 
+Per-object overrides take precedence over the global mode. Resident overrides
+reserve their budget before automatic objects, regardless of allocation order.
+A resident request fails with `ResourceExhausted` if it cannot fit; it is never
+silently mapped. `Auto` remains an explicit option even under a global resident
+or mapped policy. Overrides do not build representations absent from the request.
+
+```rust
+use orion_ann::{StorageOptions, StorageMode, StorageObject};
+let storage = StorageOptions {
+    mode: StorageMode::Auto,
+    objects: [
+        (StorageObject::Base, StorageMode::Mapped),
+        (StorageObject::Graph, StorageMode::Resident),
+        (StorageObject::L2U8, StorageMode::Resident),
+    ].into(),
+    ..Default::default()
+};
+assert_eq!(storage.objects[&StorageObject::Base], StorageMode::Mapped);
+```
+
+```python
+storage = StorageOptions(objects={
+    "base": "mapped", "graph": "resident", "l2-u8": "resident",
+})
+index = Index.from_file("base.fbin", storage_options=storage)
+```
+
+```bash
+orion --base base.fbin --query query.fbin --preflight \
+  --object-storage base=mapped \
+  --object-storage graph=resident \
+  --object-storage l2-u8=resident
+```
+
+Supported keys are `base`, `graph`, `norms`, `labels`, `l2-u8`, `l2-u16`,
+`mips-i8`, `mips-i16`, `pq`, `l2-kt`, `jl-sparse`, `jl-sparse-mips`,
+`jl-hadamard`, `rabitq`, and `rabitq4`. These identify representations, not
+cascade stages or cache filenames. Shared sidecars receive one placement decision; shared backing allocations are
+charged only once. `pq` selects the whole sidecar, including codebook and codes;
+suballocation placement is not part of this configuration yet.
+
+Labels remain resident-only: global mapped leaves label metadata in memory,
+while explicit `labels=mapped` is rejected, even before any labels exist.
+Label generations and external ID allocations are not part of the core-payload
+accounting list; metadata accounting remains separate from region payload accounting.
+Preflight lists `placement_objects` and `inactive_placement_overrides` (including
+objects outside the selected phase/payload scope). The table shows the same
+decisions when overrides are present. `storage_accounting.objects` in index info
+reports actual prepared payloads, so it does not include unbuilt sidecars.
+
+Preflight and preparation share the object descriptors and selection algorithm.
+Offline planning uses the supplied budget; live preparation additionally probes
+available RAM and preserves the backing of objects already created. This can
+change automatic choices when resource observations differ. Build-only reports
+exclude search sidecars; live index placement reserves room for later calibration.
+Snapshot open inherits saved storage settings unless `storage_options` is supplied;
+a supplied policy replaces the entire saved policy, consistently across interfaces.
+Overrides do not alter graph/sidecar hashes or calibration signatures.
+
 The directory must already exist. It should be backed by disk, not tmpfs.
 Private files require the mapped payload's disk space for the index lifetime;
 failures remove partial files and return structured I/O errors. Mapping reduces
 owned allocations, not the logical payload or a guaranteed RSS ceiling: touched
-file pages consume page cache. A 64 MiB reserve covers bounded copy blocks and
-some page-cache working space; growing query scratch, PQ training samples and
-other process overhead are additional. The planner rejects a budget that cannot
-fit the fixed base/graph plus remaining owned payloads and this reserve.
+file pages consume page cache. Mapped payloads are accounted separately and do
+not consume the managed resident allocation budget. There is no fixed mmap
+working-set allowance; the OS controls mapped-page residency and reclamation.
+The planner rejects a budget that cannot fit fixed resident allocations and the
+remaining resident payloads. Query scratch, copy buffers, PQ training samples
+and other process overhead can still consume RAM; preflight reports known
+working buffers separately rather than treating mapped storage as free RAM.
 Offline preflight uses the supplied budget, so it can describe a different
 machine. Live preparation also considers currently available memory. Placement
 is fixed before the first sidecar allocation and reused during recalibration.
@@ -190,6 +264,7 @@ adapter; unsupported prefilter combinations fail validation.
 ```rust
 use orion_ann::{CascadeConfig, IndexOptions, SearchMetric};
 let options = IndexOptions {
+    dataset_name: Some("my-vectors".into()),
     metric: SearchMetric::Cosine,
     cascade: CascadeConfig {
         admission: Some("cosine-i8".into()),
@@ -232,3 +307,158 @@ The input aliases `l2` and `squared_l2` resolve to the same objective. Returned
 scores are labeled `squared_l2`: they are sums of squared coordinate differences,
 without a square root, and smaller values are better. Renaming the public option
 does not change persisted graph/sidecar identities or snapshot signatures.
+
+
+### Runtime ownership and budget accounting
+
+Preparation is internal to `Index` construction, snapshot restoration and
+calibration. Configure storage and pinning through the public options and
+residency methods; applications do not call `prepare` directly. Only the opt-in
+`benchmark` feature exposes raw-index preparation for controlled experiments.
+
+`Index::info()["storage_accounting"]` reports managed resident payload bytes,
+mapped payload bytes, the generation's resident budget limit, and remaining
+unreserved resident capacity. These are **not RSS readings**.
+The budget is per index generation; multiple indexes do not share a process-wide
+cap. They still observe system headroom when their placement is prepared.
+
+Storage policy is installed during preparation, independently of calibration.
+Each managed base, graph, norm or sidecar buffer reserves its actual payload bytes
+before allocation. Its lease follows ownership through construction and freezing;
+shared views retain one lease until the last reference drops. An object containing
+several buffers has several leases under the same object account. Construction
+errors and unwinding release only allocations that are actually discarded; already
+published sidecars stay charged. No post-hoc inventory or reconciliation is needed.
+PQ codes replacement charges both old and new buffers during the copy and releases
+the old charge only after replacement succeeds. Recalibration does not charge
+existing buffers twice.
+
+Base and graph still use header-based preflight before allocation. Array inputs
+are copied before index options are available: preparation adopts that owned copy
+once if resident, or allocates its accounted mapping and then drops the input copy.
+The budget limit is captured once per generation, before managed allocation;
+calibration neither reprobes it nor changes the installed placement policy.
+Preflight remains a forecast and input check; it acquires no live reservations.
+Accounting excludes builder/query scratch, temporary PQ training samples, label/ID
+metadata, allocator overhead, application input and OS page faults. Mapped byte
+counts describe backing storage, not its current RAM footprint.
+
+Frequency is currently a preparation-time hint derived from the validated search
+recipe, not a measured per-vector access count. There is no background migration,
+cache eviction or asynchronous SSD I/O in this policy. Storage and search results,
+cache identities, SIMD dispatch and prefetch scheduling remain independent.
+
+
+Preparation dependencies are selected separately from the search recipe. A
+`GraphOnly` run (`prepare_only`) omits quantized search sidecars; `SearchReady`
+includes those needed by calibration and search. Preflight passes the same
+phase-selected sidecar list to placement that it uses for its memory estimate.
+Native cosine norms remain base auxiliary storage in either phase. Actual base
+and graph placement continues to allow for eventual search dependencies, even
+in a graph-only run; choosing this target does not mutate the run configuration.
+
+
+### Preflight phases and memory limits
+
+Partial `StorageOptions.objects` entries are overrides, not a complete allocation
+plan. Planning collects the phase requirements and deduplicates shared objects,
+reserves explicit resident choices and fixed buffers, then considers automatic
+objects in priority order: graph, admission, prefilter, rerank, and cold objects.
+Mapped overrides do not consume the resident allowance. Base/norm priority follows
+the stage that reads them. Input order does not change those choices.
+
+A bound core plan is different: its objects may already exist. Reusing it validates
+required-object coverage, fixed placement and the budget. An incomplete binding is
+rejected rather than silently allocating missing objects with the default policy.
+It is not extended or migrated during calibration. Runtime prepares the complete
+search policy before binding, including saved snapshot extras.
+
+```bash
+orion --base /data/sift/base.u8bin --base-format u8bin \
+  --dimension 128 --max-points 1000000 --dataset-name sift1m \
+  --preflight --preflight-format table \
+  --memory-budget-gib 0.4 --storage-mode auto \
+  --object-storage graph=resident --object-storage base=mapped \
+  --mmap-dir /data/orion-mappings
+```
+
+`--memory-budget-gib` must be finite and positive. Offline preflight uses the
+supplied budget, without substituting the local machine's available RAM. Live Auto
+placement additionally considers available memory and keeps a fixed allocation
+budget for that generation. The report lists both the resident lower bound and
+mapped payload bytes. No separate mmap byte-limit option exists yet; `--mmap-dir`
+chooses backing storage and does not declare its capacity. Backing free space and
+user/project quotas are not checked by preflight. Mapping/creation failures still
+return errors during preparation.
+
+A passing report only establishes that counted resident payloads fit. It cannot
+prove peak RSS fits: scratch and overhead remain additional, and mapped pages may
+occupy RAM. A future mmap cap should constrain mapped backing bytes separately
+from resident payload, not count the whole mapping as resident memory.
+
+Add `--prepare-only` for a graph-only report; it excludes search sidecars and
+query buffers. Omit it to check search-ready requirements before calibration.
+These reports describe different phases and must not be treated as interchangeable.
+
+## Explicit YAML index configuration
+
+`IndexOptions::from_yaml` decodes the same generic configuration schema as Rust
+and JSON. This describes the index's construction and resource policy, not an
+entire run or a fixed search request. It does not load presets or search for a
+default configuration file.
+
+| Index configuration (YAML / `IndexOptions`) | Per-request input (separate API / CLI arguments) |
+| --- | --- |
+| Metric, base storage format, graph and cascade | Query vectors, `k`, search list size |
+| Threads, memory budget, object placement and auto pin | Scores and filter selection |
+| Dataset display name, cache path and row limit | Input paths, offline dimension, output and execution mode |
+
+Searches reuse the index with their own `QueryBatch` and `SearchOptions`. Keeping
+these requests separate allows different callers to choose different `k`, search
+list sizes and result fields without modifying the index configuration. A future
+whole-task format can compose these existing types without expanding
+`IndexOptions` with CLI-specific run controls.
+
+Use `{}` to explicitly select all defaults; empty/null documents and sequences
+are rejected. Missing fields retain their defaults; unknown fields, duplicate keys, invalid
+field types and multiple documents are rejected. Semantic and shape validation
+run through the existing resolution path after caller overrides.
+
+```rust
+use orion_ann::IndexOptions;
+let options = IndexOptions::from_yaml(r#"
+threads: 8
+memory_budget_gib: 1.0
+storage_options:
+  mode: auto
+  objects:
+    graph: resident
+"#)?;
+assert_eq!(options.threads, 8);
+# Ok::<(), orion_ann::Error>(())
+```
+
+The CLI accepts `--config FILE`. Explicit CLI flags override YAML fields, which
+in turn override defaults. Nested fields merge independently: overriding
+`--graph-degree` preserves YAML `graph.build_l`, and `--object-storage base=mapped`
+preserves YAML choices for other objects. `--no-auto-pin` disables locking;
+when absent, the YAML value is retained. Relative paths use the process working
+directory, not the YAML directory. Environment expansion and includes are disabled.
+The file is read once for resolution and execution. `--snapshot` cannot be combined
+with `--config`; snapshot open uses its persisted build configuration.
+
+```bash
+orion --config orion-runtime/examples/placement.yaml \
+  --base /data/sift/base.u8bin --dimension 128 \
+  --preflight --preflight-format table
+
+# CLI overrides only the graph placement and the budget from the YAML file.
+orion --config orion-runtime/examples/placement.yaml \
+  --base /data/sift/base.u8bin --dimension 128 \
+  --memory-budget-gib 0.1 --object-storage graph=auto \
+  --preflight --preflight-format table
+```
+
+Input/query paths, offline dimension and query-run controls remain CLI arguments,
+not fields of `IndexOptions`. The example file's dataset name is only a display
+label; it does not infer dimensions, counts or a graph recipe.

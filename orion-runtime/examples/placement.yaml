@@ -1,0 +1,17 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
+# Generic IndexOptions; base/query paths and offline dimension are CLI inputs.
+# Paths in this file are interpreted relative to the process working directory.
+dataset_name: sift1m
+metric: squared-l2
+storage: u8
+base_format: u8bin
+max_points: 1000000
+threads: 8
+memory_budget_gib: 0.4
+storage_options:
+  mode: auto
+  objects:
+    graph: resident
+    base: mapped

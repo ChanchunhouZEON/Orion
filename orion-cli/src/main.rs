@@ -38,7 +38,7 @@ struct Command {
     #[arg(
         long, value_name = "DIR", requires = "query",
         conflicts_with_all = [
-            "cache_dir", "staged_file",
+            "config", "cache_dir", "staged_file",
             "graph_source", "graph_degree", "build_l", "alpha", "max_extra",
             "max_points", "window_size", "base_format", "vector_storage", "dimension",
             "metric", "prefilter", "admission", "rerank", "print_config", "preflight",
@@ -96,7 +96,11 @@ enum ErrorFormat {
     Json,
 }
 
-fn run(config: &ResolvedRunConfig, command: &Command) -> Result<()> {
+fn run(
+    config: &ResolvedRunConfig,
+    command: &Command,
+    options: orion_ann::IndexOptions,
+) -> Result<()> {
     // Open lightweight query/evaluation inputs before allocating the potentially
     // much larger base dataset and index structures.
     let gt_file = if config.prepare_only {
@@ -111,7 +115,6 @@ fn run(config: &ResolvedRunConfig, command: &Command) -> Result<()> {
     };
 
     let input = orion_ann::BaseInput::from_file(&config.base);
-    let options = command.run.index_options();
     #[cfg(feature = "experimental-graph")]
     let supplied = command
         .run
@@ -337,16 +340,20 @@ fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
         ));
     }
     let query = args.query.as_deref().ok_or("--query is required")?;
+    let objects = args.object_overrides()?;
     let options = orion_ann::OpenOptions {
+        dataset_name: args.dataset_name.clone(),
         object_store: command.object_store.clone(),
         threads: args.threads,
         memory_budget_gib: args.memory_budget_gib,
         auto_pin: args.no_auto_pin.then_some(false),
-        storage_options: (args.storage_options.is_some() || args.mmap_dir.is_some()).then(|| {
-            orion_ann::StorageOptions {
-                mode: args.storage_options.unwrap_or_default(),
-                directory: args.mmap_dir.clone(),
-            }
+        storage_options: (args.storage_options.is_some()
+            || args.mmap_dir.is_some()
+            || !args.object_storage.is_empty())
+        .then(|| orion_ann::StorageOptions {
+            mode: args.storage_options.unwrap_or_default(),
+            directory: args.mmap_dir.clone(),
+            objects,
         }),
     };
     let index = match &args.base {
@@ -376,8 +383,9 @@ fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
             Error::invalid_state(format!("snapshot has no saved calibration for k={k}"))
         })?)?
     };
+    let info = index.info();
     let summary = RunSummary {
-        dataset: "snapshot",
+        dataset: info["dataset_name"].as_str().unwrap_or("anonymous"),
         k,
         batch_size: args.query_batch_size,
         calibration,
@@ -431,11 +439,14 @@ fn execute(command: Command) -> Result<()> {
     if let Some(directory) = &command.snapshot {
         return run_snapshot(&command, directory);
     }
-    let config = if command.run.preflight || command.run.print_config {
-        command.run.resolve_search(command.search_l)?
-    } else {
-        command.run.resolve_execution(command.search_l)?
-    };
+    // Read and merge the file once. Resolution and allocation must consume the
+    // same options even if another process replaces the YAML during startup.
+    let options = command.run.index_options()?;
+    let config = command.run.resolve_with_options(
+        command.search_l,
+        command.run.preflight || command.run.print_config,
+        options.clone(),
+    )?;
 
     let resolved = serde_json::to_string_pretty(&config).map_err(Error::from)?;
 
@@ -455,7 +466,7 @@ fn execute(command: Command) -> Result<()> {
 
     log::info!("Input settings (graph identity finalized during load): {resolved}");
 
-    run(&config, &command)
+    run(&config, &command, options)
 }
 
 fn main() {

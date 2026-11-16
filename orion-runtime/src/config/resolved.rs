@@ -11,7 +11,19 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ResolvedRunConfig {
-    /// Preset name, or "anonymous" for explicit inputs without a preset.
+    /// Execution-local allocation domain; excluded from identities and snapshots.
+    #[cfg(feature = "benchmark")]
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub allocation_budget: std::sync::Arc<
+        std::sync::OnceLock<orion_ann_platform::allocation_budget::AllocationBudget>,
+    >,
+    #[cfg(not(feature = "benchmark"))]
+    #[serde(skip)]
+    pub(crate) allocation_budget: std::sync::Arc<
+        std::sync::OnceLock<orion_ann_platform::allocation_budget::AllocationBudget>,
+    >,
+    /// Display name, or "anonymous" when none was supplied.
     pub dataset: String,
     pub base: PathBuf,
     /// Identity of the authenticated base, when available after input preparation.

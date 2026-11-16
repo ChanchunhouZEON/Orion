@@ -13,6 +13,7 @@
 
 pub mod aligned_io;
 pub mod aligned_reader;
+pub mod allocation_budget;
 pub mod buffered_io;
 pub mod file_handle;
 pub mod graph_mmap;

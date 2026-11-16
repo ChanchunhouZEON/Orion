@@ -13,6 +13,35 @@ unreleased development baseline, not a dated release announcement.
 
 ## Unreleased
 
+### Object placement and allocation accounting
+
+- Add per-object resident, mapped and automatic placement overrides across Rust,
+  Python and CLI. Mandatory resident objects reserve their share before remaining
+  automatic objects are placed by search priority; partial overrides retain the
+  policy for unspecified objects.
+- Account actual resident and mapped payloads with atomic allocation leases owned
+  by their buffers. Shared views retain one charge until the final owner drops;
+  failed preparation and replacement release their allocations automatically.
+- Share graph-only and search-ready requirements between preflight and preparation.
+  Validate already-bound plans before reuse; separate preparation sections for
+  base, graph, sidecars, snapshot extras and native norms.
+- Remove the fixed 64 MiB mapping allowance. Report mapped payload separately from
+  resident bounds; neither those bounds nor auto pin guarantee peak process RSS
+  or verify backing-store quotas.
+- Split placement and preflight into focused planning, accounting, metadata,
+  estimation and reporting modules without changing search SIMD/prefetch loops.
+
+### Index configuration
+
+- Restore explicit YAML decoding through `IndexOptions::from_yaml` and CLI
+  `--config`. CLI flags override individual YAML fields and per-object choices;
+  both resolution and execution consume the same decoded configuration.
+- Keep YAML limited to index construction and resource policy. Queries, `k`,
+  search list size, scores and execution controls remain separate request inputs.
+  Reject unknown fields, duplicate keys, malformed types and multiple documents.
+- Add optional dataset display names across Rust, Python and CLI, preserving
+  cache identity and snapshot restoration without reintroducing dataset presets.
+
 ### Typed query preparation
 
 - Decouple query coordinates from base storage: borrowed Rust queries and NumPy

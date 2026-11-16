@@ -137,6 +137,21 @@ impl PreparedBase {
                     Rows::F32(data) => relocate(data, &storage)?,
                     Rows::U8(data) => relocate(data, &storage)?,
                 }
+            } else if let Some(account) = &storage.accounting {
+                // Input copying precedes IndexOptions resolution. Adopt the final
+                // resident allocation once; its own Drop now releases the lease.
+                match &mut self.rows {
+                    Rows::F32(data) => data
+                        .base
+                        .as_mut()
+                        .ok_or("missing base")?
+                        .account_storage(account)?,
+                    Rows::U8(data) => data
+                        .base
+                        .as_mut()
+                        .ok_or("missing base")?
+                        .account_storage(account)?,
+                }
             }
         }
         Ok(())

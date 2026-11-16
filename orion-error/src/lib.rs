@@ -188,6 +188,8 @@ impl From<std::io::Error> for Error {
                 std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
             ) {
                 ErrorCode::InvalidData
+            } else if source.kind() == std::io::ErrorKind::OutOfMemory {
+                ErrorCode::ResourceExhausted
             } else {
                 ErrorCode::Io
             },

@@ -17,6 +17,7 @@ fn options(path: &std::path::Path, metric: SearchMetric, mode: StorageMode) -> I
         storage_options: StorageOptions {
             mode,
             directory: Some(path.to_owned()),
+            ..Default::default()
         },
         graph: GraphConfig {
             degree: 4,
@@ -67,6 +68,7 @@ fn native_metrics_snapshot_mmap_and_concurrent_search() {
             storage_options: Some(StorageOptions {
                 mode: StorageMode::Mapped,
                 directory: Some(d.path().to_owned()),
+                ..Default::default()
             }),
             ..Default::default()
         }
@@ -209,6 +211,7 @@ fn byte_cascades_restore_normalization_and_mapped_payloads() {
             storage_options: Some(StorageOptions {
                 mode: StorageMode::Mapped,
                 directory: Some(directory.path().to_owned()),
+                ..Default::default()
             }),
             ..Default::default()
         }
@@ -228,4 +231,48 @@ fn byte_cascades_restore_normalization_and_mapped_payloads() {
             }
         });
     }
+}
+
+#[test]
+fn norm_placement_is_independent_of_base_and_preserves_calibration() {
+    use orion_ann::StorageObject;
+    let root = tempfile::tempdir().unwrap();
+    let base: Vec<_> = (0..32 * 33).map(|i| ((i * 31) % 255 + 1) as u8).collect();
+    let input = || BaseInput::from_u8(&base, 33).unwrap();
+    let mut config = options(root.path(), SearchMetric::Cosine, StorageMode::Resident);
+    config.storage_options.objects = [(StorageObject::Norms, StorageMode::Mapped)].into();
+    let mut index = Index::new(input(), config).unwrap();
+    let queries: Vec<_> = base[..33 * 5].iter().map(|&v| v as f32).collect();
+    index.calibrate(queries.clone(), 3, Some(16)).unwrap();
+    let info = index.info();
+    let objects = info["storage_accounting"]["objects"].as_array().unwrap();
+    assert_eq!(
+        objects.iter().find(|o| o["object"] == "norms").unwrap()["mapped_bytes"],
+        32 * 4
+    );
+    assert_eq!(info["mapped_base_bytes"], 0);
+    assert_eq!(info["mapped_graph_bytes"], 0);
+    let query = QueryBatch::from_f32(&queries, 33).unwrap();
+    let search = SearchOptions::new(3, 16).with_scores(true);
+    let expected = index.search(query, &search).unwrap();
+    let snapshot = index.save(&root.path().join("snapshot")).unwrap();
+    let swapped = OpenOptions {
+        storage_options: Some(StorageOptions {
+            mode: StorageMode::Mapped,
+            objects: [(StorageObject::Norms, StorageMode::Resident)].into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+    .open(snapshot, input())
+    .unwrap();
+    let info = swapped.info();
+    let objects = info["storage_accounting"]["objects"].as_array().unwrap();
+    assert_eq!(
+        objects.iter().find(|o| o["object"] == "norms").unwrap()["resident_bytes"],
+        32 * 4
+    );
+    assert!(info["mapped_base_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(swapped.search(query, &search).unwrap(), expected);
+    assert_eq!(swapped.calibration(3), index.calibration(3));
 }

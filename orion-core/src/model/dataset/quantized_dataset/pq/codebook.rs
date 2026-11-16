@@ -117,15 +117,6 @@ pub(super) fn check_rows(data: &[f32], rows: usize, dim: usize) -> Result<()> {
 }
 
 impl FixedChunkPQTable {
-    pub(super) fn with_storage(mut self, storage: &RegionOptions) -> Result<Self> {
-        if self.centers.placement() != storage.placement {
-            self.centers = ArrayView::copy_from(&self.centers, storage)?;
-            self.mean = ArrayView::copy_from(&self.mean, storage)?;
-            self.offsets = ArrayView::copy_from(&self.offsets, storage)?;
-        }
-        Ok(self)
-    }
-
     /// Import centroid-major centers and a per-coordinate mean translation.
     /// Supply an all-zero mean to disable translation.
     /// # Errors
@@ -180,6 +171,14 @@ impl FixedChunkPQTable {
     }
 
     pub(super) fn train_rows(base: &impl Rows, options: PqBuildOptions) -> Result<Self> {
+        Self::train_rows_with_storage(base, options, &RegionOptions::default())
+    }
+
+    pub(super) fn train_rows_with_storage(
+        base: &impl Rows,
+        options: PqBuildOptions,
+        storage: &RegionOptions,
+    ) -> Result<Self> {
         let dim = base.dimension();
         let m = options.chunks(dim)?;
         if base.is_empty() {
@@ -248,10 +247,10 @@ impl FixedChunkPQTable {
         Ok(Self {
             centers: ArrayView::copy_from(
                 &chunks.into_iter().flatten().collect::<Vec<_>>(),
-                &Default::default(),
+                storage,
             )?,
-            offsets: ArrayView::copy_from(&offsets, &Default::default())?,
-            mean: ArrayView::copy_from(&vec![0.0; dim], &Default::default())?,
+            offsets: ArrayView::copy_from(&offsets, storage)?,
+            mean: ArrayView::copy_from(&vec![0.0; dim], storage)?,
         })
     }
 

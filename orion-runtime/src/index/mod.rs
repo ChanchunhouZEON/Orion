@@ -102,7 +102,7 @@ impl Index {
     }
 
     pub fn info(&self) -> serde_json::Value {
-        serde_json::json!({"num_points": self.len(), "dimension": self.dimension(),
+        serde_json::json!({"dataset_name": self.config.dataset, "num_points": self.len(), "dimension": self.dimension(),
         "supplier": self.view.payloads.supplier,
         "storage": self.storage(), "metric": self.config.metric,
         "graph_source": self.config.graph_source, "graph_selection_reason": self.config.graph_selection_reason,
@@ -113,6 +113,7 @@ impl Index {
         "mapped_base_bytes": self.view.engine.mapped_base_bytes(),
         "mapped_graph_bytes": self.view.engine.mapped_graph_bytes(),
         "storage_options": self.options.storage_options,
+        "storage_accounting": self.view.engine.storage_accounting(),
         "external_ids_bytes": self.external_ids.as_ref().map_or(0, |ids| ids.0.len() * 8),
         "residency": self.view.engine.pin_report()})
     }

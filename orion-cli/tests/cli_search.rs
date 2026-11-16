@@ -493,7 +493,7 @@ fn snapshot_cli_restores_calibration_and_matches_rust_search() {
         assert_eq!(line["ids"], serde_json::json!(ids));
     }
     assert_eq!(lines.len(), 206);
-    assert_eq!(lines.last().unwrap()["dataset"], "snapshot");
+    assert_eq!(lines.last().unwrap()["dataset"], "anonymous");
     assert_eq!(lines.last().unwrap()["recall"], 1.);
     let summary = successful(
         command()
@@ -535,4 +535,66 @@ fn snapshot_cli_restores_calibration_and_matches_rust_search() {
     let failed = command().args(["--error-format", "json"]).output().unwrap();
     assert!(!failed.status.success());
     assert!(String::from_utf8_lossy(&failed.stderr).contains("no saved calibration"));
+}
+
+#[test]
+fn yaml_search_matches_explicit_flags_and_snapshot_rejects_config() {
+    let f = Fixture::new();
+    std::fs::write(
+        f.root.join("config.yaml"),
+        r#"
+metric: squared-l2
+storage: u8
+threads: 2
+cache_dir: cache
+graph:
+  degree: 15
+  max_extra: 0
+  staged_file: graph.staged
+cascade: {admission: native-l2-u8, rerank: none}
+"#,
+    )
+    .unwrap();
+    let expected = successful(
+        f.native()
+            .args(["--query", "query.bvecs", "--scores"])
+            .output()
+            .unwrap(),
+    );
+    let actual = successful(
+        Command::new(env!("CARGO_BIN_EXE_orion"))
+            .current_dir(&f.root)
+            .args([
+                "--config",
+                "config.yaml",
+                "--base",
+                "base.bvecs",
+                "--query",
+                "query.bvecs",
+                "--k",
+                "1",
+                "--search-l",
+                "16",
+                "--query-batch-size",
+                "2",
+                "--scores",
+            ])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(&actual[..205], &expected[..205]);
+    assert_eq!(actual.last().unwrap()["queries"], 205);
+    let conflict = Command::new(env!("CARGO_BIN_EXE_orion"))
+        .args([
+            "--snapshot",
+            "saved",
+            "--config",
+            "config.yaml",
+            "--query",
+            "query.bvecs",
+        ])
+        .output()
+        .unwrap();
+    assert!(!conflict.status.success());
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("cannot be used with"));
 }

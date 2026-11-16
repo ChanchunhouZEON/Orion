@@ -434,3 +434,57 @@ fn approximate_selection_still_reports_exact_candidate_scores() {
         }
     }
 }
+
+#[test]
+fn dataset_name_survives_snapshot_and_does_not_rebuild_graph() {
+    let root = tempfile::tempdir().unwrap();
+    let base = data();
+    let input = || BaseInput::from_f32(&base, 13).unwrap();
+    let mut options = IndexOptions {
+        cache_dir: root.path().join("cache"),
+        threads: 2,
+        auto_pin: false,
+        ..Default::default()
+    };
+    let anonymous = Index::new(input(), options.clone()).unwrap();
+    assert_eq!(anonymous.info()["dataset_name"], "anonymous");
+    let namespace = anonymous.info()["cache_namespace"].clone();
+    drop(anonymous);
+    options.dataset_name = Some("application-vectors".into());
+    let mut named = Index::new(input(), options).unwrap();
+    assert_eq!(named.info()["cache_namespace"], namespace);
+    assert!(named.info()["graph_selection_reason"]
+        .as_str()
+        .unwrap()
+        .contains("cache"));
+    named.calibrate(base[..104].to_vec(), 3, Some(32)).unwrap();
+    let snapshot = named.save(&root.path().join("snapshot")).unwrap();
+    let restored = Index::open(&snapshot, input()).unwrap();
+    assert_eq!(restored.info()["dataset_name"], "application-vectors");
+    let renamed = orion_ann::OpenOptions {
+        dataset_name: Some("deployed-vectors".into()),
+        ..Default::default()
+    }
+    .open(&snapshot, input())
+    .unwrap();
+    assert_eq!(renamed.info()["dataset_name"], "deployed-vectors");
+    assert_eq!(renamed.info()["cache_namespace"], namespace);
+    assert_eq!(renamed.calibration(3), restored.calibration(3));
+    let query = QueryBatch::from_f32(&base[..104], 13).unwrap();
+    let search = SearchOptions::new(3, 32).with_scores(true);
+    assert_eq!(
+        named.search(query, &search).unwrap(),
+        renamed.search(query, &search).unwrap()
+    );
+    assert_eq!(
+        Index::open(&snapshot, input()).unwrap().info()["dataset_name"],
+        "application-vectors"
+    );
+    let error = orion_ann::OpenOptions {
+        dataset_name: Some("\n".into()),
+        ..Default::default()
+    }
+    .open(&snapshot, input())
+    .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidArgument);
+}

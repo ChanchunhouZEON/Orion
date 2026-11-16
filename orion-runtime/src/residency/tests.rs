@@ -28,7 +28,7 @@ fn shape() -> QuantizedDatasetShape {
 }
 
 #[test]
-fn search_preparation_checks_budget_then_automatically_pins() {
+fn storage_planning_checks_budget_before_search_preparation_pins() {
     use crate::search;
     let index = index();
     // Resident preparation must not open input/cache files or require a CLI feature.
@@ -61,11 +61,15 @@ fn search_preparation_checks_budget_then_automatically_pins() {
         )
         .unwrap();
     config.prepare_only = false;
-    let error = search::prepare_search(&index, &config).unwrap_err();
+    let error = crate::placement::configure_storage_policy(&index, &config, std::iter::empty())
+        .unwrap_err();
     assert_eq!(error.code(), crate::ErrorCode::ResourceExhausted);
     assert!(index.resident_sidecar_regions(K::L2U8).is_err());
 
+    // A new preparation domain is required for a different generation budget.
+    config.allocation_budget = Default::default();
     config.memory_budget_gib = Some(1.);
+    crate::placement::configure_storage_policy(&index, &config, std::iter::empty()).unwrap();
     let guard = search::prepare_search(&index, &config).unwrap();
     let report = guard.report();
     assert!(report.requested_datasets > 0);

@@ -23,6 +23,7 @@ impl Codes {
     pub(super) fn as_slice(&self) -> &[u8] {
         self.0.as_slice()
     }
+    #[cfg(test)]
     pub(super) fn from_reader(
         reader: &mut dyn Read,
         len: usize,
@@ -57,6 +58,7 @@ impl PqCodeStorage {
                 Self::OnDemand => orion_ann_platform::region::Placement::Mapped,
             },
             directory: None,
+            accounting: None,
         }
     }
 }

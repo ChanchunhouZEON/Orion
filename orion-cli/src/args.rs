@@ -13,6 +13,15 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Parser)]
 #[command(name = "orion", about = "Shared Orion input and search configuration")]
 pub struct Args {
+    /// Generic IndexOptions YAML; explicit CLI flags override individual fields.
+    #[arg(long, value_name = "FILE")]
+    pub config: Option<PathBuf>,
+
+    /// Display name for reports/snapshots; defaults to anonymous (or the saved name).
+    /// Does not select a dataset preset or change cache identity.
+    #[arg(long)]
+    pub dataset_name: Option<String>,
+
     /// Experimental supplier STAG v4 graph; preserves its entry and partitions.
     #[cfg(feature = "experimental-graph")]
     #[arg(long, conflicts_with_all = ["staged_file", "graph_source", "graph_degree", "build_l", "alpha", "max_extra"])]
@@ -61,6 +70,9 @@ pub struct Args {
     /// Existing disk-backed directory for private mapped payloads.
     #[arg(long)]
     pub mmap_dir: Option<PathBuf>,
+    /// Override one object: base=mapped, graph=resident, l2-u8=auto, etc. Repeatable.
+    #[arg(long = "object-storage", value_name = "OBJECT=MODE", value_parser = parse_object_storage)]
+    pub object_storage: Vec<(orion_ann::StorageObject, orion_ann::StorageMode)>,
     /// Build/import and save graph cache, then exit before calibration/search.
     #[arg(long)]
     pub prepare_only: bool,
@@ -103,4 +115,16 @@ pub struct Args {
     pub threads: Option<usize>,
     #[arg(long)]
     pub print_config: bool,
+}
+
+fn parse_object_storage(
+    value: &str,
+) -> Result<(orion_ann::StorageObject, orion_ann::StorageMode), String> {
+    let (object, mode) = value.split_once('=').ok_or("expected OBJECT=MODE")?;
+    Ok((
+        object
+            .parse()
+            .map_err(|e: orion_ann::Error| e.to_string())?,
+        mode.parse().map_err(|e: orion_ann::Error| e.to_string())?,
+    ))
 }

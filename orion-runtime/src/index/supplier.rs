@@ -200,15 +200,10 @@ where
         Ok(())
     })?;
     crate::search::bind_rows(&index, config)?;
-    crate::placement::configure(&index, config, std::iter::empty())?;
+    super::prepare::storage::configure_object_storage(&index, config, std::iter::empty())?;
     let receipts = crate::sidecars::track(&mut index, store.clone(), None, BTreeMap::new(), None);
     Ok(ReadView {
-        engine: Box::new(DynamicEngine::<T> {
-            index,
-            receipts,
-            auto_pin: Default::default(),
-            pin_report: Default::default(),
-        }),
+        engine: Box::new(DynamicEngine::<T>::new(index, receipts, config)?),
         object_store: store.canonicalize()?,
         graph_bytes,
         metadata_bytes,

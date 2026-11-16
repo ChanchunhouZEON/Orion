@@ -74,7 +74,7 @@ impl PqDataset {
             },
             options,
         )?;
-        let table = FixedChunkPQTable::train_rows(base, *options)?.with_storage(storage)?;
+        let table = FixedChunkPQTable::train_rows_with_storage(base, *options, storage)?;
         let codes = orion_ann_platform::region::ArrayView::build_rows::<Error>(
             base.len(),
             table.get_num_chunks(),
@@ -164,10 +164,12 @@ impl PqDataset {
     /// Returns temporary-file/allocation/I/O errors. Existing storage survives failure.
     pub fn set_code_storage(&mut self, policy: PqCodeStorage) -> Result<()> {
         if self.code_storage() != policy {
-            let replacement = Codes::from_reader(
+            let mut options = policy.options();
+            options.accounting = self.codes.0.region().accounting();
+            let replacement = Codes::read_with_options(
                 &mut self.codes.as_slice(),
                 self.codes.as_slice().len(),
-                policy,
+                &options,
             )?;
             self.codes = replacement;
         }
