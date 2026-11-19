@@ -3,7 +3,7 @@
  * Licensed under the MIT License.
  */
 
-//! Explicit stress suite: `cargo test -p orion-ann --release --lib model::phased_graph::tests::randomized -- --ignored`.
+//! Explicit stress suite: `cargo test -p orion-ann-core --release --lib model::graph::phased_graph::tests::randomized -- --ignored`.
 //! Fixed seeds make failures reproducible. CI runs this independently of unit tests.
 use super::support;
 use crate::{ErrorCode, PhasedGraph};

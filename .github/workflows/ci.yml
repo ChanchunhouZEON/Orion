@@ -45,7 +45,7 @@ jobs:
         run: |
           cargo +nightly miri test --locked -p orion-ann-diskann --lib --target x86_64-unknown-linux-gnu common::aligned_allocator -- --skip large_allocation_preserves_length_zeroing_and_alignment
           cargo +nightly miri test --locked -p orion-ann-diskann --test allocator_adversarial --target x86_64-unknown-linux-gnu
-          cargo +nightly miri test --locked -p orion-ann-core --no-default-features --lib model::phased_graph::tests::concurrency --target x86_64-unknown-linux-gnu
+          cargo +nightly miri test --locked -p orion-ann-core --no-default-features --lib model::graph::phased_graph::tests::concurrency --target x86_64-unknown-linux-gnu
           MIRIFLAGS=-Zmiri-disable-isolation RAYON_NUM_THREADS=1 cargo +nightly miri test --locked -p orion-ann-core --no-default-features --test sidecar_safety --target x86_64-unknown-linux-gnu safe_ -- --test-threads=1
 
   graph-safety:
@@ -67,7 +67,7 @@ jobs:
           cargo test --locked -p orion-ann-diskann --test allocator_adversarial
           cargo test --locked -p orion-ann-core --test sidecar_safety
           cargo test --locked -p orion-ann-core --release --test sidecar_safety
-          cargo test --locked -p orion-ann-core --no-default-features --lib model::phased_graph::tests
+          cargo test --locked -p orion-ann-core --no-default-features --lib model::graph::phased_graph::tests
 
   randomized-safety:
     name: Randomized graph stress / ${{ matrix.os }}
@@ -87,7 +87,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo test --locked -p orion-ann-core --no-default-features --release --lib model::phased_graph::tests::randomized -- --ignored --nocapture 2>&1 | tee graph-randomized.log
+          cargo test --locked -p orion-ann-core --no-default-features --release --lib model::graph::phased_graph::tests::randomized -- --ignored --nocapture 2>&1 | tee graph-randomized.log
       - name: Randomized sidecar layouts and scalar distance parity
         run: cargo test --locked -p orion-ann-core --release --test sidecar_randomized -- --ignored --nocapture
       - uses: actions/upload-artifact@v4
@@ -343,6 +343,11 @@ jobs:
           cargo test --locked -p orion-ann-core -p orion-ann-diagnostics -p orion-ann-parlay -p orion-ann -p orion-ann-cli
           cargo test --locked -p orion-ann-diskann --all-features
           cargo test --locked -p orion-ann-platform
+      - name: Experimental storage lifetime and query parity
+        run: |
+          cargo test --locked -p orion-ann-ssd
+          cargo test --locked --manifest-path benchmark/storage/Cargo.toml
+          python3 -m unittest discover -s benchmark/storage -p 'test_*.py'
       - name: Product quantization in ordinary builds
         run: |
           cargo test --locked -p orion-ann-core --no-default-features --lib --test product_quantization

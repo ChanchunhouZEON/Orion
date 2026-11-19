@@ -41,14 +41,10 @@ impl IndexPlan {
         cascade.validate_cascade_options(metric)?;
         match vector_storage {
             VectorStorageKind::F32 => {
-                orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::L2F32Distance>(
-                    dimension,
-                )?;
+                orion_ann_vector::PaddedLayout::for_base_scalar::<f32>(dimension)?;
             }
             VectorStorageKind::U8 => {
-                orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::IpU8Distance>(
-                    dimension,
-                )?;
+                orion_ann_vector::PaddedLayout::for_base_scalar::<u8>(dimension)?;
             }
         }
 
@@ -141,9 +137,12 @@ impl IndexPlan {
         })
     }
 
+    /// Returns the resolved base representation independently of the search cascade.
     pub(crate) fn base(self) -> BaseRepresentation {
         self.base
     }
+
+    /// Returns the resolved stage choices used for query preparation and search.
     pub(crate) fn cascade(self) -> Cascade {
         self.search
     }
@@ -159,6 +158,7 @@ impl IndexPlan {
 }
 
 impl BaseRepresentation {
+    /// Rejects query-only formats and implicit float-to-byte quantization during base loading.
     pub(crate) fn validate_format(self, format: VectorFormat) -> Result<()> {
         format.validate_base()?;
         if self.0 == VectorStorageKind::U8
@@ -172,9 +172,12 @@ impl BaseRepresentation {
         Ok(())
     }
 
+    /// Returns the coordinate representation selected for the base allocation.
     pub(crate) fn kind(self) -> VectorStorageKind {
         self.0
     }
+
+    /// Returns the scalar storage width used by payload estimates, excluding padding.
     pub(crate) fn element_bytes(self) -> usize {
         match self.0 {
             VectorStorageKind::F32 => size_of::<f32>(),
@@ -185,6 +188,7 @@ impl BaseRepresentation {
 
 // Keep run logs and snapshot execution signatures stable across this refactor.
 impl serde::Serialize for IndexPlan {
+    /// Serializes base storage and cascade choices using the stable configuration keys.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(2))?;

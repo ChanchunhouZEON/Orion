@@ -27,6 +27,11 @@ pub fn distance_l2_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
     distance_l2_slice_f32(a, b)
 }
 
+/// Computes squared L2 for equal-length dynamic rows, including any scalar tail.
+///
+/// # Panics
+///
+/// Panics if row lengths differ.
 #[inline(always)]
 pub fn distance_l2_slice_f32(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len());

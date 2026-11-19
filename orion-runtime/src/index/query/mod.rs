@@ -132,6 +132,10 @@ impl Index {
         observer.finish(ids)
     }
 
+    /// Validates and executes a batch, then attaches optional business IDs.
+    ///
+    /// Small batches stay on the caller thread; larger batches use the owned Rayon
+    /// pool. The non-adaptive control is reserved for internal diagnostics/benchmarks.
     pub(crate) fn search_batch(
         &self,
         queries: QueryBatch<'_>,
@@ -159,6 +163,7 @@ impl Index {
         Ok(result)
     }
 
+    /// Maps valid result prefixes to business IDs while retaining internal IDs and padding.
     pub(super) fn attach_external_ids(&self, result: &mut SearchResult) {
         if let Some(mapping) = &self.external_ids {
             let mut ids = vec![u64::MAX; result.ids.len()];
@@ -172,6 +177,10 @@ impl Index {
         }
     }
 
+    /// Validates query values and attaches the normalization required by this index.
+    ///
+    /// Cosine rejects zero rows. Floating bases use deferred unit normalization;
+    /// native byte bases retain the original coordinates for their norm-aware kernel.
     pub(super) fn prepare_queries<'a>(&self, mut batch: QueryBatch<'a>) -> Result<QueryBatch<'a>> {
         if batch.dimension != self.dimension() {
             return Err(
@@ -198,6 +207,7 @@ impl Index {
         Ok(batch)
     }
 
+    /// Looks up explicit per-k calibration or disables adaptive convergence for internal callers.
     fn search_params(&self, k: usize, adaptive: bool) -> Result<orion_ann_core::CalibratedParams> {
         Ok(if adaptive {
             self.calibrations
@@ -222,6 +232,7 @@ impl Index {
     }
 }
 
+/// Checks result and beam bounds before allocating search scratch or traversing the graph.
 pub(super) fn validate_search(points: usize, k: usize, beam: usize) -> Result<()> {
     if k == 0 || k > points || beam < k || beam > u32::MAX as usize / 4 {
         return Err(Error::invalid_argument(
@@ -241,6 +252,7 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    /// Verifies small requests finish even when the owned batch worker is blocked.
     #[test]
     fn small_batch_completes_while_batch_worker_is_occupied() {
         let directory = tempfile::tempdir().unwrap();

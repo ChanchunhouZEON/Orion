@@ -5,7 +5,7 @@
 
 //! Stream codec shared by typed and runtime-dimensional graphs.
 use crate::index::{CompressedIndex, IndexData};
-use crate::model::PhasedGraph;
+use crate::model::graph::PhasedGraph;
 use crate::{Error, Result};
 
 use std::io::{BufWriter, Read, Write};
@@ -83,6 +83,9 @@ impl<D: IndexData, S: Default> CompressedIndex<D, S> {
         )
     }
 
+    /// Restores a native graph after validating metadata against the supplied base shape and element type.
+    ///
+    /// This structural decoder does not authenticate a digest; runtime verified I/O owns that contract.
     pub fn decode_native_graph_with_storage(
         dataset: D,
         mut reader: impl Read,

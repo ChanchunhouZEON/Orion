@@ -15,6 +15,7 @@ use std::{
     path::Path,
 };
 
+/// Loads an explicitly trusted benchmark graph with layout checks but without SHA-256 verification.
 pub(super) fn load<D: IndexData>(
     dataset: D,
     cache: CachePlan,
@@ -43,6 +44,7 @@ pub(super) fn load<D: IndexData>(
     Ok(index)
 }
 
+/// Decodes a trusted benchmark graph using default resident storage.
 pub(super) fn decode<D: IndexData>(
     graph: &Path,
     metadata: &Path,
@@ -52,6 +54,9 @@ pub(super) fn decode<D: IndexData>(
     decode_with_storage(graph, metadata, dataset, legacy, &Default::default())
 }
 
+/// Decodes a trusted graph under the selected placement policy, adapting legacy benchmark metadata.
+///
+/// This path is not the authenticated production snapshot loader.
 fn decode_with_storage<D: IndexData>(
     graph: &Path,
     metadata: &Path,

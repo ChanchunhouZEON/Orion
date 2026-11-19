@@ -14,6 +14,7 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
+/// Page-aligned locked address interval and its overlapping guard reference count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Span {
     start: usize,
@@ -21,6 +22,7 @@ struct Span {
     users: usize,
 }
 
+/// Process-local interval registry preventing overlapping guards from unlocking each other.
 #[derive(Debug, Default)]
 struct Registry {
     spans: Vec<Span>,
@@ -29,6 +31,7 @@ struct Registry {
 impl Registry {
     // Split only at allocation boundaries, not into one entry per OS page.
     // Metadata therefore stays proportional to the number of pinned regions.
+    /// Splits a tracked page span at a boundary so reference counts can be updated exactly.
     fn split(&mut self, at: usize) {
         if let Some(i) = self.spans.iter().position(|s| s.start < at && at < s.end) {
             let s = self.spans[i];
@@ -38,6 +41,7 @@ impl Registry {
     }
     // Releasing a short-lived overlapping guard must not retain its boundaries
     // forever in a long-lived guard's metadata.
+    /// Merges adjacent spans with equal user counts to bound registry fragmentation.
     fn coalesce(&mut self) {
         let mut write = 0;
         for read in 0..self.spans.len() {
@@ -54,6 +58,8 @@ impl Registry {
         }
         self.spans.truncate(write);
     }
+
+    /// Locks only uncovered pages and rolls back newly locked gaps if any lock attempt fails.
     fn acquire(
         &mut self,
         start: usize,
@@ -100,6 +106,8 @@ impl Registry {
         self.coalesce();
         Ok(())
     }
+
+    /// Decrements span users and unlocks pages only after their final pin guard releases them.
     fn release(&mut self, start: usize, end: usize, mut unlock: impl FnMut(usize, usize)) {
         self.split(start);
         self.split(end);
@@ -116,6 +124,7 @@ impl Registry {
     }
 }
 
+/// Returns the process-wide registry coordinating overlapping page-lock guards.
 fn registry() -> &'static Mutex<Registry> {
     static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(Registry::default()))
@@ -138,6 +147,8 @@ pub fn registered_bytes() -> u64 {
 pub struct OwnedPinGuard {
     _locks: PinGuard<'static>,
 }
+
+/// Rounds an address range outward to whole OS pages with checked end-address arithmetic.
 fn pages(ptr: usize, len: usize, page: usize) -> io::Result<(usize, usize)> {
     let end = ptr
         .checked_add(len)
@@ -145,6 +156,8 @@ fn pages(ptr: usize, len: usize, page: usize) -> io::Result<(usize, usize)> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "pin range overflow"))?;
     Ok((ptr / page * page, end / page * page))
 }
+
+/// Obtains the OS page size used for lock-range rounding, or reports an unsupported platform.
 #[cfg(unix)]
 fn page_size() -> io::Result<usize> {
     let value = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
@@ -153,6 +166,8 @@ fn page_size() -> io::Result<usize> {
     }
     Ok(value as usize)
 }
+
+/// Obtains the OS page size used for lock-range rounding, or reports an unsupported platform.
 #[cfg(not(unix))]
 fn page_size() -> io::Result<usize> {
     Err(io::Error::new(
@@ -160,6 +175,8 @@ fn page_size() -> io::Result<usize> {
         "RAM pinning requires Unix",
     ))
 }
+
+/// Requests a page lock for an already rounded range and reports OS or platform-support errors.
 #[cfg(unix)]
 fn lock(start: usize, len: usize) -> io::Result<()> {
     // SAFETY: the guard retains the borrowed regions; these page-rounded
@@ -169,6 +186,8 @@ fn lock(start: usize, len: usize) -> io::Result<()> {
     }
     Ok(())
 }
+
+/// Requests a page lock for an already rounded range and reports OS or platform-support errors.
 #[cfg(not(unix))]
 fn lock(_: usize, _: usize) -> io::Result<()> {
     Err(io::Error::new(
@@ -176,6 +195,8 @@ fn lock(_: usize, _: usize) -> io::Result<()> {
         "RAM pinning requires Unix",
     ))
 }
+
+/// Best-effort releases an OS page lock and logs failures without panicking during cleanup.
 fn unlock(start: usize, len: usize) {
     #[cfg(unix)]
     if unsafe { libc::munlock(start as *const libc::c_void, len) } != 0 {
@@ -268,6 +289,7 @@ impl<'a> PinGuard<'a> {
     }
 }
 impl Drop for PinGuard<'_> {
+    /// Releases this guard's page references without unlocking pages still used by another guard.
     fn drop(&mut self) {
         // A poisoned registry still owns the locks and must release our refs.
         let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
@@ -278,6 +300,7 @@ impl Drop for PinGuard<'_> {
 }
 
 impl std::fmt::Debug for PinGuard<'_> {
+    /// Formats `pinned_bytes`, `range_count` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PinGuard")
             .field("pinned_bytes", &self.bytes)

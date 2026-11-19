@@ -28,6 +28,11 @@ pub fn distance_ip_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
     distance_ip_slice_f32(a, b)
 }
 
+/// Computes negative inner product for equal-length rows so smaller distances rank first.
+///
+/// # Panics
+///
+/// Panics if row lengths differ.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 pub fn distance_ip_slice_f32(a: &[f32], b: &[f32]) -> f32 {
@@ -101,6 +106,11 @@ pub fn distance_ip_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
     distance_ip_slice_f32(a, b)
 }
 
+/// Computes negative inner product for equal-length rows so smaller distances rank first.
+///
+/// # Panics
+///
+/// Panics if row lengths differ.
 #[cfg(not(target_arch = "aarch64"))]
 #[inline(always)]
 pub fn distance_ip_slice_f32(a: &[f32], b: &[f32]) -> f32 {
@@ -179,6 +189,7 @@ pub fn distance_ip_vector_f32_batch4<const N: usize>(
     }
 }
 
+/// Scores four base rows against one query, preserving input-row order.
 #[cfg(not(target_arch = "aarch64"))]
 #[inline(never)]
 pub fn distance_ip_vector_f32_batch4<const N: usize>(

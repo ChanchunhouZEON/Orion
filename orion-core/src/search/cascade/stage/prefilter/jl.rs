@@ -37,6 +37,7 @@ pub struct JlPrefilter<'a, const NZ: usize = 9> {
 }
 
 impl<'a, const NZ: usize> JlPrefilter<'a, NZ> {
+    /// Binds the dataset to this stage; query encoding is deferred until the stage is opened.
     #[inline]
     pub fn new(dataset: &'a JLSparseDataset<1024, NZ>) -> Self {
         Self { dataset }
@@ -46,6 +47,9 @@ impl<'a, const NZ: usize> JlPrefilter<'a, NZ> {
 // SAFETY: shape describes the borrowed base; sessions own checked query storage
 // and cannot outlive that base.
 unsafe impl<'a, const NZ: usize> PrefilterStage for JlPrefilter<'a, NZ> {
+    /// Identifies this prefilter's precision for cascade compatibility checks.
+    ///
+    /// See [`PrefilterStage::precision`] for the shared contract.
     fn precision(
         &self,
     ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
@@ -54,9 +58,16 @@ unsafe impl<'a, const NZ: usize> PrefilterStage for JlPrefilter<'a, NZ> {
         Some(P::Quantized(K::JlSparse))
     }
 
+    /// Describes the base shape required by this filtering representation.
+    ///
+    /// See [`PrefilterStage::shape`] for the shared contract.
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.dataset.dimension, self.dataset.num_vertices))
     }
+
+    /// Prepares query state for repeated candidate filtering.
+    ///
+    /// See [`PrefilterStage::open`] for the shared contract.
     #[inline]
     fn open<'b>(&'b self, q: &[f32]) -> Box<dyn PrefilterSession + 'b> {
         Box::new(JlSession {
@@ -66,6 +77,7 @@ unsafe impl<'a, const NZ: usize> PrefilterStage for JlPrefilter<'a, NZ> {
     }
 }
 
+/// Projected query state used to screen squared-L2 candidates before admission.
 struct JlSession<'a, const NZ: usize> {
     dataset: &'a JLSparseDataset<1024, NZ>,
     query: Box<[u8]>,
@@ -118,6 +130,9 @@ unsafe impl<'a, const NZ: usize> PrefilterSession for JlSession<'a, NZ> {
         id_scratch.truncate(w);
     }
 
+    /// Scores a node in the prefilter domain for threshold maintenance.
+    ///
+    /// See [`PrefilterSession::distance`] for the shared contract.
     #[inline]
     fn distance(&self, vid: u32) -> f32 {
         self.dataset.hamming(&self.query, vid) as f32
@@ -136,6 +151,7 @@ pub struct JlMipsPrefilter<'a, const NZ: usize = 9> {
 }
 
 impl<'a, const NZ: usize> JlMipsPrefilter<'a, NZ> {
+    /// Binds the dataset to this stage; query encoding is deferred until the stage is opened.
     #[inline]
     pub fn new(dataset: &'a JLSparseDatasetMips<1024, NZ>) -> Self {
         Self { dataset }
@@ -145,6 +161,9 @@ impl<'a, const NZ: usize> JlMipsPrefilter<'a, NZ> {
 // SAFETY: shape describes the borrowed base; sessions own checked query storage
 // and cannot outlive that base.
 unsafe impl<'a, const NZ: usize> PrefilterStage for JlMipsPrefilter<'a, NZ> {
+    /// Identifies this prefilter's precision for cascade compatibility checks.
+    ///
+    /// See [`PrefilterStage::precision`] for the shared contract.
     fn precision(
         &self,
     ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
@@ -153,9 +172,16 @@ unsafe impl<'a, const NZ: usize> PrefilterStage for JlMipsPrefilter<'a, NZ> {
         Some(P::Quantized(K::JlSparseMips))
     }
 
+    /// Describes the base shape required by this filtering representation.
+    ///
+    /// See [`PrefilterStage::shape`] for the shared contract.
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.dataset.dimension, self.dataset.num_vertices))
     }
+
+    /// Prepares query state for repeated candidate filtering.
+    ///
+    /// See [`PrefilterStage::open`] for the shared contract.
     #[inline]
     fn open<'b>(&'b self, q: &[f32]) -> Box<dyn PrefilterSession + 'b> {
         Box::new(JlMipsSession {
@@ -165,6 +191,7 @@ unsafe impl<'a, const NZ: usize> PrefilterStage for JlMipsPrefilter<'a, NZ> {
     }
 }
 
+/// Projected query state used to screen inner-product candidates before admission.
 struct JlMipsSession<'a, const NZ: usize> {
     dataset: &'a JLSparseDatasetMips<1024, NZ>,
     query: Box<[u8]>,
@@ -215,6 +242,9 @@ unsafe impl<'a, const NZ: usize> PrefilterSession for JlMipsSession<'a, NZ> {
         id_scratch.truncate(w);
     }
 
+    /// Scores a node in the prefilter domain for threshold maintenance.
+    ///
+    /// See [`PrefilterSession::distance`] for the shared contract.
     #[inline]
     fn distance(&self, vid: u32) -> f32 {
         self.dataset.mips_distance(&self.query, vid)
@@ -223,6 +253,7 @@ unsafe impl<'a, const NZ: usize> PrefilterSession for JlMipsSession<'a, NZ> {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl<'a, const NZ: usize> std::fmt::Debug for JlPrefilter<'a, NZ> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JlPrefilter")
             .field("dimension", &self.dataset.dimension)
@@ -232,6 +263,7 @@ impl<'a, const NZ: usize> std::fmt::Debug for JlPrefilter<'a, NZ> {
 }
 
 impl<'a, const NZ: usize> std::fmt::Debug for JlSession<'a, NZ> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JlSession")
             .field("dimension", &self.dataset.dimension)
@@ -241,6 +273,7 @@ impl<'a, const NZ: usize> std::fmt::Debug for JlSession<'a, NZ> {
 }
 
 impl<'a, const NZ: usize> std::fmt::Debug for JlMipsPrefilter<'a, NZ> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JlMipsPrefilter")
             .field("dimension", &self.dataset.dimension)
@@ -250,6 +283,7 @@ impl<'a, const NZ: usize> std::fmt::Debug for JlMipsPrefilter<'a, NZ> {
 }
 
 impl<'a, const NZ: usize> std::fmt::Debug for JlMipsSession<'a, NZ> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JlMipsSession")
             .field("dimension", &self.dataset.dimension)

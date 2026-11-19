@@ -40,6 +40,9 @@ pub(crate) fn materialized<D: IndexData>(
     Ok(used)
 }
 
+/// Restores each recorded sidecar through its decoder and verifies its digest and encoded length.
+///
+/// Each successful slot is published independently inside the not-yet-returned index.
 pub(crate) fn restore_snapshot<D: IndexData>(
     index: &mut CompressedIndex<D>,
     directory: &Path,

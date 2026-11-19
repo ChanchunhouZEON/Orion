@@ -16,12 +16,23 @@ use std::{
     io::{self, BufWriter, Read, Write},
     path::{Path, PathBuf},
 };
+
+/// Synced temporary payload and its content identity, awaiting publication.
 pub(crate) struct EncodedFile {
+    /// Cleanup guard owning the unpublished inode until linking or rename succeeds.
     pub temporary: PendingFile,
+
+    /// Encoded file length after the writer has been flushed.
     pub bytes: u64,
+
+    /// SHA-256 computed over the encoded bytes as they were written.
     pub digest: String,
 }
 
+/// Encodes to a private sibling file, hashes the stream and syncs it before returning.
+///
+/// Encoding or flush failure drops the temporary-file guard; no final object name
+/// is published by this function.
 pub(crate) fn encode_file(
     path: &Path,
     encode: impl FnOnce(&mut BufWriter<HashedFile>) -> Result<()>,
@@ -84,6 +95,8 @@ pub(crate) fn put(
     }
     Ok((data.bytes, data.digest))
 }
+
+/// Reads a bounded metadata object and verifies its content-addressed digest.
 pub(crate) fn read_record(
     dir: &Path,
     digest: &str,
@@ -96,11 +109,13 @@ pub(crate) fn read_record(
     Ok(bytes)
 }
 
+/// Reads a small metadata file while enforcing an allocation-size ceiling.
 pub(crate) fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let file = fs::File::open(path).map_err(|e| Error::io("open record", path, e))?;
     read_bounded_file(file, path, limit)
 }
 
+/// Consumes at most the metadata limit plus one detection byte from an existing handle.
 pub(crate) fn read_bounded_file(file: fs::File, path: &Path, limit: u64) -> Result<Vec<u8>> {
     let mut data = Vec::new();
     file.take(limit + 1)
@@ -113,6 +128,7 @@ pub(crate) fn read_bounded_file(file: fs::File, path: &Path, limit: u64) -> Resu
     Ok(data)
 }
 
+/// Resolves a validated lowercase SHA-256 identity to an object-store path.
 pub(crate) fn object(dir: &Path, digest: &str, extension: &str) -> Result<PathBuf> {
     if digest.len() != 64
         || !digest

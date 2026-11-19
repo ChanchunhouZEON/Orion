@@ -26,13 +26,25 @@ use orion_ann_platform::{
 };
 use std::collections::BTreeMap;
 
+/// Resolved per-object placement and payload budget used by allocation and preflight.
 #[derive(Debug)]
 pub(crate) struct StoragePlan {
+    /// Per-object placement decisions shared by preflight and preparation.
     pub objects: Vec<object::ObjectDecision>,
+
+    /// Overrides whose objects are not required in the selected preparation phase.
     pub inactive_overrides: Vec<StorageObject>,
+
+    /// Resolved allocation options keyed by managed object name.
     pub options: BTreeMap<String, RegionOptions>,
+
+    /// Managed payload bytes planned for resident allocation; not process RSS.
     pub resident_bytes: u64,
+
+    /// Addressable mapped payload bytes; not a physical-residency guarantee.
     pub mapped_bytes: u64,
+
+    /// Optional resident payload budget applied during placement.
     pub limit_bytes: Option<u64>,
 }
 
@@ -50,6 +62,7 @@ const KINDS: [SidecarKind; 11] = [
     SidecarKind::Rabitq4,
 ];
 
+/// Maps a sidecar kind to the storage key shared by allocation policy and persistence.
 pub(crate) fn codec(kind: SidecarKind) -> &'static str {
     match kind {
         SidecarKind::L2U8 => "qds",
@@ -87,6 +100,7 @@ fn plan_with_resources(
     )
 }
 
+/// Combines sidecar and fixed-object estimates, explicit overrides and resource observations into a placement plan.
 #[allow(clippy::too_many_arguments)]
 fn plan_objects(
     config: &ResolvedRunConfig,
@@ -143,6 +157,7 @@ fn plan_objects(
                         placement,
                         directory: config.storage_options.directory.clone(),
                         accounting: None,
+                        reclaim_after_write: false,
                     },
                 )
             })
@@ -153,6 +168,9 @@ fn plan_objects(
     })
 }
 
+/// Chooses the resident-payload ceiling from an existing ledger or the user and observed memory limits.
+///
+/// Already-owned resident input is credited once; this is not an operating-system RSS limit.
 fn effective_limit(
     config: &ResolvedRunConfig,
     resources: MemoryResources,
@@ -175,6 +193,9 @@ fn effective_limit(
     }
 }
 
+/// Assigns a placement priority from an object's role in the active search recipe.
+///
+/// This is a static access-frequency heuristic, not runtime telemetry or cache residency measurement.
 fn frequency(config: &ResolvedRunConfig, name: &str) -> scheduler::Frequency {
     use crate::config::cascade::{AdmissionChoice, Cascade, PrefilterChoice, RerankChoice};
     use scheduler::Frequency;
@@ -332,6 +353,8 @@ pub(crate) fn complete_plan(
         &[("base", base), ("graph", graph)],
     )
 }
+
+/// Rejects planned resident objects that exceed the remaining managed-payload budget.
 fn enforce(plan: &StoragePlan, fixed: u64) -> Result<()> {
     let required = fixed.saturating_add(plan.resident_bytes);
     if let Some(limit) = plan.limit_bytes.filter(|&l| required > l) {
@@ -345,18 +368,18 @@ fn enforce(plan: &StoragePlan, fixed: u64) -> Result<()> {
     }
     Ok(())
 }
+
+/// Computes padded base allocation bytes using coordinate layout rather than a search metric choice.
 fn base_size(config: &ResolvedRunConfig, rows: usize) -> Result<u64> {
     let layout = if config.storage() == crate::config::VectorStorageKind::U8 {
-        orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::IpU8Distance>(
-            config.dimension,
-        )?
+        orion_ann_vector::PaddedLayout::for_base_scalar::<u8>(config.dimension)?
     } else {
-        orion_ann_vector::PaddedLayout::for_kernel::<orion_ann_vector::L2F32Distance>(
-            config.dimension,
-        )?
+        orion_ann_vector::PaddedLayout::for_base_scalar::<f32>(config.dimension)?
     };
     Ok(layout.allocation_bytes(rows)? as u64)
 }
+
+/// Plans base placement before allocation while accounting for graph and search-ready sidecar needs.
 pub(crate) fn base_options(
     config: &ResolvedRunConfig,
     rows: usize,
@@ -392,6 +415,8 @@ pub(crate) fn base_options(
         plan.options.get("base").cloned().unwrap_or_default(),
     )
 }
+
+/// Plans graph placement around the actual base allocation and binds its allocation-budget account.
 pub(crate) fn graph_options<D: IndexData>(
     config: &ResolvedRunConfig,
     data: &D,

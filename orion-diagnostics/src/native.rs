@@ -8,6 +8,7 @@ use crate::{Candidate, Phase, SearchTrace, TraceEvent, TraceLimits, TraceMetadat
 use orion_ann_core::model::Neighbor;
 use orion_ann_core::search::diagnostics::SearchObserver;
 
+/// Converts native traversal callbacks into a bounded portable trace.
 pub struct RecordingObserver {
     recorder: TraceRecorder,
     node: u32,
@@ -15,6 +16,7 @@ pub struct RecordingObserver {
     phase: Phase,
 }
 impl RecordingObserver {
+    /// Creates a recorder after validating search metadata and recording limits.
     pub fn new(metadata: TraceMetadata, limits: TraceLimits) -> crate::Result<Self> {
         Ok(Self {
             recorder: TraceRecorder::new(metadata, limits)?,
@@ -23,10 +25,14 @@ impl RecordingObserver {
             phase: Phase::Peel,
         })
     }
+
+    /// Attaches final internal result IDs and validates the recorded search trace.
     pub fn finish(self, result_ids: Vec<u32>) -> crate::Result<SearchTrace> {
         self.recorder.finish(result_ids)
     }
 }
+
+/// Copies a neighbor into the portable score representation, preserving non-finite values.
 fn candidate(n: &Neighbor) -> Candidate {
     Candidate {
         id: n.id,
@@ -34,6 +40,7 @@ fn candidate(n: &Neighbor) -> Candidate {
     }
 }
 impl SearchObserver for RecordingObserver {
+    /// Records the scored entry node before traversal begins.
     fn scored_entry(&mut self, id: u32, distance: f32) {
         self.recorder.record(1, || TraceEvent::Entry {
             candidate: Candidate {
@@ -42,6 +49,8 @@ impl SearchObserver for RecordingObserver {
             },
         });
     }
+
+    /// Remembers the source node and traversal phase for the next expansion event.
     fn expansion_started(&mut self, node: u32, converged: bool, peel: bool) {
         self.node = node;
         self.phase = if peel {
@@ -52,6 +61,8 @@ impl SearchObserver for RecordingObserver {
             Phase::Exploration
         };
     }
+
+    /// Records the deduplicated expansion IDs and advances the expansion step counter.
     fn expansion(&mut self, _: bool, ids: &[u32]) {
         self.step += 1;
         self.recorder.record(ids.len(), || TraceEvent::Expansion {
@@ -61,6 +72,8 @@ impl SearchObserver for RecordingObserver {
             candidates: ids.to_vec(),
         });
     }
+
+    /// Records both cutoff domains and rejection counts without copying candidate vectors.
     fn prefilter_outcome(
         &mut self,
         cutoff: Option<f32>,
@@ -75,6 +88,8 @@ impl SearchObserver for RecordingObserver {
             rejected: rejected as u32,
         });
     }
+
+    /// Copies admitted candidates only while the recorder still has payload budget.
     fn admission(&mut self, evaluations: usize, admitted: &[Neighbor]) {
         self.recorder
             .record(admitted.len(), || TraceEvent::Admission {
@@ -82,16 +97,22 @@ impl SearchObserver for RecordingObserver {
                 admitted: admitted.iter().map(candidate).collect(),
             });
     }
+
+    /// Captures the current beam in order while recording capacity remains.
     fn beam_updated(&mut self, beam: &[Neighbor]) {
         self.recorder.record(beam.len(), || TraceEvent::Beam {
             candidates: beam.iter().map(candidate).collect(),
         });
     }
+
+    /// Records how many candidates reached the final reranking stage.
     fn rerank(&mut self, candidates: usize) {
         self.recorder.record(0, || TraceEvent::Rerank {
             candidates: candidates as u32,
         });
     }
+
+    /// Propagates the search termination reason independently of recording truncation.
     fn early_exit(&mut self) {
         self.recorder.early_exit();
     }

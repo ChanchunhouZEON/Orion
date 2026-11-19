@@ -28,6 +28,7 @@ pub const fn pad16(n: usize) -> usize {
     (n + 15) & !15
 }
 
+/// Bounded distance-ordered beam with a cursor to the nearest unexpanded candidate.
 #[derive(Debug)]
 pub struct NeighborPriorityQueue {
     size: usize,
@@ -37,12 +38,14 @@ pub struct NeighborPriorityQueue {
 }
 
 impl Default for NeighborPriorityQueue {
+    /// Creates an empty beam without reserving candidate storage.
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl NeighborPriorityQueue {
+    /// Creates a zero-capacity beam; reserve capacity before inserting candidates.
     pub fn new() -> Self {
         Self {
             size: 0,
@@ -52,6 +55,7 @@ impl NeighborPriorityQueue {
         }
     }
 
+    /// Allocates the requested beam plus internal sentinel and merge padding.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             size: 0,
@@ -61,6 +65,9 @@ impl NeighborPriorityQueue {
         }
     }
 
+    /// Inserts a competitive neighbor while preserving visited state and updating the expansion cursor.
+    ///
+    /// Callers provide positive capacity and the search's deduplicated candidate stream.
     pub fn insert(&mut self, nbr: Neighbor) -> bool {
         if self.size == self.capacity && self.get_at(self.size - 1) < &nbr {
             return false;
@@ -97,10 +104,14 @@ impl NeighborPriorityQueue {
         true
     }
 
+    /// Borrows an internal queue slot; callers maintain the padded-buffer bounds invariant.
     fn get_at(&self, index: usize) -> &Neighbor {
         unsafe { self.data.get_unchecked(index) }
     }
 
+    /// Marks and returns the nearest unexpanded candidate, advancing the expansion cursor.
+    ///
+    /// Call only while [`Self::has_notvisited_node`] is true.
     pub fn closest_notvisited(&mut self) -> Neighbor {
         self.data[self.cur].visited = true;
         let pre = self.cur;
@@ -110,6 +121,7 @@ impl NeighborPriorityQueue {
         self.data[pre]
     }
 
+    /// Reports whether the beam still contains a candidate eligible for expansion.
     pub fn has_notvisited_node(&self) -> bool {
         self.cur < self.size
     }
@@ -124,14 +136,19 @@ impl NeighborPriorityQueue {
         }
     }
 
+    /// Returns valid beam entries, excluding spare capacity and sentinel padding.
     pub fn size(&self) -> usize {
         self.size
     }
 
+    /// Returns the logical beam limit rather than the padded allocation length.
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
+    /// Changes the logical beam limit and grows backing storage when necessary.
+    ///
+    /// The caller must clear or otherwise bound active entries before shrinking the limit.
     pub fn set_capacity(&mut self, capacity: usize) {
         let needed = pad16(capacity + 1);
         if needed > self.data.len() {
@@ -140,6 +157,7 @@ impl NeighborPriorityQueue {
         self.capacity = capacity;
     }
 
+    /// Ensures capacity for a larger beam without shrinking or clearing existing entries.
     pub fn reserve(&mut self, capacity: usize) {
         if capacity > self.capacity {
             let needed = pad16(capacity + 1);
@@ -150,11 +168,13 @@ impl NeighborPriorityQueue {
         }
     }
 
+    /// Resets active entries and the expansion cursor while retaining allocated storage.
     pub fn clear(&mut self) {
         self.size = 0;
         self.cur = 0;
     }
 
+    /// Borrows the valid distance-ordered beam prefix, including visited entries.
     pub fn neighbors(&self) -> &[Neighbor] {
         &self.data[..self.size]
     }
@@ -341,6 +361,11 @@ impl NeighborPriorityQueue {
 impl std::ops::Index<usize> for NeighborPriorityQueue {
     type Output = Neighbor;
 
+    /// Borrows the stored candidate at a physical queue position.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the position is outside the backing vector.
     fn index(&self, i: usize) -> &Self::Output {
         &self.data[i]
     }

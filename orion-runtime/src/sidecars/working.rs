@@ -44,7 +44,10 @@ enum CacheInput {
 /// One codec's working lookup record binds input identity to a persisted object.
 #[derive(Serialize, Deserialize)]
 pub(super) struct Identity {
+    /// Identity of the base and representation recipe used to produce the cached payload.
     pub(super) dataset_sha256: String,
+
+    /// Digest locating the immutable encoded sidecar object.
     pub(super) payload_sha256: String,
 }
 
@@ -88,6 +91,9 @@ pub(crate) fn attach<D: IndexData>(index: &mut CompressedIndex<D>, metadata: &Pa
 }
 
 impl SidecarCache for WorkingCache {
+    /// Loads a matching sidecar through verified decoding and records its authenticated receipt.
+    ///
+    /// A cache miss leaves the caller free to build the representation.
     fn load(
         &self,
         base: &dyn Rows,
@@ -109,6 +115,7 @@ impl SidecarCache for WorkingCache {
         Ok(())
     }
 
+    /// Publishes an immutable sidecar object, then atomically updates its optional working-cache record.
     fn store(
         &self,
         base: &dyn Rows,
@@ -140,6 +147,7 @@ impl SidecarCache for WorkingCache {
 }
 
 impl CacheInput {
+    /// Derives a representation identity from authenticated input or a lazily cached base-row fingerprint.
     fn codec_key(&self, base: &dyn Rows, codec: &str) -> Result<String> {
         let slot = match self {
             Self::Authenticated(input) => {
@@ -184,6 +192,7 @@ pub(crate) fn derived_key(
     Ok(Some(crate::integrity::sha256(&recipe)))
 }
 
+/// Hashes logical f32 row values and shape, excluding SIMD padding, for sidecar compatibility.
 pub(super) fn fingerprint(dataset: &dyn Rows) -> Result<String> {
     let mut hash = Sha256::new();
     hash.update(b"orion-sidecar-base-v1");
@@ -210,12 +219,16 @@ pub(super) fn fingerprint(dataset: &dyn Rows) -> Result<String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
+/// Derives the identity-record filename associated with a sidecar lookup path.
 pub(super) fn metadata_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
     name.push(".identity.json");
     PathBuf::from(name)
 }
 
+/// Reads a bounded identity record and returns its payload digest only for a matching base identity.
+///
+/// Unreadable, malformed and mismatched records are treated as reusable-cache misses.
 fn expected_digest(path: &Path, dataset: &str) -> Option<String> {
     let mut bytes = Vec::new();
     File::open(metadata_path(path))

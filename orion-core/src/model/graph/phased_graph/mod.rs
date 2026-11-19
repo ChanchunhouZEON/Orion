@@ -32,13 +32,18 @@ mod tests;
 const CACHE_LINE_BYTES: usize = 64;
 const HEADER_U32: usize = 4;
 
+/// Contiguous partitioned graph slab with audited access to local, remote and extra IDs.
 #[derive(Debug)]
 pub(crate) struct PhasedGraph {
     buffer: AlignedBoxWithSlice<u32>,
     num_nodes: usize,
     stride: usize,
+
+    /// Maximum number of navigation neighbors retained per node.
     pub(crate) max_degree: u32,
     max_extra: usize,
+
+    /// Global partition threshold recorded with the graph.
     pub(crate) base_local_count: u32,
 }
 impl PhasedGraph {
@@ -51,6 +56,7 @@ impl PhasedGraph {
         Self::try_empty_with_storage(num_nodes, max_degree, max_extra, &Default::default())
     }
 
+    /// Allocates a zeroed fixed-stride graph slab under the requested placement policy.
     pub(crate) fn try_empty_with_storage(
         num_nodes: usize,
         max_degree: u32,
@@ -61,10 +67,12 @@ impl PhasedGraph {
         Self::allocate_with_storage(num_nodes, max_degree, max_extra, stride, 0, storage)
     }
 
+    /// Reports the backing placement of the graph slab allocation.
     pub(crate) fn placement(&self) -> orion_ann_platform::region::Placement {
         self.buffer.placement()
     }
 
+    /// Validates graph capacities and computes a cache-line-aligned node stride without overflow.
     pub(crate) fn checked_stride(
         num_nodes: usize,
         max_degree: u32,
@@ -90,6 +98,7 @@ impl PhasedGraph {
         Ok(stride)
     }
 
+    /// Allocates the requested slab shape in default resident storage.
     fn allocate(
         num_nodes: usize,
         max_degree: u32,
@@ -107,6 +116,7 @@ impl PhasedGraph {
         )
     }
 
+    /// Allocates the checked slab size and records its node-layout metadata.
     fn allocate_with_storage(
         num_nodes: usize,
         max_degree: u32,
@@ -157,6 +167,7 @@ impl PhasedGraph {
         Ok(graph)
     }
 
+    /// Checks encoded row counts, reserved words and neighbor bounds before exposing decoded graph rows.
     fn validate_rows(&self) -> Result<()> {
         for (node, row) in self.buffer.chunks_exact(self.stride).enumerate() {
             let degree = row[0] as usize;
@@ -185,6 +196,9 @@ impl PhasedGraph {
         Ok(())
     }
 
+    /// Checks row capacity and neighbor bounds before a partition is copied into the slab.
+    ///
+    /// Supplier duplicate and self-edge rules are enforced separately by supplier validation.
     fn validate_partition(
         &self,
         node: usize,
@@ -218,6 +232,7 @@ impl PhasedGraph {
 
     // Only validated callers reach this helper. Safe slicing also prevents a
     // future validation regression from becoming an out-of-bounds pointer write.
+    /// Copies validated local, remote and extra partitions into one preallocated node record.
     fn write_row(row: &mut [u32], local: &[u32], remote: &[u32], extra: &[u32]) {
         let degree = local.len() + remote.len();
         row[..4].copy_from_slice(&[degree as u32, extra.len() as u32, local.len() as u32, 0]);
@@ -263,6 +278,7 @@ impl PhasedGraph {
         )
     }
 
+    /// Validates every partition, then fills independent slab rows in parallel under the selected placement.
     pub(crate) fn try_from_partitions_with_storage(
         partitions: &[(Vec<u32>, Vec<u32>, Vec<u32>)],
         max_degree: u32,
@@ -285,6 +301,7 @@ impl PhasedGraph {
         Ok(graph)
     }
 
+    /// Builds the legacy graph facade from partitions and panics if the shape or IDs are invalid.
     pub(crate) fn build_from_partitions(
         partitions: &[(Vec<u32>, Vec<u32>, Vec<u32>)],
         max_degree: u32,
@@ -293,11 +310,14 @@ impl PhasedGraph {
         Self::try_from_partitions(partitions, max_degree, max_extra)
             .expect("invalid graph partitions")
     }
+
+    /// Returns the number of addressable node records.
     #[inline]
     pub(crate) fn num_nodes(&self) -> usize {
         self.num_nodes
     }
 
+    /// Returns the padded node-record stride in u32 words.
     #[inline]
     pub(crate) fn stride(&self) -> usize {
         self.stride
@@ -314,6 +334,7 @@ impl PhasedGraph {
         unsafe { std::slice::from_raw_parts(self.buffer.as_ptr() as *const u8, n) }
     }
 
+    /// Borrows one complete node record, including its metadata and unused capacity.
     #[inline]
     fn slot(&self, i: usize) -> &[u32] {
         let base = i * self.stride;
@@ -397,6 +418,7 @@ impl PhasedGraph {
         orion_ann_vector::prefetch_vector(self.slot(i));
     }
 
+    /// Logs graph occupancy and allocated slab size without modifying graph state.
     pub(crate) fn print_stats(&self) {
         let n = self.num_nodes;
         if n == 0 {
@@ -432,6 +454,9 @@ impl PhasedGraph {
 }
 
 impl Clone for PhasedGraph {
+    /// Copies graph rows into an independent resident slab, preserving the node layout.
+    ///
+    /// Panics if the new slab allocation fails.
     fn clone(&self) -> Self {
         let mut copy = Self::allocate(
             self.num_nodes,

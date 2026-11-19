@@ -13,12 +13,19 @@ use crate::{
 };
 use std::path::PathBuf;
 
+/// Validated base ownership and resolved settings used by subsequent graph preparation.
 pub(super) struct LoadedInput {
+    /// Decoded or copied rows plus their original input identity.
     pub(super) base: PreparedBase,
+
+    /// Settings resolved against actual input shape and the remaining index budget.
     pub(super) config: ResolvedRunConfig,
+
+    /// Verified-object lookup path used to estimate restored graph allocation.
     pub(super) snapshot_graph: Option<PathBuf>,
 }
 
+/// Loads base rows after reserving ID budget and binds source identity before normalization.
 pub(super) fn load(
     input: BaseInput,
     options: &IndexOptions,

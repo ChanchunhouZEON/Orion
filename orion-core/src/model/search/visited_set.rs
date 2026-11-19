@@ -58,6 +58,7 @@ pub trait VisitedSet {
     /// Number of distinct ids currently inserted.
     fn len(&self) -> usize;
 
+    /// Reports whether no node has been marked visited for the current query.
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -80,6 +81,7 @@ impl LinearProbeSet {
         target.next_power_of_two()
     }
 
+    /// Allocates a linear-probing table sized from beam capacity and expected graph degree.
     pub fn new(search_list_size: usize, max_degree: usize) -> Self {
         let size = Self::target_size(search_list_size, max_degree);
         Self {
@@ -89,6 +91,7 @@ impl LinearProbeSet {
         }
     }
 
+    /// Doubles and rehashes the visited table while preserving all existing node marks.
     #[cold]
     fn grow(&mut self) {
         let new_size = self.entries.len() * 2;
@@ -114,6 +117,9 @@ impl LinearProbeSet {
 }
 
 impl VisitedSet for LinearProbeSet {
+    /// Marks a node visited and reports whether it was newly inserted.
+    ///
+    /// See [`VisitedSet::insert`] for the shared contract.
     #[inline]
     fn insert(&mut self, id: u32) -> bool {
         let h = (id as u64).wrapping_mul(0xbf58476d1ce4e5b9);
@@ -146,6 +152,9 @@ impl VisitedSet for LinearProbeSet {
         true
     }
 
+    /// Resets per-query visit state while retaining reusable storage.
+    ///
+    /// See [`VisitedSet::clear`] for the shared contract.
     fn clear(&mut self) {
         unsafe {
             std::ptr::write_bytes(self.entries.as_mut_ptr(), 0xFF, self.entries.len());
@@ -153,6 +162,9 @@ impl VisitedSet for LinearProbeSet {
         self.num_entries = 0;
     }
 
+    /// Prepares visited-set capacity for the requested search beam.
+    ///
+    /// See [`VisitedSet::resize_for`] for the shared contract.
     fn resize_for(&mut self, search_list_size: usize) {
         let size = Self::target_size(search_list_size, DEFAULT_MAX_DEGREE);
         if size != self.entries.len() {
@@ -164,6 +176,9 @@ impl VisitedSet for LinearProbeSet {
         }
     }
 
+    /// Reports the number of nodes currently marked visited.
+    ///
+    /// See [`VisitedSet::len`] for the shared contract.
     fn len(&self) -> usize {
         self.num_entries
     }
@@ -236,6 +251,7 @@ impl BucketedSet {
         (total_slots / BUCKET_SLOTS).max(1)
     }
 
+    /// Allocates a cache-bucketed visited table for the expected search neighborhood.
     pub fn new(search_list_size: usize, max_degree: usize) -> Self {
         let nb = Self::target_buckets(search_list_size, max_degree);
         Self {
@@ -293,6 +309,9 @@ impl BucketedSet {
 }
 
 impl VisitedSet for BucketedSet {
+    /// Marks a node visited and reports whether it was newly inserted.
+    ///
+    /// See [`VisitedSet::insert`] for the shared contract.
     #[inline]
     fn insert(&mut self, id: u32) -> bool {
         // Same 50% load factor as `LinearProbeSet`.
@@ -364,6 +383,9 @@ impl VisitedSet for BucketedSet {
         }
     }
 
+    /// Resets per-query visit state while retaining reusable storage.
+    ///
+    /// See [`VisitedSet::clear`] for the shared contract.
     fn clear(&mut self) {
         // Same as `LinearProbeSet`: memset the whole table to SENTINEL.
         // O(N) but compiles to a fast L1-bandwidth memset; at 128 KB
@@ -374,6 +396,9 @@ impl VisitedSet for BucketedSet {
         self.num_entries = 0;
     }
 
+    /// Prepares visited-set capacity for the requested search beam.
+    ///
+    /// See [`VisitedSet::resize_for`] for the shared contract.
     fn resize_for(&mut self, search_list_size: usize) {
         let nb = Self::target_buckets(search_list_size, DEFAULT_MAX_DEGREE);
         let total = nb * BUCKET_SLOTS;
@@ -386,6 +411,9 @@ impl VisitedSet for BucketedSet {
         }
     }
 
+    /// Reports the number of nodes currently marked visited.
+    ///
+    /// See [`VisitedSet::len`] for the shared contract.
     fn len(&self) -> usize {
         self.num_entries
     }
@@ -433,6 +461,7 @@ impl HashsetSeen {
         ids
     }
 
+    /// Selects the configured visited-set implementation and allocates reusable query state.
     pub fn new(search_list_size: usize) -> Self {
         #[cfg(not(feature = "benchmark"))]
         let bucketed = false;
@@ -448,6 +477,7 @@ impl HashsetSeen {
         Self { inner }
     }
 
+    /// Marks a node and reports whether this query has seen it before.
     #[inline]
     pub fn insert(&mut self, id: u32) -> bool {
         match &mut self.inner {
@@ -456,6 +486,7 @@ impl HashsetSeen {
         }
     }
 
+    /// Resets visited state while preserving the selected implementation and allocation.
     pub fn clear(&mut self) {
         match &mut self.inner {
             HashsetInner::Linear(s) => s.clear(),
@@ -463,6 +494,7 @@ impl HashsetSeen {
         }
     }
 
+    /// Prepares the selected visited set for a new beam capacity.
     pub fn resize_for(&mut self, search_list_size: usize) {
         match &mut self.inner {
             HashsetInner::Linear(s) => s.resize_for(search_list_size),
@@ -475,6 +507,7 @@ impl HashsetSeen {
         self.len() == 0
     }
 
+    /// Returns distinct visited-node count for the current query.
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
         match &self.inner {
@@ -486,6 +519,7 @@ impl HashsetSeen {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl std::fmt::Debug for LinearProbeSet {
+    /// Formats `len`, `capacity` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LinearProbeSet")
             .field("len", &self.num_entries)
@@ -495,6 +529,7 @@ impl std::fmt::Debug for LinearProbeSet {
 }
 
 impl std::fmt::Debug for BucketedSet {
+    /// Formats `len`, `capacity` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BucketedSet")
             .field("len", &self.num_entries)
@@ -504,6 +539,7 @@ impl std::fmt::Debug for BucketedSet {
 }
 
 impl std::fmt::Debug for HashsetSeen {
+    /// Formats `len` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HashsetSeen")
             .field("len", &self.len())

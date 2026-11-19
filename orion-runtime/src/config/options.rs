@@ -59,6 +59,7 @@ pub struct IndexOptions {
 }
 
 impl Default for IndexOptions {
+    /// Selects automatic representation and graph choices, bounded auto pinning and the default working cache.
     fn default() -> Self {
         Self {
             dataset_name: None,
@@ -79,6 +80,9 @@ impl Default for IndexOptions {
 }
 
 impl IndexOptions {
+    /// Validates application options and combines them with inspected base metadata into an execution plan.
+    ///
+    /// This resolves configuration identity; it does not load vector payloads or construct the graph.
     pub(crate) fn resolve(
         &self,
         base: PathBuf,

@@ -17,6 +17,7 @@ use crate::{Error, QueryBuffer, Result};
 mod encoding;
 use std::io::Read;
 
+/// Sequential query input shared by files and streams; batches preserve source order and coordinate type.
 pub trait QuerySource {
     #[cfg(any(test, feature = "cli", feature = "benchmark"))]
     fn dimension(&self) -> usize;
@@ -64,10 +65,12 @@ fn read_u32_le(reader: &mut impl Read) -> Result<Option<u32>> {
     Ok(Some(u32::from_le_bytes(bytes)))
 }
 
+/// Distinguishes count-prefixed containers from per-record dimension-prefixed streams.
 fn is_binary_container(format: VectorFormat) -> bool {
     format.has_file_header()
 }
 
+/// Stateful vector decoder that checks row boundaries and retains a reusable payload buffer.
 pub struct VectorReader<R> {
     reader: R,
     format: VectorFormat,
@@ -92,6 +95,7 @@ pub struct VectorReader<R> {
 }
 
 impl<R: Read> VectorReader<R> {
+    /// Reads the initial header and validates query dimensions before allocating a row buffer.
     pub fn new(
         mut reader: R,
         format: VectorFormat,
@@ -126,6 +130,7 @@ impl<R: Read> VectorReader<R> {
         })
     }
 
+    /// Validates a nonempty count-prefixed container and returns its declared row count.
     fn read_binary_header(
         reader: &mut R,
         declared_count: u32,
@@ -142,6 +147,7 @@ impl<R: Read> VectorReader<R> {
         Ok((Some(declared_count as usize), None))
     }
 
+    /// Validates and retains the first record dimension so that its payload is not skipped.
     fn read_record_stream_header(
         first_dimension: u32,
         expected_dimension: usize,
@@ -151,6 +157,7 @@ impl<R: Read> VectorReader<R> {
         Ok((None, Some(first_dimension)))
     }
 
+    /// Rejects query dimensions that differ from the index before any row reaches search.
     fn validate_dimension(actual: u32, expected: usize) -> Result<()> {
         if actual as usize != expected {
             return Err(
@@ -172,6 +179,7 @@ impl<R: Read> VectorReader<R> {
         self.begin_record_stream_row()
     }
 
+    /// Checks whether a declared row remains and rejects trailing data after the final row.
     fn begin_binary_row(&mut self, declared_count: usize) -> Result<bool> {
         if self.rows_read < declared_count {
             return Ok(true);
@@ -184,6 +192,7 @@ impl<R: Read> VectorReader<R> {
         Ok(false)
     }
 
+    /// Consumes the next record dimension, distinguishing clean EOF from a malformed row header.
     fn begin_record_stream_row(&mut self) -> Result<bool> {
         let dimension = match self.first_row_dimension.take() {
             Some(dimension) => Some(dimension),
@@ -204,6 +213,7 @@ impl<R: Read> VectorReader<R> {
         Ok(true)
     }
 
+    /// Fills the reusable row buffer and reports truncation with its query index.
     fn read_payload(&mut self) -> Result<()> {
         self.reader
             .read_exact(&mut self.record_buf)
@@ -230,6 +240,7 @@ impl<R: Read> QuerySource for VectorReader<R> {
         self.declared_count
     }
 
+    /// Adapts typed input to the legacy f32 query path, including its metric normalization.
     fn read_batch(&mut self, output: &mut Vec<f32>, max_queries: usize) -> Result<usize> {
         let mut typed = QueryBuffer::default();
         let count = self.read_typed_batch(&mut typed, max_queries)?;
@@ -238,6 +249,9 @@ impl<R: Read> QuerySource for VectorReader<R> {
         Ok(count)
     }
 
+    /// Decodes up to the requested row count without changing coordinate type; zero rows indicates EOF.
+    ///
+    /// Errors may leave a partially filled buffer; callers must not search that batch.
     fn read_typed_batch(&mut self, output: &mut QueryBuffer, max_queries: usize) -> Result<usize> {
         if max_queries == 0 {
             return Err("query batch size must be positive".into());
@@ -271,6 +285,7 @@ pub struct GroundTruthReader<R> {
 
 #[cfg(any(feature = "cli", feature = "benchmark"))]
 impl<R: Read> GroundTruthReader<R> {
+    /// Creates a streaming top-k evaluator with bounds for ground-truth widths and internal IDs.
     pub fn new(reader: R, k: usize, base_count: usize) -> Self {
         Self {
             reader,
@@ -317,6 +332,7 @@ impl<R: Read> GroundTruthReader<R> {
         Ok(Some(ids))
     }
 
+    /// Requires consistent ground-truth row widths large enough for k and bounded by the base count.
     fn validate_width(&self, width: usize) -> Result<()> {
         let inconsistent = self.row_width.is_some_and(|previous| previous != width);
 
@@ -352,6 +368,7 @@ pub fn open_queries(config: &crate::config::ResolvedRunConfig) -> Result<Box<dyn
     open_stream(path, config.query_format, config.dimension, decode_metric)
 }
 
+/// Opens typed queries for a restored index; metric-specific preparation remains in core search.
 #[cfg(feature = "cli")]
 pub fn open_snapshot_queries(
     path: &std::path::Path,
@@ -400,6 +417,7 @@ pub fn read_query_buffer(
     Ok(values)
 }
 
+/// Opens a file or stdin (`-`) as a buffered, dimension-checked query source.
 #[cfg(any(feature = "cli", feature = "benchmark"))]
 fn open_stream(
     path: &std::path::Path,
@@ -424,6 +442,7 @@ fn open_stream(
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl<R> std::fmt::Debug for VectorReader<R> {
+    /// Formats decoder progress without printing query payloads or the underlying reader.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VectorReader")
             .field("format", &self.format)
@@ -437,6 +456,7 @@ impl<R> std::fmt::Debug for VectorReader<R> {
 
 #[cfg(any(feature = "cli", feature = "benchmark"))]
 impl<R> std::fmt::Debug for GroundTruthReader<R> {
+    /// Formats evaluation progress without exposing ground-truth rows.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GroundTruthReader")
             .field("k", &self.k)

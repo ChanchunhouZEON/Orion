@@ -11,6 +11,7 @@ fn sections_keep_mapping_alive_and_validate_typed_alignment() {
             placement,
             directory: Some(dir.path().into()),
             accounting: None,
+            reclaim_after_write: false,
         };
         let values =
             ArrayView::<u32>::build_rows::<io::Error>(16, 8, 64, &options, |start, out| {
@@ -46,6 +47,7 @@ fn mapped_builder_is_bounded_and_errors_remove_partial_files() {
         placement: Placement::Mapped,
         directory: Some(dir.path().into()),
         accounting: None,
+        reclaim_after_write: false,
     };
     let mut calls = 0;
     let result = ArrayView::<u8>::build_rows::<io::Error>(20_000_000, 1, 64, &options, |_, out| {
@@ -75,6 +77,7 @@ fn exclusive_mapped_construction_freezes_without_copy_and_views_own_lifetime() {
         placement: Placement::Mapped,
         directory: Some(dir.path().into()),
         accounting: None,
+        reclaim_after_write: false,
     };
     let mut region = MutableRegion::new(8192, 64, &options).unwrap();
     assert_eq!(region.placement(), Placement::Mapped);

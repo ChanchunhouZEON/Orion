@@ -11,6 +11,7 @@ use orion_ann_vector::{DistanceKernelBackend, IpI8Distance, IpI16Distance, L2U8D
 // Storage, kernel and on-disk parameter layout must agree. Keep the set of
 // codecs closed; a downstream safe implementation must not weaken this contract.
 mod sealed {
+    /// Restricts implementations to the audited scalar or dataset types in this module.
     pub trait Sealed {}
     impl Sealed for super::L2U8 {}
     impl Sealed for super::L2U16 {}
@@ -116,11 +117,15 @@ pub trait QuantSpec: sealed::Sealed + 'static {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct QuantParamsL2 {
+    /// Multiplier in the shared affine scalar encoding.
     pub slope: f32,
+
+    /// Rounded affine offset subtracted when encoding a coordinate.
     pub offset: i32,
 }
 
 impl QuantParamsL2 {
+    /// Fits the global affine u8 quantizer, retaining a nonzero scale for a constant-valued dataset.
     pub fn from_range(min_val: f32, max_val: f32) -> Self {
         let range = (max_val - min_val).max(1e-9);
         let slope = 255.0 / range;
@@ -139,6 +144,7 @@ impl QuantParamsL2 {
         Self { slope, offset }
     }
 
+    /// Rounds and saturates one coordinate into the fitted unsigned-byte range.
     #[inline]
     pub fn quantize_scalar(&self, v: f32) -> u8 {
         let x = ((v * self.slope).round() as i64).saturating_sub(self.offset as i64);
@@ -158,10 +164,12 @@ impl QuantParamsL2 {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct QuantParamsMips {
+    /// Scale relating signed codes to original inner-product coordinates.
     pub scale: f32,
 }
 
 impl QuantParamsMips {
+    /// Fits a symmetric signed quantizer, using a neutral scale when every coordinate is zero.
     pub fn from_abs_max(abs_max: f32, max_q: f32) -> Self {
         let scale = if abs_max > 0.0 { max_q / abs_max } else { 1.0 };
         Self { scale }
@@ -177,6 +185,9 @@ impl QuantParamsMips {
 pub struct L2U8;
 
 impl QuantSpec for L2U8 {
+    /// Rejects scalar encoding parameters that would invalidate quantization or scoring.
+    ///
+    /// See [`QuantSpec::validate_params`] for the shared contract.
     fn validate_params(params: &Self::Params) -> Result<()> {
         validation::positive_scale(params.slope)
     }
@@ -189,6 +200,9 @@ impl QuantSpec for L2U8 {
     const PF_BATCH_DEFAULT: usize = 8;
     const METRIC: crate::CalibrationMetric = crate::CalibrationMetric::SquaredL2;
 
+    /// Fits the scalar encoding parameters from the supplied floating-point coordinates.
+    ///
+    /// See [`QuantSpec::build_params`] for the shared contract.
     fn build_params(slice: &[f32]) -> Self::Params {
         let mut min_val = f32::INFINITY;
         let mut max_val = f32::NEG_INFINITY;
@@ -203,11 +217,19 @@ impl QuantSpec for L2U8 {
         QuantParamsL2::from_range(min_val, max_val)
     }
 
+    /// Encodes one coordinate using the fitted scalar quantization parameters.
+    ///
+    /// See [`QuantSpec::quantize_scalar`] for the shared contract.
     #[inline]
     fn quantize_scalar(p: &Self::Params, v: f32) -> Self::Storage {
         p.quantize_scalar(v)
     }
 
+    /// Evaluates one pair of fixed-width encoded rows in the quantizer's distance domain.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`QuantSpec::distance`]'s pointer, shape and lifetime contract.
     #[inline]
     unsafe fn distance<const N: usize>(a: *const u8, b: *const u8) -> f32 {
         let aa = unsafe { &*(a as *const [u8; N]) };
@@ -215,6 +237,11 @@ impl QuantSpec for L2U8 {
         orion_ann_vector::distance_l2_vector_u8::<N>(aa, bb)
     }
 
+    /// Scores four encoded rows against one query using the quantizer's batch kernel.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`QuantSpec::distance_batch4`]'s pointer, shape and lifetime contract.
     #[inline]
     unsafe fn distance_batch4<const N: usize>(
         a0: *const u8,
@@ -231,11 +258,17 @@ impl QuantSpec for L2U8 {
         orion_ann_vector::distance_l2_vector_u8_batch4::<N>(v0, v1, v2, v3, qq)
     }
 
+    /// Returns the squared scale used to relate quantized and original distance domains.
+    ///
+    /// See [`QuantSpec::distance_scale_sq`] for the shared contract.
     #[inline]
     fn distance_scale_sq(p: &Self::Params) -> f32 {
         p.slope * p.slope
     }
 
+    /// Evaluates the corresponding original floating-point metric for reference comparisons.
+    ///
+    /// See [`QuantSpec::truth_distance`] for the shared contract.
     #[inline]
     fn truth_distance<const N: usize>(query: &[f32; N], vertex: &[f32; N]) -> f32 {
         orion_ann_vector::distance_l2_vector_f32::<N>(query, vertex)
@@ -254,6 +287,9 @@ impl QuantSpec for L2U8 {
 pub struct L2U16;
 
 impl QuantSpec for L2U16 {
+    /// Rejects scalar encoding parameters that would invalidate quantization or scoring.
+    ///
+    /// See [`QuantSpec::validate_params`] for the shared contract.
     fn validate_params(params: &Self::Params) -> Result<()> {
         validation::positive_scale(params.slope)
     }
@@ -266,6 +302,9 @@ impl QuantSpec for L2U16 {
     const PF_BATCH_DEFAULT: usize = 8;
     const METRIC: crate::CalibrationMetric = crate::CalibrationMetric::SquaredL2;
 
+    /// Fits the scalar encoding parameters from the supplied floating-point coordinates.
+    ///
+    /// See [`QuantSpec::build_params`] for the shared contract.
     fn build_params(slice: &[f32]) -> Self::Params {
         let mut min_val = f32::INFINITY;
         let mut max_val = f32::NEG_INFINITY;
@@ -280,6 +319,9 @@ impl QuantSpec for L2U16 {
         QuantParamsL2::from_range_u16(min_val, max_val)
     }
 
+    /// Encodes one coordinate using the fitted scalar quantization parameters.
+    ///
+    /// See [`QuantSpec::quantize_scalar`] for the shared contract.
     #[inline]
     fn quantize_scalar(p: &Self::Params, v: f32) -> Self::Storage {
         p.quantize_scalar_u16(v)
@@ -329,11 +371,17 @@ impl QuantSpec for L2U16 {
         }
     }
 
+    /// Returns the squared scale used to relate quantized and original distance domains.
+    ///
+    /// See [`QuantSpec::distance_scale_sq`] for the shared contract.
     #[inline]
     fn distance_scale_sq(p: &Self::Params) -> f32 {
         p.slope * p.slope
     }
 
+    /// Evaluates the corresponding original floating-point metric for reference comparisons.
+    ///
+    /// See [`QuantSpec::truth_distance`] for the shared contract.
     #[inline]
     fn truth_distance<const N: usize>(query: &[f32; N], vertex: &[f32; N]) -> f32 {
         orion_ann_vector::distance_l2_vector_f32::<N>(query, vertex)
@@ -349,6 +397,9 @@ impl QuantSpec for L2U16 {
 pub struct MipsI8;
 
 impl QuantSpec for MipsI8 {
+    /// Rejects scalar encoding parameters that would invalidate quantization or scoring.
+    ///
+    /// See [`QuantSpec::validate_params`] for the shared contract.
     fn validate_params(params: &Self::Params) -> Result<()> {
         validation::positive_scale(params.scale)
     }
@@ -361,6 +412,9 @@ impl QuantSpec for MipsI8 {
     const PF_BATCH_DEFAULT: usize = 4;
     const METRIC: crate::CalibrationMetric = crate::CalibrationMetric::InnerProduct;
 
+    /// Fits the scalar encoding parameters from the supplied floating-point coordinates.
+    ///
+    /// See [`QuantSpec::build_params`] for the shared contract.
     fn build_params(slice: &[f32]) -> Self::Params {
         let mut abs_max = 0.0f32;
         for &v in slice {
@@ -372,11 +426,19 @@ impl QuantSpec for MipsI8 {
         QuantParamsMips::from_abs_max(abs_max, 127.0)
     }
 
+    /// Encodes one coordinate using the fitted scalar quantization parameters.
+    ///
+    /// See [`QuantSpec::quantize_scalar`] for the shared contract.
     #[inline]
     fn quantize_scalar(p: &Self::Params, v: f32) -> Self::Storage {
         (v * p.scale).round().clamp(-127.0, 127.0) as i8
     }
 
+    /// Evaluates one pair of fixed-width encoded rows in the quantizer's distance domain.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`QuantSpec::distance`]'s pointer, shape and lifetime contract.
     #[inline]
     unsafe fn distance<const N: usize>(a: *const i8, b: *const i8) -> f32 {
         let aa = unsafe { &*(a as *const [i8; N]) };
@@ -384,6 +446,11 @@ impl QuantSpec for MipsI8 {
         orion_ann_vector::distance_ip_vector_i8::<N>(aa, bb) as f32
     }
 
+    /// Scores four encoded rows against one query using the quantizer's batch kernel.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`QuantSpec::distance_batch4`]'s pointer, shape and lifetime contract.
     #[inline]
     unsafe fn distance_batch4<const N: usize>(
         a0: *const i8,
@@ -401,11 +468,17 @@ impl QuantSpec for MipsI8 {
         [r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32]
     }
 
+    /// Returns the squared scale used to relate quantized and original distance domains.
+    ///
+    /// See [`QuantSpec::distance_scale_sq`] for the shared contract.
     #[inline]
     fn distance_scale_sq(p: &Self::Params) -> f32 {
         p.scale * p.scale
     }
 
+    /// Evaluates the corresponding original floating-point metric for reference comparisons.
+    ///
+    /// See [`QuantSpec::truth_distance`] for the shared contract.
     #[inline]
     fn truth_distance<const N: usize>(query: &[f32; N], vertex: &[f32; N]) -> f32 {
         orion_ann_vector::distance_ip_vector_f32::<N>(query, vertex)
@@ -422,6 +495,9 @@ impl QuantSpec for MipsI8 {
 pub struct MipsI16;
 
 impl QuantSpec for MipsI16 {
+    /// Rejects scalar encoding parameters that would invalidate quantization or scoring.
+    ///
+    /// See [`QuantSpec::validate_params`] for the shared contract.
     fn validate_params(params: &Self::Params) -> Result<()> {
         validation::positive_scale(params.scale)
     }
@@ -434,6 +510,9 @@ impl QuantSpec for MipsI16 {
     const PF_BATCH_DEFAULT: usize = 4;
     const METRIC: crate::CalibrationMetric = crate::CalibrationMetric::InnerProduct;
 
+    /// Fits the scalar encoding parameters from the supplied floating-point coordinates.
+    ///
+    /// See [`QuantSpec::build_params`] for the shared contract.
     fn build_params(slice: &[f32]) -> Self::Params {
         let mut abs_max = 0.0f32;
         for &v in slice {
@@ -445,11 +524,19 @@ impl QuantSpec for MipsI16 {
         QuantParamsMips::from_abs_max(abs_max, 32767.0)
     }
 
+    /// Encodes one coordinate using the fitted scalar quantization parameters.
+    ///
+    /// See [`QuantSpec::quantize_scalar`] for the shared contract.
     #[inline]
     fn quantize_scalar(p: &Self::Params, v: f32) -> Self::Storage {
         (v * p.scale).round().clamp(-32767.0, 32767.0) as i16
     }
 
+    /// Evaluates one pair of fixed-width encoded rows in the quantizer's distance domain.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`QuantSpec::distance`]'s pointer, shape and lifetime contract.
     #[inline]
     unsafe fn distance<const N: usize>(a: *const i16, b: *const i16) -> f32 {
         let aa = unsafe { &*(a as *const [i16; N]) };
@@ -457,6 +544,11 @@ impl QuantSpec for MipsI16 {
         orion_ann_vector::distance_ip_vector_i16::<N>(aa, bb) as f32
     }
 
+    /// Scores four encoded rows against one query using the quantizer's batch kernel.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`QuantSpec::distance_batch4`]'s pointer, shape and lifetime contract.
     #[inline]
     unsafe fn distance_batch4<const N: usize>(
         a0: *const i16,
@@ -474,11 +566,17 @@ impl QuantSpec for MipsI16 {
         [r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32]
     }
 
+    /// Returns the squared scale used to relate quantized and original distance domains.
+    ///
+    /// See [`QuantSpec::distance_scale_sq`] for the shared contract.
     #[inline]
     fn distance_scale_sq(p: &Self::Params) -> f32 {
         p.scale * p.scale
     }
 
+    /// Evaluates the corresponding original floating-point metric for reference comparisons.
+    ///
+    /// See [`QuantSpec::truth_distance`] for the shared contract.
     #[inline]
     fn truth_distance<const N: usize>(query: &[f32; N], vertex: &[f32; N]) -> f32 {
         orion_ann_vector::distance_ip_vector_f32::<N>(query, vertex)

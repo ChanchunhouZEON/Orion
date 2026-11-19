@@ -99,13 +99,17 @@ pub const fn l2_kt_stride(n: usize) -> usize {
     bytes.div_ceil(block) * block
 }
 
+/// Rounds logical coordinates to the persistent 32-byte scalar-code stride.
 pub const fn l2_kt_stride_disk(n: usize) -> usize {
     (n + 31) & !31
 }
 
 /// L2-kernel-trick sidecar: i8 base + per-vertex squared L2 norms.
 pub struct L2KTDataset {
+    /// Logical coordinates per original vector, excluding padding.
     pub(crate) dimension: usize,
+
+    /// Byte distance between adjacent encoded rows, including padding.
     pub(crate) stride: usize,
     /// i8 quantized base, `num_vertices × STRIDE` bytes, 32-B aligned.
     pub(crate) data: AlignedBoxWithSlice<i8>,
@@ -200,6 +204,9 @@ impl L2KTDataset {
                 *norm_slot = sum;
             });
 
+        if storage.reclaim_after_write {
+            norms_sq.flush_and_reclaim(0..num_vertices * size_of::<i32>())?;
+        }
         Ok(Self {
             dimension: dim,
             stride,
@@ -282,6 +289,7 @@ impl L2KTDataset {
         Ok(())
     }
 
+    /// Restores and validates an L2 kernel-trick payload using default resident storage.
     pub fn decode(r: &mut dyn std::io::Read, byte_len: u64) -> Result<Self> {
         Self::decode_with_storage(r, byte_len, &Default::default())
     }
@@ -370,6 +378,9 @@ impl L2KTDataset {
                 "L2KT norm exceeds the quantized row bound",
             ));
         }
+        if storage.reclaim_after_write {
+            norms_sq.flush_and_reclaim(0..num_vertices * size_of::<i32>())?;
+        }
         Ok(Self {
             dimension: dim,
             stride,
@@ -395,6 +406,7 @@ fn quantize_to_i8(p: &QuantParamsL2, v: f32) -> i8 {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl std::fmt::Debug for L2KTDataset {
+    /// Formats `dimension`, `num_vertices`, `stride` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("L2KTDataset")
             .field("dimension", &self.dimension)
@@ -440,7 +452,15 @@ impl L2KTDataset {
 impl crate::model::dataset::quantized_dataset::sealed::Sealed for L2KTDataset {}
 impl QuantizedDataset for L2KTDataset {
     type BuildOptions = ();
+
+    /// Selects the canonical construction recipe for this representation.
+    ///
+    /// See [`QuantizedDataset::default_build_options`] for the shared contract.
     fn default_build_options() -> Self::BuildOptions {}
+
+    /// Builds this sidecar from validated logical rows.
+    ///
+    /// See [`QuantizedDataset::build`] for the shared contract.
     fn build(base: &impl Rows, _options: &Self::BuildOptions) -> Result<Self> {
         Self::estimate_resident_memory(
             QuantizedDatasetShape {
@@ -451,6 +471,10 @@ impl QuantizedDataset for L2KTDataset {
         )?;
         Self::try_build_from(base)
     }
+
+    /// Predicts this representation's payload allocation before reading base rows.
+    ///
+    /// See [`QuantizedDataset::estimate_resident_memory`] for the shared contract.
     fn estimate_resident_memory(
         input_shape: QuantizedDatasetShape,
         _options: &Self::BuildOptions,
@@ -465,6 +489,10 @@ impl QuantizedDataset for L2KTDataset {
             0,
         )
     }
+
+    /// Accounts for the payload buffers currently owned by this representation.
+    ///
+    /// See [`QuantizedDataset::resident_memory`] for the shared contract.
     fn resident_memory(&self) -> ResidentMemory {
         ResidentMemory::new(
             self.data.len(),

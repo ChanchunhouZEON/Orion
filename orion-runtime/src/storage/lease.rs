@@ -9,10 +9,18 @@ use std::{
     path::Path,
 };
 
+/// Owns a nonblocking OS file lock for one publication destination.
+///
+/// Closing the owned handle releases the lock; the lock inode intentionally remains.
 pub(crate) struct WriterLease {
     _file: File,
 }
 impl WriterLease {
+    /// Attempts exclusive writer ownership without waiting for a competing writer.
+    ///
+    /// # Errors
+    ///
+    /// Reports `InvalidState` on contention and preserves filesystem failures with context.
     pub(crate) fn acquire(destination: &Path) -> Result<Self> {
         let absolute = std::path::absolute(destination)?;
         let parent = absolute
@@ -60,6 +68,8 @@ impl WriterLease {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verifies contention fails immediately and dropping the owner permits a new writer.
     #[test]
     fn conflicting_writers_fail_and_drop_releases_lease() {
         let root = tempfile::tempdir().unwrap();

@@ -6,6 +6,7 @@
 //! macOS physical memory and conservative reclaimable-page observations.
 use super::MemoryResources;
 
+/// Collects best-effort physical-memory and locking observations from macOS APIs.
 #[allow(deprecated)] // libc retains the Mach ABI; avoid a separate OS-only dependency.
 pub(super) fn observe(result: &mut MemoryResources) {
     unsafe extern "C" {

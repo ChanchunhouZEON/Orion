@@ -179,6 +179,7 @@ pub fn distance_ip_vector_i16<const N: usize>(a: &[i16; N], b: &[i16; N]) -> i64
     -s
 }
 
+/// Scores four base rows against one query, preserving input-row order.
 #[cfg(not(target_arch = "aarch64"))]
 #[inline(never)]
 pub fn distance_ip_vector_i16_batch4<const N: usize>(

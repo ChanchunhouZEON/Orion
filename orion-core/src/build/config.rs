@@ -54,7 +54,10 @@ pub enum BuildMetric {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BuildConfig {
+    /// Graph construction implementation selected for this build.
     pub backend: BuildBackend,
+
+    /// Original metric used to interpret coordinates and scores.
     pub metric: BuildMetric,
     /// Maximum navigation degree, positive and fitting a graph row header.
     pub degree: u32,
@@ -73,6 +76,7 @@ pub struct BuildConfig {
 }
 
 impl Default for BuildConfig {
+    /// Selects automatic backend resolution with the core graph-construction defaults.
     fn default() -> Self {
         Self {
             backend: BuildBackend::Auto,
@@ -122,6 +126,7 @@ impl BuildConfig {
         Ok(())
     }
 
+    /// Resolves the available builder and rejects unsupported shapes, metrics or backend-specific integer bounds.
     pub(super) fn backend(
         &self,
         count: usize,
@@ -193,6 +198,7 @@ impl BuildConfig {
         Ok(backend)
     }
 
+    /// Runs construction in a worker pool matching the requested thread count, reusing a compatible current pool.
     pub(super) fn install<R: Send>(&self, build: impl FnOnce() -> Result<R> + Send) -> Result<R> {
         // The runtime already installs its worker pool. Reuse it only when its
         // size matches; standalone callers get an isolated, bounded pool.

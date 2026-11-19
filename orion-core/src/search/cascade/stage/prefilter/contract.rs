@@ -63,7 +63,7 @@ pub unsafe trait PrefilterSession: Send + Sync {
     /// validated dataset. `search_list_size` must be nonzero.
     unsafe fn apply(
         &self,
-        scratch: &mut crate::model::scratch::InMemSearchScratch,
+        scratch: &mut crate::model::search::scratch::InMemSearchScratch,
         search_list_size: usize,
         lookahead_lines: usize,
     ) -> PrefilterOutcome {
@@ -142,6 +142,7 @@ pub struct PrefilterOutcome {
     rejected: usize,
 }
 impl PrefilterOutcome {
+    /// Emits the work and rejection counts from this filter outcome without rerunning the filter.
     #[inline(always)]
     pub(crate) fn observe<O: crate::search::diagnostics::SearchObserver>(
         self,

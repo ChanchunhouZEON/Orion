@@ -16,17 +16,25 @@ pub type EncodeSidecar<'a> = dyn Fn(&mut dyn Write) -> Result<()> + 'a;
 /// Optional runtime service. A miss skips the decoder. On a hit, the service
 /// must verify the bytes consumed by the decoder before returning success.
 pub trait SidecarCache: Send + Sync {
+    /// Attempts to load a representation through the supplied decoder; a miss may return without invoking it.
+    ///
+    /// The adapter owns authentication policy and must propagate failure before the value is published.
     fn load(
         &self,
         base: &dyn Rows,
         codec: &'static str,
         decode: &mut DecodeSidecar<'_>,
     ) -> Result<()>;
+
+    /// Persists a representation by invoking its encoder; core may treat cache writes as optional.
     fn store(&self, base: &dyn Rows, codec: &'static str, encode: &EncodeSidecar<'_>)
     -> Result<()>;
 }
 
 impl<T: SidecarCodec> SidecarCell<T> {
+    /// Reuses a valid cached sidecar or builds it once, with optional persistence after successful construction.
+    ///
+    /// Cache failures are logged and rebuilt; failed initialization leaves the slot retryable.
     pub(super) fn ensure(
         &self,
         dataset: &impl Rows,
@@ -62,6 +70,7 @@ impl<T: SidecarCodec> SidecarCell<T> {
 }
 
 // Keep the candidate private until the caller finishes verifying its input.
+/// Holds a decoded sidecar locally until the loader succeeds and its shape matches the base.
 fn decode_checked<T: SidecarCodec>(
     shape: (usize, usize),
     options: &RegionOptions,
@@ -79,13 +88,21 @@ fn decode_checked<T: SidecarCodec>(
     Ok(candidate)
 }
 
+/// Internal typed access to one lazily materialized sidecar cell.
 trait Slot {
+    /// Returns the stable codec key used to locate this slot's persistent representation.
     fn codec(&self) -> &'static str;
+
+    /// Reports whether this slot already contains a published sidecar.
     fn initialized(&self) -> bool;
+
+    /// Invokes an encoder visitor only when this slot is initialized.
     fn visit(
         &self,
         visit: &mut dyn FnMut(&'static str, &EncodeSidecar<'_>) -> Result<()>,
     ) -> Result<()>;
+
+    /// Restores one slot through a caller-provided loader while checking the expected logical shape.
     fn restore(
         &self,
         shape: (usize, usize),
@@ -95,12 +112,17 @@ trait Slot {
 }
 
 impl<T: SidecarCodec> Slot for SidecarCell<T> {
+    /// Reports whether this sidecar has been successfully published.
     fn initialized(&self) -> bool {
         self.get().is_some()
     }
+
+    /// Returns the stable persistence key of this sidecar slot.
     fn codec(&self) -> &'static str {
         T::EXTENSION
     }
+
+    /// Exposes the encoder of an initialized sidecar without building an empty slot.
     fn visit(
         &self,
         visit: &mut dyn FnMut(&'static str, &EncodeSidecar<'_>) -> Result<()>,
@@ -110,6 +132,8 @@ impl<T: SidecarCodec> Slot for SidecarCell<T> {
         }
         Ok(())
     }
+
+    /// Decodes and validates a snapshot sidecar, rejecting an already initialized slot.
     fn restore(
         &self,
         shape: (usize, usize),
@@ -125,6 +149,7 @@ impl<T: SidecarCodec> Slot for SidecarCell<T> {
 }
 
 impl DynamicSidecars {
+    /// Enumerates all representation slots for uniform snapshot and residency operations.
     fn slots(&self) -> [&dyn Slot; 11] {
         [
             &self.q_dataset,
@@ -186,6 +211,8 @@ impl<D: IndexData> CompressedIndex<D, DynamicSidecars> {
             .set(plan)
             .map_err(|_| Error::invalid_state("concurrent storage configuration"))
     }
+
+    /// Borrows the immutable placement policy installed before sidecar allocation.
     #[doc(hidden)]
     pub fn sidecar_storage_plan(&self) -> Option<&PlacementPlan> {
         self.sidecars.placement.get()
@@ -276,6 +303,7 @@ impl<D: IndexData> CompressedIndex<D, DynamicSidecars> {
 }
 
 impl<D> CompressedIndex<D, DynamicSidecars> {
+    /// Borrows an initialized native-cosine norm allocation together with its actual placement.
     #[doc(hidden)]
     pub fn native_norms_region(&self) -> Option<(&[u8], orion_ann_platform::region::Placement)> {
         self.sidecars
@@ -285,10 +313,13 @@ impl<D> CompressedIndex<D, DynamicSidecars> {
     }
 }
 impl CompressedIndex<orion_ann_diskann::model::PaddedDataset<u8>, DynamicSidecars> {
+    /// Ensures exact native-byte cosine norms are available before any cosine session is created.
     #[doc(hidden)]
     pub fn prepare_native_cosine(&self) -> Result<()> {
         self.native_cosine_norms().map(|_| ())
     }
+
+    /// Initializes the native-byte norm table once under its configured allocation policy.
     pub(crate) fn native_cosine_norms(
         &self,
     ) -> Result<&crate::model::dataset::native_u8::NativeU8Norms> {
@@ -338,6 +369,8 @@ impl<D: crate::model::dataset::rows::CascadeData> CompressedIndex<D, DynamicSide
         };
         ExactStage::u8(base, norms, metric)
     }
+
+    /// Returns the transformation used for sidecar fitting, defaulting to unchanged logical rows.
     pub(crate) fn sidecar_row_transform(&self) -> crate::model::dataset::rows::RowTransform {
         self.sidecars
             .row_transform

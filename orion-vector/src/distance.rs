@@ -56,6 +56,11 @@ pub trait FullPrecisionDistance<T, const N: usize> {
 
 #[allow(clippy::panic)]
 impl<const N: usize> FullPrecisionDistance<f32, N> for [f32; N] {
+    /// Computes squared L2 using the existing full-precision kernel.
+    ///
+    /// # Panics
+    ///
+    /// Panics for unsupported legacy metrics.
     #[inline(always)]
     fn distance_compare(a: &[f32; N], b: &[f32; N], metric: Metric) -> f32 {
         match metric {
@@ -64,6 +69,9 @@ impl<const N: usize> FullPrecisionDistance<f32, N> for [f32; N] {
         }
     }
 
+    /// Evaluates squared L2 with the backend's early-abandon bound.
+    ///
+    /// See [`FullPrecisionDistance::distance_compare_with_bound`] for the sentinel contract.
     #[inline(always)]
     fn distance_compare_with_bound(a: &[f32; N], b: &[f32; N], upper_bound: f32) -> f32 {
         #[cfg(target_arch = "aarch64")]
@@ -88,6 +96,7 @@ impl<const N: usize> FullPrecisionDistance<f32, N> for [f32; N] {
         }
     }
 
+    /// Applies the benchmark ADSampling bound while retaining the selected backend's schedule.
     #[inline(always)]
     #[cfg(feature = "benchmark")]
     fn distance_compare_adsampling(
@@ -137,6 +146,11 @@ impl<const N: usize> FullPrecisionDistance<f32, N> for [f32; N] {
 
 #[allow(clippy::panic)]
 impl<const N: usize> FullPrecisionDistance<Half, N> for [Half; N] {
+    /// Computes squared L2 using the existing full-precision kernel.
+    ///
+    /// # Panics
+    ///
+    /// Panics for unsupported legacy metrics.
     fn distance_compare(a: &[Half; N], b: &[Half; N], metric: Metric) -> f32 {
         match metric {
             Metric::L2 => distance_l2_vector_f16::<N>(a, b),
@@ -147,6 +161,11 @@ impl<const N: usize> FullPrecisionDistance<Half, N> for [Half; N] {
 
 #[allow(clippy::panic)]
 impl<const N: usize> FullPrecisionDistance<i8, N> for [i8; N] {
+    /// Rejects the unsupported legacy fixed-array i8 distance path.
+    ///
+    /// # Panics
+    ///
+    /// Always panics; signed scalar storage does not enable this legacy kernel.
     fn distance_compare(_a: &[i8; N], _b: &[i8; N], _metric: Metric) -> f32 {
         panic!("Not supported VectorType i8")
     }

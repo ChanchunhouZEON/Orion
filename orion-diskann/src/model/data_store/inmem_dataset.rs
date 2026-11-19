@@ -27,6 +27,7 @@ use crate::common::{ANNError, ANNResult, AlignedBoxWithSlice};
 use crate::model::Vertex;
 use crate::utils::copy_aligned_data_from_file;
 
+/// Computes a grown coordinate capacity and rejects nonfinite growth or byte-index overflow.
 fn checked_capacity(
     num_points: usize,
     dimension: usize,
@@ -49,13 +50,21 @@ fn checked_capacity(
     Ok((grown as usize).max(minimum))
 }
 
+/// Legacy fixed-width vector storage with owned aligned rows and an active count.
 pub struct InmemDataset<T, const N: usize>
 where
     [T; N]: FullPrecisionDistance<T, N>,
 {
+    /// Owned aligned vector payload including reserved capacity and padding.
     pub data: AlignedBoxWithSlice<T>,
+
+    /// Configured initial point count, distinct from active rows and growth capacity.
     pub num_points: usize,
+
+    /// Number of initialized vectors currently available to the index.
     pub num_active_pts: usize,
+
+    /// Allocated coordinate capacity before the final SIMD tail margin.
     pub capacity: usize,
 }
 
@@ -64,6 +73,7 @@ where
     T: Default + Copy + Sync + Send + Into<f32>,
     [T; N]: FullPrecisionDistance<T, N>,
 {
+    /// Allocates aligned fixed-width base storage with growth capacity and a SIMD tail margin.
     pub fn new(num_points: usize, index_growth_factor: f32) -> ANNResult<Self>
     where
         T: bytemuck::Pod,
@@ -89,10 +99,14 @@ where
         })
     }
 
+    /// Borrows the underlying allocation, including unused capacity and the tail margin.
     pub fn get_data(&self) -> &[T] {
         &self.data
     }
 
+    /// Loads file rows into the existing allocation through the bulk aligned decoder.
+    ///
+    /// This mutates the dataset during loading; failure does not promise rollback of partially read data.
     pub fn build_from_file(&mut self, filename: &str, num_points_to_load: usize) -> ANNResult<()>
     where
         T: bytemuck::Pod,
@@ -109,6 +123,7 @@ where
         Ok(())
     }
 
+    /// Loads additional file rows after the current active rows and advances counts after successful decoding.
     pub fn append_from_file(&mut self, filename: &str, num_points_to_append: usize) -> ANNResult<()>
     where
         T: bytemuck::Pod,
@@ -134,6 +149,9 @@ where
         Ok(())
     }
 
+    /// Borrows one fixed-width row when its range fits the allocated buffer.
+    ///
+    /// Active-point validation belongs to callers; allocated growth capacity may exceed active rows.
     pub fn get_vertex(&'a self, id: u32) -> ANNResult<Vertex<'a, T, N>> {
         let start = id as usize * N;
         let end = start + N;
@@ -166,6 +184,7 @@ where
         unsafe { &*ptr }
     }
 
+    /// Scores two stored fixed-width rows with the selected legacy metric.
     pub fn get_distance(&self, id1: u32, id2: u32, metric: Metric) -> ANNResult<f32> {
         let vertex1 = self.get_vertex(id1)?;
         let vertex2 = self.get_vertex(id2)?;
@@ -173,10 +192,12 @@ where
         Ok(vertex1.compare(&vertex2, metric))
     }
 
+    /// Chooses the active row nearest to the mean as a graph entry-point approximation.
     pub fn calculate_medoid_point_id(&self) -> ANNResult<u32> {
         Ok(self.find_nearest_point_id(self.calculate_centroid_point()?))
     }
 
+    /// Averages active coordinates into an f32 center; the dataset is expected to be nonempty.
     fn calculate_centroid_point(&self) -> ANNResult<[f32; N]> {
         let mut center: [f32; N] = [0.0; N];
 
@@ -196,6 +217,7 @@ where
         Ok(center)
     }
 
+    /// Scans active rows in parallel and selects the first minimum squared-L2 distance to the supplied point.
     fn find_nearest_point_id(&self, point: [f32; N]) -> u32 {
         let mut distances = vec![0f32; self.num_active_pts];
         let slice = &self.data[..];
@@ -219,6 +241,7 @@ where
         min_idx as u32
     }
 
+    /// Hints the cache lines of a row when its address range fits the allocation.
     #[inline]
     pub fn prefetch_vector(&self, id: u32) {
         let start = id as usize * N;
@@ -230,6 +253,7 @@ where
         }
     }
 
+    /// Lends mutable base storage and its physical row width to the aligned file decoder.
     pub fn into_dto(&mut self) -> DatasetDto<'_, T> {
         DatasetDto {
             data: &mut self.data,
@@ -238,9 +262,13 @@ where
     }
 }
 
+/// Borrowed mutable payload and row stride used by legacy vector I/O.
 #[derive(Debug)]
 pub struct DatasetDto<'a, T> {
+    /// Mutable borrowed vector payload used by the legacy dataset codec.
     pub data: &'a mut [T],
+
+    /// Physical row stride in scalar elements, including padding.
     pub rounded_dim: usize,
 }
 
@@ -248,6 +276,7 @@ impl<T, const N: usize> std::fmt::Debug for InmemDataset<T, N>
 where
     [T; N]: FullPrecisionDistance<T, N>,
 {
+    /// Formats `dimension`, `num_points`, `num_active_pts`, `capacity` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InmemDataset")
             .field("dimension", &N)

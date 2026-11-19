@@ -11,12 +11,18 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 pub(crate) const CODEC: &str = "labels.json";
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Snapshot reference to one immutable, content-addressed label revision.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LabelObject {
+    /// Digest naming the serialized label object in the shared store.
     pub sha256: String,
+
+    /// Expected label revision, checked against the decoded payload.
     pub revision: u64,
 }
+
+/// Versioned wire representation validated before reconstructing label membership.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
@@ -27,6 +33,7 @@ struct Record {
     labels: Vec<(LabelKey, Vec<u32>)>,
 }
 
+/// Binds labels to base content, row count and optional business-ID mapping.
 pub(crate) fn identity(base: &str, points: usize, external_ids: Option<&str>) -> String {
     // Separates equal-length datasets and different business-ID assignments.
     // Graph/cascade/calibration changes do not alter the row identity space.
@@ -35,8 +42,10 @@ pub(crate) fn identity(base: &str, points: usize, external_ids: Option<&str>) ->
     )
 }
 impl LabelSnapshot {
+    /// Publishes the captured label generation without cloning membership payloads or changing live state.
     pub(crate) fn save(&self, store: &Path) -> Result<LabelObject> {
         // Arc payloads are borrowed during serialization; no membership clone.
+        /// Borrowing serializer view that avoids copying immutable membership arrays.
         #[derive(Serialize)]
         struct Borrowed<'a> {
             format_version: u32,
@@ -64,6 +73,8 @@ impl LabelSnapshot {
             revision: self.revision,
         })
     }
+
+    /// Verifies label content, identity, revision and membership invariants before creating a usable generation.
     pub(crate) fn load(
         store: &Path,
         object: &LabelObject,

@@ -8,6 +8,7 @@ use crate::{Error, Result};
 
 pub(crate) const BYTES_PER_GIB: f64 = 1_073_741_824.0;
 
+/// Rejects nonfinite or nonpositive explicit GiB budgets; absence leaves resource policy to planning.
 pub fn validate_memory_budget(budget: Option<f64>) -> Result<()> {
     if budget.is_some_and(|gib| !gib.is_finite() || gib <= 0.) {
         return Err(Error::configuration(
@@ -20,6 +21,7 @@ pub fn validate_memory_budget(budget: Option<f64>) -> Result<()> {
 
 // Keep the floating-point result for preflight comparisons. Lock planning casts
 // to u64 only at its integer budget boundary (saturating for enormous limits).
+/// Converts GiB to floating-point bytes without rounding or enforcing a budget.
 pub(crate) fn gib_to_bytes(gib: f64) -> f64 {
     gib * BYTES_PER_GIB
 }

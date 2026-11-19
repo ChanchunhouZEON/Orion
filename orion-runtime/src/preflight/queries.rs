@@ -9,14 +9,28 @@ use crate::{
     Result,
 };
 
+/// Known query, result and evaluation buffers for a replay or streaming run.
 pub(super) struct QueryBuffers {
+    /// Maximum query rows retained by the selected execution mode.
     pub buffered: usize,
+
+    /// Decoded and search-ready query payloads, including native-byte worker buffers when needed.
     pub query_bytes: u64,
+
+    /// Internal top-k ID storage for buffered queries.
     pub result_bytes: u64,
+
+    /// Ground-truth IDs retained for replay or the current streaming row.
     pub gt_bytes: u64,
+
+    /// Whether replay requires a query count that has not yet been established.
     pub unknown_replay: bool,
 }
 impl QueryBuffers {
+    /// Estimates execution buffers from query count and batching policy, rejecting byte-count overflow.
+    ///
+    /// Graph-only preparation has no query buffers; an unknown replay size remains
+    /// explicit rather than being interpreted as a complete zero-byte estimate.
     pub(super) fn estimate(
         config: &ResolvedRunConfig,
         query_count: Option<usize>,

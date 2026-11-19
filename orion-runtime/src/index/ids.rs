@@ -6,9 +6,15 @@
 use crate::{Error, ErrorCode, Result};
 use std::io::Write;
 
-pub(super) struct IdMap(pub Vec<u64>);
+/// Owns the external ID at each internal row position, independently of graph topology.
+/// Construction rejects duplicate business IDs.
+pub(super) struct IdMap(
+    /// Application IDs indexed by compact internal graph ID.
+    pub Vec<u64>,
+);
 
 impl IdMap {
+    /// Checks mapping length, uniqueness and validation-copy budget before accepting ownership.
     pub fn validate(ids: Vec<u64>, points: usize, budget: Option<f64>) -> Result<Self> {
         if ids.len() != points {
             return Err(Error::invalid_argument(
@@ -30,6 +36,7 @@ impl IdMap {
         Ok(Self(ids))
     }
 
+    /// Publishes the mapping as an immutable little-endian u64 object and returns its digest.
     pub fn save(&self, store: &std::path::Path) -> Result<String> {
         crate::storage::put(store, "ids-u64-le", |writer| {
             if cfg!(target_endian = "little") {
@@ -48,6 +55,7 @@ impl IdMap {
         .map(|(_, hash)| hash)
     }
 
+    /// Verifies and decodes a mapping, then rechecks its shape and uniqueness within budget.
     pub fn load(
         store: &std::path::Path,
         digest: &str,
@@ -82,6 +90,7 @@ impl IdMap {
     }
 }
 
+/// Checks headroom for external IDs and temporary uniqueness validation buffers.
 fn reserve_budget(points: usize, budget: Option<f64>, pending_buffers: u64) -> Result<()> {
     crate::config::resources::validate_memory_budget(budget)?;
     if points == 0 || points >= u32::MAX as usize {

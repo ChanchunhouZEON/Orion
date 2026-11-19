@@ -27,7 +27,7 @@ pub use config::{BuildBackend, BuildConfig, BuildMetric};
 pub const PARLAY_RECIPE: &str = "parlay-memory-v1-unquantized-two-pass";
 
 macro_rules! build_api {
-    ($ty:ty, $native:expr, $kernel:ty, $pa:ident, $rust:expr) => {
+    ($ty:ty, $native:expr, $pa:ident, $rust:expr) => {
         impl Orion<$ty> {
             /// Build an index in memory, taking ownership of the padded base.
             ///
@@ -60,7 +60,7 @@ macro_rules! build_api {
                         .row(id)
                         .unwrap()
                         .iter()
-                        .any(|&x| !<$ty as crate::index::DynamicElement>::valid_coordinate(x))
+                        .any(|&x| !<$ty as crate::index::BaseScalar>::valid_coordinate(x))
                 }) {
                     return Err(
                         Error::invalid_argument("base contains a non-finite coordinate")
@@ -96,7 +96,7 @@ macro_rules! build_api {
                     .at("build_graph"));
                 }
                 config.backend(values.len() / dimension, dimension, $native)?;
-                let layout = crate::PaddedLayout::for_kernel::<$kernel>(dimension)
+                let layout = crate::PaddedLayout::for_base_scalar::<$ty>(dimension)
                     .map_err(Error::invalid_argument)?;
                 let dataset =
                     PaddedDataset::from_packed(values, layout).map_err(Error::invalid_argument)?;
@@ -105,13 +105,7 @@ macro_rules! build_api {
         }
     };
 }
-build_api!(
-    f32,
-    false,
-    orion_ann_vector::L2F32Distance,
-    f32,
-    diskann::build
-);
+build_api!(f32, false, f32, diskann::build);
 
 #[cfg(test)]
 mod tests {
@@ -159,7 +153,6 @@ mod tests {
 build_api!(
     u8,
     true,
-    orion_ann_vector::IpU8Distance,
     u8,
     |_: PaddedDataset<u8>, _: &BuildConfig, _: &orion_ann_platform::region::RegionOptions| Err(
         Error::unsupported("native u8 construction requires ParlayANN")

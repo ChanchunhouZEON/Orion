@@ -12,6 +12,7 @@ fn mapped_slab_build_import_decode_preserve_partitions_and_lifetime() {
         placement: Placement::Mapped,
         directory: Some(dir.path().into()),
         accounting: None,
+        reclaim_after_write: false,
     };
     let mut staged = Vec::new();
     for word in [0x53544147u32, 3, 4, 2, 1, 0] {
@@ -84,4 +85,36 @@ fn mapped_slab_build_import_decode_preserve_partitions_and_lifetime() {
     );
     drop(decoded);
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn mapped_native_decode_bounds_payload_read_requests() {
+    use orion_ann_platform::buffered_io::FILE_READ_BYTES;
+    use std::io::Read;
+    struct Bounded<R>(R);
+    impl<R: Read> Read for Bounded<R> {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            assert!(out.len() <= FILE_READ_BYTES, "unbounded payload read");
+            self.0.read(out)
+        }
+    }
+    let nodes = 530_000usize;
+    let mut bytes = vec![0u8; 16 + nodes * 64];
+    for (chunk, word) in bytes[..16]
+        .chunks_exact_mut(4)
+        .zip([nodes as u32, 1, 16, 1])
+    {
+        chunk.copy_from_slice(&word.to_le_bytes());
+    }
+    let storage = RegionOptions {
+        placement: Placement::Mapped,
+        reclaim_after_write: true,
+        ..Default::default()
+    };
+    let graph =
+        PhasedGraph::decode_with_storage(Bounded(bytes.as_slice()), bytes.len() as u64, &storage)
+            .unwrap();
+    assert_eq!(graph.placement(), Placement::Mapped);
+    assert_eq!(graph.num_nodes(), nodes);
+    assert!(graph.neighbors(nodes - 1).is_empty());
 }

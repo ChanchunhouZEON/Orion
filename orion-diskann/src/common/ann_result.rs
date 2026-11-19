@@ -78,6 +78,7 @@ pub enum ANNError {
 }
 
 impl From<io::Error> for ANNError {
+    /// Converts this failure into the legacy DiskANN error domain using its logging policy.
     #[inline]
     fn from(err: io::Error) -> Self {
         Self::log_io_error(err)
@@ -85,6 +86,7 @@ impl From<io::Error> for ANNError {
 }
 
 impl From<TryFromIntError> for ANNError {
+    /// Converts this failure into the legacy DiskANN error domain using its logging policy.
     #[inline]
     fn from(err: TryFromIntError) -> Self {
         Self::log_try_from_int_error(err)
@@ -92,6 +94,7 @@ impl From<TryFromIntError> for ANNError {
 }
 
 impl From<LayoutError> for ANNError {
+    /// Converts this failure into the legacy DiskANN error domain using its logging policy.
     #[inline]
     fn from(err: LayoutError) -> Self {
         Self::log_mem_alloc_layout_error(err)
@@ -99,6 +102,7 @@ impl From<LayoutError> for ANNError {
 }
 
 impl From<TryFromSliceError> for ANNError {
+    /// Converts this failure into the legacy DiskANN error domain using its logging policy.
     #[inline]
     fn from(err: TryFromSliceError) -> Self {
         Self::log_try_from_slice_error(err)
@@ -106,6 +110,7 @@ impl From<TryFromSliceError> for ANNError {
 }
 
 impl From<bincode::error::EncodeError> for ANNError {
+    /// Converts this failure into the legacy DiskANN error domain using its logging policy.
     #[inline]
     fn from(err: bincode::error::EncodeError) -> Self {
         Self::log_serialize_error(err)
@@ -113,6 +118,7 @@ impl From<bincode::error::EncodeError> for ANNError {
 }
 
 impl From<bincode::error::DecodeError> for ANNError {
+    /// Converts this failure into the legacy DiskANN error domain using its logging policy.
     #[inline]
     fn from(err: bincode::error::DecodeError) -> Self {
         Self::log_deserialize_error(err)
@@ -121,6 +127,7 @@ impl From<bincode::error::DecodeError> for ANNError {
 
 // Retain explicit logger failures without replacing unrelated errors.
 impl From<LogError> for ANNError {
+    /// Converts this failure into the legacy DiskANN error domain using its logging policy.
     #[inline]
     fn from(err: LogError) -> Self {
         Self::LogError { err }
@@ -128,56 +135,67 @@ impl From<LogError> for ANNError {
 }
 
 impl ANNError {
+    /// Constructs an index-operation error without emitting a log record.
     #[inline]
     pub fn log_index_error(err: String) -> Self {
         ANNError::IndexError { err }
     }
 
+    /// Constructs a configuration error carrying the offending parameter name.
     #[inline]
     pub fn log_index_config_error(parameter: String, err: String) -> Self {
         ANNError::IndexConfigError { parameter, err }
     }
 
+    /// Preserves a failed integer conversion in the legacy error envelope.
     #[inline]
     pub fn log_try_from_int_error(err: TryFromIntError) -> Self {
         ANNError::TryFromIntError { err }
     }
 
+    /// Preserves an I/O error without performing an additional read, write or log operation.
     #[inline]
     pub fn log_io_error(err: io::Error) -> Self {
         ANNError::IOError { err }
     }
 
+    /// Constructs an error describing an invalid aligned-I/O request.
     #[inline]
     pub fn log_disk_io_request_alignment_error(err: String) -> Self {
         ANNError::DiskIOAlignmentError { err }
     }
 
+    /// Preserves an invalid allocation-layout error.
     #[inline]
     pub fn log_mem_alloc_layout_error(err: LayoutError) -> Self {
         ANNError::MemoryAllocLayoutError { err }
     }
 
+    /// Constructs a synchronization-poison error with the affected operation's context.
     #[inline]
     pub fn log_lock_poison_error(err: String) -> Self {
         ANNError::LockPoisonError { err }
     }
 
+    /// Constructs a legacy PQ preparation or decoding error.
     #[inline]
     pub fn log_pq_error(err: String) -> Self {
         ANNError::PQError { err }
     }
 
+    /// Preserves a slice-to-array shape conversion failure.
     #[inline]
     pub fn log_try_from_slice_error(err: TryFromSliceError) -> Self {
         ANNError::TryFromSliceError { err }
     }
 
+    /// Preserves a legacy binary-encoding failure.
     #[inline]
     pub fn log_serialize_error(err: bincode::error::EncodeError) -> Self {
         ANNError::SerializeError { err }
     }
 
+    /// Preserves a legacy binary-decoding failure.
     #[inline]
     pub fn log_deserialize_error(err: bincode::error::DecodeError) -> Self {
         ANNError::DeserializeError { err }
@@ -202,6 +220,7 @@ mod public_error {
     use orion_ann_error::{Error, ErrorCode};
     use serde_json::json;
     impl From<super::ANNError> for Error {
+        /// Maps the legacy failure into the shared public error code while preserving its cause.
         fn from(source: super::ANNError) -> Self {
             use super::ANNError as A;
             let code = match &source {

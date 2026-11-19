@@ -84,6 +84,7 @@ pub(crate) fn load_with_storage<T: BaseElement + Pod>(
     )
 }
 
+/// Loads padded base rows while hashing the same input stream for cache identity.
 pub(crate) fn load_hashed<T: BaseElement + Pod>(
     path: &Path,
     format: VectorFormat,
@@ -107,6 +108,7 @@ pub(crate) fn load_hashed<T: BaseElement + Pod>(
     Ok((dataset, source.finish().1))
 }
 
+/// Validates file shape and budget, then decodes logical rows directly into the planned padded allocation.
 #[allow(clippy::too_many_arguments)]
 fn load_inner<T: BaseElement + Pod>(
     path: &Path,
@@ -183,6 +185,7 @@ fn load_inner<T: BaseElement + Pod>(
     Ok(data)
 }
 
+/// Applies base-type validation and metric preparation to logical rows without modifying padding.
 fn normalize<T: BaseElement + Pod>(
     data: &mut PaddedDataset<T>,
     metric: SearchMetric,

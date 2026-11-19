@@ -7,6 +7,8 @@ use orion_ann::{
     BaseInput, ExternalLabelUpdate, FilterSearchOptions, Index, IndexOptions, LabelFilter,
     LabelKey, QueryBatch, Result,
 };
+
+/// Demonstrates label revision publication, external-ID updates, filtered search and snapshot recovery.
 fn main() -> Result<()> {
     let root = std::env::args_os()
         .nth(1)

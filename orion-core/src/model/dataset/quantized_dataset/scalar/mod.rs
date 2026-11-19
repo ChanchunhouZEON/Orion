@@ -47,10 +47,19 @@ use spec::*;
 /// }
 /// ```
 pub struct ScalarQuantizedDataset<Q: QuantSpec> {
+    /// Encoded scalar rows with padding and shared resident or mapped ownership.
     pub(crate) data: ArrayView<Q::Storage>,
+
+    /// Fitted scalar-encoding parameters shared by every row.
     pub(crate) params: Q::Params,
+
+    /// Number of quantized rows in the backing span.
     pub(crate) n: usize,
+
+    /// Logical coordinates per original vector, excluding padding.
     pub(crate) dimension: usize,
+
+    /// Scalar-element distance between adjacent encoded rows, including padding.
     pub(crate) stride: usize,
 }
 
@@ -265,6 +274,7 @@ impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
         f32_pq_worst * Q::distance_scale_sq(&self.params)
     }
 
+    /// Hints the cache lines of one encoded row after checking its internal ID.
     #[inline]
     pub fn prefetch_vector(&self, id: u32) {
         assert!((id as usize) < self.n, "sidecar row ID out of bounds");
@@ -301,6 +311,7 @@ impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
         Ok(())
     }
 
+    /// Validates and restores a scalar-quantized payload using default resident storage.
     pub fn decode(r: &mut dyn std::io::Read, byte_len: u64) -> Result<Self> {
         Self::decode_with_storage(r, byte_len, &RegionOptions::default())
     }
@@ -394,6 +405,7 @@ impl<Q: QuantSpec> ScalarQuantizedDataset<Q> {
 }
 
 impl<Q: QuantSpec> std::fmt::Debug for ScalarQuantizedDataset<Q> {
+    /// Formats `quantizer`, `points`, `dimension`, `stride` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ScalarQuantizedDataset")
             .field("quantizer", &std::any::type_name::<Q>())
@@ -449,7 +461,15 @@ impl<Q: QuantSpec> crate::model::dataset::quantized_dataset::sealed::Sealed
 }
 impl<Q: QuantSpec> QuantizedDataset for ScalarQuantizedDataset<Q> {
     type BuildOptions = ();
+
+    /// Selects the canonical construction recipe for this representation.
+    ///
+    /// See [`QuantizedDataset::default_build_options`] for the shared contract.
     fn default_build_options() -> Self::BuildOptions {}
+
+    /// Builds this sidecar from validated logical rows.
+    ///
+    /// See [`QuantizedDataset::build`] for the shared contract.
     fn build(base: &impl Rows, _options: &Self::BuildOptions) -> Result<Self> {
         Self::estimate_resident_memory(
             QuantizedDatasetShape {
@@ -460,6 +480,10 @@ impl<Q: QuantSpec> QuantizedDataset for ScalarQuantizedDataset<Q> {
         )?;
         Self::try_from_f32_dataset(base)
     }
+
+    /// Predicts this representation's payload allocation before reading base rows.
+    ///
+    /// See [`QuantizedDataset::estimate_resident_memory`] for the shared contract.
     fn estimate_resident_memory(
         input_shape: QuantizedDatasetShape,
         _options: &Self::BuildOptions,
@@ -469,6 +493,10 @@ impl<Q: QuantSpec> QuantizedDataset for ScalarQuantizedDataset<Q> {
             orion_ann_vector::PaddedLayout::for_kernel::<Q::QuantKernel>(input_shape.dimension)?;
         ResidentMemory::new(layout.allocation_bytes(input_shape.rows)?, 0, 0)
     }
+
+    /// Accounts for the payload buffers currently owned by this representation.
+    ///
+    /// See [`QuantizedDataset::resident_memory`] for the shared contract.
     fn resident_memory(&self) -> ResidentMemory {
         ResidentMemory::new(std::mem::size_of_val(self.data.as_slice()), 0, 0)
             .expect("validated resident allocation sizes")

@@ -17,12 +17,16 @@ pub struct QueryInput<'a> {
 }
 
 mod sealed {
+    /// Restricts implementations to the audited scalar or dataset types in this module.
     pub trait Sealed {}
 }
 
 /// Supported input scalars. Sealed so validation and conversion remain audited.
 pub trait QueryElement: sealed::Sealed + Copy + Send + Sync + 'static {
+    /// Wraps a coordinate slice as borrowed typed input without copying or converting it.
     fn view(values: &[Self]) -> QueryInput<'_>;
+
+    /// Wraps an owned coordinate vector as transport storage without changing its element type.
     fn owned(values: Vec<Self>) -> QueryBuffer;
 }
 
@@ -65,27 +69,34 @@ macro_rules! define_query_elements {
         $(
             impl sealed::Sealed for $scalar {}
             impl QueryElement for $scalar {
+                /// Borrows typed coordinates without allocation or conversion.
                 fn view(values: &[Self]) -> QueryInput<'_> { QueryInput::$variant(values) }
+                /// Transfers an owned coordinate vector into typed transport storage.
                 fn owned(values: Vec<Self>) -> QueryBuffer { QueryBuffer::$variant(values) }
             }
             impl<'a> From<&'a [$scalar]> for QueryInput<'a> {
+                /// Borrows the source slice without narrowing its coordinate type.
                 fn from(values: &'a [$scalar]) -> Self { Self::$variant(values) }
             }
         )+
         impl<'a> QueryInput<'a> {
             $(
                 // Retain the existing QueryInput::F32 / U8 construction syntax.
+                /// Wraps borrowed coordinates with normalization initially disabled.
                 #[allow(non_snake_case)]
                 pub fn $variant(values: &'a [$scalar]) -> Self {
                     Self { values: QueryCoordinates::$variant(values), unit_norm: false }
                 }
             )+
+            /// Returns coordinate count; callers divide by logical dimension for row count.
             pub fn len(self) -> usize {
                 match self.values { $(QueryCoordinates::$variant(q) => q.len(),)+ }
             }
+            /// Identifies the original scalar type independently of the base representation.
             pub fn element_type(self) -> &'static str {
                 match self.values { $(QueryCoordinates::$variant(_) => stringify!($scalar),)+ }
             }
+            /// Checks whether all coordinates are zero before cosine preparation.
             pub fn is_zero(self) -> bool {
                 match self.values {
                     $(QueryCoordinates::$variant(q) => q.iter().all(|&x| x == 0 as $scalar),)+
@@ -99,6 +110,7 @@ macro_rules! define_query_elements {
                 };
                 Self { values, unit_norm: self.unit_norm }
             }
+            /// Copies coordinates into the wide arithmetic representation without integer narrowing.
             fn to_f64(self) -> Vec<f64> {
                 match self.values {
                     $(QueryCoordinates::$variant(q) => q.iter().map(|&x| f64::from(x)).collect(),)+
@@ -106,16 +118,18 @@ macro_rules! define_query_elements {
             }
             /// Original-coordinate scoring: integer inputs reach f64 without
             /// narrowing; the public score retains the existing f32 contract.
-            pub(crate) fn score<T: Copy + Into<f32>>(self, row: &[T], metric: ScoreMetric) -> f32 {
+            pub(crate) fn score<T: Copy + Into<f64>>(self, row: &[T], metric: ScoreMetric) -> f32 {
                 match self.values {
                     $(QueryCoordinates::$variant(q) => super::numeric::score(q, row, metric),)+
                 }
             }
         }
         impl QueryBuffer {
+            /// Borrows typed coordinates from the owned transport buffer for one operation.
             pub fn as_input(&self) -> QueryInput<'_> {
                 match self { $(Self::$variant(q) => QueryInput::$variant(q),)+ }
             }
+            /// Removes coordinates while retaining the current type and allocation capacity.
             pub fn clear(&mut self) {
                 match self { $(Self::$variant(q) => q.clear(),)+ }
             }
@@ -134,6 +148,7 @@ macro_rules! define_query_elements {
 define_query_elements! { F32: f32; U8: u8, I8: i8, U16: u16, U32: u32 }
 
 impl QueryInput<'_> {
+    /// Reports whether this input contains zero coordinates, independently of batch shape.
     pub fn is_empty(self) -> bool {
         self.len() == 0
     }
@@ -146,9 +161,13 @@ impl<'a> QueryInput<'a> {
         self.unit_norm = true;
         self
     }
+
+    /// Reports whether query preparation must normalize before using metric-specific stages.
     pub(crate) fn needs_unit_norm(self) -> bool {
         self.unit_norm
     }
+
+    /// Rejects nonfinite floating coordinates before preparation; integer variants need no finiteness scan.
     pub fn validate(self) -> Result<()> {
         if let QueryCoordinates::F32(q) = self.values
             && q.iter().any(|v| !v.is_finite())
@@ -159,12 +178,18 @@ impl<'a> QueryInput<'a> {
         }
         Ok(())
     }
+
+    /// Checks whether every input coordinate can be represented exactly in f32 before choosing a narrow path.
     pub(crate) fn lossless_f32(self) -> bool {
         match self.values {
             QueryCoordinates::U32(q) => q.iter().all(|&x| f64::from(x as f32) == f64::from(x)),
             _ => true,
         }
     }
+
+    /// Borrows byte input or converts exactly representable integer-valued coordinates into owned bytes.
+    ///
+    /// Returns `None` instead of truncating, saturating or rounding incompatible input.
     pub(crate) fn to_u8(self) -> Option<Cow<'a, [u8]>> {
         match self.values {
             QueryCoordinates::U8(q) => Some(Cow::Borrowed(q)),
@@ -204,19 +229,24 @@ impl<'a> QueryInput<'a> {
     }
 }
 impl QueryBuffer {
+    /// Returns the total coordinate count, not the number of query rows.
     pub fn len(&self) -> usize {
         self.as_input().len()
     }
+
+    /// Reports whether the transport buffer contains no coordinates.
     pub fn is_empty(&self) -> bool {
         self.as_input().is_empty()
     }
 }
 impl Default for QueryBuffer {
+    /// Creates empty f32 transport storage; decoding can replace it with another coordinate type.
     fn default() -> Self {
         Self::F32(Vec::new())
     }
 }
 impl std::fmt::Debug for QueryInput<'_> {
+    /// Formats `type`, `elements` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("QueryInput")
             .field("type", &self.element_type())
@@ -225,6 +255,7 @@ impl std::fmt::Debug for QueryInput<'_> {
     }
 }
 impl std::fmt::Debug for QueryBuffer {
+    /// Formats the diagnostic representation of this wrapper and its contained state.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.as_input().fmt(f)
     }

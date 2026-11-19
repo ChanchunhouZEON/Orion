@@ -8,7 +8,7 @@ use crate::{Result, ScoreMetric, SearchResult};
 
 /// Used for final candidate scores and the exact subset baseline. Accumulate in f64 to
 /// avoid intermediate overflow; reject unrepresentable f32 outputs at assembly.
-pub(crate) fn exact_score<T: Copy + Into<f32>>(
+pub(crate) fn exact_score<T: Copy + Into<f64>>(
     query: &[f32],
     row: &[T],
     metric: ScoreMetric,

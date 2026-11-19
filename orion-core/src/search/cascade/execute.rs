@@ -7,7 +7,7 @@
 //! dispatch happens before this layer; neither scheduling nor beam traversal
 //! inspects the base element type.
 use crate::index::IndexData;
-use crate::model::scratch::InMemSearchScratch;
+use crate::model::search::scratch::InMemSearchScratch;
 use crate::search::{
     cascade::stage::{AdmissionSession, PrefilterSession},
     diagnostics::{NeighborMode, NoopObserver, SearchObserver, metrics::SetupTimer},
@@ -20,15 +20,18 @@ pub(super) use crate::search::output::SearchRow;
 
 /// Borrow the actual session, not a trait object around its Box. This avoids
 /// introducing a second virtual call for existing quantized stage factories.
-pub(super) trait SessionHandle {
+pub(crate) trait SessionHandle {
+    /// Borrows the underlying admission session without adding a second trait-object wrapper.
     fn session(&self) -> &dyn AdmissionSession;
 }
 impl<T: AdmissionSession> SessionHandle for T {
+    /// Borrows the underlying admission session without adding a second trait-object wrapper.
     fn session(&self) -> &dyn AdmissionSession {
         self
     }
 }
 impl SessionHandle for Box<dyn AdmissionSession + '_> {
+    /// Borrows the underlying admission session without adding a second trait-object wrapper.
     fn session(&self) -> &dyn AdmissionSession {
         self.as_ref()
     }
@@ -37,29 +40,38 @@ impl SessionHandle for Box<dyn AdmissionSession + '_> {
 /// A query-scoped representation binds the three stages. Associated session
 /// types keep native kernels on the stack; existing quantized stage factories
 /// retain their boxed sessions. All borrows end before the prepared row drops.
-pub(super) trait QueryPlan: Sync {
+pub(crate) trait QueryPlan: Sync {
     type Prepared<'a>
     where
         Self: 'a;
     type Admission<'a>: SessionHandle
     where
         Self: 'a;
+
+    /// Checks that the selected stages can share one base shape and precision ordering.
     fn validate(&self) -> Result<()>;
+
+    /// Validates one logical query and materializes only the representations its stages need.
     fn prepare<'a>(
         &'a self,
         query: crate::search::query::QueryInput<'a>,
     ) -> Result<Self::Prepared<'a>>;
     // The prepared row may borrow the original input for 'q, but a session
     // only borrows that row for the shorter execution scope 'a.
+    /// Borrows an admission session whose lifetime ends before its prepared query storage.
     fn admission<'a, 'q: 'a>(&'a self, query: &'a Self::Prepared<'q>) -> Self::Admission<'a>
     where
         Self: 'q;
+
+    /// Opens the filtering session, including a no-op session for disabled filtering.
     fn prefilter<'a, 'q: 'a>(
         &'a self,
         _query: &'a Self::Prepared<'q>,
     ) -> Box<dyn PrefilterSession + 'a>
     where
         Self: 'q;
+
+    /// Selects final neighbors and optional original-metric scores from completed search scratch.
     fn finish<'a>(
         &'a self,
         query: &Self::Prepared<'a>,
@@ -71,7 +83,11 @@ pub(super) trait QueryPlan: Sync {
 }
 
 impl<D: IndexData + Sync> CompressedIndex<D> {
-    pub(super) fn execute_batch<P: QueryPlan>(
+    /// Validates a plan once and executes independent rows in input order.
+    ///
+    /// Small batches remain serial; larger batches use Rayon. Every row shares the
+    /// same preparation, traversal and result assembly contract.
+    pub(crate) fn execute_batch<P: QueryPlan>(
         &self,
         queries: crate::search::query::QueryInput<'_>,
         config: DynamicSearchConfig,
@@ -113,7 +129,8 @@ impl<D: IndexData + Sync> CompressedIndex<D> {
         crate::search::output::assemble(rows, config.k, self.num_nodes, scores)
     }
 
-    pub(super) fn execute_observed<P: QueryPlan, O: SearchObserver>(
+    /// Runs one validated query with caller-selected diagnostic traversal and observer hooks.
+    pub(crate) fn execute_observed<P: QueryPlan, O: SearchObserver>(
         &self,
         query: crate::search::query::QueryInput<'_>,
         config: DynamicSearchConfig,
@@ -133,6 +150,7 @@ impl<D: IndexData + Sync> CompressedIndex<D> {
             .map(|row| row.0)
     }
 
+    /// Checks graph/base compatibility and request controls before constructing query sessions.
     fn validate_plan<P: QueryPlan>(&self, config: DynamicSearchConfig, plan: &P) -> Result<()> {
         self.validate_dataset_graph()?;
         config.validate(self.num_nodes)?;
@@ -141,6 +159,7 @@ impl<D: IndexData + Sync> CompressedIndex<D> {
 
     // The observer remains generic so production hooks compile away. The
     // existing search_sessions implementation owns scratch and the hot loop.
+    /// Prepares one query and its stages, then borrows scratch for the shared traversal.
     fn execute_row<P: QueryPlan, O: SearchObserver>(
         &self,
         query: crate::search::query::QueryInput<'_>,

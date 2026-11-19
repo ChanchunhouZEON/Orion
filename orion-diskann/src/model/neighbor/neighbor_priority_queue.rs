@@ -8,6 +8,7 @@
 
 use crate::model::Neighbor;
 
+/// Distance-ordered candidate storage with an expansion cursor and bounded beam.
 #[derive(Debug)]
 pub struct NeighborPriorityQueue {
     size: usize,
@@ -17,12 +18,14 @@ pub struct NeighborPriorityQueue {
 }
 
 impl Default for NeighborPriorityQueue {
+    /// Creates an empty beam with no reserved candidate capacity.
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl NeighborPriorityQueue {
+    /// Creates an empty queue; reserve positive beam capacity before inserting candidates.
     pub fn new() -> Self {
         Self {
             size: 0,
@@ -32,6 +35,7 @@ impl NeighborPriorityQueue {
         }
     }
 
+    /// Allocates a bounded beam and its extra insertion slot.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             size: 0,
@@ -41,6 +45,9 @@ impl NeighborPriorityQueue {
         }
     }
 
+    /// Inserts a competitive candidate in sorted order and updates the next unvisited position.
+    ///
+    /// The queue must have positive capacity and a valid insertion slot.
     pub fn insert(&mut self, nbr: Neighbor) {
         if self.size == self.capacity && self.get_at(self.size - 1) < &nbr {
             return;
@@ -75,10 +82,12 @@ impl NeighborPriorityQueue {
         }
     }
 
+    /// Borrows an initialized queue slot without bounds checks; callers maintain the storage index invariant.
     fn get_at(&self, index: usize) -> &Neighbor {
         unsafe { self.data.get_unchecked(index) }
     }
 
+    /// Marks and returns the next unvisited candidate; call only after checking availability.
     pub fn closest_notvisited(&mut self) -> Neighbor {
         self.data[self.cur].visited = true;
         let pre = self.cur;
@@ -88,6 +97,7 @@ impl NeighborPriorityQueue {
         self.data[pre]
     }
 
+    /// Reports whether traversal still has an unexpanded candidate in the beam.
     pub fn has_notvisited_node(&self) -> bool {
         self.cur < self.size
     }
@@ -102,14 +112,17 @@ impl NeighborPriorityQueue {
         }
     }
 
+    /// Returns the number of live candidates, excluding the insertion slot.
     pub fn size(&self) -> usize {
         self.size
     }
 
+    /// Returns the configured beam bound, not the allocated vector length.
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
+    /// Changes the beam bound, growing storage when needed; callers clear state before shrinking a live beam.
     pub fn set_capacity(&mut self, capacity: usize) {
         if capacity > self.data.len() {
             self.data.resize(capacity + 1, Neighbor::default());
@@ -117,6 +130,7 @@ impl NeighborPriorityQueue {
         self.capacity = capacity;
     }
 
+    /// Grows beam storage and its logical capacity only when the requested bound is larger.
     pub fn reserve(&mut self, capacity: usize) {
         if capacity > self.capacity {
             self.data.resize(capacity + 1, Neighbor::default());
@@ -124,6 +138,7 @@ impl NeighborPriorityQueue {
         }
     }
 
+    /// Resets beam length and visit cursor while keeping allocated storage for reuse.
     pub fn clear(&mut self) {
         self.size = 0;
         self.cur = 0;
@@ -133,6 +148,11 @@ impl NeighborPriorityQueue {
 impl std::ops::Index<usize> for NeighborPriorityQueue {
     type Output = Neighbor;
 
+    /// Borrows the stored candidate at a physical queue position.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the position is outside the backing vector.
     fn index(&self, i: usize) -> &Self::Output {
         &self.data[i]
     }

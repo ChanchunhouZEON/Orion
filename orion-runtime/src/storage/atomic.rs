@@ -12,9 +12,13 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 /// Each writer owns its temporary file, including cleanup after a failed encode.
-pub(crate) struct PendingFile(pub(crate) PathBuf);
+pub(crate) struct PendingFile(
+    /// Unpublished temporary path removed when this guard is dropped.
+    pub(crate) PathBuf,
+);
 
 impl PendingFile {
+    /// Creates a unique sibling file without truncating another writer's temporary output.
     pub(crate) fn create(destination: &Path) -> Result<(Self, File)> {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         loop {
@@ -31,11 +35,13 @@ impl PendingFile {
 }
 
 impl Drop for PendingFile {
+    /// Best-effort removes this writer's temporary name after failure or publication.
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
     }
 }
 
+/// Requests directory-entry durability on Unix; other targets perform no operation.
 pub(crate) fn sync_dir(path: &Path) -> Result<()> {
     #[cfg(unix)]
     fs::File::open(path)?.sync_all()?;
@@ -44,6 +50,10 @@ pub(crate) fn sync_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Builds a generation in a sibling directory and publishes it with one rename.
+///
+/// A writer lease prevents competing publication. Failures clean up the staging
+/// directory and do not replace an existing destination.
 pub(crate) fn publish<T>(destination: &Path, write: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
     let _lease = super::WriterLease::acquire(destination)?;
     if destination.try_exists()? {
@@ -79,6 +89,7 @@ pub(crate) fn publish<T>(destination: &Path, write: impl FnOnce(&Path) -> Result
     result
 }
 
+/// Verifies a failed staged write leaves the previous generation intact and no new directory visible.
 #[test]
 fn incomplete_generation_is_never_published() {
     let root = std::env::temp_dir().join(format!("orion-publish-test-{}", std::process::id()));

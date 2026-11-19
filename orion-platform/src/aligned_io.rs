@@ -13,8 +13,13 @@ use crate::aligned_reader::DISK_IO_ALIGNMENT;
 
 /// Aligned read request, analogous to the Windows OVERLAPPED structure.
 pub struct AlignedRead<T: Default + Clone> {
+    /// Byte offset of this read within the file.
     pub offset: u64,
+
+    /// Buffer length in T elements; byte-oriented read callers use u8.
     pub len: usize,
+
+    /// Owned destination buffer retaining the read payload.
     pub buf: Vec<T>,
 }
 

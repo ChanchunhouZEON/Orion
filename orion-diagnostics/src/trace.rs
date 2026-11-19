@@ -14,10 +14,14 @@ pub const MAX_TRACE_JSON_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TraceLimits {
+    /// Maximum retained event count; reaching it truncates recording, not search.
     pub max_events: u32,
+
+    /// Budget for retained ID/score items, including reserved final-result slots.
     pub max_items: u32,
 }
 impl Default for TraceLimits {
+    /// Uses bounded recording defaults suitable for interactive trace replay.
     fn default() -> Self {
         Self {
             max_events: 2048,
@@ -26,6 +30,11 @@ impl Default for TraceLimits {
     }
 }
 impl TraceLimits {
+    /// Checks recording caps and reserves room for the final `k` result IDs.
+    ///
+    /// # Errors
+    ///
+    /// Rejects oversized limits or an item budget smaller than `k`.
     pub fn validate(self, k: u32) -> Result<()> {
         if self.max_events > 8192 || self.max_items > 65536 || self.max_items < k {
             return Err(crate::argument(
@@ -44,6 +53,8 @@ pub enum Score {
     Finite(f32),
     Special(SpecialScore),
 }
+
+/// JSON-safe representations of non-finite distance values.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpecialScore {
@@ -52,6 +63,7 @@ pub enum SpecialScore {
     Nan,
 }
 impl From<f32> for Score {
+    /// Preserves non-finite values explicitly instead of serializing them as JSON null.
     fn from(v: f32) -> Self {
         if v.is_finite() {
             Self::Finite(v)
@@ -64,13 +76,19 @@ impl From<f32> for Score {
         }
     }
 }
+
+/// A scored internal node ID in the distance domain of the emitting stage.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Candidate {
+    /// Internal graph node ID, not an application-provided external ID.
     pub id: u32,
+
+    /// Stage-local score; it must not be interpreted as an exact business similarity.
     pub distance: Score,
 }
 
+/// Traversal phase associated with a recorded node expansion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -78,6 +96,8 @@ pub enum Phase {
     Exploration,
     Converged,
 }
+
+/// Reason the search stopped, independent of whether recording was truncated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
@@ -85,21 +105,42 @@ pub enum StopReason {
     EarlyExit,
 }
 
+/// Search settings needed to interpret a trace without loading the index.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TraceMetadata {
+    /// Logical vector dimension, excluding any SIMD padding.
     pub dimension: u32,
+
+    /// Number of addressable graph nodes; bounds all recorded internal IDs.
     pub points: u32,
+
+    /// Requested result count and reserved final-result recording capacity.
     pub k: u32,
+
+    /// Search candidate capacity, which must be at least `k`.
     pub beam: u32,
+
+    /// Whether calibrated adaptive traversal was enabled for this search.
     pub adaptive: bool,
+
+    /// Metric label describing the search configuration.
     pub metric: String,
+
+    /// Base representation label describing the indexed vector storage.
     pub storage: String,
+
+    /// Selected prefilter representation, including its disabled form.
     pub prefilter: String,
+
+    /// Selected representation used to score admission candidates.
     pub admission: String,
+
+    /// Selected final reranking representation, including its disabled form.
     pub rerank: String,
 }
 impl TraceMetadata {
+    /// Rejects impossible search shapes and unbounded or empty configuration labels.
     fn validate(&self) -> Result<()> {
         if self.dimension == 0
             || self.points == 0
@@ -159,6 +200,7 @@ pub enum TraceEvent {
     },
 }
 impl TraceEvent {
+    /// Counts variable-size ID/score payload items charged to the recorder budget.
     pub fn items(&self) -> usize {
         match self {
             Self::Entry { .. } => 1,
@@ -168,6 +210,8 @@ impl TraceEvent {
             _ => 0,
         }
     }
+
+    /// Checks node bounds, score encodings and count relationships for one event.
     fn validate(&self, points: u32) -> Result<()> {
         let score = |s: &Score| !matches!(s, Score::Finite(v) if !v.is_finite());
         let candidate = |c: &Candidate| c.id < points && score(&c.distance);
@@ -196,19 +240,37 @@ impl TraceEvent {
     }
 }
 
+/// Portable search results plus a bounded, ordered prefix of traversal events.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SearchTrace {
+    /// Wire format version; readers reject unsupported values.
     pub schema_version: u32,
+
+    /// Search settings used to interpret event IDs, scores and phases.
     pub metadata: TraceMetadata,
+
+    /// Recording limits against which the retained document is validated.
     pub limits: TraceLimits,
+
+    /// Retained traversal prefix in production emission order.
     pub events: Vec<TraceEvent>,
+
+    /// Whether recording stopped before the complete search event sequence.
     pub truncated: bool,
+
+    /// Search termination reason; truncation alone does not change it.
     pub stop_reason: StopReason,
     /// Always the real completed search result, even when the event prefix is truncated.
     pub result_ids: Vec<u32>,
 }
 impl SearchTrace {
+    /// Checks schema compatibility, recording budgets and event/result invariants.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed documents, out-of-range IDs and incomplete event boundaries
+    /// unless the trace is explicitly marked truncated.
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != TRACE_VERSION {
             return Err(crate::invalid("unsupported trace schema version"));
@@ -245,6 +307,12 @@ impl SearchTrace {
         }
         Ok(())
     }
+
+    /// Validates and serializes the trace within the JSON byte-size limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, serialization or output-size errors without changing the trace.
     pub fn to_json(&self) -> Result<String> {
         self.validate()?;
         let json = serde_json::to_string(self).map_err(|e| crate::invalid(e.to_string()))?;
@@ -271,6 +339,11 @@ pub struct TraceRecorder {
     items: usize,
 }
 impl TraceRecorder {
+    /// Starts bounded recording and reserves final-result space before the first event.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid metadata or limits using the same checks as a restored trace.
     pub fn new(metadata: TraceMetadata, limits: TraceLimits) -> Result<Self> {
         metadata.validate()?;
         limits.validate(metadata.k)?;
@@ -288,6 +361,11 @@ impl TraceRecorder {
             items,
         })
     }
+
+    /// Appends an event lazily when both recording budgets permit it.
+    ///
+    /// The closure is not called after truncation or when the declared cost will not fit.
+    /// A mismatch between declared and actual item counts also stops recording.
     pub fn record(&mut self, items: usize, make: impl FnOnce() -> TraceEvent) {
         if self.trace.truncated {
             return;
@@ -307,9 +385,17 @@ impl TraceRecorder {
         self.items += items;
         self.trace.events.push(event);
     }
+
+    /// Marks search termination as early exit without allocating another event.
     pub fn early_exit(&mut self) {
         self.trace.stop_reason = StopReason::EarlyExit;
     }
+
+    /// Attaches the actual search result and validates the completed document.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid IDs or malformed events supplied by the producer.
     pub fn finish(mut self, result_ids: Vec<u32>) -> Result<SearchTrace> {
         self.trace.result_ids = result_ids;
         self.trace.validate()?;

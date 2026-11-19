@@ -9,6 +9,10 @@ use crate::{Error, Result};
 use orion_ann_platform::region::{Placement, RegionOptions};
 use std::collections::BTreeMap;
 
+/// Reuses installed placements only when they cover every requirement and agree with explicit overrides.
+///
+/// The report is updated to actual choices; live resident buffers are never silently
+/// reclassified as mappings to make a new estimate fit.
 pub(super) fn validate(
     plan: &mut StoragePlan,
     installed: &BTreeMap<String, RegionOptions>,

@@ -32,6 +32,7 @@ pub struct RabitqPrefilter<'a> {
 }
 
 impl<'a> RabitqPrefilter<'a> {
+    /// Binds the dataset to this stage; query encoding is deferred until the stage is opened.
     #[inline]
     pub fn new(dataset: &'a RabitQDataset) -> Self {
         Self { dataset }
@@ -41,6 +42,9 @@ impl<'a> RabitqPrefilter<'a> {
 // SAFETY: shape describes the borrowed base; sessions own checked query storage
 // and cannot outlive that base.
 unsafe impl<'a> PrefilterStage for RabitqPrefilter<'a> {
+    /// Identifies this prefilter's precision for cascade compatibility checks.
+    ///
+    /// See [`PrefilterStage::precision`] for the shared contract.
     fn precision(
         &self,
     ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
@@ -49,9 +53,16 @@ unsafe impl<'a> PrefilterStage for RabitqPrefilter<'a> {
         Some(P::Quantized(K::Rabitq))
     }
 
+    /// Describes the base shape required by this filtering representation.
+    ///
+    /// See [`PrefilterStage::shape`] for the shared contract.
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.dataset.dimension, self.dataset.num_vertices))
     }
+
+    /// Prepares query state for repeated candidate filtering.
+    ///
+    /// See [`PrefilterStage::open`] for the shared contract.
     #[inline]
     fn open<'b>(&'b self, q: &[f32]) -> Box<dyn PrefilterSession + 'b> {
         // 1. Rotate the query (O(N²)).
@@ -149,6 +160,7 @@ unsafe impl<'a> PrefilterSession for RabitqSession<'a> {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl std::fmt::Debug for RabitqPrefilter<'_> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RabitqPrefilter")
             .field("dimension", &self.dataset.dimension)
@@ -158,6 +170,7 @@ impl std::fmt::Debug for RabitqPrefilter<'_> {
 }
 
 impl std::fmt::Debug for RabitqSession<'_> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RabitqSession")
             .field("dimension", &self.dataset.dimension)

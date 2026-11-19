@@ -23,11 +23,21 @@ pub struct DiskANNBuildResult {
     pub partitions: Vec<(Vec<u32>, Vec<u32>, Vec<u32>)>,
     /// Entry point node ID.
     pub entry_point: u32,
+
+    /// Built legacy index retained until graph and candidates have been extracted.
     pub index: Box<dyn ANNInmemIndex<f32>>,
+
+    /// Optional shared legacy PQ codebook retained for benchmark compatibility.
     pub pq: Option<Arc<FixedChunkPQTable>>,
+
+    /// Optional packed legacy PQ codes retained for benchmark compatibility.
     pub pq_codes: Option<Vec<u8>>,
+
+    /// Measured graph construction duration for benchmark reporting.
     #[cfg(feature = "benchmark")]
     pub graph_build_time: Duration,
+
+    /// Measured PQ preparation duration for benchmark reporting.
     #[cfg(feature = "benchmark")]
     pub pq_build_time: Duration,
 }
@@ -172,6 +182,7 @@ pub fn build_diskann_index(
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl std::fmt::Debug for DiskANNBuildResult {
+    /// Formats `partition_count`, `entry_point`, `has_pq`, `pq_code_bytes` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug = f.debug_struct("DiskANNBuildResult");
         debug

@@ -18,6 +18,7 @@ use std::path::PathBuf;
 #[derive(Debug)]
 pub struct BaseInput(Input);
 
+/// Owned input descriptor distinguishing a file from copied f32 or byte rows.
 #[derive(Debug)]
 enum Input {
     File(PathBuf),
@@ -34,21 +35,31 @@ enum Input {
 /// Owned rows plus the original input identity. Graph selection and snapshot
 /// verification consume this identity before array normalization changes rows.
 pub(super) struct PreparedBase {
+    /// Validated, padded rows ready to move into the core index.
     pub rows: Rows,
+
+    /// Canonical source path for file input; array input has no backing source file.
     pub file: Option<PathBuf>,
+
+    /// Digest established while consuming input, used to bind graph and snapshot identities.
     pub sha256: String,
 }
 
+/// Typed ownership of prepared base allocations before core construction.
 pub(super) enum Rows {
     F32(LoadedBase<f32>),
     U8(LoadedBase<u8>),
 }
 
 impl BaseInput {
+    /// Describes a file input without opening or allocating it; validation occurs when constructing the index.
     pub fn from_file(path: impl Into<PathBuf>) -> Self {
         Self(Input::File(path.into()))
     }
 
+    /// Copies a nonempty rectangular f32 matrix into padded owned storage.
+    ///
+    /// Returns an error for invalid shape, unsupported size or allocation failure.
     pub fn from_f32(values: &[f32], dimension: usize) -> Result<Self> {
         Ok(Self(Input::F32 {
             data: copy_array(values, dimension)?,
@@ -56,6 +67,9 @@ impl BaseInput {
         }))
     }
 
+    /// Copies a nonempty rectangular byte matrix into padded owned storage.
+    ///
+    /// The input borrow ends at return; subsequent index work does not retain the caller's slice.
     pub fn from_u8(values: &[u8], dimension: usize) -> Result<Self> {
         Ok(Self(Input::U8 {
             data: copy_array(values, dimension)?,
@@ -158,6 +172,7 @@ impl PreparedBase {
     }
 }
 
+/// Copies an already prepared base into the selected storage and replaces the old owner after success.
 fn relocate<T: BaseElement>(
     data: &mut LoadedBase<T>,
     storage: &orion_ann_platform::region::RegionOptions,
@@ -170,6 +185,7 @@ fn relocate<T: BaseElement>(
 }
 
 impl Rows {
+    /// Returns the number of logical base rows, independent of coordinate type or padding.
     pub(super) fn len(&self) -> usize {
         match self {
             Self::F32(data) => data.num_points,
@@ -178,6 +194,7 @@ impl Rows {
     }
 }
 
+/// Inspects and budgets a file input, then decodes and hashes it to finalize the cache namespace.
 fn prepare_file(
     path: PathBuf,
     options: &IndexOptions,
@@ -217,6 +234,7 @@ fn prepare_file(
     ))
 }
 
+/// Resolves configuration for owned array rows while rejecting file-format and truncation overrides.
 fn prepare_array(
     rows: Rows,
     dimension: usize,
@@ -255,8 +273,9 @@ fn prepare_array(
     ))
 }
 
+/// Loads padded rows under the base placement policy and checks that the observed count stayed stable.
 fn read_file_base<T: BaseElement>(config: &ResolvedRunConfig) -> Result<(LoadedBase<T>, String)> {
-    let layout = orion_ann_vector::PaddedLayout::for_kernel::<T::LayoutKernel>(config.dimension)?;
+    let layout = orion_ann_vector::PaddedLayout::for_base_scalar::<T>(config.dimension)?;
     let (dataset, digest) = data::padded::load_hashed::<T>(
         &config.base,
         config.base_format,
@@ -286,6 +305,7 @@ fn read_file_base<T: BaseElement>(config: &ResolvedRunConfig) -> Result<(LoadedB
     ))
 }
 
+/// Validates a rectangular matrix and copies its logical rows into zero-padded aligned storage.
 fn copy_array<T: BaseElement>(values: &[T], dimension: usize) -> Result<LoadedBase<T>> {
     if dimension == 0 || values.is_empty() || !values.len().is_multiple_of(dimension) {
         return Err("base must be a nonempty rectangular matrix".into());
@@ -294,7 +314,7 @@ fn copy_array<T: BaseElement>(values: &[T], dimension: usize) -> Result<LoadedBa
     if count >= u32::MAX as usize {
         return Err("base point count exceeds u32 IDs".into());
     }
-    let layout = orion_ann_vector::PaddedLayout::for_kernel::<T::LayoutKernel>(dimension)?;
+    let layout = orion_ann_vector::PaddedLayout::for_base_scalar::<T>(dimension)?;
     let base = orion_ann_diskann::model::PaddedDataset::from_packed(values, layout)?;
     Ok(LoadedBase {
         base: Some(base.into_allocation()),
@@ -330,6 +350,7 @@ fn validate_array<T: BaseElement>(data: &LoadedBase<T>, dimension: usize) -> Res
     Ok(())
 }
 
+/// Hashes logical f32 coordinates in little-endian order without including padding bytes.
 fn f32_digest(data: &LoadedBase<f32>, dimension: usize) -> Result<String> {
     // Hash the owned, unnormalized allocation after the Python GIL
     // has been released. Hashes stay stable across host byte order.
@@ -354,6 +375,7 @@ fn f32_digest(data: &LoadedBase<f32>, dimension: usize) -> Result<String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
+/// Hashes logical byte coordinates without including per-row SIMD padding.
 fn u8_digest(data: &LoadedBase<u8>, dimension: usize) -> Result<String> {
     let base = data.base.as_ref().ok_or("missing array base")?;
     let mut hash = Sha256::new();

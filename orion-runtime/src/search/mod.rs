@@ -36,6 +36,7 @@ pub(crate) fn bind_rows<T: BaseElement>(
     )
 }
 
+/// Binds row semantics and materializes required sidecars, including exact native-cosine norms.
 pub(crate) fn prepare_datasets<T: BaseElement>(
     index: &Orion<T>,
     config: &ResolvedRunConfig,
@@ -54,6 +55,8 @@ where
         &crate::placement::ordered_sidecar_requirements(config),
     )
 }
+
+/// Prepares search representations and returns a bounded automatic pin guard for their lifetimes.
 pub(crate) fn prepare_search<'a, T: BaseElement>(
     index: &'a Orion<T>,
     config: &ResolvedRunConfig,
@@ -71,6 +74,8 @@ where
         config.memory_budget_gib,
     )
 }
+
+/// Applies explicit pin choices to prepared storage without selecting a different cascade.
 pub(crate) fn pin_search_storage<'a, T: BaseElement>(
     index: &'a Orion<T>,
     config: &ResolvedRunConfig,
@@ -84,6 +89,8 @@ pub(crate) fn pin_search_storage<'a, T: BaseElement>(
         options,
     )
 }
+
+/// Reports the prepared payloads used by this cascade without locking their pages.
 pub(crate) fn pin_hints<T: BaseElement>(
     index: &Orion<T>,
     config: &ResolvedRunConfig,
@@ -95,6 +102,8 @@ pub(crate) fn pin_hints<T: BaseElement>(
         &config.cascade().dataset_requirements(),
     )
 }
+
+/// Describes logical base dimensions for sidecar planning, excluding SIMD padding.
 fn shape<T: BaseElement>(index: &Orion<T>) -> orion_ann_core::QuantizedDatasetShape {
     orion_ann_core::QuantizedDatasetShape {
         rows: index.len(),
@@ -133,6 +142,8 @@ where
         scores.then(|| score_metric(config)),
     )
 }
+
+/// Runs one query with the configured cascade and an observer for diagnostic events.
 pub fn search_observed<T: BaseElement, O: SearchObserver>(
     index: &Orion<T>,
     query: QueryInput<'_>,
@@ -167,6 +178,7 @@ where
 /// This counts rows in one request; independent requests are never coalesced.
 pub(crate) const SERIAL_BATCH_LIMIT: usize = 2;
 
+/// Combines per-request search bounds with saved calibration and the shared small-batch cutoff.
 fn search_config(
     config: &ResolvedRunConfig,
     k: usize,
@@ -183,6 +195,7 @@ fn search_config(
     }
 }
 
+/// Maps runtime metric semantics to the exact score representation returned by core.
 fn score_metric(config: &ResolvedRunConfig) -> orion_ann_core::ScoreMetric {
     match config.metric {
         crate::SearchMetric::SquaredL2 => orion_ann_core::ScoreMetric::SquaredL2,

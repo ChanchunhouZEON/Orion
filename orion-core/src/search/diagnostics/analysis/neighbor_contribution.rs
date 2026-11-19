@@ -136,8 +136,14 @@ pub struct PositionContributionStats {
     ///   (i.e., distance was good enough to enter the candidate list)
     /// - `last_useful[i]`: how many expansions had their last-admitted position at i
     pub visit_count: Vec<usize>,
+
+    /// Previously unseen neighbors observed at each adjacency position.
     pub unseen_count: Vec<usize>,
+
+    /// Neighbors admitted to the beam at each adjacency position.
     pub admitted_count: Vec<usize>,
+
+    /// Reserved per-position counters; current collection leaves these zero and records last_useful_hist.
     pub last_useful_pos: Vec<usize>,
     /// Histogram of "last useful position" across all expansions.
     /// `last_useful_hist[i]` = number of expansions whose last PQ-admitted neighbor
@@ -248,12 +254,14 @@ pub fn search_with_contribution(
 }
 
 impl Default for PositionContributionStats {
+    /// Creates empty contribution statistics for an upcoming query sample.
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl PositionContributionStats {
+    /// Creates empty per-position contribution statistics to be populated by observed queries.
     pub fn new() -> Self {
         Self {
             num_queries: 0,
@@ -268,6 +276,7 @@ impl PositionContributionStats {
 }
 
 impl std::fmt::Display for PositionContributionStats {
+    /// Formats visited, unseen and admitted neighbor counts by position.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,

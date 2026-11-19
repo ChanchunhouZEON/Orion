@@ -15,11 +15,14 @@ pub mod aligned_io;
 pub mod aligned_reader;
 pub mod allocation_budget;
 pub mod buffered_io;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod file_cache;
 pub mod file_handle;
 pub mod graph_mmap;
 pub mod io_context;
 pub mod memory;
 pub mod mmap_search;
+pub mod reading;
 pub mod region;
 pub mod residency;
 pub mod resources;

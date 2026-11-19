@@ -47,11 +47,15 @@ impl ScoreMetric {
 /// Padding is NaN and must be ignored using the corresponding result counts.
 #[derive(Clone, PartialEq)]
 pub struct SearchScores {
+    /// Original-metric interpretation and ordering direction of valid score entries.
     pub metric: ScoreMetric,
+
+    /// Row-major scores aligned with result IDs; ignore padding using result counts.
     pub values: Vec<f32>,
 }
 
 impl std::fmt::Debug for SearchScores {
+    /// Formats `metric`, `value_count` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SearchScores")
             .field("metric", &self.metric)
@@ -61,6 +65,7 @@ impl std::fmt::Debug for SearchScores {
 }
 
 impl SearchResult {
+    /// Validates internal IDs and packs variable-length results into padded fixed-width rows.
     pub(crate) fn from_rows(rows: Vec<Vec<u32>>, k: usize, points: usize) -> Result<Self> {
         if k == 0 {
             return Err(Error::invalid_argument("result width must be nonzero"));
@@ -86,6 +91,7 @@ impl SearchResult {
         })
     }
 
+    /// Validates finite score/ID pairs and packs matching rows with NaN score padding.
     pub(crate) fn from_scored_rows(
         rows: Vec<(Vec<u32>, Vec<f32>)>,
         k: usize,
@@ -138,6 +144,7 @@ impl SearchResult {
 }
 
 impl std::fmt::Debug for SearchResult {
+    /// Formats `query_count`, `id_count`, `k` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SearchResult")
             .field("query_count", &self.counts.len())

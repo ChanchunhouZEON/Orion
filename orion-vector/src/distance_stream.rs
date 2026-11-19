@@ -47,6 +47,7 @@ fn sink_burst() -> usize {
     })
 }
 
+/// Returns the production far-prefetch burst budget in cache lines.
 #[cfg(not(feature = "benchmark"))]
 fn sink_burst() -> usize {
     DEFAULT_BURST_LINES
@@ -74,6 +75,7 @@ fn burst_group_config() -> (usize, usize) {
     })
 }
 
+/// Returns production grouping and ahead-distance controls before stream execution.
 #[cfg(not(feature = "benchmark"))]
 fn burst_group_config() -> (usize, usize) {
     (DEFAULT_TRIGGER_LINES, DEFAULT_AHEAD_VECTORS)
@@ -90,6 +92,7 @@ struct BurstSchedule {
 }
 
 impl BurstSchedule {
+    /// Derives whole-vector grouping and a bounded far window from cache-line controls.
     fn new(
         lines_per_vertex: usize,
         near_lines: usize,
@@ -105,6 +108,7 @@ impl BurstSchedule {
         }
     }
 
+    /// Advances the far-prefetch cursor within the remaining stream and per-burst budget.
     #[inline(always)]
     fn requests(self, next: &mut usize, consumed: usize, total: usize) -> std::ops::Range<usize> {
         // Skip already-consumed lines, and never resolve an index past the
@@ -125,6 +129,7 @@ struct NearCursor {
 }
 
 impl NearCursor {
+    /// Consumes one near-prefetch line token, stopping at the configured end.
     #[inline(always)]
     fn take(&mut self) -> Option<usize> {
         if self.next == self.end {
@@ -145,6 +150,7 @@ struct NearPrefetch<'s, 'a, K: DistanceKernelBackend> {
 impl<K: DistanceKernelBackend> crate::stream_kernels::compute::LinePrefetch
     for NearPrefetch<'_, '_, K>
 {
+    /// Prefetches the next near line and its auxiliary value at the vector boundary.
     #[inline(always)]
     fn advance(&mut self) {
         if let Some(line) = self.cursor.take() {
@@ -237,6 +243,7 @@ impl<'a, K: DistanceKernelBackend> DistanceStream<'a, K> {
         }
     }
 
+    /// Returns the padded byte span evaluated per candidate, independently of row stride.
     pub(crate) fn compute_bytes(&self) -> usize {
         self.compute_bytes
     }
@@ -392,6 +399,7 @@ impl<'a, K: DistanceKernelBackend> DistanceStream<'a, K> {
     // These helpers must inline into the stream loop. An outlined compute or
     // resolver call forces live SIMD accumulators through the stack and hides
     // the fixed dimension/stride from constant propagation.
+    /// Maps a logical stream cache-line index to the corresponding candidate row address.
     #[inline(always)]
     fn resolve(&self, idx: usize) -> *const u8 {
         let stride = self.id_stride_bytes;
@@ -448,6 +456,7 @@ impl<'a, K: DistanceKernelBackend> DistanceStream<'a, K> {
         }
     }
 
+    /// Maps a logical stream line to its candidate's auxiliary sidecar address.
     #[inline(always)]
     fn aux_resolve(&self, idx: usize) -> *const u8 {
         let lpv = self.compute_bytes.div_ceil(CACHE_LINE_BYTES);
@@ -471,6 +480,7 @@ impl<'a, K: DistanceKernelBackend> DistanceStream<'a, K> {
         }
     }
 
+    /// Identifies vector boundaries so auxiliary data is prefetched once per candidate.
     #[inline(always)]
     fn aux_at_idx(&self, idx: usize) -> bool {
         let lpv = self.compute_bytes.div_ceil(CACHE_LINE_BYTES);
@@ -486,6 +496,12 @@ impl<'a, K: DistanceKernelBackend> DistanceStream<'a, K> {
         }
     }
 
+    /// Evaluates one candidate with the shared chunk driver and near-prefetch cursor.
+    ///
+    /// # Safety
+    ///
+    /// The stream must satisfy its construction contract, and `vi` must identify
+    /// a valid candidate in the stream's ID list.
     #[inline(always)]
     fn compute_vertex(&self, vi: usize, pf_front: &mut NearCursor) -> f32 {
         unsafe {

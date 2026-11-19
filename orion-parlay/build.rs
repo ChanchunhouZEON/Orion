@@ -3,6 +3,7 @@
  * Licensed under the MIT License.
  */
 
+/// Compiles the ParlayANN bridge for supported native targets and declares its source rebuild dependencies.
 fn main() {
     println!("cargo:rerun-if-changed=cpp");
     println!("cargo:rerun-if-changed=vendor");

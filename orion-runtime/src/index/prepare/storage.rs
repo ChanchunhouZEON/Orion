@@ -7,6 +7,7 @@
 //! binds lazy sidecars, saved extras and native norms to the same domain.
 use crate::{config::ResolvedRunConfig, data::BaseElement, Result};
 
+/// Binds lazy sidecars, norms and extras to the index allocation domain before preparation.
 pub(in crate::index) fn configure_object_storage<T: BaseElement>(
     index: &orion_ann_core::Orion<T>,
     config: &ResolvedRunConfig,
@@ -19,6 +20,7 @@ pub(in crate::index) fn configure_object_storage<T: BaseElement>(
 mod tests {
     use crate::{BaseInput, CascadeConfig, Index, IndexOptions, StorageMode, StorageOptions};
 
+    /// Verifies shared generations retain allocation charges until the final owner is dropped.
     #[test]
     fn generation_clones_keep_buffers_charged_until_final_drop() {
         let root = tempfile::tempdir().unwrap();

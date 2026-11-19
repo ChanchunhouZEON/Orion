@@ -16,6 +16,7 @@ use crate::{
 };
 use std::{collections::BTreeMap, path::Path};
 
+/// Selected graph source after request validation and budget checks.
 pub(super) enum GraphInput {
     Snapshot(CheckedManifest),
     Working(CachePlan),
@@ -80,6 +81,7 @@ pub(super) fn resolve(
     Ok((source, calibrations))
 }
 
+/// Resolves the working-cache hit or build plan and checks its selected memory budget.
 fn working_input(
     config: &ResolvedRunConfig,
     points: usize,

@@ -6,6 +6,7 @@
 //! Historical sampled-medoid entry selection shared by builders and STAG import.
 use rayon::prelude::*;
 
+/// Computes squared L2 for entry-point selection over matching logical rows.
 fn dist_l2<T: Copy + Into<f32>>(a: &[T], b: &[T]) -> f32 {
     let mut s = 0.0f32;
     for (x, y) in a.iter().zip(b.iter()) {

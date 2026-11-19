@@ -56,11 +56,13 @@ pub fn distance_l2_slice_f32(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
+/// Computes squared L2 for fixed-width f32 inputs through the shared slice dispatcher.
 #[inline]
 pub fn distance_l2_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32 {
     distance_l2_slice_f32(a, b)
 }
 
+/// Computes squared L2 for half-precision rows, selecting available AVX2/F16C support or the scalar fallback.
 #[inline]
 pub fn distance_l2_vector_f16<const N: usize>(a: &[Half; N], b: &[Half; N]) -> f32 {
     #[cfg(all(
@@ -126,6 +128,11 @@ fn scalar_f16(a: &[Half], b: &[Half]) -> f32 {
 
 // SAFETY contract: caller verifies AVX2/FMA and equal slice lengths. Loads are
 // unaligned, each vector fits in-bounds, and the scalar loop handles the tail.
+/// Accumulates squared-L2 differences with AVX2/FMA and handles the trailing coordinates.
+///
+/// # Safety
+///
+/// The CPU must support AVX2 and FMA; both input slices must have the same length.
 #[target_feature(enable = "avx2,fma")]
 #[inline]
 unsafe fn avx2_f32(a: &[f32], b: &[f32]) -> f32 {
@@ -153,6 +160,11 @@ unsafe fn avx2_f32(a: &[f32], b: &[f32]) -> f32 {
 }
 
 // SAFETY contract: caller also verifies F16C; Half is repr(transparent) over f16.
+/// Converts half-precision blocks with F16C and accumulates squared L2 with AVX2/FMA.
+///
+/// # Safety
+///
+/// The CPU must support AVX2, FMA and F16C; both input slices must have the same length.
 #[target_feature(enable = "avx2,fma,f16c")]
 #[inline]
 unsafe fn avx2_f16(a: &[Half], b: &[Half]) -> f32 {

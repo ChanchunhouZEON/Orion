@@ -5,16 +5,20 @@
 
 //! Native cache and STAG readers validate records before publishing the slab.
 use super::*;
-use orion_ann_platform::buffered_io::write_in_blocks;
+use orion_ann_platform::buffered_io::{read_exact_in_blocks, write_in_blocks};
 use std::io::{BufWriter, Read, Write};
 
 impl PhasedGraph {
+    /// Writes the graph header and contiguous slab using the common block writer.
+    ///
+    /// The caller owns flushing, durability and publication of the resulting file.
     pub(crate) fn encode(&self, writer: &mut BufWriter<impl Write>) -> Result<()> {
         writer.write_all(bytemuck::cast_slice(&self.file_header()))?;
         write_in_blocks(writer, self.buffer_bytes())?;
         Ok(())
     }
 
+    /// Returns the native graph header describing node count, degree and slab stride.
     fn file_header(&self) -> [u32; 4] {
         [
             self.num_nodes as u32,
@@ -35,6 +39,7 @@ impl PhasedGraph {
         Self::decode_with_storage(reader, file_bytes, &Default::default())
     }
 
+    /// Validates the native graph header, reads the slab into planned storage and checks every row.
     pub(crate) fn decode_with_storage(
         mut reader: impl Read,
         file_bytes: u64,
@@ -75,8 +80,30 @@ impl PhasedGraph {
             base_local_count,
             storage,
         )?;
-        reader.read_exact(bytemuck::cast_slice_mut(graph.buffer.as_mut_slice()))?;
+        // Bound destination spans as well as buffering: BufReader may otherwise
+        // submit the entire mapped slab in one underlying read request.
+        if storage.reclaim_after_write {
+            // Flush completed windows before allocating further dirty file pages.
+            // Validation still runs on the complete graph before publication.
+            let window = orion_ann_platform::buffered_io::RECLAIM_WINDOW_BYTES / size_of::<u32>();
+            for start in (0..total).step_by(window) {
+                let end = (start + window).min(total);
+                read_exact_in_blocks(
+                    &mut reader,
+                    bytemuck::cast_slice_mut(&mut graph.buffer[start..end]),
+                )?;
+                graph.buffer.flush_and_reclaim(start * 4..end * 4)?;
+            }
+        } else {
+            read_exact_in_blocks(
+                &mut reader,
+                bytemuck::cast_slice_mut(graph.buffer.as_mut_slice()),
+            )?;
+        }
         graph.validate_rows()?;
+        if storage.reclaim_after_write {
+            graph.buffer.flush_and_reclaim(0..total * 4)?;
+        }
         Ok(graph)
     }
 
@@ -100,6 +127,7 @@ impl PhasedGraph {
         )
     }
 
+    /// Streams STAG v3 rows into an aligned slab, rejecting incompatible shape, capacities or trailing data.
     pub(crate) fn decode_staged_with_storage(
         mut reader: impl Read,
         file_bytes: u64,
@@ -107,6 +135,7 @@ impl PhasedGraph {
         expected_degree: u32,
         storage: &orion_ann_platform::region::RegionOptions,
     ) -> Result<Self> {
+        /// Reads one little-endian STAG header or row-count word, propagating truncation errors.
         fn word(reader: &mut impl Read) -> Result<u32> {
             let mut bytes = [0; 4];
             reader.read_exact(&mut bytes)?;

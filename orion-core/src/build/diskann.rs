@@ -7,6 +7,9 @@
 use super::*;
 use crate::build_diskann_index;
 
+/// Adapts dynamic f32 rows to a supported DiskANN build width and imports its partitions into Orion storage.
+///
+/// Any required padded build copy is temporary; the resulting index retains the original base owner.
 pub(super) fn build(
     dataset: PaddedDataset<f32>,
     config: &BuildConfig,

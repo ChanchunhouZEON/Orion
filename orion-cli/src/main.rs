@@ -25,6 +25,7 @@ use std::{
     time::Instant,
 };
 
+/// CLI request envelope combining index configuration with output, snapshot and search controls.
 #[derive(Parser)]
 #[command(
     name = "orion",
@@ -90,12 +91,17 @@ struct Command {
     error_format: ErrorFormat,
 }
 
+/// Presentation of a failed CLI request on stderr; both forms use the same runtime error.
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum ErrorFormat {
     Text,
     Json,
 }
 
+/// Builds or loads an index, calibrates from the first query batch, then searches the stream.
+///
+/// Preparation-only requests stop before query consumption; the calibration batch
+/// is retained as the first search batch rather than skipped.
 fn run(
     config: &ResolvedRunConfig,
     command: &Command,
@@ -202,11 +208,13 @@ fn run(
     )
 }
 
+/// Opens optional evaluation input before search so missing-file errors surface at startup.
 fn open_truth(path: Option<&std::path::Path>) -> Result<Option<std::fs::File>> {
     path.map(|p| std::fs::File::open(p).map_err(|e| Error::io("open ground truth", p, e)))
         .transpose()
 }
 
+/// Creates a new results file or buffers stdout; existing files are never overwritten.
 fn open_output(output: Option<&PathBuf>) -> Result<Box<dyn Write>> {
     Ok(match output {
         Some(path) => Box::new(BufWriter::new(
@@ -221,6 +229,7 @@ fn open_output(output: Option<&PathBuf>) -> Result<Box<dyn Write>> {
     })
 }
 
+/// Metadata shared by streamed result records and the final CLI timing summary.
 struct RunSummary<'a> {
     dataset: &'a str,
     k: usize,
@@ -230,6 +239,10 @@ struct RunSummary<'a> {
     residency: serde_json::Value,
 }
 
+/// Searches decoded batches, writes JSONL results and evaluates optional ground truth in query order.
+///
+/// Search timing excludes decoding, serialization and recall evaluation. Output is
+/// flushed per batch; a length mismatch in ground truth is reported as an error.
 fn stream_results(
     source: &mut dyn QuerySource,
     mut decoded: orion_ann::QueryBuffer,
@@ -330,6 +343,9 @@ fn stream_results(
     Ok(())
 }
 
+/// Restores a verified snapshot and searches with its saved calibration or an explicit label filter.
+///
+/// Unlike a fresh build, this path does not recalibrate from incoming queries.
 fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
     let args = &command.run;
     let k = args.k.unwrap_or(10);
@@ -435,6 +451,7 @@ fn run_snapshot(command: &Command, directory: &std::path::Path) -> Result<()> {
     )
 }
 
+/// Routes a CLI request to snapshot search, configuration output, preflight or index execution.
 fn execute(command: Command) -> Result<()> {
     if let Some(directory) = &command.snapshot {
         return run_snapshot(&command, directory);
@@ -469,6 +486,7 @@ fn execute(command: Command) -> Result<()> {
     run(&config, &command, options)
 }
 
+/// Initializes logging and translates a runtime failure into the selected stderr format and exit code 2.
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 

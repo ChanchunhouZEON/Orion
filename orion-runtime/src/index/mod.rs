@@ -88,19 +88,29 @@ impl Index {
         OpenOptions::default().open(source, input)
     }
 
+    /// Returns the logical vector width, excluding storage and SIMD padding.
     pub fn dimension(&self) -> usize {
         self.config.dimension
     }
+
+    /// Returns the base element representation, independently of cascade sidecars.
     pub fn storage(&self) -> VectorStorageKind {
         self.config.storage()
     }
+
+    /// Returns the number of indexed vectors after applying the configured point limit.
     pub fn len(&self) -> usize {
         self.config.num_points.unwrap().min(self.config.max_points)
     }
+
+    /// Reports whether the index has no searchable vectors.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Builds a diagnostic summary of configuration, calibration and storage ownership.
+    ///
+    /// This allocates JSON metadata; it does not search, calibrate or sample process RSS.
     pub fn info(&self) -> serde_json::Value {
         serde_json::json!({"dataset_name": self.config.dataset, "num_points": self.len(), "dimension": self.dimension(),
         "supplier": self.view.payloads.supplier,
@@ -120,6 +130,7 @@ impl Index {
 }
 
 impl std::fmt::Debug for Index {
+    /// Formats index metadata without printing vector, graph or sidecar payloads.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Index")
             .field("points", &self.len())

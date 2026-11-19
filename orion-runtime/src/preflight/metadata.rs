@@ -18,14 +18,31 @@ const CACHE_LINE_BYTES: u64 = 64;
 /// Resolved counts and graph layout consumed by the pure budget calculator.
 /// All filesystem observations are resolved before placement arithmetic begins.
 pub(super) struct MemoryInputs {
+    /// Number of vectors described by this dataset or input.
     pub(super) num_points: usize,
+
+    /// Provenance of the base metadata used by the memory estimate.
     pub(super) base_source: &'static str,
+
+    /// Known query row count, absent when the source has no finite count.
     pub(super) query_count: Option<usize>,
+
+    /// Provenance of the query metadata used by the memory estimate.
     pub(super) query_source: &'static str,
+
+    /// Padded byte distance between adjacent base rows.
     pub(super) stride_bytes: u64,
+
+    /// Graph origin used to explain the selected construction/import estimate.
     pub(super) graph_source: &'static str,
+
+    /// Optional staged graph file inspected during preflight.
     pub(super) staged_source: Option<PathBuf>,
+
+    /// Whether the selected working graph cache can be reused.
     pub(super) cache_hit: bool,
+
+    /// Working graph cache location resolved for this configuration.
     pub(super) cache_key: PathBuf,
 }
 
@@ -90,6 +107,9 @@ pub(super) fn resolve_memory_inputs(
     inputs_with_plan(config, num_points, offline, base_source, &cache)
 }
 
+/// Resolves graph stride and query count from the selected cache/source without reading vector payloads.
+///
+/// Execution requires a known replayable query count; offline estimates may retain unknown inputs.
 pub(super) fn inputs_with_plan(
     config: &ResolvedRunConfig,
     num_points: usize,

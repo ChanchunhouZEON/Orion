@@ -6,6 +6,7 @@
 //! Linux memory counters and visible cgroup hierarchy.
 use super::MemoryResources;
 
+/// Collects Linux memory observations and constrains availability by applicable cgroup limits.
 #[cfg(target_os = "linux")]
 pub(super) fn observe(result: &mut MemoryResources) {
     let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
@@ -28,6 +29,7 @@ pub(super) fn observe(result: &mut MemoryResources) {
     }
 }
 
+/// Reads a named KiB-valued proc field and converts it to bytes with overflow checking.
 fn kib_field(text: &str, key: &str) -> Option<u64> {
     text.lines().find_map(|line| {
         let mut words = line.split_whitespace();
@@ -38,6 +40,7 @@ fn kib_field(text: &str, key: &str) -> Option<u64> {
     })
 }
 
+/// Combines matching cgroup memory limits with observed availability across the mount hierarchy.
 fn constrain_cgroups(
     result: &mut MemoryResources,
     groups: &str,

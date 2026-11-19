@@ -12,13 +12,16 @@ use crate::common::ANNError;
 
 use super::{AdjacencyList, VertexAndNeighbors};
 
+/// Mutable adjacency storage used while the legacy builder links and prunes nodes.
 #[derive(Debug)]
 pub struct InMemoryGraph {
+    /// Per-vertex adjacency owners protected during mutable graph construction.
     pub final_graph: Vec<RwLock<VertexAndNeighbors>>,
     max_degree: u32,
 }
 
 impl InMemoryGraph {
+    /// Allocates per-node adjacency lists and independent reader/writer locks for construction.
     pub fn new(size: usize, max_degree: u32) -> Self {
         let mut graph = Vec::with_capacity(size);
         for id in 0..size {
@@ -33,14 +36,17 @@ impl InMemoryGraph {
         }
     }
 
+    /// Returns the graph's configured degree capacity.
     pub fn max_degree(&self) -> u32 {
         self.max_degree
     }
 
+    /// Returns the number of allocated node records.
     pub fn size(&self) -> usize {
         self.final_graph.len()
     }
 
+    /// Appends empty node records with consecutive internal IDs.
     pub fn extend(&mut self, size: usize, max_degree: u32) {
         let first_id = self.final_graph.len();
         for id in first_id..first_id + size {
@@ -52,6 +58,9 @@ impl InMemoryGraph {
         }
     }
 
+    /// Acquires a node read guard, reporting poison errors; the caller must use an in-range node ID.
+    ///
+    /// Release this guard before taking destination write locks during reverse-edge insertion.
     pub fn read_vertex_and_neighbors(
         &self,
         vertex_id: u32,
@@ -64,6 +73,7 @@ impl InMemoryGraph {
         })
     }
 
+    /// Acquires exclusive access to one node's adjacency list, reporting a poisoned lock as an error.
     pub fn write_vertex_and_neighbors(
         &self,
         vertex_id: u32,

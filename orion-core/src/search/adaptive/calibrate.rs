@@ -8,7 +8,7 @@
 use crate::StaticOrion;
 use crate::index::CompressedIndex;
 use crate::model::Neighbor as DNeighbor;
-use crate::model::scratch::InMemSearchScratch;
+use crate::model::search::scratch::InMemSearchScratch;
 use crate::search::traversal::tuning::AlignedQuery;
 use crate::{Error, Result};
 
@@ -44,6 +44,7 @@ pub enum CalibrationMetric {
 }
 
 impl CalibrationMetric {
+    /// Computes an exact finite metric distance for a static calibration query and base vector.
     fn distance<const N: usize>(self, a: &[f32; N], b: &[f32; N]) -> Result<f32>
     where
         [f32; N]: FullPrecisionDistance<f32, N>,
@@ -90,6 +91,7 @@ impl CalibrationMetric {
 /// Storage-specific exact scoring for calibration. Only a visited byte vector
 /// is widened on the stack; the full base is never materialized as f32.
 pub trait CalibrationElement: Default + Copy + Send + Sync + Into<f32> {
+    /// Scores one typed base vector against a calibration query without widening the full base.
     fn calibration_distance<const N: usize>(
         metric: CalibrationMetric,
         query: &[f32; N],
@@ -98,6 +100,7 @@ pub trait CalibrationElement: Default + Copy + Send + Sync + Into<f32> {
 }
 
 impl CalibrationElement for f32 {
+    /// Adapts a typed base vector to exact calibration scoring.
     fn calibration_distance<const N: usize>(
         metric: CalibrationMetric,
         query: &[f32; N],
@@ -108,6 +111,7 @@ impl CalibrationElement for f32 {
 }
 
 impl CalibrationElement for u8 {
+    /// Widens one byte row for legacy squared-L2 calibration, rejecting other metrics on this facade.
     fn calibration_distance<const N: usize>(
         metric: CalibrationMetric,
         query: &[f32; N],
@@ -123,11 +127,15 @@ impl CalibrationElement for u8 {
 /// Calibration target, independent of the lossy search cascade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CalibrationConfig {
+    /// Top-k target used to measure adaptive search parameters.
     pub k: usize,
+
+    /// Original metric used to interpret coordinates and scores.
     pub metric: CalibrationMetric,
 }
 
 impl Default for CalibrationConfig {
+    /// Selects squared-L2 calibration for top-10 retrieval.
     fn default() -> Self {
         Self {
             k: 10,
@@ -137,6 +145,7 @@ impl Default for CalibrationConfig {
 }
 
 impl CalibrationConfig {
+    /// Checks top-k, beam and observation-window bounds before allocating calibration statistics.
     fn validate(self, search_list_size: usize, window_size: usize) -> Result<()> {
         if self.k == 0 || self.k > search_list_size {
             return Err(calibration_error("k", "require 1 <= k <= search_list_size"));
@@ -157,6 +166,7 @@ impl CalibrationConfig {
     }
 }
 
+/// Attaches the offending parameter and calibration stage to a configuration failure.
 fn calibration_error(parameter: &str, err: &str) -> Error {
     Error::configuration(parameter, err).at("calibrate")
 }
@@ -164,7 +174,10 @@ fn calibration_error(parameter: &str, err: &str) -> Error {
 /// Calibrated search parameters.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CalibratedParams {
+    /// Calibrated admission-rate threshold used by convergence detection.
     pub threshold: f32,
+
+    /// Calibrated bound used by the adaptive stopping rule.
     pub early_exit_limit: usize,
 }
 
@@ -653,6 +666,7 @@ impl<D, S> CompressedIndex<D, S> {
     }
 }
 
+/// Selects a bounded integer percentile rank from a sorted sample, returning zero for an empty sample.
 fn percentile(sorted: &[usize], p: usize) -> usize {
     if sorted.is_empty() {
         return 0;
@@ -665,6 +679,7 @@ impl<const N: usize, T: CalibrationElement> StaticOrion<N, T>
 where
     [T; N]: FullPrecisionDistance<T, N>,
 {
+    /// Fits adaptive thresholds for the static benchmark index using exact original-metric distances.
     pub fn calibrate(
         &self,
         queries: &[[f32; N]],
@@ -681,6 +696,8 @@ where
             )
         })
     }
+
+    /// Fits static-index thresholds and returns the diagnostic observations behind the selected values.
     #[cfg(feature = "benchmark")]
     pub fn calibrate_with_diagnostics(
         &self,

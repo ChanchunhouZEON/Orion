@@ -11,8 +11,9 @@
 
 use std::mem::{align_of, size_of};
 
-use crate::DistanceKernelBackend;
+use crate::{BaseScalar, DistanceKernelBackend};
 
+/// Checked per-row layout separating logical coordinates from SIMD compute and allocation spans.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaddedLayout {
     logical_dim: usize,
@@ -28,15 +29,52 @@ impl PaddedLayout {
     /// Built-in x86 kernels retain 32-byte short rows even in AVX-512 builds;
     /// their primitive `step` contract remains unchanged.
     pub fn for_kernel<K: DistanceKernelBackend>(logical_dim: usize) -> Result<Self, String> {
-        if logical_dim > K::MAX_COORDINATES {
-            return Err("dimension exceeds kernel accumulator range".into());
-        }
-        let row_bytes = logical_dim
-            .checked_mul(size_of::<K::Storage>())
-            .ok_or("row size overflow")?;
-        Self::new::<K::Storage>(logical_dim, K::stream_block_bytes(row_bytes))
+        Self::for_storage::<K::Storage>(logical_dim, K::MAX_COORDINATES, K::stream_block_bytes)
     }
 
+    /// Computes the physical layout of a base row from its scalar representation.
+    ///
+    /// This chooses padding only, not a search metric, calibration policy or CPU
+    /// backend. Encoded sidecars should continue to use [`Self::for_kernel`]
+    /// because their computation layout follows the quantized representation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero or unaddressable dimensions and dimensions beyond the
+    /// scalar layout's supported range. No backing memory is allocated.
+    ///
+    /// ```
+    /// use orion_ann_vector::PaddedLayout;
+    /// let layout = PaddedLayout::for_base_scalar::<u16>(25)?;
+    /// assert_eq!(layout.element_bytes(), 2);
+    /// assert!(layout.stride_elements() >= 25);
+    /// # Ok::<(), String>(())
+    /// ```
+    pub fn for_base_scalar<T: BaseScalar>(logical_dim: usize) -> Result<Self, String> {
+        Self::for_storage::<T>(logical_dim, T::MAX_DIMENSION, T::block_bytes)
+    }
+
+    /// Applies shared size/range checks before rounding storage to compute blocks.
+    fn for_storage<T>(
+        logical_dim: usize,
+        max_coordinates: usize,
+        block_bytes: impl FnOnce(usize) -> usize,
+    ) -> Result<Self, String> {
+        if logical_dim > max_coordinates {
+            return Err("dimension exceeds supported coordinate range".into());
+        }
+        let row_bytes = logical_dim
+            .checked_mul(size_of::<T>())
+            .ok_or("row size overflow")?;
+        Self::new::<T>(logical_dim, block_bytes(row_bytes))
+    }
+
+    /// Checks a scalar/block layout and rounds each row to whole compute blocks.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero dimensions, invalid block/element sizes and unaddressable or
+    /// overflowing row sizes. This constructor does not check a kernel's accumulator limit.
     pub fn new<T>(logical_dim: usize, block_bytes: usize) -> Result<Self, String> {
         let element_bytes = size_of::<T>();
         if logical_dim == 0
@@ -65,21 +103,32 @@ impl PaddedLayout {
         })
     }
 
+    /// Returns meaningful coordinates per row, excluding the zero-padded tail.
     pub fn logical_dim(self) -> usize {
         self.logical_dim
     }
+
+    /// Returns bytes per stored scalar, independent of the logical dimension.
     pub fn element_bytes(self) -> usize {
         self.element_bytes
     }
+
+    /// Returns padded bytes consumed when a kernel evaluates one row.
     pub fn compute_bytes(self) -> usize {
         self.compute_bytes
     }
+
+    /// Returns the byte distance between consecutive stored rows.
     pub fn stride_bytes(self) -> usize {
         self.compute_bytes
     }
+
+    /// Returns the padded row stride in scalar elements rather than bytes.
     pub fn stride_elements(self) -> usize {
         self.compute_bytes / self.element_bytes
     }
+
+    /// Returns the required base allocation alignment for this layout.
     pub fn alignment(self) -> usize {
         self.alignment
     }
@@ -92,6 +141,7 @@ impl PaddedLayout {
             .ok_or_else(|| "padded allocation size overflow".into())
     }
 
+    /// Counts row-tail padding across the dataset using checked allocation bounds.
     pub fn padding_bytes(self, rows: usize) -> Result<usize, String> {
         self.allocation_bytes(rows)?;
         Ok((self.stride_bytes() - self.logical_dim * self.element_bytes) * rows)

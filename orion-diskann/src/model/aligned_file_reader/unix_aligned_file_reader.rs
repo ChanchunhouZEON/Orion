@@ -87,6 +87,7 @@ impl UnixAlignedFileReader {
         Ok(&self.mmap[offset..offset + len])
     }
 
+    /// Registers a shared mapping view for the current thread without creating another file mapping.
     pub fn register_thread(&self) -> ANNResult<()> {
         let mut ctx_map = self.ctx_map.write().map_err(|_| {
             ANNError::log_lock_poison_error("unable to acquire read lock on ctx_map".to_string())

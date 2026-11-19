@@ -10,11 +10,14 @@ use std::cmp::Ordering;
 
 use bit_vec::BitVec;
 
+/// Resizes legacy visited-bit storage while preserving existing bits.
 pub trait BitVecExtension {
+    /// Changes bit-vector length, filling newly added bits with the requested value.
     fn resize(&mut self, new_len: usize, value: bool);
 }
 
 impl BitVecExtension for BitVec {
+    /// Truncates the bit vector or fills newly appended bits with the supplied value.
     fn resize(&mut self, new_len: usize, value: bool) {
         let old_len = self.len();
         match new_len.cmp(&old_len) {

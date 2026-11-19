@@ -58,6 +58,7 @@ pub(crate) fn load_verified<D: IndexData, S: Default>(
     load_verified_with_storage(path, dataset, metadata, expected, &Default::default())
 }
 
+/// Decodes a graph into planned storage and verifies the same input stream before returning it.
 pub(crate) fn load_verified_with_storage<D: IndexData, S: Default>(
     path: &Path,
     dataset: D,

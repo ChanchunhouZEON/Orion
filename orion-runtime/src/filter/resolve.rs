@@ -10,6 +10,7 @@ use crate::{
     Error, Result,
 };
 
+/// Resolves boolean label terms against one captured revision into a bounded sorted allowlist.
 pub(crate) fn resolve(
     snapshot: &LabelSnapshot,
     filter: &LabelFilter,
@@ -76,6 +77,8 @@ pub(crate) fn resolve(
         Ok(ids)
     }
 }
+
+/// Reports that a filtered exact scan would exceed the caller's candidate budget.
 fn limit_error(limit: usize) -> Error {
     Error::invalid_argument("filtered exact scan exceeds max_candidates")
         .with_detail("max_candidates", limit)

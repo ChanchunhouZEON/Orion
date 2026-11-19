@@ -31,6 +31,7 @@ use crate::model::dataset::{rows::Rows, validation};
 use crate::{Error, Result};
 
 pub(crate) mod sealed {
+    /// Restricts implementations to the audited scalar or dataset types in this module.
     pub trait Sealed {}
 }
 #[doc(hidden)]
@@ -49,10 +50,14 @@ pub mod scalar;
 /// This is not the encoded stride or the projected output width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuantizedDatasetShape {
+    /// Logical input row count, before encoding into a sidecar.
     pub rows: usize,
+
+    /// Original logical coordinate width, not the encoded or projected stride.
     pub dimension: usize,
 }
 impl QuantizedDatasetShape {
+    /// Checks that input shape fits sidecar row IDs and addressable allocation bounds.
     pub(crate) fn validate(self) -> Result<()> {
         validation::shape(self.rows, self.dimension, u32::MAX as usize)
     }
@@ -74,6 +79,7 @@ pub struct ResidentMemory {
     total_bytes: usize,
 }
 impl ResidentMemory {
+    /// Sums encoded, auxiliary and transform payload spans with checked arithmetic.
     pub(crate) fn new(codes: usize, auxiliary: usize, transforms: usize) -> Result<Self> {
         let total_bytes = codes
             .checked_add(auxiliary)
@@ -161,10 +167,14 @@ pub trait QuantizedDataset: QuantizedDatasetCompute + Sized + Send + Sync {
 /// Hadamard construction parameters. `None` uses the canonical padded width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HadamardOptions {
+    /// Seed fixing the signs/projection used by both dataset and query encoding.
     pub seed: u64,
+
+    /// Optional transform width; None chooses the canonical power-of-two padding.
     pub padded_dimension: Option<usize>,
 }
 impl HadamardOptions {
+    /// Resolves and validates the transform width without allocating the transform.
     pub(crate) fn padded_dimension(self, dimension: usize) -> Result<usize> {
         let padded = match self.padded_dimension {
             Some(value) => value,

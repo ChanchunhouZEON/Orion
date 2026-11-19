@@ -47,6 +47,10 @@ type PySearchOutput<'py> = (
     Option<Bound<'py, PyArray2<u64>>>,
 );
 
+/// Owns a runtime index behind shared-search/exclusive-mutation locking.
+///
+/// Input arrays are copied before releasing the GIL. Lock acquisition for native
+/// operations happens outside the GIL so returning workers cannot deadlock it.
 #[pyclass(name = "_Index", module = "orion_ann._native")]
 struct PyIndex {
     inner: RwLock<Index>,
@@ -57,6 +61,7 @@ struct PyIndex {
     result_type: std::sync::OnceLock<Py<PyType>>,
 }
 
+/// Parses the shared runtime configuration and classifies malformed Python options.
 fn options(json: &str) -> Result<IndexOptions> {
     serde_json::from_str(json).map_err(|e| {
         Error::invalid_argument(format!("invalid index options: {e}"))
@@ -65,6 +70,7 @@ fn options(json: &str) -> Result<IndexOptions> {
     })
 }
 
+/// Copies a contiguous native f32/u8 matrix into Rust-owned base input before GIL release.
 fn array_base(py: Python<'_>, array: &Bound<'_, PyAny>) -> PyResult<BaseInput> {
     if let Ok(values) = array.extract::<PyReadonlyArray2<'_, f32>>() {
         if !values.is_c_contiguous() {
@@ -123,6 +129,7 @@ fn array_queries(
     }
 }
 
+/// Builds the shared invalid-argument exception for unsupported NumPy query types.
 fn unsupported_query(py: Python<'_>) -> PyErr {
     to_python(
         py,
@@ -156,11 +163,13 @@ fn copy_queries<T: numpy::Element + orion_ann::QueryElement>(
     Ok(T::owned(values.as_slice()?.to_vec()))
 }
 
+/// Owned query transport that remains valid while native execution runs without the GIL.
 enum Queries {
     Array(orion_ann::QueryBuffer),
     File(PathBuf, Option<VectorFormat>),
 }
 impl Queries {
+    /// Copies array queries or captures a file request, preserving PathLike precedence.
     fn extract(
         py: Python<'_>,
         value: &Bound<'_, PyAny>,
@@ -204,6 +213,7 @@ impl Queries {
         Ok(Self::Array(array_queries(py, value, dimension, storage)?))
     }
 
+    /// Transfers an owned query buffer or decodes a captured file outside the GIL.
     fn read(self, dimension: usize, _storage: VectorStorageKind) -> Result<orion_ann::QueryBuffer> {
         match self {
             Self::Array(values) => Ok(values),
@@ -214,8 +224,10 @@ impl Queries {
 
 // RwLock poisons exclusive writers only. A read-side backend panic must also
 // invalidate the Python handle, matching the exception's reopen contract.
+/// Invalidates a shared Python handle if a read-side native operation panics.
 struct InvalidateOnUnwind<'a>(&'a AtomicBool);
 impl Drop for InvalidateOnUnwind<'_> {
+    /// Marks the handle unusable only during unwinding; ordinary failures keep it reusable.
     fn drop(&mut self) {
         if std::thread::panicking() {
             self.0.store(true, Ordering::Release);
@@ -224,6 +236,7 @@ impl Drop for InvalidateOnUnwind<'_> {
 }
 
 impl PyIndex {
+    /// Runs a shared operation after rejecting poisoned or explicitly invalidated handles.
     fn with_read<T>(&self, f: impl FnOnce(&Index) -> Result<T>) -> Result<T> {
         let index = self.inner.read().map_err(|_| errors::poisoned())?;
         if self.invalidated.load(Ordering::Acquire) {
@@ -233,6 +246,7 @@ impl PyIndex {
         f(&index)
     }
 
+    /// Runs an exclusive mutation after rejecting poisoned or invalidated handles.
     fn with_write<T>(&self, f: impl FnOnce(&mut Index) -> Result<T>) -> Result<T> {
         let mut index = self.inner.write().map_err(|_| errors::poisoned())?;
         if self.invalidated.load(Ordering::Acquire) {
@@ -241,6 +255,7 @@ impl PyIndex {
         f(&mut index)
     }
 
+    /// Takes ownership of a prepared index and caches immutable input-shape metadata.
     fn wrap(index: Index) -> Self {
         Self {
             dimension: index.dimension(),
@@ -256,6 +271,7 @@ impl PyIndex {
 impl PyIndex {
     // The registered Python result class is an owned reference. Expose it to
     // cyclic GC rather than hiding a potential class/handle reference cycle.
+    /// Exposes the registered result class to Python cyclic garbage collection.
     fn __traverse__(
         &self,
         visit: pyo3::PyVisit<'_>,
@@ -266,10 +282,12 @@ impl PyIndex {
         Ok(())
     }
 
+    /// Breaks the owned result-class reference when Python clears a detected cycle.
     fn __clear__(&mut self) {
         self.result_type.take();
     }
 
+    /// Injects a write-side panic to verify exception conversion and poisoned-handle rejection.
     #[cfg(feature = "test-hooks")]
     fn _test_panic(&self, py: Python<'_>) -> PyResult<()> {
         boundary(py, "test_panic", || {
@@ -280,6 +298,7 @@ impl PyIndex {
         })
     }
 
+    /// Injects a shared-read panic to verify explicit handle invalidation.
     #[cfg(feature = "test-hooks")]
     fn _test_read_panic(&self, py: Python<'_>) -> PyResult<()> {
         boundary(py, "test_read_panic", || {
@@ -292,6 +311,7 @@ impl PyIndex {
         })
     }
 
+    /// Builds a runtime index from a file without holding the GIL during native preparation.
     #[staticmethod]
     #[pyo3(signature = (path, options_json, external_ids=None))]
     fn from_file(
@@ -311,6 +331,7 @@ impl PyIndex {
         })
     }
 
+    /// Copies NumPy base input, then builds the runtime index with the GIL released.
     #[staticmethod]
     #[pyo3(signature = (base, options_json, external_ids=None))]
     fn from_array(
@@ -331,6 +352,7 @@ impl PyIndex {
         })
     }
 
+    /// Imports supplier partitions against the supplied base using shared runtime validation.
     #[cfg(feature = "experimental-graph")]
     #[staticmethod]
     fn from_staged(
@@ -351,6 +373,7 @@ impl PyIndex {
         })
     }
 
+    /// Restores a verified snapshot or bundle and its saved calibration without rebuilding.
     #[staticmethod]
     #[pyo3(signature = (reference, base, options_json="{}"))]
     fn open(
@@ -382,6 +405,7 @@ impl PyIndex {
         })
     }
 
+    /// Prepares adaptive search for one k under exclusive native access and returns its record.
     #[pyo3(signature = (queries, k, search_list_size=None, query_format=None))]
     fn calibrate(
         &self,
@@ -412,6 +436,7 @@ impl PyIndex {
     }
 
     // Keep the public options flat; the last argument is a private result factory.
+    /// Executes the compatibility search entry through the shared native binding implementation.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (queries, k, search_list_size, *, query_format=None, scores=false, _result_type=None))]
     fn search<'py>(
@@ -463,6 +488,7 @@ impl PyIndex {
         )
     }
 
+    /// Installs the public result factory once, rejecting a later conflicting factory.
     fn _register_search_result(
         &self,
         py: Python<'_>,
@@ -487,16 +513,19 @@ impl PyIndex {
             })
     }
 
+    /// Starts bounded thread-local timing collection for the experimental search probe.
     #[cfg(feature = "search-timing")]
     fn _start_search_timing(&self, capacity: usize) {
         search_timing::start(capacity);
     }
 
+    /// Drains timing samples collected on the calling Python thread.
     #[cfg(feature = "search-timing")]
     fn _finish_search_timing(&self) -> Vec<search_timing::Sample> {
         search_timing::finish()
     }
 
+    /// Reads the current published label revision with the GIL released.
     fn label_revision(&self, py: Python<'_>) -> PyResult<u64> {
         boundary(py, "labels", || {
             py.allow_threads(|| self.with_read(Index::label_revision))
@@ -504,6 +533,7 @@ impl PyIndex {
         })
     }
 
+    /// Publishes an internal-ID label batch only if the expected revision still matches.
     fn update_labels(
         &self,
         py: Python<'_>,
@@ -525,6 +555,7 @@ impl PyIndex {
         })
     }
 
+    /// Resolves business IDs and applies a label batch through the runtime rollback contract.
     fn update_labels_external(
         &self,
         py: Python<'_>,
@@ -546,6 +577,7 @@ impl PyIndex {
         })
     }
 
+    /// Translates business IDs to compact internal IDs using this index's mapping.
     fn resolve_external_ids(&self, py: Python<'_>, ids: Vec<u64>) -> PyResult<Vec<u32>> {
         boundary(py, "labels", || {
             py.allow_threads(|| self.with_read(|index| index.resolve_external_ids(&ids)))
@@ -553,6 +585,7 @@ impl PyIndex {
         })
     }
 
+    /// Searches one captured label revision and returns that revision with the result buffers.
     #[pyo3(signature = (queries, filter_json, options_json, query_format=None))]
     fn search_filtered<'py>(
         &self,
@@ -595,6 +628,7 @@ impl PyIndex {
         })
     }
 
+    /// Prepares several k values from one owned sample batch under exclusive native access.
     #[pyo3(signature = (queries, ks, search_list_size=None, query_format=None))]
     fn calibrate_many(
         &self,
@@ -622,6 +656,7 @@ impl PyIndex {
         })
     }
 
+    /// Publishes a snapshot manifest and returns its serialized reference with the GIL released.
     fn save(&self, py: Python<'_>, path: String) -> PyResult<String> {
         boundary(py, "save", || {
             py.allow_threads(move || {
@@ -634,6 +669,7 @@ impl PyIndex {
         })
     }
 
+    /// Exports relocatable snapshot objects, optionally including the original base.
     fn export_bundle(&self, py: Python<'_>, path: String, include_base: bool) -> PyResult<String> {
         boundary(py, "export_bundle", || {
             py.allow_threads(|| {
@@ -648,6 +684,7 @@ impl PyIndex {
         })
     }
 
+    /// Serializes runtime metadata without executing queries or changing index readiness.
     fn info(&self, py: Python<'_>) -> PyResult<String> {
         boundary(py, "info", || {
             py.allow_threads(|| {
@@ -658,6 +695,7 @@ impl PyIndex {
     }
 }
 
+/// Registers the native index, search descriptor and shared exception type with Python.
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyIndex>()?;
@@ -666,6 +704,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
+/// Transfers Rust result vectors into shaped NumPy arrays while preserving optional scores and IDs.
 fn search_output<'py>(
     py: Python<'py>,
     result: orion_ann::SearchResult,

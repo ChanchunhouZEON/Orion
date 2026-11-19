@@ -95,6 +95,7 @@ pub fn distance_l2_vector_u8<const N: usize>(a: &[u8; N], b: &[u8; N]) -> f32 {
 }
 
 // Scalar fallback for non-aarch64.
+/// Computes squared L2 with scalar unsigned accumulation when the NEON implementation is unavailable.
 #[cfg(not(target_arch = "aarch64"))]
 #[inline(never)]
 pub fn distance_l2_vector_u8<const N: usize>(a: &[u8; N], b: &[u8; N]) -> f32 {
@@ -188,6 +189,7 @@ pub fn distance_l2_vector_u8_batch4<const N: usize>(
     }
 }
 
+/// Scores four base rows against one query, preserving input-row order.
 #[cfg(not(target_arch = "aarch64"))]
 #[inline(never)]
 pub fn distance_l2_vector_u8_batch4<const N: usize>(

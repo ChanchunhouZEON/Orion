@@ -10,6 +10,7 @@ use crate::{
     Error, Result,
 };
 
+/// Multiplies payload dimensions without allowing an overflow to understate the memory budget.
 pub(super) fn checked_mul_bytes(count: u64, bytes_per_item: u64) -> Result<u64> {
     count
         .checked_mul(bytes_per_item)

@@ -1013,6 +1013,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "orion-ann-ssd"
+version = "0.1.0"
+dependencies = [
+ "orion-ann-core",
+ "orion-ann-diskann",
+ "orion-ann-platform",
+ "orion-ann-vector",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "orion-ann-vector"
 version = "0.1.0"
 dependencies = [

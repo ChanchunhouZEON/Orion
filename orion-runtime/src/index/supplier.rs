@@ -26,12 +26,14 @@ use std::{
     path::Path,
 };
 
+/// Validated supplier graph metadata and source retained during runtime preparation.
 pub(crate) struct SuppliedGraph {
     spec: PartitionSpec,
     source: Box<dyn PartitionSource + Send>,
 }
 
 impl SuppliedGraph {
+    /// Checks supplier shape, coordinate type and optional base digest against the prepared input.
     pub(super) fn validate_base(
         &self,
         config: &ResolvedRunConfig,
@@ -121,6 +123,7 @@ impl Index {
     }
 }
 
+/// Derives graph interpretation from the supplier specification and rejects conflicting user graph settings.
 pub(crate) fn configure_options(spec: &PartitionSpec, options: &mut IndexOptions) -> Result<()> {
     if options.graph != crate::GraphConfig::default() {
         return Err(Error::invalid_argument(
@@ -165,6 +168,7 @@ pub fn write_staged_file(
     Ok(encoded.digest)
 }
 
+/// Imports supplier partitions into planned storage and persists immutable graph and provenance objects.
 pub(super) fn prepare<T: BaseElement + 'static>(
     config: &ResolvedRunConfig,
     mut data: LoadedBase<T>,

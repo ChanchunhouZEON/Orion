@@ -10,7 +10,7 @@ use crossbeam::queue::ArrayQueue;
 use crate::model::Neighbor as DNeighbor;
 use crate::model::NeighborPriorityQueue;
 use crate::model::neighbor::neighbor_priority_queue::pad16;
-use crate::model::visited_set::HashsetSeen;
+use crate::model::search::visited_set::HashsetSeen;
 use crate::search::adaptive::convergence::SearchConvergenceChecker;
 
 /// Pre-allocated scratch for in-memory greedy search.
@@ -60,8 +60,14 @@ pub struct InMemSearchScratch {
     /// then average those per-hop means. The observation count includes hops
     /// that reuse a cached mean; it is not a distance-evaluation count.
     pub(crate) prefilter_frontier_mean_sum: f32,
+
+    /// Number of samples accumulated in the query-local prefilter state.
     pub(crate) prefilter_observations: u32,
+
+    /// Beam-tail ID used to recognize when the prefilter threshold needs refresh.
     pub(crate) prefilter_last_worst_id: u32,
+
+    /// Running frontier estimate used by the prefilter policy.
     pub(crate) prefilter_frontier_mean: f32,
     /// Reusable convergence checker — avoids per-query allocation.
     pub(crate) scc: SearchConvergenceChecker,
@@ -70,6 +76,7 @@ pub struct InMemSearchScratch {
 }
 
 impl InMemSearchScratch {
+    /// Allocates reusable beam, visited-state and staging buffers for a search capacity.
     pub fn new(search_list_size: usize) -> Self {
         Self {
             pq: NeighborPriorityQueue::with_capacity(search_list_size),
@@ -136,6 +143,11 @@ impl InMemScratchPool {
         Self::new(num_threads + spare, search_list_size)
     }
 
+    /// Allocates a fixed number of reusable scratch slots.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the requested slot count is zero.
     pub fn new(num_threads: usize, search_list_size: usize) -> Self {
         let pool = Arc::new(ArrayQueue::new(num_threads));
         for _ in 0..num_threads {
@@ -167,12 +179,14 @@ pub struct InMemScratchGuard {
 }
 
 impl InMemScratchGuard {
+    /// Borrows the checked-out scratch exclusively until the guard is returned.
     pub fn scratch(&mut self) -> &mut InMemSearchScratch {
         self.scratch.as_deref_mut().unwrap()
     }
 }
 
 impl Drop for InMemScratchGuard {
+    /// Returns the owned scratch slot to its pool without clearing reusable state.
     fn drop(&mut self) {
         if let Some(scratch) = self.scratch.take() {
             self.pool.push(scratch).ok();
@@ -182,6 +196,7 @@ impl Drop for InMemScratchGuard {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl std::fmt::Debug for InMemSearchScratch {
+    /// Formats `candidate_count`, `seen`, `id_scratch_len`, `distance_buffer_len`, `query_buffer_len` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InMemSearchScratch")
             .field("candidate_count", &self.pq.neighbors().len())
@@ -194,6 +209,7 @@ impl std::fmt::Debug for InMemSearchScratch {
 }
 
 impl std::fmt::Debug for InMemScratchPool {
+    /// Formats `available`, `capacity` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InMemScratchPool")
             .field("available", &self.pool.len())
@@ -203,6 +219,7 @@ impl std::fmt::Debug for InMemScratchPool {
 }
 
 impl std::fmt::Debug for InMemScratchGuard {
+    /// Formats `borrowed` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InMemScratchGuard")
             .field("borrowed", &self.scratch.is_some())

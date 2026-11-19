@@ -44,18 +44,23 @@ impl IndexOptions {
 // Serde-derived structs can accept positional sequences and some YAML parsers
 // treat an empty document as a default struct. A configuration must be a named
 // field mapping: require `{}` when the caller explicitly wants all defaults.
+/// Serde wrapper requiring a mapping instead of accepting scalar YAML documents.
 struct OptionsMapping(IndexOptions);
 
 impl<'de> Deserialize<'de> for OptionsMapping {
+    /// Requires a YAML mapping and delegates its fields to the shared IndexOptions deserializer.
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        /// Validates the outer YAML shape before delegating option fields to serde.
         struct MappingVisitor;
         impl<'de> Visitor<'de> for MappingVisitor {
             type Value = OptionsMapping;
 
+            /// Describes the required mapping shape in serde input errors.
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str("an IndexOptions mapping (use {} for defaults)")
             }
 
+            /// Deserializes the mapping through IndexOptions so field validation has one implementation.
             fn visit_map<M: MapAccess<'de>>(
                 self,
                 map: M,

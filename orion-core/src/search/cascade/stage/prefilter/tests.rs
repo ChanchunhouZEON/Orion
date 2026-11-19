@@ -5,7 +5,7 @@
 
 use super::{NoPrefilterSession, PrefilterSession};
 use crate::{
-    model::{Neighbor, scratch::InMemSearchScratch},
+    model::{Neighbor, search::scratch::InMemSearchScratch},
     search::diagnostics::SearchObserver,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};

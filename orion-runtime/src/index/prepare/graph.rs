@@ -15,6 +15,7 @@ use crate::{
     Result,
 };
 
+/// Dispatches base element storage into the common graph-source preparation path.
 pub(super) fn prepare(
     config: &ResolvedRunConfig,
     rows: Rows,
@@ -35,6 +36,7 @@ pub(super) fn prepare(
     }
 }
 
+/// Transfers typed rows to the selected snapshot, working-cache or supplier loader.
 fn prepare_typed<T: BaseElement + 'static>(
     config: &ResolvedRunConfig,
     data: LoadedBase<T>,

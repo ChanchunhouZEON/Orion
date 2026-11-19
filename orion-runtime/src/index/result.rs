@@ -22,6 +22,7 @@ pub struct SearchResult {
     pub external_ids: Option<Vec<u64>>,
 }
 impl From<orion_ann_core::SearchResult> for SearchResult {
+    /// Moves core result buffers into the application result without copying their payloads.
     fn from(value: orion_ann_core::SearchResult) -> Self {
         Self {
             ids: value.ids,
@@ -33,12 +34,17 @@ impl From<orion_ann_core::SearchResult> for SearchResult {
     }
 }
 impl SearchResult {
+    /// Returns the number of query rows, including rows with no valid neighbors.
     pub fn len(&self) -> usize {
         self.counts.len()
     }
+
+    /// Reports whether there are no query rows, rather than whether every row has zero hits.
     pub fn is_empty(&self) -> bool {
         self.counts.is_empty()
     }
+
+    /// Iterates valid internal-ID prefixes in query order, excluding padding slots.
     pub fn rows(&self) -> impl ExactSizeIterator<Item = &[u32]> {
         self.ids
             .chunks(self.k.max(1))
@@ -47,6 +53,7 @@ impl SearchResult {
     }
 }
 impl std::fmt::Debug for SearchResult {
+    /// Formats result shape and score availability without printing large result buffers.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SearchResult")
             .field("query_count", &self.len())

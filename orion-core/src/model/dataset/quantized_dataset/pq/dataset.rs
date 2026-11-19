@@ -40,13 +40,23 @@ pub enum PqMetric {
 pub struct PqDataset {
     // Drop the lock before its backing allocations. The codebook cannot be
     // mutated/replaced through any public API; its Box allocations never move.
+    /// Page-lock guard retaining the codebook lock for this dataset lifetime.
     pub(super) codebook_pin: PinGuard<'static>,
+
+    /// Recorded optional lock failure; absence does not itself measure RSS.
     pub(super) pin_error: Option<String>,
+
+    /// Trained codebook used to encode rows and prepare query distance tables.
     pub(super) table: FixedChunkPQTable,
+
+    /// Encoded PQ rows with independently selected resident or mapped backing.
     pub(super) codes: Codes,
+
+    /// Number of encoded dataset rows.
     pub(super) rows: usize,
 }
 impl std::fmt::Debug for PqDataset {
+    /// Formats `rows`, `codebook`, `codes`, `codebook_pinned_bytes`, `pin_error` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PqDataset")
             .field("rows", &self.rows)
@@ -85,6 +95,9 @@ impl PqDataset {
         Self::from_parts(table, Codes(codes), base.len())
     }
 
+    /// Validates code count and assembles the dataset, attempting a bounded codebook pin when resident.
+    ///
+    /// Pin failure leaves the codebook usable and pageable; the failure reason is retained for inspection.
     pub(super) fn from_parts(table: FixedChunkPQTable, codes: Codes, rows: usize) -> Result<Self> {
         if rows == 0 || rows.checked_mul(table.get_num_chunks()) != Some(codes.as_slice().len()) {
             return Err(Error::invalid_argument(
@@ -120,12 +133,18 @@ impl PqDataset {
             rows,
         })
     }
+
+    /// Returns the number of encoded vectors.
     pub fn len(&self) -> usize {
         self.rows
     }
+
+    /// Reports whether the code table contains no vectors.
     pub fn is_empty(&self) -> bool {
         self.rows == 0
     }
+
+    /// Returns the original logical vector dimension, not the number of PQ chunks.
     pub fn dimension(&self) -> usize {
         self.table.dim()
     }
@@ -144,18 +163,28 @@ impl PqDataset {
                 0
             }
     }
+
+    /// Borrows trained centroids and chunk boundaries used by query lookup preparation.
     pub fn codebook(&self) -> &FixedChunkPQTable {
         &self.table
     }
+
+    /// Borrows row-major centroid IDs, one byte per chunk per vector.
     pub fn codes(&self) -> &[u8] {
         self.codes.as_slice()
     }
+
+    /// Reports whether row codes are resident or backed by a pageable mapping.
     pub fn code_storage(&self) -> PqCodeStorage {
         self.codes.policy()
     }
+
+    /// Returns the last codebook lock failure, if the best-effort pin attempt was denied.
     pub fn codebook_pin_error(&self) -> Option<&str> {
         self.pin_error.as_deref()
     }
+
+    /// Returns page-rounded bytes locked for the codebook by this dataset.
     pub fn codebook_pinned_bytes(&self) -> usize {
         self.codebook_pin.pinned_bytes()
     }
@@ -209,15 +238,26 @@ impl PqDataset {
 }
 impl sealed::Sealed for PqDataset {}
 impl QuantizedDatasetCompute for PqDataset {
+    /// Binds validated encoded query state to the dataset that produced it.
+    ///
+    /// See [`QuantizedDatasetCompute::prepare_query`] for the shared contract.
     fn prepare_query(&self, query: &[f32]) -> Result<impl PreparedQuery + '_> {
         self.query(query, PqMetric::L2)
     }
 }
 impl QuantizedDataset for PqDataset {
     type BuildOptions = PqBuildOptions;
+
+    /// Selects the canonical construction recipe for this representation.
+    ///
+    /// See [`QuantizedDataset::default_build_options`] for the shared contract.
     fn default_build_options() -> PqBuildOptions {
         Default::default()
     }
+
+    /// Builds this sidecar from validated logical rows.
+    ///
+    /// See [`QuantizedDataset::build`] for the shared contract.
     fn build(base: &impl Rows, options: &PqBuildOptions) -> Result<Self> {
         Self::build_with_storage(
             base,
@@ -225,6 +265,10 @@ impl QuantizedDataset for PqDataset {
             &orion_ann_platform::region::RegionOptions::default(),
         )
     }
+
+    /// Predicts this representation's payload allocation before reading base rows.
+    ///
+    /// See [`QuantizedDataset::estimate_resident_memory`] for the shared contract.
     fn estimate_resident_memory(
         shape: QuantizedDatasetShape,
         options: &PqBuildOptions,
@@ -242,6 +286,10 @@ impl QuantizedDataset for PqDataset {
             .ok_or_else(|| Error::invalid_argument("PQ codebook overflow"))?;
         ResidentMemory::new(codes, 0, centers)
     }
+
+    /// Accounts for the payload buffers currently owned by this representation.
+    ///
+    /// See [`QuantizedDataset::resident_memory`] for the shared contract.
     fn resident_memory(&self) -> ResidentMemory {
         // Mapped payload is potential resident storage, not a current RSS reading.
         ResidentMemory::new(self.codes().len(), 0, self.table.bytes())
@@ -249,6 +297,7 @@ impl QuantizedDataset for PqDataset {
     }
 }
 impl super::super::residency::ResidentRegions for PqDataset {
+    /// Borrows owned payload spans for residency selection; placement policy decides which may be locked.
     fn resident_regions(&self) -> Vec<&[u8]> {
         let mut r = self.table.regions();
         r.push(self.codes());
@@ -262,6 +311,7 @@ pub struct PqQuery<'a> {
     lookup: Vec<f32>,
 }
 impl std::fmt::Debug for PqQuery<'_> {
+    /// Formats `chunks` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PqQuery")
             .field("chunks", &self.dataset.table.get_num_chunks())
@@ -270,6 +320,9 @@ impl std::fmt::Debug for PqQuery<'_> {
 }
 impl sealed::Sealed for PqQuery<'_> {}
 impl PreparedQuery for PqQuery<'_> {
+    /// Scores a checked row using query state bound to its original dataset.
+    ///
+    /// See [`PreparedQuery::distance`] for the shared contract.
     fn distance(&self, id: u32) -> Result<f32> {
         let mut distance = 0.0;
         self.stream(&[id], 1, |_, d| distance = d)?;
@@ -290,6 +343,13 @@ impl PqQuery<'_> {
         }
         Ok(())
     }
+
+    /// Streams ADC distances for candidate IDs through the shared prefetch scheduler.
+    ///
+    /// # Safety
+    ///
+    /// Every ID must address this dataset. The sink must satisfy the distance stream
+    /// contract, and the prepared lookup table must remain live throughout execution.
     pub(crate) unsafe fn stream_unchecked(
         &self,
         ids: &[u32],

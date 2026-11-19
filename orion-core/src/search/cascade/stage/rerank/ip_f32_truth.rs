@@ -19,7 +19,7 @@
 
 use super::RerankStage;
 use crate::model::Neighbor;
-use crate::model::scratch::InMemSearchScratch;
+use crate::model::search::scratch::InMemSearchScratch;
 use crate::search::NDC_F32;
 use crate::search::traversal::tuning::dstream_la_truth;
 use orion_ann_diskann::model::InmemDataset;
@@ -37,6 +37,7 @@ pub struct IpF32Rerank<'a, const N: usize> {
 }
 
 impl<'a, const N: usize> IpF32Rerank<'a, N> {
+    /// Binds the dataset to this stage; query encoding is deferred until the stage is opened.
     #[inline]
     pub fn new(dataset: &'a InmemDataset<f32, N>) -> Self {
         assert!(N > 0, "stage dimension must be positive");
@@ -53,6 +54,9 @@ impl<'a, const N: usize> IpF32Rerank<'a, N> {
 }
 
 impl<'a, const N: usize> RerankStage for IpF32Rerank<'a, N> {
+    /// Identifies final-stage precision for cascade compatibility checks.
+    ///
+    /// See [`RerankStage::precision`] for the shared contract.
     fn precision(
         &self,
     ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
@@ -60,9 +64,16 @@ impl<'a, const N: usize> RerankStage for IpF32Rerank<'a, N> {
         Some(P::Exact)
     }
 
+    /// Describes the base shape required by this reranking representation.
+    ///
+    /// See [`RerankStage::shape`] for the shared contract.
     fn shape(&self) -> Option<(usize, usize)> {
         Some((N, self.dataset.num_active_pts))
     }
+
+    /// Selects final IDs from the search scratch using this stage's ranking policy.
+    ///
+    /// See [`RerankStage::rerank`] for the shared contract.
     fn rerank(
         &self,
         query: &[f32],
@@ -158,6 +169,7 @@ impl<'a, const N: usize> RerankStage for IpF32Rerank<'a, N> {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl<'a, const N: usize> std::fmt::Debug for IpF32Rerank<'a, N> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IpF32Rerank")
             .field("dimension", &(N))

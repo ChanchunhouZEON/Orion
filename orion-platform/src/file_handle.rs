@@ -64,6 +64,11 @@ impl UnixFileHandle {
 impl Default for UnixFileHandle {
     // Default cannot return an I/O error. Preserve the legacy placeholder
     // contract; callers needing recovery use the fallible `open` constructor.
+    /// Opens a null placeholder handle, falling back to a temporary file.
+    ///
+    /// # Panics
+    ///
+    /// Panics if neither the null device nor the fallback file can be opened.
     #[expect(
         clippy::expect_used,
         reason = "infallible Default has no handle if both placeholder opens fail"

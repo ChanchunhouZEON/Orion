@@ -13,11 +13,13 @@ pub(super) struct SearchDescriptor;
 
 #[pymethods]
 impl SearchDescriptor {
+    /// Creates the stateless descriptor used to bind public search directly to native code.
     #[new]
     fn new() -> Self {
         Self
     }
 
+    /// Binds instance search to its native handle while preserving subclass method lookup.
     fn __get__(
         slf: PyRef<'_, Self>,
         instance: Option<&Bound<'_, PyAny>>,
@@ -36,6 +38,7 @@ impl SearchDescriptor {
         }
     }
 
+    /// Builds the public introspection signature without adding work to ordinary searches.
     #[getter]
     fn __signature__(&self, py: Python<'_>) -> PyResult<PyObject> {
         // Preserve the Python facade's unbound self keyword as well as the
@@ -75,6 +78,7 @@ impl SearchDescriptor {
             .unbind())
     }
 
+    /// Supports unbound class-level search calls while preserving Python self-argument errors.
     #[pyo3(signature = (*args, **kwargs))]
     fn __call__<'py>(
         &self,
@@ -137,6 +141,10 @@ impl PyIndex {
         )
     }
 
+    /// Copies query input, runs native search without the GIL, then constructs the Python result.
+    ///
+    /// Optional probes distinguish native execution, GIL return and result assembly;
+    /// normal execution uses the same search body without recording timestamps.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn search_impl<'py>(
         &self,

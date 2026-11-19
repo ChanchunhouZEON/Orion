@@ -80,9 +80,12 @@ pub mod residency {
         model::dataset::rows::{CascadeData, Rows},
         CompressedIndex, QuantizedDatasetShape,
     };
+
+    /// Benchmark-only description of inputs required to execute the selected run.
     #[derive(Debug, Clone)]
     pub struct DatasetRequirements(Vec<DatasetRequirement>);
     impl DatasetRequirements {
+        /// Validates benchmark stage choices and resolves their dataset requirements.
         pub fn from_cascade(
             prefilter: PrefilterChoice,
             admission: AdmissionChoice,
@@ -98,6 +101,8 @@ pub mod residency {
             Ok(Self(cascade.dataset_requirements()))
         }
     }
+
+    /// Builds the sidecars in the benchmark requirement list without performing page locking.
     pub fn prepare<D: Rows>(
         index: &CompressedIndex<D>,
         requirements: &DatasetRequirements,
@@ -132,6 +137,7 @@ pub mod residency {
         )
     }
 
+    /// Applies an explicit benchmark pin policy to the already prepared dataset requirements.
     pub fn pin<'a, D: CascadeData>(
         index: &'a CompressedIndex<D>,
         requirements: &DatasetRequirements,

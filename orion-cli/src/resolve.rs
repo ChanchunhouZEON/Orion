@@ -9,6 +9,9 @@ use orion_ann::execution::ResolvedRunConfig;
 use orion_ann::{execution, Error, GraphSourcePolicy, IndexOptions, Result, VectorFormat};
 
 impl Args {
+    /// Loads optional YAML and overlays explicitly supplied flags without discarding sibling settings.
+    ///
+    /// This resolves user intent only; it does not allocate an index or load vector payloads.
     pub(crate) fn index_options(&self) -> Result<IndexOptions> {
         let mut options = if let Some(path) = &self.config {
             let yaml = std::fs::read_to_string(path)
@@ -64,6 +67,7 @@ impl Args {
         Ok(options)
     }
 
+    /// Collects per-object placement overrides, rejecting repeated objects instead of silently choosing the last flag.
     pub(crate) fn object_overrides(
         &self,
     ) -> Result<std::collections::BTreeMap<orion_ann::StorageObject, orion_ann::StorageMode>> {
@@ -90,6 +94,10 @@ impl Args {
         self.resolve_with_options(beam, false, self.index_options()?)
     }
 
+    /// Combines inspected input shape with shared options and CLI-only query settings.
+    ///
+    /// Offline preflight may use an explicit shape when the base is absent. `fingerprint`
+    /// requests content hashing for cache lookup; execution defers that hash to decoding.
     pub(crate) fn resolve_with_options(
         &self,
         beam: Option<usize>,

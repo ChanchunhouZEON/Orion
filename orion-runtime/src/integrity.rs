@@ -14,16 +14,26 @@ use std::{
 };
 /// Evidence about the bytes consumed by a successful decoder on a single handle.
 pub(crate) struct Verified<T> {
+    /// Decoded value released to the caller only after verification succeeds.
     pub value: T,
+
+    /// File length checked on the same open handle used for decoding.
     pub bytes: u64,
+
+    /// SHA-256 of bytes consumed by the verified decoding stream.
     pub digest: String,
 }
 
+/// File handle that hashes bytes actually transferred through its read/write adapters.
 pub(crate) struct HashedFile {
     file: File,
     hash: Sha256,
 }
 
+/// Decodes and hashes one file handle, rejecting mismatched size, digest or trailing data.
+///
+/// The decoded value remains local until verification succeeds; a failed check
+/// drops it rather than publishing partially trusted state.
 pub(crate) fn read_verified<T>(
     path: &Path,
     role: &str,
@@ -54,6 +64,7 @@ pub(crate) fn read_verified<T>(
     })
 }
 
+/// Hashes a file through one open handle without retaining its contents in memory.
 pub(crate) fn file_sha256(path: &Path) -> Result<String> {
     let file = File::open(path).map_err(|e| Error::io("hash", path, e))?;
     Ok(hash_file(file)?.1)
@@ -78,10 +89,12 @@ pub(crate) fn hash_file(file: File) -> Result<(u64, String)> {
     Ok((bytes, source.finish().1))
 }
 
+/// Computes the lowercase SHA-256 object identity of an in-memory payload.
 pub(crate) fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// Rejects a content-identity mismatch with the affected payload role attached.
 pub(crate) fn check(role: &str, actual: &str, expected: &str) -> Result<()> {
     if actual != expected {
         return Err(Error::cache(format!("snapshot {role} SHA-256 mismatch"))
@@ -91,18 +104,22 @@ pub(crate) fn check(role: &str, actual: &str, expected: &str) -> Result<()> {
 }
 
 impl HashedFile {
+    /// Starts a fresh digest for subsequent transfers through the supplied file handle.
     pub(crate) fn new(file: File) -> Self {
         Self {
             file,
             hash: Sha256::new(),
         }
     }
+
+    /// Returns the file and digest of transferred bytes without rereading or syncing the file.
     pub(crate) fn finish(self) -> (File, String) {
         (self.file, format!("{:x}", self.hash.finalize()))
     }
 }
 
 impl Read for HashedFile {
+    /// Hashes only the bytes successfully read, including partial reads.
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         let n = self.file.read(bytes)?;
         self.hash.update(&bytes[..n]);
@@ -111,12 +128,14 @@ impl Read for HashedFile {
 }
 
 impl Write for HashedFile {
+    /// Hashes only the bytes successfully written, including partial writes.
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let n = self.file.write(bytes)?;
         self.hash.update(&bytes[..n]);
         Ok(n)
     }
 
+    /// Forwards buffered-output flushing without changing the digest or requesting durability.
     fn flush(&mut self) -> io::Result<()> {
         self.file.flush()
     }

@@ -8,12 +8,18 @@ use std::cmp::Ordering;
 /// Neighbor node with distance and visited state.
 #[derive(Debug, Clone, Copy)]
 pub struct Neighbor {
+    /// Internal graph ID associated with this candidate.
     pub id: u32,
+
+    /// Smaller-is-closer distance used for candidate ordering.
     pub distance: f32,
+
+    /// Whether this candidate has already been expanded.
     pub visited: bool,
 }
 
 impl Neighbor {
+    /// Creates an unvisited candidate with its internal node ID and ranking distance.
     pub fn new(id: u32, distance: f32) -> Self {
         Self {
             id,
@@ -24,6 +30,7 @@ impl Neighbor {
 }
 
 impl Default for Neighbor {
+    /// Creates an unvisited zero-valued placeholder for reusable candidate buffers.
     fn default() -> Self {
         Self {
             id: 0,
@@ -34,6 +41,7 @@ impl Default for Neighbor {
 }
 
 impl PartialEq for Neighbor {
+    /// Compares candidate identity by internal ID, independently of distance and visit state.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
@@ -43,6 +51,7 @@ impl PartialEq for Neighbor {
 impl Eq for Neighbor {}
 
 impl Ord for Neighbor {
+    /// Orders candidates by distance and then internal ID for deterministic beam ties.
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         let ord = self.distance.total_cmp(&other.distance);
@@ -55,6 +64,7 @@ impl Ord for Neighbor {
 }
 
 impl PartialOrd for Neighbor {
+    /// Orders candidates by distance and then internal ID for deterministic beam ties.
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))

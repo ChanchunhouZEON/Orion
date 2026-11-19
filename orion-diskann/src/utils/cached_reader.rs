@@ -11,6 +11,7 @@ use std::io::{Read, Seek};
 
 use crate::common::{ANNError, ANNResult};
 
+/// Sequential file reader with a bounded reusable byte cache.
 pub struct CachedReader {
     reader: File,
     cache_size: u64,
@@ -20,6 +21,7 @@ pub struct CachedReader {
 }
 
 impl CachedReader {
+    /// Opens the file and fills an initial cache bounded by its captured length.
     pub fn new(filename: &str, cache_size: u64) -> ANNResult<Self> {
         let mut reader = File::open(filename)?;
         let metadata = reader.metadata()?;
@@ -38,10 +40,16 @@ impl CachedReader {
         })
     }
 
+    /// Returns the file length observed when the reader was opened.
     pub fn get_file_size(&self) -> u64 {
         self.fsize
     }
 
+    /// Fills the requested output from cached bytes and sequential file reads.
+    ///
+    /// # Errors
+    ///
+    /// Rejects reads beyond the captured file length and propagates underlying I/O failures.
     pub fn read(&mut self, read_buf: &mut [u8]) -> ANNResult<()> {
         let n_bytes = read_buf.len() as u64;
         if n_bytes <= (self.cache_size - self.cur_off) {
@@ -77,6 +85,7 @@ impl CachedReader {
         Ok(())
     }
 
+    /// Consumes one little-endian u32 through the same sequential cache.
     pub fn read_u32(&mut self) -> ANNResult<u32> {
         let mut bytes = [0u8; 4];
         self.read(&mut bytes)?;

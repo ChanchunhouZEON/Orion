@@ -21,6 +21,7 @@ use super::{snapshot::Snapshot, BaseInput, Index};
 use crate::{Error, IndexOptions, Result};
 
 impl Index {
+    /// Restores optional business IDs before assembling the index generation.
     pub(super) fn load(
         input: BaseInput,
         options: IndexOptions,
@@ -30,6 +31,7 @@ impl Index {
         Self::load_with_ids(input, options, snapshot, ids)
     }
 
+    /// Assembles a normal build/restore request with an already validated ID mapping.
     pub(super) fn load_with_ids(
         input: BaseInput,
         options: IndexOptions,

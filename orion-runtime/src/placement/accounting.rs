@@ -9,6 +9,9 @@ use orion_ann_platform::{
     allocation_budget::AllocationBudget, region::RegionOptions, resources::MemoryResources,
 };
 
+/// Initializes the shared allocation ledger once using the effective resource limit.
+///
+/// `input_credit` accounts for storage already owned by the caller during this first decision.
 pub(crate) fn budget(config: &ResolvedRunConfig, input_credit: u64) -> &AllocationBudget {
     config.allocation_budget.get_or_init(|| {
         AllocationBudget::new(super::effective_limit(
@@ -19,6 +22,7 @@ pub(crate) fn budget(config: &ResolvedRunConfig, input_credit: u64) -> &Allocati
     })
 }
 
+/// Attaches a named allocation account to region options before any buffer is created.
 pub(super) fn bind(
     config: &ResolvedRunConfig,
     name: &str,
@@ -29,6 +33,7 @@ pub(super) fn bind(
     Ok(options)
 }
 
+/// Snapshots allocation-owned resident and mapped bytes for diagnostics, independently of RSS.
 pub(crate) fn report(budget: &AllocationBudget) -> serde_json::Value {
     let usage = budget.usage();
     // Only registry bookkeeping holds this lock; no user code runs under it.

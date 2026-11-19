@@ -7,7 +7,7 @@
 use orion_ann_core::{
     NaiveOrion,
     model::Neighbor,
-    model::scratch::InMemSearchScratch,
+    model::search::scratch::InMemSearchScratch,
     search::diagnostics::{MatchedStateTrace, SearchObserver},
 };
 use orion_ann_diskann::model::{CsrGraph, InmemDataset};

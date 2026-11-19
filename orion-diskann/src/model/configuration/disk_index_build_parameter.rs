@@ -11,6 +11,7 @@ use crate::common::{ANNError, ANNResult};
 const SPACE_FOR_CACHED_NODES_IN_GB: f64 = 0.25;
 const THRESHOLD_FOR_CACHING_IN_GB: f64 = 1.0;
 
+/// Search and build memory allowances for the legacy disk-index builder.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct DiskIndexBuildParameters {
     search_ram_limit: f64,
@@ -18,6 +19,7 @@ pub struct DiskIndexBuildParameters {
 }
 
 impl DiskIndexBuildParameters {
+    /// Converts GiB limits to byte budgets and rejects nonpositive search or build allowances.
     pub fn new(search_ram_limit_gb: f64, index_build_ram_limit_gb: f64) -> ANNResult<Self> {
         let param = Self {
             search_ram_limit: Self::get_memory_budget(search_ram_limit_gb),
@@ -41,14 +43,17 @@ impl DiskIndexBuildParameters {
         Ok(param)
     }
 
+    /// Returns the search payload budget in bytes after the legacy cached-node allowance.
     pub fn search_ram_limit(&self) -> f64 {
         self.search_ram_limit
     }
 
+    /// Returns the graph-build RAM budget in bytes.
     pub fn index_build_ram_limit(&self) -> f64 {
         self.index_build_ram_limit
     }
 
+    /// Converts a GiB limit to bytes, subtracting the legacy node-cache allowance when the budget permits it.
     fn get_memory_budget(mut index_ram_limit_gb: f64) -> f64 {
         if index_ram_limit_gb - SPACE_FOR_CACHED_NODES_IN_GB > THRESHOLD_FOR_CACHING_IN_GB {
             index_ram_limit_gb -= SPACE_FOR_CACHED_NODES_IN_GB;

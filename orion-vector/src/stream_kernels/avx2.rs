@@ -8,25 +8,69 @@
 use crate::DistanceKernelBackend;
 use std::arch::x86_64::*;
 
+/// Private avx2 implementation of the squared-L2 byte stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct L2U8Distance;
+
+/// Private avx2 implementation of the squared-L2 unsigned-16-bit stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct L2U16Distance;
+
+/// Private avx2 implementation of the binary Hamming stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct JLHammingDistance;
+
+/// Private avx2 implementation of the signed-byte inner-product stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct IpI8Distance;
+
+/// Private avx2 implementation of the signed-16-bit inner-product stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct IpI16Distance;
+
+/// Private avx2 implementation of the f32 inner-product stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct IpF32Distance;
+
+/// Private avx2 implementation of the f32 squared-L2 stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct L2F32Distance;
 
+/// Reduces SIMD accumulator lanes after all chunks of a row have been accumulated.
+///
+/// # Safety
+///
+/// The caller must have selected a CPU supporting this module's SIMD instructions.
 #[inline(always)]
 unsafe fn sum_i32(x: __m256i) -> i32 {
     let x = _mm_add_epi32(_mm256_castsi256_si128(x), _mm256_extracti128_si256(x, 1));
     let x = _mm_add_epi32(x, _mm_srli_si128(x, 8));
     _mm_cvtsi128_si32(_mm_add_epi32(x, _mm_srli_si128(x, 4)))
 }
+
+/// Reduces SIMD accumulator lanes after all chunks of a row have been accumulated.
+///
+/// # Safety
+///
+/// The caller must have selected a CPU supporting this module's SIMD instructions.
 #[inline(always)]
 unsafe fn sum_i64(x: __m256i) -> i64 {
     let x = _mm_add_epi64(_mm256_castsi256_si128(x), _mm256_extracti128_si256(x, 1));
     _mm_cvtsi128_si64(_mm_add_epi64(x, _mm_srli_si128(x, 8)))
 }
+
+/// Reduces SIMD accumulator lanes after all chunks of a row have been accumulated.
+///
+/// # Safety
+///
+/// The caller must have selected a CPU supporting this module's SIMD instructions.
 #[inline(always)]
 unsafe fn sum_f32(x: __m256) -> f32 {
     let x = _mm_add_ps(_mm256_castps256_ps128(x), _mm256_extractf128_ps(x, 1));
@@ -162,10 +206,20 @@ word_kernel!(
 impl DistanceKernelBackend for JLHammingDistance {
     type Storage = u8;
     type Acc = __m256i;
+
+    /// Starts a fresh per-vector accumulator for this distance kernel.
+    ///
+    /// See [`DistanceKernelBackend::init`] for the shared contract.
     #[inline(always)]
     fn init() -> Self::Acc {
         unsafe { _mm256_setzero_si256() }
     }
+
+    /// Accumulates one kernel chunk without reducing the partial distance.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`DistanceKernelBackend::step`]'s pointer, shape and lifetime contract.
     #[inline(always)]
     unsafe fn step(acc: &mut Self::Acc, a: *const u8, b: *const u8) {
         let x = _mm256_xor_si256(_mm256_loadu_si256(a.cast()), _mm256_loadu_si256(b.cast()));
@@ -180,10 +234,18 @@ impl DistanceKernelBackend for JLHammingDistance {
             _mm256_sad_epu8(_mm256_add_epi8(low, high), _mm256_setzero_si256()),
         );
     }
+
+    /// Converts the completed accumulator to a smaller-is-closer distance.
+    ///
+    /// See [`DistanceKernelBackend::reduce`] for the shared contract.
     #[inline(always)]
     fn reduce(acc: Self::Acc) -> f32 {
         unsafe { sum_i64(acc) as f32 }
     }
+
+    /// Combines independent chunk accumulators before the final reduction.
+    ///
+    /// See [`DistanceKernelBackend::merge`] for the shared contract.
     #[inline(always)]
     fn merge(into: &mut Self::Acc, src: Self::Acc) {
         unsafe {
@@ -236,6 +298,9 @@ float_kernel!(IpF32Distance, false);
 
 // Unsigned byte products widen before accumulation. No signed-byte reinterpretation
 // or saturating pairwise multiply; high-dimensional rows retain their full sum.
+/// Private avx2 implementation of the unsigned-byte inner-product stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct IpU8Distance;
 impl DistanceKernelBackend for IpU8Distance {
     type Storage = u8;
@@ -246,10 +311,20 @@ impl DistanceKernelBackend for IpU8Distance {
     } else {
         (u64::MAX / 65025) as usize
     };
+
+    /// Starts a fresh per-vector accumulator for this distance kernel.
+    ///
+    /// See [`DistanceKernelBackend::init`] for the shared contract.
     #[inline(always)]
     fn init() -> Self::Acc {
         unsafe { _mm256_setzero_si256() }
     }
+
+    /// Accumulates one kernel chunk without reducing the partial distance.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`DistanceKernelBackend::step`]'s pointer, shape and lifetime contract.
     #[inline(always)]
     unsafe fn step(acc: &mut Self::Acc, a: *const u8, b: *const u8) {
         for offset in [0, 16] {
@@ -260,10 +335,18 @@ impl DistanceKernelBackend for IpU8Distance {
             *acc = _mm256_add_epi64(*acc, _mm256_cvtepu32_epi64(_mm256_extracti128_si256(p, 1)));
         }
     }
+
+    /// Converts the completed accumulator to a smaller-is-closer distance.
+    ///
+    /// See [`DistanceKernelBackend::reduce`] for the shared contract.
     #[inline(always)]
     fn reduce(acc: Self::Acc) -> f32 {
         unsafe { -(sum_i64(acc) as u64 as f32) }
     }
+
+    /// Combines independent chunk accumulators before the final reduction.
+    ///
+    /// See [`DistanceKernelBackend::merge`] for the shared contract.
     #[inline(always)]
     fn merge(into: &mut Self::Acc, src: Self::Acc) {
         unsafe {

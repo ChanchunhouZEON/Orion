@@ -24,6 +24,7 @@ use orion_ann_vector::{DistanceKernelBackend, DistanceStream, PaddedLayout};
 
 use crate::common::AlignedBoxWithSlice;
 
+/// Owns aligned, zero-padded rows independently of the scalar's available distance kernels.
 pub struct PaddedDataset<T: Pod> {
     data: AlignedBoxWithSlice<T>,
     layout: PaddedLayout,
@@ -31,10 +32,20 @@ pub struct PaddedDataset<T: Pod> {
 }
 
 impl<T: Pod> PaddedDataset<T> {
+    /// Allocates zero-initialized resident rows using a checked scalar layout.
+    ///
+    /// # Errors
+    ///
+    /// Rejects empty shapes, element-width mismatches and failed or overflowing allocations.
     pub fn new(rows: usize, layout: PaddedLayout) -> Result<Self, String> {
         Self::new_with_storage(rows, layout, &Default::default())
     }
 
+    /// Allocates zero-padded rows under the requested placement and allocation account.
+    ///
+    /// # Errors
+    ///
+    /// Rejects shape/type mismatches and propagates allocation or mapping failures.
     pub fn new_with_storage(
         rows: usize,
         layout: PaddedLayout,
@@ -95,23 +106,51 @@ impl<T: Pod> PaddedDataset<T> {
         }
         Ok(Self { data, rows, layout })
     }
+
+    /// Transfers backing ownership without copying rows or releasing their budget charge.
     pub fn into_allocation(self) -> AlignedBoxWithSlice<T> {
         self.data
     }
 
+    /// Reports heap or mapped backing, independently of actual page residency.
     pub fn placement(&self) -> orion_ann_platform::region::Placement {
         self.data.placement()
     }
 
+    /// Flushes completed rows and requests file-page reclamation without losing ownership.
+    /// Resident rows are unchanged. Page boundaries may include adjacent rows;
+    /// callers must finish writes before requesting reclamation.
+    ///
+    /// # Errors
+    /// Rejects invalid row ranges and propagates storage/advice failures.
+    pub fn flush_and_reclaim_rows(&mut self, rows: std::ops::Range<usize>) -> std::io::Result<()> {
+        if rows.start > rows.end || rows.end > self.rows {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "row reclaim range out of bounds",
+            ));
+        }
+        let stride = self.layout.stride_bytes();
+        self.data
+            .flush_and_reclaim(rows.start * stride..rows.end * stride)
+    }
+
+    /// Returns the checked relationship between logical width and physical row stride.
     pub fn layout(&self) -> PaddedLayout {
         self.layout
     }
+
+    /// Returns logical row count, not padded scalar count.
     pub fn len(&self) -> usize {
         self.rows
     }
+
+    /// Reports whether there are no logical rows.
     pub fn is_empty(&self) -> bool {
         self.rows == 0
     }
+
+    /// Borrows the complete allocation, including zero-filled row padding.
     pub fn as_slice(&self) -> &[T] {
         &self.data
     }
@@ -122,6 +161,7 @@ impl<T: Pod> PaddedDataset<T> {
             .then(|| self.data.as_mut_slice())
     }
 
+    /// Borrows only logical coordinates, returning None for an out-of-range row ID.
     pub fn row(&self, id: usize) -> Option<&[T]> {
         if id >= self.rows {
             return None;
@@ -140,6 +180,11 @@ impl<T: Pod> PaddedDataset<T> {
         Some(&mut self.data[start..start + self.layout.logical_dim()])
     }
 
+    /// Copies one logical row without exposing or overwriting SIMD padding.
+    ///
+    /// # Errors
+    ///
+    /// Rejects wrong row width or an out-of-range row ID before copying.
     pub fn set_row(&mut self, id: usize, values: &[T]) -> Result<(), String> {
         if values.len() != self.layout.logical_dim() {
             return Err("query/vector dimension mismatch".into());
@@ -228,6 +273,7 @@ impl<T: Pod> PaddedDataset<T> {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl<T: Pod> std::fmt::Debug for PaddedDataset<T> {
+    /// Formats `rows`, `layout`, `allocated_elements` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PaddedDataset")
             .field("rows", &self.rows)

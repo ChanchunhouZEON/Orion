@@ -16,6 +16,7 @@ use crate::{
     Result,
 };
 
+/// Restores a verified graph and saved sidecars under the resolved placement policy.
 pub(super) fn restore<T: BaseElement + 'static>(
     config: &ResolvedRunConfig,
     mut data: LoadedBase<T>,

@@ -16,9 +16,12 @@ pub use orion_ann_error::{Error, ErrorCode, ErrorReport, Result};
 pub use replay::TraceReplay;
 pub use trace::*;
 
+/// Classifies a malformed trace document without logging it.
 fn invalid(message: impl Into<String>) -> Error {
     Error::invalid_data(message).at("trace")
 }
+
+/// Classifies an invalid recorder or replay request without logging it.
 fn argument(message: impl Into<String>) -> Error {
     Error::invalid_argument(message).at("trace")
 }

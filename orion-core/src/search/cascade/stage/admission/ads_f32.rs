@@ -38,6 +38,7 @@ pub struct AdsF32Admission<'a, const N: usize> {
 }
 
 impl<'a, const N: usize> AdsF32Admission<'a, N> {
+    /// Binds the dataset to this stage; query encoding is deferred until the stage is opened.
     #[inline]
     pub fn new(dataset: &'a InmemDataset<f32, N>, ads_epsilon: f32) -> Self {
         assert!(N > 0, "stage dimension must be positive");
@@ -62,6 +63,9 @@ unsafe impl<'a, const N: usize> AdmissionStage for AdsF32Admission<'a, N>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
+    /// Identifies the precision used to validate cascade ordering.
+    ///
+    /// See [`AdmissionStage::precision`] for the shared contract.
     fn precision(
         &self,
     ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
@@ -69,9 +73,16 @@ where
         Some(P::Exact)
     }
 
+    /// Describes the base shape required by this admission representation.
+    ///
+    /// See [`AdmissionStage::shape`] for the shared contract.
     fn shape(&self) -> Option<(usize, usize)> {
         Some((N, self.dataset.num_active_pts))
     }
+
+    /// Prepares the query state consumed by this admission stage.
+    ///
+    /// See [`AdmissionStage::open`] for the shared contract.
     #[inline]
     fn open<'b>(&'b self, q: &[f32]) -> Box<dyn AdmissionSession + 'b> {
         assert_eq!(q.len(), N);
@@ -99,6 +110,9 @@ unsafe impl<'a, const N: usize> AdmissionSession for AdsF32Session<'a, N>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
+    /// Scores the entry node in the admission distance domain.
+    ///
+    /// See [`AdmissionSession::entry_distance`] for the shared contract.
     #[inline]
     fn entry_distance(&self, vid: u32) -> f32 {
         assert!((vid as usize) < self.dataset.num_active_pts);
@@ -111,6 +125,11 @@ where
         }
     }
 
+    /// Scores candidates and compacts qualifying neighbors into caller-owned output.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`AdmissionSession::admit_stream`]'s pointer, shape and lifetime contract.
     #[inline]
     unsafe fn admit_stream(
         &self,
@@ -164,6 +183,7 @@ pub struct DynamicAdsF32Admission<'a> {
     epsilon: f32,
 }
 impl<'a> DynamicAdsF32Admission<'a> {
+    /// Binds the dataset to this stage; query encoding is deferred until the stage is opened.
     pub fn new(dataset: &'a orion_ann_diskann::model::PaddedDataset<f32>, epsilon: f32) -> Self {
         Self { dataset, epsilon }
     }
@@ -171,6 +191,9 @@ impl<'a> DynamicAdsF32Admission<'a> {
 // SAFETY: shape describes the borrowed base; sessions own checked query storage
 // and cannot outlive that base.
 unsafe impl AdmissionStage for DynamicAdsF32Admission<'_> {
+    /// Identifies the precision used to validate cascade ordering.
+    ///
+    /// See [`AdmissionStage::precision`] for the shared contract.
     fn precision(
         &self,
     ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
@@ -178,9 +201,16 @@ unsafe impl AdmissionStage for DynamicAdsF32Admission<'_> {
         Some(P::Exact)
     }
 
+    /// Describes the base shape required by this admission representation.
+    ///
+    /// See [`AdmissionStage::shape`] for the shared contract.
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.dataset.layout().logical_dim(), self.dataset.len()))
     }
+
+    /// Prepares the query state consumed by this admission stage.
+    ///
+    /// See [`AdmissionStage::open`] for the shared contract.
     fn open<'b>(&'b self, q: &[f32]) -> Box<dyn AdmissionSession + 'b> {
         assert_eq!(q.len(), self.dataset.layout().logical_dim());
         Box::new(DynamicAdsSession {
@@ -190,6 +220,8 @@ unsafe impl AdmissionStage for DynamicAdsF32Admission<'_> {
         })
     }
 }
+
+/// Query-local state for benchmark-only adaptive distance sampling.
 struct DynamicAdsSession<'a> {
     dataset: &'a orion_ann_diskann::model::PaddedDataset<f32>,
     query: Vec<f32>,
@@ -198,9 +230,18 @@ struct DynamicAdsSession<'a> {
 // SAFETY: streams retain input IDs, write only within the input-sized output
 // region, and return the initialized compacted prefix length.
 unsafe impl AdmissionSession for DynamicAdsSession<'_> {
+    /// Scores the entry node in the admission distance domain.
+    ///
+    /// See [`AdmissionSession::entry_distance`] for the shared contract.
     fn entry_distance(&self, id: u32) -> f32 {
         orion_ann_vector::distance_l2_slice_f32(&self.query, self.dataset.row(id as usize).unwrap())
     }
+
+    /// Scores candidates and compacts qualifying neighbors into caller-owned output.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`AdmissionSession::admit_stream`]'s pointer, shape and lifetime contract.
     unsafe fn admit_stream(&self, ids: &[u32], out: *mut Neighbor, cutoff: f32, _: usize) -> usize {
         let prefetch = |id: u32| {
             let row = self.dataset.row(id as usize).unwrap();
@@ -231,6 +272,7 @@ unsafe impl AdmissionSession for DynamicAdsSession<'_> {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl<'a, const N: usize> std::fmt::Debug for AdsF32Admission<'a, N> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AdsF32Admission")
             .field("dimension", &(N))
@@ -240,6 +282,7 @@ impl<'a, const N: usize> std::fmt::Debug for AdsF32Admission<'a, N> {
 }
 
 impl<'a, const N: usize> std::fmt::Debug for AdsF32Session<'a, N> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AdsF32Session")
             .field("dimension", &(N))
@@ -249,6 +292,7 @@ impl<'a, const N: usize> std::fmt::Debug for AdsF32Session<'a, N> {
 }
 
 impl std::fmt::Debug for DynamicAdsF32Admission<'_> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DynamicAdsF32Admission")
             .field("dimension", &self.dataset.layout().logical_dim())

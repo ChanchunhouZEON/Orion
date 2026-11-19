@@ -7,10 +7,19 @@
 /// convergence switching/early exit; they are not calibrated parameters.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DynamicSearchConfig {
+    /// Maximum returned neighbors per query.
     pub k: usize,
+
+    /// Candidate beam capacity, which must be at least k.
     pub search_list_size: usize,
+
+    /// Number of recent admission observations used by convergence detection.
     pub window_size: usize,
+
+    /// Admission-rate convergence threshold; zero disables the transition.
     pub epsilon: f32,
+
+    /// Bound used by the converged-phase early-exit checker.
     pub early_exit_limit: usize,
     /// Maximum batch size executed serially on the caller. One row is always
     /// serial; larger batches use Rayon. Runtime sets this explicitly before bypassing its pool,
@@ -18,6 +27,7 @@ pub struct DynamicSearchConfig {
     pub serial_batch_limit: usize,
 }
 impl Default for DynamicSearchConfig {
+    /// Selects uncalibrated controls with adaptive convergence and early exit disabled.
     fn default() -> Self {
         Self {
             k: 10,
@@ -31,6 +41,7 @@ impl Default for DynamicSearchConfig {
 }
 
 impl DynamicSearchConfig {
+    /// Checks result width, beam, convergence-window bounds and finite threshold values.
     pub(crate) fn validate(self, points: usize) -> crate::Result<()> {
         if self.k == 0
             || self.k > points

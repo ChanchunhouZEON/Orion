@@ -10,13 +10,23 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Calibration for a specific index, cascade and top-k; included in snapshots.
 pub struct Calibration {
+    /// Result count for which the adaptive parameters were measured.
     pub k: usize,
+
+    /// Beam capacity used during calibration, not a forced capacity for later searches.
     pub search_list_size: usize,
+
+    /// Number of query rows used to estimate these parameters.
     pub samples: usize,
+
+    /// Admission-rate threshold controlling the transition to converged traversal.
     pub threshold: f32,
+
+    /// Calibrated bound used by the converged search early-exit rule.
     pub early_exit_limit: usize,
 }
 impl Calibration {
+    /// Copies only the adaptive controls consumed by the core search loop.
     pub(super) fn params(&self) -> orion_ann_core::CalibratedParams {
         orion_ann_core::CalibratedParams {
             threshold: self.threshold,

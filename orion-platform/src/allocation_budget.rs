@@ -15,6 +15,7 @@ use std::{
     },
 };
 
+/// Shared allocation limit and aggregate counters keyed by managed object identity.
 #[derive(Debug)]
 struct State {
     limit: Option<u64>,
@@ -22,6 +23,8 @@ struct State {
     mapped: AtomicU64,
     objects: Mutex<BTreeMap<String, Arc<Counters>>>,
 }
+
+/// Resident and mapped payload totals for one named allocation account.
 #[derive(Debug, Default)]
 struct Counters {
     resident: AtomicU64,
@@ -38,6 +41,7 @@ pub struct AllocationAccount {
     counters: Arc<Counters>,
 }
 impl PartialEq for AllocationAccount {
+    /// Compares account identity, not current usage or the textual object name.
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.counters, &other.counters)
     }
@@ -55,11 +59,20 @@ pub(crate) struct AllocationLease {
 /// Observational totals. Concurrent operations can change counts between reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AllocationUsage {
+    /// Managed heap payload currently charged to this domain; not measured RSS.
     pub resident_bytes: u64,
+
+    /// Managed mapping spans currently owned, independently of page-cache residency.
     pub mapped_bytes: u64,
+
+    /// Optional ceiling on resident payload charges; mapped spans are not capped here.
     pub limit_bytes: Option<u64>,
 }
 impl AllocationBudget {
+    /// Creates an empty shared payload budget with an optional resident-byte ceiling.
+    ///
+    /// Mapped spans are tracked separately. This is allocation accounting, not an
+    /// operating-system RSS limit, and construction allocates no payload storage.
     pub fn new(limit_bytes: Option<u64>) -> Self {
         Self(Arc::new(State {
             limit: limit_bytes,
@@ -81,6 +94,10 @@ impl AllocationBudget {
             counters,
         })
     }
+
+    /// Samples resident and mapped counters without locking or inspecting payloads.
+    ///
+    /// Concurrent allocations can change the counters between individual reads.
     pub fn usage(&self) -> AllocationUsage {
         AllocationUsage {
             resident_bytes: self.0.resident.load(Ordering::Acquire),
@@ -115,6 +132,10 @@ impl AllocationBudget {
     }
 }
 impl AllocationAccount {
+    /// Atomically charges a pending allocation before touching the allocator.
+    ///
+    /// A failed reservation rolls back its partial charge. The returned lease must
+    /// outlive the backing it accounts for and be dropped after that backing is freed.
     pub(crate) fn reserve(
         &self,
         bytes: usize,
@@ -166,11 +187,13 @@ impl AllocationAccount {
     }
 }
 impl AllocationLease {
+    /// Borrows the named account retained by this allocation lease.
     pub(crate) fn account(&self) -> &AllocationAccount {
         &self.account
     }
 }
 impl Drop for AllocationLease {
+    /// Releases this allocation's object and domain charges after its backing has been freed.
     fn drop(&mut self) {
         self.account
             .counters

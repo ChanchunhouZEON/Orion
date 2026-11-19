@@ -58,6 +58,7 @@ pub(crate) fn check_index_budget(
     enforce_budget(&calculate_memory(config, input)?)
 }
 
+/// Checks known memory bounds using the graph source already selected for this load.
 pub(crate) fn check_selected_budget(
     config: &ResolvedRunConfig,
     points: usize,
@@ -67,12 +68,16 @@ pub(crate) fn check_selected_budget(
     enforce_budget(&calculate_memory(config, input)?)
 }
 
+/// Logs the resolved memory report and rejects a known over-budget allocation before execution.
 pub fn check_memory_budget(config: &ResolvedRunConfig, num_points: usize) -> Result<()> {
     let report = estimate_resident_memory(config, num_points)?;
     log::info!("Resource preflight:\n{}", format_report(&report));
     enforce_budget(&report)
 }
 
+/// Converts an exceeded preflight bound into a resource error carrying the component report.
+///
+/// A successful check covers known payloads only; it does not guarantee peak RSS or disk quota.
 pub fn enforce_budget(report: &serde_json::Value) -> Result<()> {
     if report["budget_exceeded"].as_bool() == Some(true) {
         return Err(Error::new(

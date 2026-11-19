@@ -9,9 +9,16 @@
 /// Host memory, deployment headroom and process lock allowance, all in bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MemoryResources {
+    /// Detected physical memory size, absent when the platform cannot report it.
     pub total_bytes: Option<u64>,
+
+    /// Detected currently available memory estimate, not a reservation.
     pub available_bytes: Option<u64>,
+
+    /// Detected page-lock limit, absent when unknown or unbounded.
     pub lock_limit_bytes: Option<u64>,
+
+    /// Detected bytes currently locked by the process, when available.
     pub locked_bytes: Option<u64>,
 }
 

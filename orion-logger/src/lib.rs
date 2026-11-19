@@ -27,6 +27,7 @@ pub fn init_logger() {
     });
 }
 
+/// Compatibility error type for callers of the logging facade.
 #[derive(thiserror::Error, Debug)]
 pub enum LogError {
     #[error("Logging error: {0}")]

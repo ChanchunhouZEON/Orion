@@ -16,6 +16,7 @@ members = [
     "orion-parlay",
     "orion-py",
     "orion-platform",
+    "orion-ssd",
     "orion-vector",
 ]
 # Python is built explicitly (or with maturin); ordinary Rust workspace builds
@@ -33,6 +34,7 @@ default-members = [
     "orion-wasm",
     "orion-parlay",
     "orion-platform",
+    "orion-ssd",
     "orion-vector",
 ]
 resolver = "2"

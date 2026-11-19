@@ -13,6 +13,44 @@ unreleased development baseline, not a dated release announcement.
 
 ## Unreleased
 
+### Experimental storage
+
+- Add opt-in, owner-checked file-page reclamation on Linux and macOS. Completed
+  private mapped/file output is synchronously written back before invalidation;
+  shared views and allocation leases retain their original lifetime. Accepted
+  advice is not advertised as a hard RSS guarantee.
+- Enable bounded 32 MiB writeback/reclaim checkpoints for the storage experiment's
+  base, graph and sidecar loading. Preserve warmup and all timed SIMD/prefetch
+  paths. Production cache policy remains unchanged by default.
+- Bound graph payload reads to 8 MiB, record preparation memory phases and provide
+  isolated load-only validation. Exclude telemetry from query summaries so one
+  completed measurement cannot abort later arms with a missing-schema error.
+
+- Keep `StorageGraph` alongside `PhasedGraph` in the model layer, with an internal
+  graph-access contract. A separate `SearchDriver` owns suspendable query
+  execution; graph models no longer depend on traversal modules.
+
+- Add a lease-aware bounded page cache with coalesced misses, LRU eviction and
+  separately accounted cross-page assembly buffers.
+- Share graph traversal between resident reads and suspendable SSD graph reads;
+  preserve distance sessions, SIMD streams, partition order and prefetch policy.
+- Validate page lifetime, cancellation, failed-load recovery and exact search
+  parity against the previous resident loop. SSD graph search remains experimental.
+
+
+### Unified object reads (experimental)
+
+- Add runtime-independent `ReadRequest`, `ReadLease` and `ObjectReader` contracts
+  for existing resident and mapped regions, with immediate zero-copy borrowed
+  reads, explicit shared ownership, and checked typed views.
+- Add the unpublished `orion-ann-ssd` foundation with bounded Tokio-driven
+  positioned file reads. Running I/O retains its buffer and in-flight permit
+  after caller cancellation; allocation accounting follows the returned backing.
+- Preserve existing search SIMD and prefetch paths. Explicit asynchronous reads
+  currently cover graph records; base and sidecars still use synchronous mappings.
+  Direct I/O, io_uring and object authentication are not part of this foundation.
+
+
 ### Object placement and allocation accounting
 
 - Add per-object resident, mapped and automatic placement overrides across Rust,

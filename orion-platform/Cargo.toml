@@ -11,7 +11,7 @@ description = "Aligned I/O, block writes and memory support for Orion ANN"
 readme = "README.md"
 keywords = ["ann", "vector-search", "similarity"]
 categories = ["algorithms"]
-include = ["src/**", "tests/**", "configs/**", "Cargo.toml", "README.md", "LICENSE"]
+include = ["src/**", "tests/**", "examples/**", "configs/**", "Cargo.toml", "README.md", "LICENSE"]
 edition = "2021"
 
 [dependencies]

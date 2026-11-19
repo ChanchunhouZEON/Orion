@@ -12,6 +12,7 @@ use crate::{Error, Result};
 use orion_ann_platform::region::Placement;
 use std::collections::BTreeMap;
 
+/// Preparation-time access priority; higher variants receive automatic residency first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Frequency {
     Cold,
@@ -21,11 +22,21 @@ pub(super) enum Frequency {
     Graph,
 }
 
+/// Placement forecast and totals, with no ownership of actual allocations.
 pub(super) struct Selection {
+    /// Decisions ordered by placement priority for reporting.
     pub objects: Vec<ObjectDecision>,
+
+    /// User overrides for representations absent from this preparation phase.
     pub inactive_overrides: Vec<StorageObject>,
+
+    /// Internal object keys mapped to resolved backing modes.
     pub placements: BTreeMap<&'static str, Placement>,
+
+    /// Total forecast resident payload bytes, excluding the separately supplied fixed overhead.
     pub resident: u64,
+
+    /// Total mapped payload span; the OS decides which of these pages occupy RAM.
     pub mapped: u64,
 }
 

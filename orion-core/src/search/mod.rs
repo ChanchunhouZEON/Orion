@@ -31,6 +31,8 @@ static INCLUDE_EXTRAS: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 pub fn set_include_extras(value: bool) {
     INCLUDE_EXTRAS.store(value, std::sync::atomic::Ordering::Relaxed);
 }
+
+/// Reports whether search may inspect extra neighbors; production always enables them.
 #[inline]
 pub(crate) fn include_extras() -> bool {
     #[cfg(feature = "benchmark")]
@@ -63,3 +65,7 @@ pub mod adaptive;
 pub mod diagnostics;
 #[cfg(feature = "benchmark")]
 pub use diagnostics::SearchProfile;
+
+/// Experimental explicit-storage graph traversal; ordinary search stays synchronous.
+#[cfg(feature = "experimental-storage")]
+pub mod storage;

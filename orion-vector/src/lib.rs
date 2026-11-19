@@ -423,6 +423,9 @@ mod distance_test {
     }
 }
 
+mod base_scalar;
+pub use base_scalar::BaseScalar;
+
 mod padded_layout;
 pub use padded_layout::PaddedLayout;
 

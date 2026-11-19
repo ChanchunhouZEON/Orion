@@ -26,20 +26,46 @@ pub const SECTOR_LEN: usize = 4096;
 pub const MAX_N_SECTOR_READS: usize = 128;
 pub const QUERY_ALIGNMENT_OF_T_SIZE: usize = 16;
 
+/// Per-query visited, candidate and pruning workspaces reused across searches.
 #[derive(Debug)]
 pub struct InMemQueryScratch<T, const N: usize> {
+    /// Beam capacity for which this scratch instance was initialized.
     pub candidate_size: u32,
+
+    /// Maximum number of navigation neighbors retained per node.
     pub max_degree: u32,
+
+    /// Maximum candidate count considered by occlusion pruning.
     pub max_occlusion_size: u32,
+
+    /// Aligned reusable query coordinates.
     pub query: AlignedBoxWithSlice<T>,
+
+    /// Distance-ordered search beam with its expansion cursor.
     pub best_candidates: NeighborPriorityQueue,
+
+    /// Per-candidate pruning factors reused during robust pruning.
     pub occlude_factor: Vec<f32>,
+
+    /// Reusable internal IDs for a candidate batch.
     pub id_scratch: Vec<u32>,
+
+    /// Distances corresponding to the current candidate ID batch.
     pub dist_scratch: Vec<f32>,
+
+    /// Optional PQ-specific workspaces, absent for full-precision evaluation.
     pub pq_scratch: Option<Box<PQScratch>>,
+
+    /// IDs retained while collecting expanded construction candidates.
     pub expanded_nodes_set: HashSet<u32>,
+
+    /// Candidate records collected from graph expansion.
     pub expanded_neighbors_vector: Vec<Neighbor>,
+
+    /// Neighbor IDs retained after occlusion pruning.
     pub occlude_list_output: Vec<u32>,
+
+    /// Query-local membership set preventing repeated node discovery.
     pub node_visited_robinset: HashSet<u32>,
 
     /// Local buffer for (anchor_id, pruned_id) pairs accumulated in `occlude_list`.
@@ -49,6 +75,9 @@ pub struct InMemQueryScratch<T, const N: usize> {
 }
 
 impl<T: Default + Copy, const N: usize> InMemQueryScratch<T, N> {
+    /// Allocates reusable beam, visited-set, query and optional PQ buffers for construction or search.
+    ///
+    /// Zero capacities and invalid dimensions are rejected before allocation.
     pub fn new(
         search_candidate_size: u32,
         index_write_parameter: &IndexWriteParameters,
@@ -108,6 +137,7 @@ impl<T: Default + Copy, const N: usize> InMemQueryScratch<T, N> {
         Ok(scratch)
     }
 
+    /// Expands reusable query capacity for a larger candidate horizon without clearing current contents.
     pub fn resize_for_new_candidate_size(&mut self, new_candidate_size: u32) {
         if new_candidate_size > self.candidate_size {
             let delta = new_candidate_size - self.candidate_size;
@@ -119,6 +149,7 @@ impl<T: Default + Copy, const N: usize> InMemQueryScratch<T, N> {
 }
 
 impl<T: Default + Copy, const N: usize> Scratch for InMemQueryScratch<T, N> {
+    /// Clears per-query state while retaining allocated scratch capacity for reuse.
     fn clear(&mut self) {
         self.best_candidates.clear();
         self.occlude_factor.clear();

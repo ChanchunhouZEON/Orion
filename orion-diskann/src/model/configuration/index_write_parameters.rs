@@ -19,20 +19,39 @@ pub mod default_param_vals {
     pub const SEARCH_LIST_SIZE: u32 = 100;
 }
 
+/// Resolved graph construction controls, including pruning, capacity and workers.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct IndexWriteParameters {
+    /// Construction beam capacity used to gather pruning candidates.
     pub search_list_size: u32,
+
+    /// Maximum number of navigation neighbors retained per node.
     pub max_degree: u32,
+
+    /// Whether pruning fills remaining degree capacity with additional candidates.
     pub saturate_graph: bool,
+
+    /// Maximum candidate count considered by occlusion pruning.
     pub max_occlusion_size: u32,
+
+    /// Robust-pruning relaxation factor.
     pub alpha: f32,
+
+    /// Number of graph refinement passes requested from the builder.
     pub num_rounds: u32,
+
+    /// Worker count requested for graph construction.
     pub num_threads: u32,
+
+    /// Reserved frozen vertices used by the legacy builder.
     pub num_frozen_points: u32,
+
+    /// Whether construction retains candidate sets for downstream extraction.
     pub compute_candidate_sets: bool,
 }
 
 impl Default for IndexWriteParameters {
+    /// Selects the legacy DiskANN build defaults without enabling candidate-set capture.
     fn default() -> Self {
         Self {
             search_list_size: default_param_vals::SEARCH_LIST_SIZE,
@@ -48,6 +67,7 @@ impl Default for IndexWriteParameters {
     }
 }
 
+/// Collects overrides before resolving graph construction defaults.
 #[derive(Debug)]
 pub struct IndexWriteParametersBuilder {
     search_list_size: u32,
@@ -62,6 +82,7 @@ pub struct IndexWriteParametersBuilder {
 }
 
 impl IndexWriteParametersBuilder {
+    /// Starts build-parameter configuration with required beam width and degree; other fields use defaults at build.
     pub fn new(search_list_size: u32, max_degree: u32) -> Self {
         Self {
             search_list_size,
@@ -76,41 +97,49 @@ impl IndexWriteParametersBuilder {
         }
     }
 
+    /// Sets the candidate horizon considered by robust pruning.
     pub fn with_max_occlusion_size(mut self, max_occlusion_size: u32) -> Self {
         self.max_occlusion_size = Some(max_occlusion_size);
         self
     }
 
+    /// Controls whether pruning fills unused degree with remaining candidates.
     pub fn with_saturate_graph(mut self, saturate_graph: bool) -> Self {
         self.saturate_graph = Some(saturate_graph);
         self
     }
 
+    /// Sets the occlusion relaxation factor used during graph pruning.
     pub fn with_alpha(mut self, alpha: f32) -> Self {
         self.alpha = Some(alpha);
         self
     }
 
+    /// Sets the number of graph-construction refinement rounds.
     pub fn with_num_rounds(mut self, num_rounds: u32) -> Self {
         self.num_rounds = Some(num_rounds);
         self
     }
 
+    /// Sets the worker count used by the legacy construction path.
     pub fn with_num_threads(mut self, num_threads: u32) -> Self {
         self.num_threads = Some(num_threads);
         self
     }
 
+    /// Sets the number of reserved frozen graph seeds.
     pub fn with_num_frozen_points(mut self, num_frozen_points: u32) -> Self {
         self.num_frozen_points = Some(num_frozen_points);
         self
     }
 
+    /// Enables capture of pruned candidates for later Orion partition construction.
     pub fn with_compute_candidate_sets(mut self, compute: bool) -> Self {
         self.compute_candidate_sets = Some(compute);
         self
     }
 
+    /// Materializes the parameter record, filling unspecified fields from the legacy defaults.
     pub fn build(self) -> IndexWriteParameters {
         IndexWriteParameters {
             search_list_size: self.search_list_size,
@@ -133,6 +162,7 @@ impl IndexWriteParametersBuilder {
 }
 
 impl From<IndexWriteParameters> for IndexWriteParametersBuilder {
+    /// Seeds an editable builder with every value from existing write parameters.
     fn from(param: IndexWriteParameters) -> Self {
         Self {
             search_list_size: param.search_list_size,

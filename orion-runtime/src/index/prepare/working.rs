@@ -18,6 +18,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
+/// Builds or loads a working graph and binds immutable provenance and sidecar receipts.
 pub(super) fn prepare<T: BaseElement + 'static>(
     config: &ResolvedRunConfig,
     mut data: LoadedBase<T>,

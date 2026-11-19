@@ -11,11 +11,13 @@ use std::{
     sync::{Arc, Mutex, RwLock},
 };
 
+/// Publishes immutable label generations while serializing conflicting writers.
 pub(crate) struct LabelStore {
     writer: Mutex<()>,
     current: RwLock<Arc<LabelSnapshot>>,
 }
 impl LabelStore {
+    /// Creates an empty revision-zero label generation bound to a row identity space.
     pub fn empty(identity: String, points: usize) -> Self {
         Self::from_snapshot(LabelSnapshot {
             identity,
@@ -24,18 +26,27 @@ impl LabelStore {
             labels: BTreeMap::new(),
         })
     }
+
+    /// Installs a previously validated label generation as the initial published state.
     pub fn from_snapshot(snapshot: LabelSnapshot) -> Self {
         Self {
             writer: Mutex::new(()),
             current: RwLock::new(Arc::new(snapshot)),
         }
     }
+
+    /// Captures one immutable label revision under a short publication read lock.
     pub fn snapshot(&self) -> Result<Arc<LabelSnapshot>> {
         self.current
             .read()
             .map(|s| Arc::clone(&s))
             .map_err(|_| Error::invalid_state("label publication lock is poisoned"))
     }
+
+    /// Validates and publishes a whole label batch against an expected revision.
+    ///
+    /// Failures leave the current generation unchanged. A no-op batch retains its
+    /// revision, and readers already holding the old generation continue to use it.
     pub fn update(&self, expected: u64, changes: &[LabelUpdate]) -> Result<u64> {
         let _writer = self
             .writer

@@ -16,7 +16,7 @@ use crate::PhasedGraph;
 /// use orion_ann_core::PhasedGraph;
 /// ```
 /// ```compile_fail
-/// use orion_ann_core::model::phased_graph::PhasedGraph;
+/// use orion_ann_core::model::graph::phased_graph::PhasedGraph;
 /// ```
 /// Nor can callers obtain mutable storage through the owning index:
 /// ```compile_fail
@@ -33,10 +33,12 @@ pub struct GraphView<'a> {
 }
 
 impl<'a> GraphView<'a> {
+    /// Reports the backing placement of the graph viewed through this read-only facade.
     pub fn placement(&self) -> orion_ann_platform::region::Placement {
         self.graph.placement()
     }
 
+    /// Asserts that a requested internal node ID belongs to this graph view.
     fn check_node(&self, node: usize) {
         assert!(node < self.graph.num_nodes(), "graph node ID out of range");
     }

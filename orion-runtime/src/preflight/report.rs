@@ -32,6 +32,7 @@ pub fn print_report(
     Ok(())
 }
 
+/// Formats byte counts in binary units while keeping small buffers visible.
 fn memory_size(bytes: u64) -> String {
     // Small query buffers should not disappear as rounded `0.000 GiB` values.
     for (unit, scale) in [
@@ -47,6 +48,9 @@ fn memory_size(bytes: u64) -> String {
     format!("{bytes} B")
 }
 
+/// Renders a preflight report as tables with placement choices, assumptions and unestimated memory.
+///
+/// This is presentation only; it neither enforces the budget nor probes resources.
 pub fn format_report(report: &serde_json::Value) -> String {
     use comfy_table::{presets::UTF8_FULL, Cell, CellAlignment, ContentArrangement, Table};
     let value = |key: &str| {

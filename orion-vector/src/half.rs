@@ -20,34 +20,40 @@ unsafe impl Pod for Half {}
 unsafe impl Zeroable for Half {}
 
 impl From<Half> for f32 {
+    /// Widens a stored half-precision value to f32.
     fn from(val: Half) -> Self {
         val.0.to_f32()
     }
 }
 
 impl AsRef<f16> for Half {
+    /// Borrows the underlying IEEE half value without conversion.
     fn as_ref(&self) -> &f16 {
         &self.0
     }
 }
 
 impl Half {
+    /// Rounds an f32 value to the stored IEEE half representation.
     pub fn from_f32(value: f32) -> Self {
         Self(f16::from_f32(value))
     }
 
+    /// Widens the stored half value for floating-point computation.
     pub fn to_f32(&self) -> f32 {
         self.0.to_f32()
     }
 }
 
 impl Default for Half {
+    /// Creates a zero-valued half scalar.
     fn default() -> Self {
         Self(f16::from_f32(Default::default()))
     }
 }
 
 impl Clone for Half {
+    /// Copies the half scalar without allocating.
     fn clone(&self) -> Self {
         *self
     }
@@ -56,6 +62,7 @@ impl Clone for Half {
 impl Copy for Half {}
 
 impl fmt::Debug for Half {
+    /// Formats the scalar with its half-precision type wrapper.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Half({:?})", self.0)
     }

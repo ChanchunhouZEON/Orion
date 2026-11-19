@@ -24,6 +24,11 @@
 
 use std::arch::x86_64::*;
 
+/// Reduces SIMD accumulator lanes after all chunks of a row have been accumulated.
+///
+/// # Safety
+///
+/// The caller must have selected a CPU supporting this module's SIMD instructions.
 #[inline(always)]
 unsafe fn reduce_add_epi32(v: __m512i) -> i32 {
     _mm512_reduce_add_epi32(v)

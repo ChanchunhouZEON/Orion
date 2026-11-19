@@ -7,6 +7,7 @@
 use super::rows::Rows;
 use crate::{Error, Result};
 
+/// Multiplies allocation dimensions while rejecting overflow and unaddressable spans.
 pub(super) fn product(a: usize, b: usize) -> Result<usize> {
     a.checked_mul(b)
         .filter(|&n| n <= isize::MAX as usize)
@@ -32,6 +33,7 @@ pub(super) fn file_length(actual: u64, header: usize, parts: &[(usize, usize)]) 
     Ok(())
 }
 
+/// Rejects empty or unrepresentable dataset shapes before sidecar allocation.
 pub(super) fn shape(rows: usize, dimension: usize, max_dimension: usize) -> Result<()> {
     if rows == 0
         || rows > u32::MAX as usize
@@ -48,6 +50,7 @@ pub(super) fn shape(rows: usize, dimension: usize, max_dimension: usize) -> Resu
     Ok(())
 }
 
+/// Rejects encoding scales whose value or square is nonpositive or non-finite.
 pub(super) fn positive_scale(scale: f32) -> Result<()> {
     let square = scale * scale;
     if !scale.is_finite() || scale <= 0. || !square.is_finite() || square == 0. {
@@ -58,6 +61,7 @@ pub(super) fn positive_scale(scale: f32) -> Result<()> {
     Ok(())
 }
 
+/// Checks model parameters for non-finite values and optional nonnegativity.
 pub(super) fn finite(values: &[f32], nonnegative: bool) -> Result<()> {
     if values
         .iter()
@@ -80,6 +84,7 @@ pub(super) struct CheckedRows<'a, D> {
     range: (f32, f32),
 }
 impl<'a, D: Rows> CheckedRows<'a, D> {
+    /// Validates every logical row and computes a trusted coordinate range for sidecar fitting.
     pub(super) fn new(data: &'a D, max_dimension: usize) -> Result<Self> {
         let dimension = data.dimension();
         let rows = data.len();
@@ -114,12 +119,17 @@ impl<'a, D: Rows> CheckedRows<'a, D> {
     }
 }
 impl<D: Rows> Rows for CheckedRows<'_, D> {
+    /// Reports logical coordinates per row, excluding storage padding.
     fn dimension(&self) -> usize {
         self.dimension
     }
+
+    /// Reports logical rows available to sidecar fitting.
     fn len(&self) -> usize {
         self.rows
     }
+
+    /// Replaces caller scratch with one logical row in f32 representation.
     fn copy_row_f32(&self, id: usize, output: &mut Vec<f32>) {
         self.data.copy_row_f32(id, output);
         assert_eq!(
@@ -128,9 +138,13 @@ impl<D: Rows> Rows for CheckedRows<'_, D> {
             "row provider changed shape during construction"
         );
     }
+
+    /// Returns the validated coordinate range used to fit quantizers.
     fn range(&self) -> (f32, f32) {
         self.range
     }
+
+    /// Borrows a logical f32 row or converts it into reusable caller scratch.
     fn row_f32<'a>(&'a self, id: usize, scratch: &'a mut Vec<f32>) -> &'a [f32] {
         let row = self.data.row_f32(id, scratch);
         // A custom row provider can change between calls. Never let a shorter

@@ -50,6 +50,7 @@ pub fn validate_search_list_sizes(k: usize, values: &[usize]) -> Result<()> {
     Ok(())
 }
 
+/// Checks that evaluation input supplies the requested query rows and at least k IDs per row.
 pub fn validate_ground_truth(gt: &[Vec<u32>], queries: usize, k: usize) -> Result<()> {
     if k == 0 || queries == 0 || gt.len() < queries || gt[..queries].iter().any(|row| row.len() < k)
     {
@@ -140,6 +141,7 @@ pub fn set_thread_qos_user_interactive() {
     }
 }
 
+/// Leaves thread priority unchanged on platforms without the macOS QoS implementation.
 #[cfg(not(target_os = "macos"))]
 #[inline]
 #[cfg(feature = "benchmark")]
@@ -172,6 +174,7 @@ pub fn mlock_bytes(label: &str, ptr: *const u8, len: usize) {
     }
 }
 
+/// Leaves memory pageable on targets without the platform-specific benchmark locking implementation.
 #[cfg(not(unix))]
 #[inline]
 pub fn mlock_bytes(_label: &str, _ptr: *const u8, _len: usize) {}

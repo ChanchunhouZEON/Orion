@@ -6,17 +6,22 @@
 /// Trait for on-demand vector access, enabling both in-memory slices and
 /// mmap-backed storage to be used interchangeably in search algorithms.
 pub trait VectorStorage<T: Copy, const N: usize> {
+    /// Returns one owned fixed-width vector by internal ID. Implementations may panic for an invalid ID.
     fn get_vector(&self, id: u32) -> [T; N];
+
+    /// Returns the number of vectors addressable through this storage view.
     fn num_vectors(&self) -> usize;
 }
 
 /// Blanket impl for contiguous slices — ensures backward compatibility.
 impl<T: Copy, const N: usize> VectorStorage<T, N> for [[T; N]] {
+    /// Copies one fixed-width vector by internal ID. Out-of-range IDs panic.
     #[inline(always)]
     fn get_vector(&self, id: u32) -> [T; N] {
         self[id as usize]
     }
 
+    /// Reports the number of addressable vectors in this storage.
     #[inline(always)]
     fn num_vectors(&self) -> usize {
         self.len()
@@ -26,11 +31,13 @@ impl<T: Copy, const N: usize> VectorStorage<T, N> for [[T; N]] {
 /// Impl for Vec — delegates to the slice impl via Deref.
 /// This avoids needing explicit `.as_slice()` at every call site.
 impl<T: Copy, const N: usize> VectorStorage<T, N> for Vec<[T; N]> {
+    /// Copies one fixed-width vector by internal ID. Out-of-range IDs panic.
     #[inline(always)]
     fn get_vector(&self, id: u32) -> [T; N] {
         self[id as usize]
     }
 
+    /// Reports the number of addressable vectors in this storage.
     #[inline(always)]
     fn num_vectors(&self) -> usize {
         self.len()

@@ -10,7 +10,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 pyo3::create_exception!(_native, OrionError, pyo3::exceptions::PyRuntimeError);
 
+/// Creates the Python exception carrying the same structured report as the Rust API.
 pub fn to_python(py: Python<'_>, error: Error) -> PyErr {
+    /// Attaches report fields to the Python exception while the GIL is held.
     fn build(py: Python<'_>, error: Error) -> PyResult<PyErr> {
         let exception = OrionError::new_err(error.to_string());
         let report = serde_json::to_string(&error.report())
@@ -26,6 +28,7 @@ pub fn to_python(py: Python<'_>, error: Error) -> PyErr {
     build(py, error).unwrap_or_else(|error| error)
 }
 
+/// Preserves successful values and translates only failures at the Python boundary.
 pub fn result<T>(py: Python<'_>, value: Result<T>) -> PyResult<T> {
     value.map_err(|error| to_python(py, error))
 }
@@ -59,6 +62,7 @@ pub fn boundary<T>(
     }
 }
 
+/// Creates the reopen-required error used after a native operation unwinds.
 pub fn poisoned() -> Error {
     Error::invalid_state("index operation panicked; reopen the index")
         .with_detail("requires_reopen", true)

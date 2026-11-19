@@ -6,6 +6,8 @@
 //! Generate a portable trace with the production native-u8 search path.
 use orion_ann::diagnostics::TraceLimits;
 use orion_ann::{BaseInput, GraphConfig, Index, IndexOptions, Result};
+
+/// Builds a small index and exports an observed search as portable JSON, cleaning up its temporary cache.
 fn main() -> Result<()> {
     let destination = std::env::args()
         .nth(1)

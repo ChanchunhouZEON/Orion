@@ -11,7 +11,10 @@ use orion_ann_core::search::query::{QueryElement, QueryInput};
 /// Read-only packed rows; synchronous operations retain no caller borrows.
 #[derive(Clone, Copy)]
 pub struct QueryBatch<'a> {
+    /// Borrowed scalar storage and any deferred query transformation.
     pub(in crate::index) values: QueryInput<'a>,
+
+    /// Logical coordinates per packed row; storage padding is not part of the input.
     pub(super) dimension: usize,
 }
 impl<'a> QueryBatch<'a> {
@@ -27,32 +30,49 @@ impl<'a> QueryBatch<'a> {
         }
         Ok(Self { values, dimension })
     }
+
+    /// Borrows packed floating-point queries using [`Self::from_slice`] shape validation.
     pub fn from_f32(values: &'a [f32], dimension: usize) -> Result<Self> {
         Self::from_slice(values, dimension)
     }
+
+    /// Borrows packed byte queries without requiring a byte-valued base dataset.
     pub fn from_u8(values: &'a [u8], dimension: usize) -> Result<Self> {
         Self::from_slice(values, dimension)
     }
+
+    /// Borrows signed-byte query rows without converting the whole batch to floats.
     pub fn from_i8(values: &'a [i8], dimension: usize) -> Result<Self> {
         Self::from_slice(values, dimension)
     }
+
+    /// Borrows unsigned 16-bit query rows using [`Self::from_slice`] validation.
     pub fn from_u16(values: &'a [u16], dimension: usize) -> Result<Self> {
         Self::from_slice(values, dimension)
     }
+
+    /// Borrows unsigned 32-bit query rows using [`Self::from_slice`] validation.
     pub fn from_u32(values: &'a [u32], dimension: usize) -> Result<Self> {
         Self::from_slice(values, dimension)
     }
+
+    /// Returns the logical row width used to interpret the packed input.
     pub fn dimension(self) -> usize {
         self.dimension
     }
+
+    /// Returns the query count, not the number of scalar coordinates.
     pub fn len(self) -> usize {
         self.values.len() / self.dimension
     }
+
+    /// Reports whether the batch contains zero query rows.
     pub fn is_empty(self) -> bool {
         self.values.is_empty()
     }
 }
 impl std::fmt::Debug for QueryBatch<'_> {
+    /// Formats shape and scalar type without exposing or copying query coordinates.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("QueryBatch")
             .field("rows", &self.len())

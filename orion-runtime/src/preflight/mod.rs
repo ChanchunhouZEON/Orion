@@ -94,6 +94,7 @@ pub fn estimate_resident_memory(
     calculate_memory(config, input)
 }
 
+/// Estimates the graph slab payload from the selected cached, staged or configured node stride.
 pub(crate) fn graph_bytes(config: &ResolvedRunConfig, points: usize) -> Result<u64> {
     let input = resolve_memory_inputs(config, points, true, "configuration")?;
     checked_mul_bytes(points as u64, input.stride_bytes)

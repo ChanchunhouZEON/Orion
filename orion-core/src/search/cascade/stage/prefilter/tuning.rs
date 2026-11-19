@@ -27,6 +27,7 @@ pub(super) fn prefilter_slack() -> f32 {
     })
 }
 
+/// Returns the production margin used when converting admission bounds into filter cutoffs.
 #[cfg(not(feature = "benchmark"))]
 pub(super) fn prefilter_slack() -> f32 {
     1.05

@@ -4,7 +4,7 @@
  */
 
 #![allow(dead_code)]
-use crate::model::PhasedGraph;
+use crate::model::graph::PhasedGraph;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

@@ -17,6 +17,7 @@ where
     T: Default + Copy + Sync + Send + Into<f32>,
     [T; N]: FullPrecisionDistance<T, N>,
 {
+    /// Initializes a query beam at the requested width and returns the greedy walk's distance-comparison count.
     pub fn search_with_l_override(
         &self,
         query: &Vertex<T, N>,
@@ -53,6 +54,7 @@ where
         Ok(cmp)
     }
 
+    /// Collects expanded candidates for graph construction, excluding the query vertex itself.
     pub fn search_for_point(
         &self,
         query: &Vertex<T, N>,
@@ -66,6 +68,7 @@ where
         Ok(visited_nodes)
     }
 
+    /// Combines the entry point with distinct frozen-node seeds for the greedy walk.
     fn get_init_ids(&self) -> ANNResult<Vec<u32>> {
         let mut init_ids = Vec::with_capacity(1 + self.configuration.num_frozen_pts);
         init_ids.push(self.start);
@@ -82,6 +85,9 @@ where
         Ok(init_ids)
     }
 
+    /// Copies the query into aligned scratch and scores unseen entry seeds before traversal.
+    ///
+    /// The caller supplies cleared ID scratch; incompatible state and invalid seed IDs return errors.
     fn init_graph_for_point(
         &self,
         query: &Vertex<T, N>,
@@ -201,6 +207,7 @@ where
         Ok((visited_nodes, cmps))
     }
 
+    /// Expands the nearest unvisited beam candidates and returns visited nodes plus distance-comparison count.
     fn greedy_search(
         &self,
         query: &Vertex<T, N>,

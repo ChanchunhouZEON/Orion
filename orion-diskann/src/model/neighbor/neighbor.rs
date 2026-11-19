@@ -8,14 +8,21 @@
 
 use std::cmp::Ordering;
 
+/// One candidate ID, ascending distance and traversal state.
 #[derive(Debug, Clone, Copy)]
 pub struct Neighbor {
+    /// Internal graph ID associated with this candidate.
     pub id: u32,
+
+    /// Smaller-is-closer distance used for candidate ordering.
     pub distance: f32,
+
+    /// Whether this candidate has already been expanded.
     pub visited: bool,
 }
 
 impl Neighbor {
+    /// Creates an unvisited scored candidate for insertion into the beam.
     pub fn new(id: u32, distance: f32) -> Self {
         Self {
             id,
@@ -26,6 +33,7 @@ impl Neighbor {
 }
 
 impl Default for Neighbor {
+    /// Creates an unvisited zero-valued placeholder for reusable candidate buffers.
     fn default() -> Self {
         Self {
             id: 0,
@@ -36,6 +44,7 @@ impl Default for Neighbor {
 }
 
 impl PartialEq for Neighbor {
+    /// Compares candidate identity by internal ID, independently of distance and visit state.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
@@ -45,6 +54,7 @@ impl PartialEq for Neighbor {
 impl Eq for Neighbor {}
 
 impl Ord for Neighbor {
+    /// Orders candidates by distance and then internal ID for deterministic beam ties.
     fn cmp(&self, other: &Self) -> Ordering {
         let ord = self
             .distance
@@ -62,11 +72,13 @@ impl Ord for Neighbor {
     reason = "Preserve the legacy eq/lt-only comparison contract and its explicit partial_cmp rejection."
 )]
 impl PartialOrd for Neighbor {
+    /// Orders candidates by distance and then internal ID for deterministic beam ties.
     #[inline]
     fn lt(&self, other: &Self) -> bool {
         self.distance < other.distance || (self.distance == other.distance && self.id < other.id)
     }
 
+    /// Rejects general partial comparison; this legacy type supports only its explicit equality and less-than operations.
     #[allow(clippy::panic)]
     fn partial_cmp(&self, _: &Self) -> Option<Ordering> {
         panic!("Neighbor only allows eq and lt")
