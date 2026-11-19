@@ -88,21 +88,31 @@ impl Index {
         OpenOptions::default().open(source, input)
     }
 
+    /// Returns the logical vector width, excluding storage and SIMD padding.
     pub fn dimension(&self) -> usize {
         self.config.dimension
     }
+
+    /// Returns the base element representation, independently of cascade sidecars.
     pub fn storage(&self) -> VectorStorageKind {
         self.config.storage()
     }
+
+    /// Returns the number of indexed vectors after applying the configured point limit.
     pub fn len(&self) -> usize {
         self.config.num_points.unwrap().min(self.config.max_points)
     }
+
+    /// Reports whether the index has no searchable vectors.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Builds a diagnostic summary of configuration, calibration and storage ownership.
+    ///
+    /// This allocates JSON metadata; it does not search, calibrate or sample process RSS.
     pub fn info(&self) -> serde_json::Value {
-        serde_json::json!({"num_points": self.len(), "dimension": self.dimension(),
+        serde_json::json!({"dataset_name": self.config.dataset, "num_points": self.len(), "dimension": self.dimension(),
         "supplier": self.view.payloads.supplier,
         "storage": self.storage(), "metric": self.config.metric,
         "graph_source": self.config.graph_source, "graph_selection_reason": self.config.graph_selection_reason,
@@ -113,12 +123,14 @@ impl Index {
         "mapped_base_bytes": self.view.engine.mapped_base_bytes(),
         "mapped_graph_bytes": self.view.engine.mapped_graph_bytes(),
         "storage_options": self.options.storage_options,
+        "storage_accounting": self.view.engine.storage_accounting(),
         "external_ids_bytes": self.external_ids.as_ref().map_or(0, |ids| ids.0.len() * 8),
         "residency": self.view.engine.pin_report()})
     }
 }
 
 impl std::fmt::Debug for Index {
+    /// Formats index metadata without printing vector, graph or sidecar payloads.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Index")
             .field("points", &self.len())

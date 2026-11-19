@@ -36,20 +36,28 @@ pub(crate) fn bind_rows<T: BaseElement>(
     )
 }
 
-pub fn prepare_datasets<T: BaseElement>(index: &Orion<T>, config: &ResolvedRunConfig) -> Result<()>
+/// Binds row semantics and materializes required sidecars, including exact native-cosine norms.
+pub(crate) fn prepare_datasets<T: BaseElement>(
+    index: &Orion<T>,
+    config: &ResolvedRunConfig,
+) -> Result<()>
 where
     PaddedDataset<T>: CascadeData,
 {
     bind_rows(index, config)?;
-    crate::placement::configure(index, config, std::iter::empty())?;
     if config.storage() == crate::VectorStorageKind::U8
         && config.metric == crate::SearchMetric::Cosine
     {
         index.exact_stage(orion_ann_core::ScoreMetric::CosineSimilarity)?;
     }
-    crate::sidecars::requirements::prepare(index, &config.index_plan().sidecar_requirements(false))
+    crate::sidecars::requirements::prepare(
+        index,
+        &crate::placement::ordered_sidecar_requirements(config),
+    )
 }
-pub fn prepare_search<'a, T: BaseElement>(
+
+/// Prepares search representations and returns a bounded automatic pin guard for their lifetimes.
+pub(crate) fn prepare_search<'a, T: BaseElement>(
     index: &'a Orion<T>,
     config: &ResolvedRunConfig,
 ) -> Result<crate::PinnedDatasets<'a>>
@@ -66,7 +74,9 @@ where
         config.memory_budget_gib,
     )
 }
-pub fn pin_search_storage<'a, T: BaseElement>(
+
+/// Applies explicit pin choices to prepared storage without selecting a different cascade.
+pub(crate) fn pin_search_storage<'a, T: BaseElement>(
     index: &'a Orion<T>,
     config: &ResolvedRunConfig,
     options: &crate::PinOptions,
@@ -79,7 +89,9 @@ pub fn pin_search_storage<'a, T: BaseElement>(
         options,
     )
 }
-pub fn pin_hints<T: BaseElement>(
+
+/// Reports the prepared payloads used by this cascade without locking their pages.
+pub(crate) fn pin_hints<T: BaseElement>(
     index: &Orion<T>,
     config: &ResolvedRunConfig,
 ) -> Result<Vec<crate::PinHint>> {
@@ -90,6 +102,8 @@ pub fn pin_hints<T: BaseElement>(
         &config.cascade().dataset_requirements(),
     )
 }
+
+/// Describes logical base dimensions for sidecar planning, excluding SIMD padding.
 fn shape<T: BaseElement>(index: &Orion<T>) -> orion_ann_core::QuantizedDatasetShape {
     orion_ann_core::QuantizedDatasetShape {
         rows: index.len(),
@@ -128,6 +142,8 @@ where
         scores.then(|| score_metric(config)),
     )
 }
+
+/// Runs one query with the configured cascade and an observer for diagnostic events.
 pub fn search_observed<T: BaseElement, O: SearchObserver>(
     index: &Orion<T>,
     query: QueryInput<'_>,
@@ -162,6 +178,7 @@ where
 /// This counts rows in one request; independent requests are never coalesced.
 pub(crate) const SERIAL_BATCH_LIMIT: usize = 2;
 
+/// Combines per-request search bounds with saved calibration and the shared small-batch cutoff.
 fn search_config(
     config: &ResolvedRunConfig,
     k: usize,
@@ -178,6 +195,7 @@ fn search_config(
     }
 }
 
+/// Maps runtime metric semantics to the exact score representation returned by core.
 fn score_metric(config: &ResolvedRunConfig) -> orion_ann_core::ScoreMetric {
     match config.metric {
         crate::SearchMetric::SquaredL2 => orion_ann_core::ScoreMetric::SquaredL2,

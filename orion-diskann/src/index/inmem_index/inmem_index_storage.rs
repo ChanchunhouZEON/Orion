@@ -29,6 +29,9 @@ where
     T: Default + Copy + Sync + Send + Into<f32>,
     [T; N]: FullPrecisionDistance<T, N>,
 {
+    /// Restores legacy adjacency records and graph metadata into the mutable construction graph.
+    ///
+    /// Loading mutates this index incrementally; an I/O failure does not roll back prior rows.
     pub fn load_graph(&mut self, filename: &str, expected_num_points: usize) -> ANNResult<usize> {
         let mut in_file = BufReader::new(File::open(Path::new(filename))?);
 
@@ -117,6 +120,9 @@ where
         Ok(nodes_read as usize)
     }
 
+    /// Writes legacy graph records through a large buffered writer and patches the final header before flushing.
+    ///
+    /// This writes directly to the requested path; atomic publication and fsync belong to the caller.
     pub fn save_graph(&mut self, graph_file: &str) -> ANNResult<u64> {
         let file: File = File::create(graph_file)?;
         let mut out = BufWriter::with_capacity(FILE_WRITE_BYTES, file);
@@ -188,6 +194,7 @@ where
         Ok(index_size)
     }
 
+    /// Writes active and frozen base rows in logical dimensions, omitting in-memory SIMD padding.
     pub fn save_data(&mut self, data_file: &str) -> ANNResult<usize> {
         save_data_in_base_dimensions(
             data_file,
@@ -199,6 +206,9 @@ where
         )
     }
 
+    /// Writes the nonempty logical-deletion set and returns its encoded byte count.
+    ///
+    /// An empty set creates no file; this method does not remove an older deletion file.
     pub fn save_delete_list(&mut self, delete_list_file: &str) -> ANNResult<usize> {
         let mut delete_file_size = 0;
         if let Ok(delete_set) = self.delete_set.read() {
@@ -227,6 +237,7 @@ where
         Ok(delete_file_size)
     }
 
+    /// Adds IDs from an optional deletion file to the current set and returns the decoded count.
     pub fn load_delete_list(&mut self, delete_list_file: &str) -> ANNResult<usize> {
         let mut len = 0;
 

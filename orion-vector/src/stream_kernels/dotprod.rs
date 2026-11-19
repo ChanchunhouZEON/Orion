@@ -12,17 +12,29 @@ pub use super::neon::L2U16Distance;
 pub use super::neon::L2U8Distance;
 use crate::DistanceKernelBackend;
 use std::arch::aarch64::*;
+
+/// Private dotprod implementation of the signed-byte inner-product stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct IpI8Distance;
 impl DistanceKernelBackend for IpI8Distance {
     const MAX_COORDINATES: usize = (i32::MAX as u64 / (128 * 128)) as usize;
     type Storage = i8;
     type Acc = int32x4_t;
 
+    /// Starts a fresh per-vector accumulator for this distance kernel.
+    ///
+    /// See [`DistanceKernelBackend::init`] for the shared contract.
     #[inline(always)]
     fn init() -> Self::Acc {
         unsafe { vdupq_n_s32(0) }
     }
 
+    /// Accumulates one kernel chunk without reducing the partial distance.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`DistanceKernelBackend::step`]'s pointer, shape and lifetime contract.
     #[inline(always)]
     unsafe fn step(acc: &mut Self::Acc, base_chunk: *const i8, query_chunk: *const i8) {
         // FEAT_DotProd `sdot` via inline asm (the
@@ -51,11 +63,17 @@ impl DistanceKernelBackend for IpI8Distance {
         );
     }
 
+    /// Converts the completed accumulator to a smaller-is-closer distance.
+    ///
+    /// See [`DistanceKernelBackend::reduce`] for the shared contract.
     #[inline(always)]
     fn reduce(acc: Self::Acc) -> f32 {
         unsafe { -(vaddvq_s32(acc) as f32) }
     }
 
+    /// Combines independent chunk accumulators before the final reduction.
+    ///
+    /// See [`DistanceKernelBackend::merge`] for the shared contract.
     #[inline(always)]
     fn merge(into: &mut Self::Acc, src: Self::Acc) {
         unsafe { *into = vaddq_s32(*into, src) }

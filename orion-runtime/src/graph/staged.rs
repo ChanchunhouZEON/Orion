@@ -12,6 +12,8 @@ use std::{
     io::Read,
     path::{Component, Path, PathBuf},
 };
+
+/// Provenance of the staged bytes consumed during graph import.
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct SourceFileIdentity {
     path: PathBuf,
@@ -41,6 +43,7 @@ fn normalize_absolute_path(path: &Path) -> Result<PathBuf> {
 }
 
 impl SourceFileIdentity {
+    /// Records an already-computed staged digest and size with a normalized source path.
     pub(super) fn from_stream(path: &Path, size: u64, sha256: String) -> Result<Self> {
         Ok(Self {
             path: normalize_absolute_path(path)?,
@@ -49,6 +52,7 @@ impl SourceFileIdentity {
         })
     }
 
+    /// Hashes a regular staged file to establish its current content identity.
     pub(super) fn from_file(path: &Path, file: std::fs::File) -> Result<Self> {
         if !file.metadata()?.is_file() {
             return Err(Error::invalid_data(format!(
@@ -60,6 +64,9 @@ impl SourceFileIdentity {
         Self::from_stream(path, bytes, digest)
     }
 
+    /// Compares an available export by content; a missing export can match only its recorded path.
+    ///
+    /// Other I/O failures propagate instead of being treated as absence.
     pub(super) fn matches_requested_export(&self, path: &Path) -> Result<bool> {
         match std::fs::File::open(path) {
             Ok(file) => {
@@ -150,6 +157,10 @@ pub(crate) fn resolve_staged_export(
     Ok(path)
 }
 
+/// Streams a staged partition graph into planned storage while hashing the consumed source bytes.
+///
+/// The entry point is recomputed from base rows; the returned provenance describes
+/// the exact import stream rather than a separate later read.
 pub(super) fn import_staged_graph<T: BaseElement>(
     config: &ResolvedRunConfig,
     dataset: PaddedDataset<T>,

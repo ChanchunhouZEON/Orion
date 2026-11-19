@@ -7,12 +7,40 @@
 
 use crate::DistanceKernelBackend;
 use std::arch::aarch64::*;
+
+/// Private neon implementation of the squared-L2 byte stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct L2U8Distance;
+
+/// Private neon implementation of the squared-L2 unsigned-16-bit stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct L2U16Distance;
+
+/// Private neon implementation of the binary Hamming stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct JLHammingDistance;
+
+/// Private neon implementation of the signed-byte inner-product stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct IpI8Distance;
+
+/// Private neon implementation of the signed-16-bit inner-product stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct IpI16Distance;
+
+/// Private neon implementation of the f32 inner-product stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct IpF32Distance;
+
+/// Private neon implementation of the f32 squared-L2 stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct L2F32Distance;
 
 impl DistanceKernelBackend for L2U8Distance {
@@ -20,11 +48,19 @@ impl DistanceKernelBackend for L2U8Distance {
     type Storage = u8;
     type Acc = uint32x4_t;
 
+    /// Starts a fresh per-vector accumulator for this distance kernel.
+    ///
+    /// See [`DistanceKernelBackend::init`] for the shared contract.
     #[inline(always)]
     fn init() -> Self::Acc {
         unsafe { vdupq_n_u32(0) }
     }
 
+    /// Accumulates one kernel chunk without reducing the partial distance.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`DistanceKernelBackend::step`]'s pointer, shape and lifetime contract.
     #[inline(always)]
     unsafe fn step(acc: &mut Self::Acc, base_chunk: *const u8, query_chunk: *const u8) {
         let a_lo = vld1q_u8(base_chunk);
@@ -48,11 +84,17 @@ impl DistanceKernelBackend for L2U8Distance {
         *acc = vpadalq_u16(*acc, p_hi_h);
     }
 
+    /// Converts the completed accumulator to a smaller-is-closer distance.
+    ///
+    /// See [`DistanceKernelBackend::reduce`] for the shared contract.
     #[inline(always)]
     fn reduce(acc: Self::Acc) -> f32 {
         unsafe { vaddvq_u32(acc) as f32 }
     }
 
+    /// Combines independent chunk accumulators before the final reduction.
+    ///
+    /// See [`DistanceKernelBackend::merge`] for the shared contract.
     #[inline(always)]
     fn merge(into: &mut Self::Acc, src: Self::Acc) {
         unsafe { *into = vaddq_u32(*into, src) }
@@ -64,6 +106,9 @@ impl DistanceKernelBackend for L2U16Distance {
     type Storage = u16;
     type Acc = (uint64x2_t, uint64x2_t, uint64x2_t, uint64x2_t);
 
+    /// Starts a fresh per-vector accumulator for this distance kernel.
+    ///
+    /// See [`DistanceKernelBackend::init`] for the shared contract.
     #[inline(always)]
     fn init() -> Self::Acc {
         unsafe {
@@ -76,6 +121,11 @@ impl DistanceKernelBackend for L2U16Distance {
         }
     }
 
+    /// Accumulates one kernel chunk without reducing the partial distance.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`DistanceKernelBackend::step`]'s pointer, shape and lifetime contract.
     #[inline(always)]
     unsafe fn step(acc: &mut Self::Acc, base_chunk: *const u16, query_chunk: *const u16) {
         // 32 bytes = 16 u16 lanes = two paired loads of u16x8.
@@ -104,6 +154,9 @@ impl DistanceKernelBackend for L2U16Distance {
         acc.3 = vpadalq_u32(acc.3, p_hh);
     }
 
+    /// Converts the completed accumulator to a smaller-is-closer distance.
+    ///
+    /// See [`DistanceKernelBackend::reduce`] for the shared contract.
     #[inline(always)]
     fn reduce(acc: Self::Acc) -> f32 {
         unsafe {
@@ -116,6 +169,9 @@ impl DistanceKernelBackend for L2U16Distance {
         }
     }
 
+    /// Combines independent chunk accumulators before the final reduction.
+    ///
+    /// See [`DistanceKernelBackend::merge`] for the shared contract.
     #[inline(always)]
     fn merge(into: &mut Self::Acc, src: Self::Acc) {
         unsafe {
@@ -131,11 +187,19 @@ impl DistanceKernelBackend for JLHammingDistance {
     type Storage = u8;
     type Acc = uint32x4_t;
 
+    /// Starts a fresh per-vector accumulator for this distance kernel.
+    ///
+    /// See [`DistanceKernelBackend::init`] for the shared contract.
     #[inline(always)]
     fn init() -> Self::Acc {
         unsafe { vdupq_n_u32(0) }
     }
 
+    /// Accumulates one kernel chunk without reducing the partial distance.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`DistanceKernelBackend::step`]'s pointer, shape and lifetime contract.
     #[inline(always)]
     unsafe fn step(acc: &mut Self::Acc, base_chunk: *const u8, query_chunk: *const u8) {
         let a_lo = vld1q_u8(base_chunk);
@@ -163,11 +227,17 @@ impl DistanceKernelBackend for JLHammingDistance {
         *acc = vaddq_u32(*acc, h32_hi);
     }
 
+    /// Converts the completed accumulator to a smaller-is-closer distance.
+    ///
+    /// See [`DistanceKernelBackend::reduce`] for the shared contract.
     #[inline(always)]
     fn reduce(acc: Self::Acc) -> f32 {
         unsafe { vaddvq_u32(acc) as f32 }
     }
 
+    /// Combines independent chunk accumulators before the final reduction.
+    ///
+    /// See [`DistanceKernelBackend::merge`] for the shared contract.
     #[inline(always)]
     fn merge(into: &mut Self::Acc, src: Self::Acc) {
         unsafe { *into = vaddq_u32(*into, src) }
@@ -179,11 +249,19 @@ impl DistanceKernelBackend for IpI8Distance {
     type Storage = i8;
     type Acc = int32x4_t;
 
+    /// Starts a fresh per-vector accumulator for this distance kernel.
+    ///
+    /// See [`DistanceKernelBackend::init`] for the shared contract.
     #[inline(always)]
     fn init() -> Self::Acc {
         unsafe { vdupq_n_s32(0) }
     }
 
+    /// Accumulates one kernel chunk without reducing the partial distance.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`DistanceKernelBackend::step`]'s pointer, shape and lifetime contract.
     #[inline(always)]
     unsafe fn step(acc: &mut Self::Acc, base_chunk: *const i8, query_chunk: *const i8) {
         let a0 = vld1q_s8(base_chunk);
@@ -196,11 +274,17 @@ impl DistanceKernelBackend for IpI8Distance {
         *acc = vpadalq_s16(*acc, vmull_high_s8(a1, q1));
     }
 
+    /// Converts the completed accumulator to a smaller-is-closer distance.
+    ///
+    /// See [`DistanceKernelBackend::reduce`] for the shared contract.
     #[inline(always)]
     fn reduce(acc: Self::Acc) -> f32 {
         unsafe { -(vaddvq_s32(acc) as f32) }
     }
 
+    /// Combines independent chunk accumulators before the final reduction.
+    ///
+    /// See [`DistanceKernelBackend::merge`] for the shared contract.
     #[inline(always)]
     fn merge(into: &mut Self::Acc, src: Self::Acc) {
         unsafe { *into = vaddq_s32(*into, src) }
@@ -218,6 +302,9 @@ impl DistanceKernelBackend for IpI16Distance {
     /// 4 NEON pipes, dropping per-chunk latency to ~4 cycle.
     type Acc = (int64x2_t, int64x2_t, int64x2_t, int64x2_t);
 
+    /// Starts a fresh per-vector accumulator for this distance kernel.
+    ///
+    /// See [`DistanceKernelBackend::init`] for the shared contract.
     #[inline(always)]
     fn init() -> Self::Acc {
         unsafe {
@@ -230,6 +317,11 @@ impl DistanceKernelBackend for IpI16Distance {
         }
     }
 
+    /// Accumulates one kernel chunk without reducing the partial distance.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`DistanceKernelBackend::step`]'s pointer, shape and lifetime contract.
     #[inline(always)]
     unsafe fn step(acc: &mut Self::Acc, base_chunk: *const i16, query_chunk: *const i16) {
         // 32 bytes = 16 i16 lanes = two paired loads of i16x8.
@@ -251,6 +343,9 @@ impl DistanceKernelBackend for IpI16Distance {
         acc.3 = vpadalq_s32(acc.3, p_hi_h);
     }
 
+    /// Converts the completed accumulator to a smaller-is-closer distance.
+    ///
+    /// See [`DistanceKernelBackend::reduce`] for the shared contract.
     #[inline(always)]
     fn reduce(acc: Self::Acc) -> f32 {
         // Tree reduce: 3 vaddq + 1 vaddvq + sign flip.
@@ -261,6 +356,9 @@ impl DistanceKernelBackend for IpI16Distance {
         }
     }
 
+    /// Combines independent chunk accumulators before the final reduction.
+    ///
+    /// See [`DistanceKernelBackend::merge`] for the shared contract.
     #[inline(always)]
     fn merge(into: &mut Self::Acc, src: Self::Acc) {
         unsafe {
@@ -276,11 +374,19 @@ impl DistanceKernelBackend for IpF32Distance {
     type Storage = f32;
     type Acc = (float32x4_t, float32x4_t);
 
+    /// Starts a fresh per-vector accumulator for this distance kernel.
+    ///
+    /// See [`DistanceKernelBackend::init`] for the shared contract.
     #[inline(always)]
     fn init() -> Self::Acc {
         unsafe { (vdupq_n_f32(0.0), vdupq_n_f32(0.0)) }
     }
 
+    /// Accumulates one kernel chunk without reducing the partial distance.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`DistanceKernelBackend::step`]'s pointer, shape and lifetime contract.
     #[inline(always)]
     unsafe fn step(acc: &mut Self::Acc, base_chunk: *const f32, query_chunk: *const f32) {
         let a_lo = vld1q_f32(base_chunk);
@@ -291,11 +397,17 @@ impl DistanceKernelBackend for IpF32Distance {
         acc.1 = vfmaq_f32(acc.1, a_hi, q_hi);
     }
 
+    /// Converts the completed accumulator to a smaller-is-closer distance.
+    ///
+    /// See [`DistanceKernelBackend::reduce`] for the shared contract.
     #[inline(always)]
     fn reduce(acc: Self::Acc) -> f32 {
         unsafe { -vaddvq_f32(vaddq_f32(acc.0, acc.1)) }
     }
 
+    /// Combines independent chunk accumulators before the final reduction.
+    ///
+    /// See [`DistanceKernelBackend::merge`] for the shared contract.
     #[inline(always)]
     fn merge(into: &mut Self::Acc, src: Self::Acc) {
         unsafe {
@@ -309,11 +421,19 @@ impl DistanceKernelBackend for L2F32Distance {
     type Storage = f32;
     type Acc = (float32x4_t, float32x4_t);
 
+    /// Starts a fresh per-vector accumulator for this distance kernel.
+    ///
+    /// See [`DistanceKernelBackend::init`] for the shared contract.
     #[inline(always)]
     fn init() -> Self::Acc {
         unsafe { (vdupq_n_f32(0.0), vdupq_n_f32(0.0)) }
     }
 
+    /// Accumulates one kernel chunk without reducing the partial distance.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`DistanceKernelBackend::step`]'s pointer, shape and lifetime contract.
     #[inline(always)]
     unsafe fn step(acc: &mut Self::Acc, base_chunk: *const f32, query_chunk: *const f32) {
         let a_lo = vld1q_f32(base_chunk);
@@ -326,11 +446,17 @@ impl DistanceKernelBackend for L2F32Distance {
         acc.1 = vfmaq_f32(acc.1, d_hi, d_hi);
     }
 
+    /// Converts the completed accumulator to a smaller-is-closer distance.
+    ///
+    /// See [`DistanceKernelBackend::reduce`] for the shared contract.
     #[inline(always)]
     fn reduce(acc: Self::Acc) -> f32 {
         unsafe { vaddvq_f32(vaddq_f32(acc.0, acc.1)) }
     }
 
+    /// Combines independent chunk accumulators before the final reduction.
+    ///
+    /// See [`DistanceKernelBackend::merge`] for the shared contract.
     #[inline(always)]
     fn merge(into: &mut Self::Acc, src: Self::Acc) {
         unsafe {
@@ -342,6 +468,9 @@ impl DistanceKernelBackend for L2F32Distance {
 
 // Unsigned byte products widen before accumulation. No signed-byte reinterpretation
 // or saturating pairwise multiply; high-dimensional rows retain their full sum.
+/// Private neon implementation of the unsigned-byte inner-product stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct IpU8Distance;
 impl DistanceKernelBackend for IpU8Distance {
     type Storage = u8;
@@ -352,10 +481,20 @@ impl DistanceKernelBackend for IpU8Distance {
     } else {
         (u64::MAX / 65025) as usize
     };
+
+    /// Starts a fresh per-vector accumulator for this distance kernel.
+    ///
+    /// See [`DistanceKernelBackend::init`] for the shared contract.
     #[inline(always)]
     fn init() -> Self::Acc {
         unsafe { vdupq_n_u64(0) }
     }
+
+    /// Accumulates one kernel chunk without reducing the partial distance.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`DistanceKernelBackend::step`]'s pointer, shape and lifetime contract.
     #[inline(always)]
     unsafe fn step(acc: &mut Self::Acc, a: *const u8, b: *const u8) {
         for offset in [0, 16] {
@@ -369,10 +508,18 @@ impl DistanceKernelBackend for IpU8Distance {
             );
         }
     }
+
+    /// Converts the completed accumulator to a smaller-is-closer distance.
+    ///
+    /// See [`DistanceKernelBackend::reduce`] for the shared contract.
     #[inline(always)]
     fn reduce(acc: Self::Acc) -> f32 {
         unsafe { -(vaddvq_u64(acc) as f32) }
     }
+
+    /// Combines independent chunk accumulators before the final reduction.
+    ///
+    /// See [`DistanceKernelBackend::merge`] for the shared contract.
     #[inline(always)]
     fn merge(into: &mut Self::Acc, src: Self::Acc) {
         unsafe {

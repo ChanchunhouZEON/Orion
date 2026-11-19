@@ -86,6 +86,7 @@ pub const fn rabitq_b4_code_stride(dim: usize) -> usize {
 
 /// B=4 RaBitQ-encoded base store.
 pub struct RabitQ4Dataset {
+    /// Logical coordinates per original vector, excluding padding.
     pub(crate) dimension: usize,
     /// Packed nibble codes, `num_vertices * STRIDE` bytes, 16-byte
     /// aligned. Each byte holds two signed 4-bit values: low nibble =
@@ -103,11 +104,16 @@ pub struct RabitQ4Dataset {
     /// path's rotation (each codec owns its own seed → matrix) so the
     /// two sidecars can be loaded side-by-side without interfering.
     pub(crate) rotation: AlignedBoxWithSlice<f32>,
+
+    /// Number of encoded base vectors.
     pub(crate) num_vertices: usize,
+
+    /// Byte distance between adjacent encoded rows, including padding.
     pub(crate) stride: usize,
 }
 
 impl RabitQ4Dataset {
+    /// Returns the byte distance between packed multibit code rows, including padding.
     pub fn stride(&self) -> usize {
         self.stride
     }
@@ -219,6 +225,11 @@ impl RabitQ4Dataset {
         })
     }
 
+    /// Applies this dataset's trained rotation to a query of the same logical dimension.
+    ///
+    /// # Panics
+    ///
+    /// Panics when either the query or output length differs from the dataset dimension.
     #[inline]
     pub fn rotate_query(&self, q: &[f32], out: &mut [f32]) {
         assert_eq!(q.len(), self.dimension);
@@ -278,6 +289,7 @@ impl RabitQ4Dataset {
         Ok(())
     }
 
+    /// Restores a four-bit RaBitQ payload using default resident storage.
     pub fn decode(r: &mut dyn std::io::Read, byte_len: u64) -> Result<Self> {
         Self::decode_with_storage(r, byte_len, &Default::default())
     }
@@ -415,6 +427,7 @@ fn unpack_hi(byte: u8) -> i8 {
 
 // ── Signed-dot kernel: <rotated_q, code (as i8 lanes)> ────────────────
 
+/// Computes the packed-code projection with a compiled SIMD kernel and a scalar remainder.
 #[inline]
 fn signed_dot_dispatch(code: &[u8], rotated_q: &[f32]) -> f32 {
     #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
@@ -622,6 +635,7 @@ unsafe fn signed_dot_avx512(code: *const u8, rotated_q: *const f32, bytes: usize
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl std::fmt::Debug for RabitQ4Dataset {
+    /// Formats `dimension`, `num_vertices`, `stride` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RabitQ4Dataset")
             .field("dimension", &self.dimension)
@@ -672,9 +686,17 @@ impl RabitQ4Dataset {
 impl crate::model::dataset::quantized_dataset::sealed::Sealed for RabitQ4Dataset {}
 impl QuantizedDataset for RabitQ4Dataset {
     type BuildOptions = u64;
+
+    /// Selects the canonical construction recipe for this representation.
+    ///
+    /// See [`QuantizedDataset::default_build_options`] for the shared contract.
     fn default_build_options() -> Self::BuildOptions {
         RABITQ_B4_MAGIC as u64
     }
+
+    /// Builds this sidecar from validated logical rows.
+    ///
+    /// See [`QuantizedDataset::build`] for the shared contract.
     fn build(base: &impl Rows, options: &Self::BuildOptions) -> Result<Self> {
         Self::estimate_resident_memory(
             QuantizedDatasetShape {
@@ -685,6 +707,10 @@ impl QuantizedDataset for RabitQ4Dataset {
         )?;
         Self::try_build_from(base, *options)
     }
+
+    /// Predicts this representation's payload allocation before reading base rows.
+    ///
+    /// See [`QuantizedDataset::estimate_resident_memory`] for the shared contract.
     fn estimate_resident_memory(
         input_shape: QuantizedDatasetShape,
         _options: &Self::BuildOptions,
@@ -702,6 +728,10 @@ impl QuantizedDataset for RabitQ4Dataset {
             )?,
         )
     }
+
+    /// Accounts for the payload buffers currently owned by this representation.
+    ///
+    /// See [`QuantizedDataset::resident_memory`] for the shared contract.
     fn resident_memory(&self) -> ResidentMemory {
         ResidentMemory::new(
             self.codes.len(),

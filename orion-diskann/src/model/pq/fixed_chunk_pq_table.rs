@@ -455,6 +455,7 @@ fn run_kmeans_flat(
 // ======================================================================
 
 impl std::fmt::Debug for FixedChunkPQTable {
+    /// Formats `dimension`, `num_pq_chunks`, `table_elements` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FixedChunkPQTable")
             .field("dimension", &self.dim)

@@ -22,7 +22,7 @@
 //! # Embedded Rust service
 //!
 //! [`Index`] owns its storage and Rayon pool; ordinary operations require no
-//! process-wide pool or YAML configuration. [`orion_ann_core::Orion`] is the lower-level
+//! process-wide pool or implicitly loaded configuration. [`orion_ann_core::Orion`] is the lower-level
 //! API for callers supplying their own graph and storage. Both use [`Error`].
 //!
 //! ```no_run
@@ -65,6 +65,12 @@ use orion_ann::benchmark::utils::flush_cache;
 )]
 //!
 //! Storage and graph-loading internals are private even when building adapters.
+//! Preparation runs through Index's lifecycle; callers configure policy instead
+//! of invoking a separate preparation step.
+//! ```compile_fail,E0599
+//! use orion_ann::Index;
+//! let _ = Index::prepare;
+//! ```
 //! ```compile_fail,E0603
 //! use orion_ann::data::LoadedBase;
 //! ```
@@ -83,7 +89,7 @@ mod graph;
 mod integrity;
 mod placement;
 mod preflight;
-pub use placement::{StorageMode, StorageOptions};
+pub use placement::{StorageMode, StorageObject, StorageOptions};
 mod residency;
 mod sidecars;
 pub use orion_ann_core::model::dataset::quantized_dataset::QuantizedKind;

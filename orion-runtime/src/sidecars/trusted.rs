@@ -19,11 +19,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Benchmark-only sidecar adapter that retains structural decoding while skipping content authentication.
 struct TrustedCache {
     metadata: PathBuf,
     objects: PathBuf,
 }
 
+/// Attaches trusted sidecar reuse to a compatible f32 benchmark index.
 pub(crate) fn attach<D: IndexData>(index: &mut CompressedIndex<D>, path: &Path) -> Result<()> {
     if index.dataset().element_type() == "f32" {
         index.set_sidecar_cache(Box::new(TrustedCache {
@@ -35,6 +37,7 @@ pub(crate) fn attach<D: IndexData>(index: &mut CompressedIndex<D>, path: &Path) 
 }
 
 impl SidecarCache for TrustedCache {
+    /// Decodes an existing trusted sidecar, leaving the slot uninitialized when no cache record exists.
     fn load(
         &self,
         _base: &dyn Rows,
@@ -66,6 +69,7 @@ impl SidecarCache for TrustedCache {
         Ok(())
     }
 
+    /// Flushes and syncs a temporary sidecar before replacing its trusted benchmark cache path.
     fn store(
         &self,
         _base: &dyn Rows,

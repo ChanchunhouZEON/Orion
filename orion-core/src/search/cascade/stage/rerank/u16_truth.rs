@@ -14,7 +14,7 @@
 
 use super::RerankStage;
 use crate::model::Neighbor;
-use crate::model::scratch::InMemSearchScratch;
+use crate::model::search::scratch::InMemSearchScratch;
 use crate::model::{L2U16, ScalarQuantizedDataset};
 use crate::search::NDC_F32;
 use crate::search::traversal::tuning::dstream_la_truth;
@@ -29,6 +29,7 @@ pub struct U16Rerank<'a> {
 }
 
 impl<'a> U16Rerank<'a> {
+    /// Binds the dataset to this stage; query encoding is deferred until the stage is opened.
     #[inline]
     pub fn new(dataset: &'a ScalarQuantizedDataset<L2U16>) -> Self {
         Self { dataset }
@@ -36,6 +37,9 @@ impl<'a> U16Rerank<'a> {
 }
 
 impl<'a> RerankStage for U16Rerank<'a> {
+    /// Identifies final-stage precision for cascade compatibility checks.
+    ///
+    /// See [`RerankStage::precision`] for the shared contract.
     fn precision(
         &self,
     ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
@@ -44,9 +48,16 @@ impl<'a> RerankStage for U16Rerank<'a> {
         Some(P::Quantized(K::L2U16))
     }
 
+    /// Describes the base shape required by this reranking representation.
+    ///
+    /// See [`RerankStage::shape`] for the shared contract.
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.dataset.dimension, self.dataset.n))
     }
+
+    /// Selects final IDs from the search scratch using this stage's ranking policy.
+    ///
+    /// See [`RerankStage::rerank`] for the shared contract.
     fn rerank(
         &self,
         query: &[f32],
@@ -131,6 +142,7 @@ impl<'a> RerankStage for U16Rerank<'a> {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl std::fmt::Debug for U16Rerank<'_> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("U16Rerank")
             .field("dimension", &self.dataset.dimension)

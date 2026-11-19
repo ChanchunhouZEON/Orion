@@ -27,6 +27,7 @@ pub struct L2KTAdmission<'a> {
 }
 
 impl<'a> L2KTAdmission<'a> {
+    /// Binds the dataset to this stage; query encoding is deferred until the stage is opened.
     #[inline]
     pub fn new(dataset: &'a L2KTDataset) -> Self {
         Self { dataset }
@@ -36,6 +37,9 @@ impl<'a> L2KTAdmission<'a> {
 // SAFETY: shape describes the borrowed base; sessions own checked query storage
 // and cannot outlive that base.
 unsafe impl<'a> AdmissionStage for L2KTAdmission<'a> {
+    /// Identifies the precision used to validate cascade ordering.
+    ///
+    /// See [`AdmissionStage::precision`] for the shared contract.
     fn precision(
         &self,
     ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
@@ -44,9 +48,16 @@ unsafe impl<'a> AdmissionStage for L2KTAdmission<'a> {
         Some(P::Quantized(K::L2Kt))
     }
 
+    /// Describes the base shape required by this admission representation.
+    ///
+    /// See [`AdmissionStage::shape`] for the shared contract.
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.dataset.dimension, self.dataset.num_vertices))
     }
+
+    /// Prepares the query state consumed by this admission stage.
+    ///
+    /// See [`AdmissionStage::open`] for the shared contract.
     #[inline]
     fn open<'b>(&'b self, q: &[f32]) -> Box<dyn AdmissionSession + 'b> {
         let padded = self.dataset.quantize_query_padded(q);
@@ -70,6 +81,9 @@ struct L2KTSession<'a> {
 // SAFETY: streams retain input IDs, write only within the input-sized output
 // region, and return the initialized compacted prefix length.
 unsafe impl<'a> AdmissionSession for L2KTSession<'a> {
+    /// Scores the entry node in the admission distance domain.
+    ///
+    /// See [`AdmissionSession::entry_distance`] for the shared contract.
     #[inline]
     fn entry_distance(&self, vid: u32) -> f32 {
         assert!(
@@ -102,6 +116,11 @@ unsafe impl<'a> AdmissionSession for L2KTSession<'a> {
         }
     }
 
+    /// Scores candidates and compacts qualifying neighbors into caller-owned output.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`AdmissionSession::admit_stream`]'s pointer, shape and lifetime contract.
     #[inline]
     unsafe fn admit_stream(
         &self,
@@ -140,6 +159,7 @@ unsafe impl<'a> AdmissionSession for L2KTSession<'a> {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl std::fmt::Debug for L2KTAdmission<'_> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("L2KTAdmission")
             .field("dimension", &self.dataset.dimension)
@@ -149,6 +169,7 @@ impl std::fmt::Debug for L2KTAdmission<'_> {
 }
 
 impl std::fmt::Debug for L2KTSession<'_> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("L2KTSession")
             .field("dimension", &self.dataset.dimension)

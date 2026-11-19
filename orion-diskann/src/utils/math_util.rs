@@ -25,6 +25,7 @@ use std::{
 
 use crate::common::{ANNError, ANNResult};
 
+/// Owns clustering pivots used by the legacy training helpers.
 #[allow(dead_code)]
 struct PivotContainer {
     piv_id: usize,
@@ -36,12 +37,14 @@ struct PivotContainer {
     reason = "Partial comparison preserves NaN as unordered; heap ordering uses its existing fallback."
 )]
 impl PartialOrd for PivotContainer {
+    /// Compares pivot distances in reverse order for the clustering heap.
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         other.piv_dist.partial_cmp(&self.piv_dist)
     }
 }
 
 impl Ord for PivotContainer {
+    /// Compares pivot distances in reverse order for the clustering heap.
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Treat NaN as less than all other values.
         // piv_dist should never be NaN.
@@ -50,6 +53,7 @@ impl Ord for PivotContainer {
 }
 
 impl PartialEq for PivotContainer {
+    /// Compares pivot distance equality independently of the associated pivot ID.
     fn eq(&self, other: &Self) -> bool {
         self.piv_dist == other.piv_dist
     }

@@ -43,6 +43,11 @@ pub(super) fn l2_sq_slice(a: &[f32], b: &[f32]) -> f32 {
 
 // ─── aarch64 / NEON ─────────────────────────────────────────────────────────
 
+/// Computes squared L2 for PQ centroid comparisons with NEON and a scalar tail.
+///
+/// # Safety
+///
+/// The CPU must support NEON and `b` must contain at least `a.len()` coordinates.
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -96,6 +101,11 @@ unsafe fn l2_sq_neon(a: &[f32], b: &[f32]) -> f32 {
 
 // ─── x86_64 / AVX2 + FMA ────────────────────────────────────────────────────
 
+/// Computes squared L2 for PQ centroid comparisons with AVX2/FMA and a scalar tail.
+///
+/// # Safety
+///
+/// The CPU must support AVX2 and FMA; `b` must contain at least `a.len()` coordinates.
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 #[target_feature(enable = "avx2", enable = "fma")]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -156,6 +166,11 @@ unsafe fn l2_sq_avx2(a: &[f32], b: &[f32]) -> f32 {
 
 // ─── x86_64 / AVX-512 ───────────────────────────────────────────────────────
 
+/// Computes squared L2 for PQ centroid comparisons with AVX-512 and a scalar tail.
+///
+/// # Safety
+///
+/// The CPU must support the enabled target features and `b` must contain at least `a.len()` coordinates.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[target_feature(enable = "avx512f")]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -207,6 +222,7 @@ unsafe fn l2_sq_avx512(a: &[f32], b: &[f32]) -> f32 {
 
 // ─── Scalar fallback ─────────────────────────────────────────────────────────
 
+/// Provides the scalar centroid-distance fallback for equally sized PQ subvectors.
 #[allow(dead_code)]
 #[inline]
 fn l2_sq_scalar(a: &[f32], b: &[f32]) -> f32 {

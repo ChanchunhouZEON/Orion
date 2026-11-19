@@ -128,6 +128,7 @@ pub const fn jl_sparse_stride(bits: usize) -> usize {
     bytes.div_ceil(block) * block
 }
 
+/// Rounds packed sparse-projection bits to the persistent 16-byte code stride.
 pub const fn jl_sparse_stride_disk(bits: usize) -> usize {
     let raw = bits.div_ceil(8);
     (raw + 15) & !15
@@ -135,6 +136,7 @@ pub const fn jl_sparse_stride_disk(bits: usize) -> usize {
 
 /// JL Sparse signature dataset.
 pub struct JLSparseDataset<const BITS: usize = 1024, const NZ: usize = 9> {
+    /// Logical coordinates per original vector, excluding padding.
     pub(crate) dimension: usize,
     /// Packed sign bits, `num_vertices × STRIDE` bytes, 16-byte
     /// aligned. Bit `i` of byte `b` encodes signature bit `b × 8 + i`.
@@ -323,6 +325,7 @@ impl<const BITS: usize, const NZ: usize> JLSparseDataset<BITS, NZ> {
         Ok(())
     }
 
+    /// Restores a sparse JL sketch using default resident storage.
     pub fn decode(r: &mut dyn std::io::Read, byte_len: u64) -> Result<Self> {
         Self::decode_with_storage(r, byte_len, &Default::default())
     }
@@ -481,6 +484,7 @@ pub const JL_SPARSE_MIPS_MAGIC: u32 = 0x4A4C_4D38; // "JLM8"
 /// [`JLSparseDataset`], so the two share
 /// `encode_vertex_scalar`.
 pub struct JLSparseDatasetMips<const BITS: usize = 1024, const NZ: usize = 9> {
+    /// Logical coordinates per original vector, excluding padding.
     pub(crate) dimension: usize,
     /// Same sign-bit code layout as [`JLSparseDataset::codes`].
     pub(crate) codes: AlignedBoxWithSlice<u8>,
@@ -491,8 +495,14 @@ pub struct JLSparseDatasetMips<const BITS: usize = 1024, const NZ: usize = 9> {
     /// as `radius` and multiplies it into the per-candidate
     /// distance estimate (`jl_point.h:319`).
     pub(crate) norms: AlignedBoxWithSlice<f32>,
+
+    /// Number of encoded base vectors.
     pub(crate) num_vertices: usize,
+
+    /// Byte distance between adjacent encoded rows, including padding.
     pub(crate) stride: usize,
+
+    /// Deterministic construction seed persisted with the projection.
     pub(crate) seed: u64,
 }
 
@@ -599,6 +609,11 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
         })
     }
 
+    /// Projects a query into this sketch's padded sign-code layout.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the query dimension differs from the trained projection.
     pub fn encode_query(&self, q: &[f32]) -> Box<[u8]> {
         assert_eq!(q.len(), self.dimension);
 
@@ -607,6 +622,9 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
         out
     }
 
+    /// Counts differing projection bits between the query signature and one encoded base row.
+    ///
+    /// The row ID and signature length must match this dataset.
     #[inline]
     pub fn hamming(&self, q_sig: &[u8], vid: u32) -> u32 {
         let off = (vid as usize) * self.stride;
@@ -655,6 +673,7 @@ impl<const BITS: usize, const NZ: usize> JLSparseDatasetMips<BITS, NZ> {
         Ok(())
     }
 
+    /// Restores a sparse inner-product JL sketch using default resident storage.
     pub fn decode(r: &mut dyn std::io::Read, byte_len: u64) -> Result<Self> {
         Self::decode_with_storage(r, byte_len, &Default::default())
     }
@@ -817,6 +836,11 @@ pub fn hamming_dispatch(p: &[u8], q: &[u8]) -> u32 {
     hamming_scalar(p, q)
 }
 
+/// Counts differing bits for the scalar Hamming reference path.
+///
+/// # Panics
+///
+/// Panics for unequal input lengths or a result that cannot fit in u32.
 #[inline]
 pub fn hamming_scalar(p: &[u8], q: &[u8]) -> u32 {
     assert_eq!(p.len(), q.len(), "Hamming inputs must match length");
@@ -972,9 +996,11 @@ unsafe fn hamming_avx512_harley_seal(p: *const u8, q: *const u8, len: usize) -> 
 
 // ── Deterministic PRNG (shared shape with rabitq_dataset) ─────────────
 
+/// Small deterministic generator for reproducible projection or quantizer construction.
 struct XorShift64(u64);
 
 impl XorShift64 {
+    /// Advances the deterministic projection generator without depending on platform RNG state.
     #[inline]
     fn next_u64(&mut self) -> u64 {
         let mut s = self.0;
@@ -988,6 +1014,7 @@ impl XorShift64 {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl<const BITS: usize, const NZ: usize> std::fmt::Debug for JLSparseDataset<BITS, NZ> {
+    /// Formats `dimension`, `num_vertices`, `stride` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JLSparseDataset")
             .field("dimension", &self.dimension)
@@ -998,6 +1025,7 @@ impl<const BITS: usize, const NZ: usize> std::fmt::Debug for JLSparseDataset<BIT
 }
 
 impl<const BITS: usize, const NZ: usize> std::fmt::Debug for JLSparseDatasetMips<BITS, NZ> {
+    /// Formats `dimension`, `num_vertices`, `stride` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JLSparseDatasetMips")
             .field("dimension", &self.dimension)
@@ -1084,9 +1112,17 @@ impl<const BITS: usize, const NZ: usize> crate::model::dataset::quantized_datase
 }
 impl<const BITS: usize, const NZ: usize> QuantizedDataset for JLSparseDataset<BITS, NZ> {
     type BuildOptions = u64;
+
+    /// Selects the canonical construction recipe for this representation.
+    ///
+    /// See [`QuantizedDataset::default_build_options`] for the shared contract.
     fn default_build_options() -> Self::BuildOptions {
         JL_SPARSE_MAGIC as u64
     }
+
+    /// Builds this sidecar from validated logical rows.
+    ///
+    /// See [`QuantizedDataset::build`] for the shared contract.
     fn build(base: &impl Rows, options: &Self::BuildOptions) -> Result<Self> {
         Self::estimate_resident_memory(
             QuantizedDatasetShape {
@@ -1097,6 +1133,10 @@ impl<const BITS: usize, const NZ: usize> QuantizedDataset for JLSparseDataset<BI
         )?;
         Self::try_build_from(base, *options)
     }
+
+    /// Predicts this representation's payload allocation before reading base rows.
+    ///
+    /// See [`QuantizedDataset::estimate_resident_memory`] for the shared contract.
     fn estimate_resident_memory(
         input_shape: QuantizedDatasetShape,
         _options: &Self::BuildOptions,
@@ -1118,6 +1158,10 @@ impl<const BITS: usize, const NZ: usize> QuantizedDataset for JLSparseDataset<BI
             validation::product(validation::product(BITS, NZ)?, 4)?,
         )
     }
+
+    /// Accounts for the payload buffers currently owned by this representation.
+    ///
+    /// See [`QuantizedDataset::resident_memory`] for the shared contract.
     fn resident_memory(&self) -> ResidentMemory {
         ResidentMemory::new(self.codes.len(), 0, self.indices.len() * 4)
             .expect("validated resident allocation sizes")
@@ -1130,9 +1174,17 @@ impl<const BITS: usize, const NZ: usize> crate::model::dataset::quantized_datase
 }
 impl<const BITS: usize, const NZ: usize> QuantizedDataset for JLSparseDatasetMips<BITS, NZ> {
     type BuildOptions = u64;
+
+    /// Selects the canonical construction recipe for this representation.
+    ///
+    /// See [`QuantizedDataset::default_build_options`] for the shared contract.
     fn default_build_options() -> Self::BuildOptions {
         JL_SPARSE_MAGIC as u64
     }
+
+    /// Builds this sidecar from validated logical rows.
+    ///
+    /// See [`QuantizedDataset::build`] for the shared contract.
     fn build(base: &impl Rows, options: &Self::BuildOptions) -> Result<Self> {
         Self::estimate_resident_memory(
             QuantizedDatasetShape {
@@ -1143,6 +1195,10 @@ impl<const BITS: usize, const NZ: usize> QuantizedDataset for JLSparseDatasetMip
         )?;
         Self::try_build_from(base, *options)
     }
+
+    /// Predicts this representation's payload allocation before reading base rows.
+    ///
+    /// See [`QuantizedDataset::estimate_resident_memory`] for the shared contract.
     fn estimate_resident_memory(
         input_shape: QuantizedDatasetShape,
         options: &Self::BuildOptions,
@@ -1158,6 +1214,10 @@ impl<const BITS: usize, const NZ: usize> QuantizedDataset for JLSparseDatasetMip
             0,
         )
     }
+
+    /// Accounts for the payload buffers currently owned by this representation.
+    ///
+    /// See [`QuantizedDataset::resident_memory`] for the shared contract.
     fn resident_memory(&self) -> ResidentMemory {
         ResidentMemory::new(
             self.codes.len(),

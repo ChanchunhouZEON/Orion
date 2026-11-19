@@ -79,10 +79,13 @@ impl NodeSlabBuffer {
         }
     }
 
+    /// Returns the number of node slots owned by this slab.
     #[inline]
     pub fn num_nodes(&self) -> usize {
         self.num_nodes
     }
+
+    /// Returns the fixed slot width in u32 words.
     #[inline]
     pub fn stride(&self) -> usize {
         self.stride_u32
@@ -240,6 +243,9 @@ impl NodeSlabBuffer {
         }
     }
 
+    /// Blocks new readers, drains existing reader guards and applies queued node writes before reopening reads.
+    ///
+    /// The caller holds the write queue exclusively for the entire flush.
     fn stop_the_world_flush(&self, queue: &mut VecDeque<NodeWrite>) {
         self.write_blocked.store(true, Ordering::Release);
         for reader in self.node_readers.iter() {
@@ -281,6 +287,7 @@ impl NodeSlabBuffer {
 }
 
 impl Clone for NodeSlabBuffer {
+    /// Copies the slab into a new resident allocation with independent reader counters and an empty write queue.
     fn clone(&self) -> Self {
         let src = self.buffer.as_slice();
         let mut buf =
@@ -301,6 +308,7 @@ impl Clone for NodeSlabBuffer {
 }
 
 impl std::fmt::Debug for NodeSlabBuffer {
+    /// Formats `num_nodes`, `stride_u32` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NodeSlabBuffer")
             .field("num_nodes", &self.num_nodes)
@@ -319,6 +327,7 @@ pub struct SegmentGuard<'a> {
 }
 
 impl<'a> SegmentGuard<'a> {
+    /// Borrows the node record protected by this reader guard.
     #[inline]
     pub fn slot(&self) -> &[u32] {
         self.slab.slot(self.node)
@@ -326,6 +335,7 @@ impl<'a> SegmentGuard<'a> {
 }
 
 impl<'a> Drop for SegmentGuard<'a> {
+    /// Releases this node's reader count so a waiting writer may make progress.
     fn drop(&mut self) {
         self.slab.node_readers[self.node].fetch_sub(1, Ordering::Release);
     }

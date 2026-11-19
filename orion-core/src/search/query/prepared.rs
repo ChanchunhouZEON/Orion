@@ -17,25 +17,45 @@ use crate::{
 };
 use std::borrow::Cow;
 
+/// Representations and transforms needed to prepare one query for a selected cascade.
 #[derive(Clone, Copy)]
 pub(crate) struct QueryRequirements<'a> {
+    /// Exact admission adapter, or None when admission needs floating transport for quantization.
     pub(crate) admission: Option<ExactStage<'a>>,
+
+    /// Exact rerank adapter that may share admission query state.
     pub(crate) rerank: Option<ExactStage<'a>>,
+
+    /// Whether a filtering representation requires floating query coordinates.
     pub(crate) filter: bool,
+
+    /// Whether a non-exact reranker needs floating query transport.
     pub(crate) float_rerank: bool,
+
+    /// Sidecar input transform, kept separate from original coordinates used for exact scores.
     pub(crate) transform: RowTransform,
 }
 
+/// Query-scoped storage shared by sessions and released after final result selection.
 pub(crate) struct PreparedQuery<'a> {
+    /// Original coordinates retained for exact business-facing result scores.
     pub(crate) raw: QueryInput<'a>,
     // None for exact-only byte search: no f32 transport allocation is needed.
+    /// Optional floating transport; absent for exact-only byte queries.
     pub(crate) floating: Option<Cow<'a, [f32]>>,
+
+    /// Prepared exact admission state when the selected representation needs it.
     pub(crate) admission: Option<PreparedExact>,
+
+    /// Separate exact rerank state only when it cannot reuse admission preparation.
     pub(crate) rerank: Option<PreparedExact>,
+
+    /// Whether rerank and admission use the same exact query representation.
     pub(crate) reuse_admission: bool,
 }
 
 impl<'a> PreparedQuery<'a> {
+    /// Validates and prepares one row, reusing matching exact-stage state and avoiding unused conversions.
     pub(crate) fn new(raw: QueryInput<'a>, requirements: QueryRequirements<'_>) -> Result<Self> {
         raw.validate()?;
         let needs_float =

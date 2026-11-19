@@ -12,19 +12,38 @@ pub struct TraceReplay {
     position: usize,
 }
 impl TraceReplay {
+    /// Validates an owned trace and starts replay before its first event.
+    ///
+    /// # Errors
+    ///
+    /// Returns the trace validation error before creating a cursor.
     pub fn new(trace: SearchTrace) -> Result<Self> {
         trace.validate()?;
         Ok(Self { trace, position: 0 })
     }
+
+    /// Parses a size-bounded trace document and starts replay at event zero.
+    ///
+    /// See [`SearchTrace::from_json`] for the document validation contract.
     pub fn from_json(json: &str) -> Result<Self> {
         Self::new(SearchTrace::from_json(json)?)
     }
+
+    /// Borrows the validated document without advancing the replay cursor.
     pub fn trace(&self) -> &SearchTrace {
         &self.trace
     }
+
+    /// Returns the index of the next event to be replayed; the end position is valid.
     pub fn position(&self) -> usize {
         self.position
     }
+
+    /// Moves to an event boundary without executing graph search.
+    ///
+    /// # Errors
+    ///
+    /// Rejects positions beyond the event count and leaves the cursor unchanged.
     pub fn seek(&mut self, position: usize) -> Result<()> {
         if position > self.trace.events.len() {
             return Err(crate::argument("trace cursor exceeds event count"));

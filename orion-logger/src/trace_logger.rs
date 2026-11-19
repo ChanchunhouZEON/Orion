@@ -13,12 +13,14 @@ use log;
 pub struct TraceLogger;
 
 impl TraceLogger {
+    /// Creates a stateless logging facade without replacing the process-wide logger.
     pub fn new() -> Self {
         TraceLogger
     }
 }
 
 impl Default for TraceLogger {
+    /// Creates the same stateless facade as [`Self::new`].
     fn default() -> Self {
         Self::new()
     }

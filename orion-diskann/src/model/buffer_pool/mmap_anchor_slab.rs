@@ -17,7 +17,8 @@
 //! ## Memory accounting
 //!
 //! mmap pages are NOT tracked by the Rust allocator, so heap peak stays low.
-//! RSS is bounded by the OS page cache; unused pages are demand-paged (zero-fill).
+//! Pages are demand-paged; mapping alone does not impose an RSS limit.
+//! External process limits or explicit application budgeting are separate concerns.
 
 use crate::common::ANNResult;
 use std::fs::{File, OpenOptions};
@@ -27,11 +28,15 @@ use std::sync::atomic::{AtomicU32, Ordering};
 const CACHE_LINE: usize = 64;
 const SLOT_HEADER: usize = 8; // count (u32) + reserved (u32)
 
+/// Rounds an anchor header and candidate-pair capacity to a whole cache-line slot.
 fn compute_slot_bytes(max_pairs: usize) -> usize {
     let raw = SLOT_HEADER + max_pairs * 8;
     raw.div_ceil(CACHE_LINE) * CACHE_LINE
 }
 
+/// File-backed per-anchor candidate pairs retained during graph construction.
+///
+/// Mapping changes backing ownership; it does not enforce an RSS limit.
 pub struct MmapAnchorSlab {
     mmap: memmap2::MmapMut,
     _file: File,
@@ -108,21 +113,25 @@ impl MmapAnchorSlab {
         }
     }
 
+    /// Returns the number of addressable candidate-collection anchors.
     #[inline]
     pub fn num_anchors(&self) -> usize {
         self.num_anchors
     }
 
+    /// Returns the maximum candidate pairs retained per anchor slot.
     #[inline]
     pub fn max_pairs(&self) -> usize {
         self.max_pairs
     }
 
+    /// Returns the padded byte stride of each anchor slot.
     #[inline]
     pub fn slot_bytes(&self) -> usize {
         self.slot_bytes
     }
 
+    /// Computes a mutable slot address inside the mapping; callers validate the anchor and synchronization.
     #[inline]
     fn slot_ptr(&self, anchor: usize) -> *mut u8 {
         unsafe { (self.mmap.as_ptr() as *mut u8).add(anchor * self.slot_bytes) }
@@ -275,6 +284,7 @@ impl MmapAnchorSlab {
 }
 
 impl Drop for MmapAnchorSlab {
+    /// Best-effort removes the temporary backing path when the anchor slab is dropped.
     fn drop(&mut self) {
         // mmap is unmapped by memmap2::MmapMut::drop.
         // Remove the temp file.
@@ -285,6 +295,7 @@ impl Drop for MmapAnchorSlab {
 }
 
 impl std::fmt::Debug for MmapAnchorSlab {
+    /// Formats `num_anchors`, `max_pairs`, `virtual_size`, `total_pairs` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let total_pairs: usize = (0..self.num_anchors).map(|a| self.count(a)).sum();
         f.debug_struct("MmapAnchorSlab")

@@ -61,6 +61,7 @@ where
     /// query scratch queue.
     query_scratch_queue: ArcConcurrentBoxedQueue<InMemQueryScratch<T, N>>,
 
+    /// Logically deleted vertex IDs guarded against concurrent updates.
     pub delete_set: RwLock<HashSet<u32>>,
 
     /// mmap-backed storage for `(location, pruned_id)` pairs per anchor.
@@ -129,6 +130,7 @@ where
             .get_distance(id1, id2, self.configuration.dist_metric)
     }
 
+    /// Initializes scratch if needed and links a graph over base rows already stored in the index.
     fn build_with_data_populated(&mut self) -> ANNResult<()>
     where
         T: bytemuck::Pod,
@@ -158,6 +160,7 @@ where
         Ok(())
     }
 
+    /// Selects the entry point, seeds navigation, inserts vertices in parallel and performs final degree cleanup.
     fn link(&mut self) -> ANNResult<()> {
         let mut visit_order =
             Vec::with_capacity(self.num_active_pts + self.configuration.num_frozen_pts);
@@ -212,6 +215,7 @@ where
         Ok(())
     }
 
+    /// Builds one node's outgoing edges and then inserts reverse edges using an exclusive scratch lease.
     fn insert_vertex_id(&self, vertex_id: u32) -> ANNResult<()> {
         let mut scratch_manager =
             ScratchStoreManager::new(self.query_scratch_queue.clone(), Duration::from_millis(10))?;
@@ -240,6 +244,7 @@ where
         Ok(())
     }
 
+    /// Copies the source adjacency before reverse insertion so no source read lock is held while writing destinations.
     fn update_neighbors_of_vertex(
         &self,
         vertex_id: u32,
@@ -265,6 +270,7 @@ where
         Ok(())
     }
 
+    /// Publishes a pruned adjacency list under the node write lock.
     #[cfg(not(feature = "orion"))]
     fn update_vertex_with_neighbors(
         &self,
@@ -277,6 +283,7 @@ where
         Ok(())
     }
 
+    /// Searches for construction candidates and robustly prunes a nonempty outgoing list.
     #[cfg(not(feature = "orion"))]
     fn search_for_point_and_prune(
         &self,
@@ -398,6 +405,10 @@ where
         Ok(cmp)
     }
 
+    /// Searches with borrowed pool scratch and writes eligible top-k IDs into caller-provided output.
+    ///
+    /// Frozen and soft-deleted nodes are excluded from results. If fewer than k IDs are
+    /// found, only the written prefix changes; the legacy API reports work rather than a result count.
     fn search(
         &self,
         query: &Vertex<T, N>,
@@ -465,6 +476,7 @@ where
         Ok(cmp)
     }
 
+    /// Reprunes any node still exceeding the configured degree after parallel insertion.
     fn cleanup_graph(&mut self, visit_order: &[u32]) -> ANNResult<()> {
         if self.num_active_pts > 0 {
             log::info!("Starting final cleanup..");
@@ -527,6 +539,7 @@ where
         )
     }
 
+    /// Builds a scored, deduplicated candidate pool from a node's current adjacency.
     fn get_neighbors_for_vertex(&self, vertex_id: u32) -> ANNResult<Vec<Neighbor>> {
         let binding = self.final_graph.read_vertex_and_neighbors(vertex_id)?;
         let neighbors = binding.get_neighbors();
@@ -535,6 +548,7 @@ where
         Ok(dummy_pool)
     }
 
+    /// Scores unique neighbors while excluding the source node, prefetching the following base row.
     pub fn get_unique_neighbors(
         &self,
         neighbors: &[u32],
@@ -577,6 +591,7 @@ where
         Ok(dummy_pool)
     }
 
+    /// Adds a scored neighbor only when it is not the source and has not already been collected.
     fn insert_neighbor_if_unique(
         &self,
         dummy_visited: &mut HashSet<u32>,
@@ -597,6 +612,7 @@ where
         Ok(())
     }
 
+    /// Reads the current adjacency length while holding the node read guard.
     fn get_neighbor_count(&self, vertex_id: u32) -> ANNResult<usize> {
         let num_nbrs = self
             .final_graph
@@ -605,6 +621,7 @@ where
         Ok(num_nbrs)
     }
 
+    /// Adds an active internal ID to the logical deletion set without removing its graph storage.
     fn soft_delete_vertex(&self, vertex_id_to_delete: u32) -> ANNResult<()> {
         if vertex_id_to_delete as usize >= self.num_active_pts {
             return Err(ANNError::log_index_error(format!(
@@ -627,6 +644,7 @@ where
         Ok(())
     }
 
+    /// Allocates the requested number of reusable query scratch objects and publishes them to the pool.
     fn initialize_query_scratch(
         &mut self,
         num_threads: u32,
@@ -649,6 +667,7 @@ where
         Ok(())
     }
 
+    /// Logs degree and logical-deletion statistics and updates the maximum observed degree.
     fn print_stats(&mut self) -> ANNResult<()> {
         let mut max = 0;
         let mut min = usize::MAX;
@@ -1029,10 +1048,14 @@ where
     T: Default + Copy + Sync + Send + Into<f32> + bytemuck::Pod + 'static,
     [T; N]: FullPrecisionDistance<T, N>,
 {
+    /// Exposes the concrete index for adapter downcasts without transferring ownership.
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
 
+    /// Loads validated file rows and constructs this index using its configured builder.
+    ///
+    /// See [`ANNInmemIndex::build`] for the file and capacity contract.
     fn build(&mut self, filename: &str, num_points_to_load: usize) -> ANNResult<()> {
         if !file_exists(filename) {
             return Err(ANNError::log_index_error(format!(
@@ -1082,6 +1105,9 @@ where
         Ok(())
     }
 
+    /// Loads additional rows and links them into the current graph.
+    ///
+    /// See [`ANNInmemIndex::insert`] for input and capacity requirements.
     fn insert(&mut self, filename: &str, num_points_to_insert: usize) -> ANNResult<()> {
         if !file_exists(filename) {
             return Err(ANNError::log_index_error(format!(
@@ -1161,6 +1187,9 @@ where
         Ok(())
     }
 
+    /// Writes graph, vector data and deletion IDs as the legacy multi-file cache.
+    ///
+    /// Files are saved sequentially; this operation does not atomically publish a snapshot.
     fn save(&mut self, filename: &str) -> ANNResult<()> {
         let data_file = filename.to_string() + ".data";
         let delete_file = filename.to_string() + ".delete";
@@ -1172,6 +1201,9 @@ where
         Ok(())
     }
 
+    /// Restores vectors, graph and deletions, then initializes reusable query scratch if absent.
+    ///
+    /// A failed component load can leave this mutable index partially populated.
     fn load(&mut self, filename: &str, expected_num_points: usize) -> ANNResult<()> {
         self.num_active_pts = expected_num_points;
         self.dataset
@@ -1190,6 +1222,7 @@ where
         Ok(())
     }
 
+    /// Checks the fixed query width and delegates to the scratch-backed search loop.
     fn search(
         &self,
         query: &[T],
@@ -1201,6 +1234,7 @@ where
         InmemIndex::search(self, &query_vector, k_value, l_value, indices)
     }
 
+    /// Checks the fixed query width before the benchmark-only ADSampling search.
     #[cfg(feature = "benchmark")]
     fn search_adsampling(
         &self,
@@ -1214,6 +1248,7 @@ where
         InmemIndex::search_adsampling(self, &query_vector, k_value, l_value, ads_epsilon, indices)
     }
 
+    /// Validates the requested ID prefix before marking its active vertices deleted.
     fn soft_delete(
         &mut self,
         vertex_ids_to_delete: Vec<u32>,
@@ -1252,10 +1287,12 @@ where
         Ok(())
     }
 
+    /// Exports the final graph in the legacy mmap-compatible adjacency format.
     fn save_graph_mmap(&self, path: &str) -> ANNResult<()> {
         self.final_graph.save_graph_mmap(path)
     }
 
+    /// Exports the final graph with its vectors, dimension and metric discriminator.
     fn save_graph_mmap_with_vectors(&self, path: &str) -> ANNResult<()> {
         let metric_byte = match self.configuration.dist_metric {
             orion_ann_vector::Metric::L2 => 0u8,
@@ -1269,23 +1306,28 @@ where
         )
     }
 
+    /// Returns the entry vertex used to initialize a search beam.
     fn start_node(&self) -> u32 {
         self.start
     }
 
+    /// Copies optional build candidates, returning None when extraction fails.
     #[cfg(feature = "orion")]
     fn extract_candidate_sets(&mut self) -> Option<Vec<StdHashSet<u32>>> {
         InmemIndex::extract_candidate_sets(self).ok()
     }
 
+    /// Copies the final adjacency lists for downstream partition construction.
     fn extract_graph(&self) -> HashMap<u32, Vec<u32>> {
         InmemIndex::extract_graph(self)
     }
 
+    /// Transfers the final graph out, leaving an empty graph of the requested degree.
     fn extract_final_graph(&mut self, _num_points: usize, max_degree: u32) -> InMemoryGraph {
         std::mem::replace(&mut self.final_graph, InMemoryGraph::new(0, max_degree))
     }
 
+    /// Combines navigation edges and bounded retained build candidates for Orion import.
     #[cfg(feature = "orion")]
     fn extract_graph_and_candidates(
         &mut self,
@@ -1294,15 +1336,18 @@ where
         InmemIndex::extract_graph_and_candidates(self, max_extra)
     }
 
+    /// Releases retained construction candidates after downstream extraction.
     #[cfg(feature = "orion")]
     fn drop_candidate_slab(&mut self) {
         InmemIndex::drop_candidate_slab(self)
     }
 
+    /// Reports the active vector count used by the built index.
     fn num_active_points(&self) -> usize {
         InmemIndex::num_active_points(self)
     }
 
+    /// Copies the requested packed rows into owned storage and builds without a temporary input file.
     fn build_from_data(&mut self, data: &[T], num_points: usize) -> ANNResult<()> {
         let expected_len = num_points * N;
         if data.len() < expected_len {

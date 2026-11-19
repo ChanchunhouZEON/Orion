@@ -66,6 +66,8 @@ impl IndexSlot {
         Ok(std::mem::replace(&mut *current, replacement))
     }
 }
+
+/// Rejects publication of an index missing any application-required calibration.
 fn check(index: &Index, ks: &[usize]) -> Result<()> {
     for &k in ks {
         if index.calibration(k).is_none() {

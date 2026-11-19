@@ -63,6 +63,11 @@ pub fn distance_l2_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
     distance_l2_slice_f32(a, b)
 }
 
+/// Computes squared L2 for equal-length dynamic rows, including any scalar tail.
+///
+/// # Panics
+///
+/// Panics if row lengths differ.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 pub fn distance_l2_slice_f32(a: &[f32], b: &[f32]) -> f32 {
@@ -170,6 +175,12 @@ pub fn distance_l2_adsampling_f32<const N: usize>(
 ) -> f32 {
     distance_l2_adsampling_slice_f32(a, b, upper_bound, epsilon)
 }
+
+/// Evaluates squared L2 with the experimental adaptive-sampling rejection bound.
+///
+/// # Panics
+///
+/// Panics if row lengths differ.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 #[cfg(feature = "benchmark")]

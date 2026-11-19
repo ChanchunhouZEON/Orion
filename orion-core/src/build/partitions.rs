@@ -5,7 +5,7 @@
 
 //! Validated partition and STAG construction into the final graph slab.
 use crate::index::{CompressedIndex, IndexData};
-use crate::model::PhasedGraph;
+use crate::model::graph::PhasedGraph;
 use crate::{Error, Result};
 use std::io::Read;
 impl<D: IndexData, S: Default> CompressedIndex<D, S> {
@@ -21,9 +21,8 @@ impl<D: IndexData, S: Default> CompressedIndex<D, S> {
     /// # Example
     /// ```
     /// use orion_ann_core::{Orion, PaddedDataset, PaddedLayout};
-    /// use orion_ann_vector::L2F32Distance;
     /// let data = PaddedDataset::from_packed(
-    ///     &[0.0f32, 1.0, 2.0, 3.0], PaddedLayout::for_kernel::<L2F32Distance>(2)?,
+    ///     &[0.0f32, 1.0, 2.0, 3.0], PaddedLayout::for_base_scalar::<f32>(2)?,
     /// )?;
     /// let parts = [(vec![1], vec![], vec![]), (vec![0], vec![], vec![])];
     /// let index = Orion::from_graph_partitions(data, &parts, 0, 1, 0)?;
@@ -68,6 +67,7 @@ impl<D: IndexData, S: Default> CompressedIndex<D, S> {
         )
     }
 
+    /// Imports a staged partition stream into planned graph storage after checking its base and entry point.
     pub fn from_staged_graph_with_storage(
         dataset: D,
         reader: impl Read,
@@ -83,6 +83,7 @@ impl<D: IndexData, S: Default> CompressedIndex<D, S> {
         Ok(Self::from_phased_graph(dataset, graph, entry))
     }
 
+    /// Rejects an empty or mismatched graph and an entry node outside the supplied dataset.
     pub(crate) fn validate_graph_shape(dataset: &D, nodes: usize, entry: u32) -> Result<()> {
         if nodes == 0 || nodes != dataset.point_count() || entry as usize >= nodes {
             return Err(

@@ -43,8 +43,13 @@ pub const HIGH_DIMENSION_L2: usize = 512;
 /// The exact stage implementations depend on the configured [`SearchMetric`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct Cascade {
+    /// Optional screening policy applied before admission scoring.
     pub prefilter: PrefilterChoice,
+
+    /// Stage that computes candidate distances used to update the search beam.
     pub admission: AdmissionChoice,
+
+    /// Final scoring stage applied to selected candidates.
     pub rerank: RerankChoice,
 }
 
@@ -87,6 +92,7 @@ impl Cascade {
         }
     }
 
+    /// Formats the resolved prefilter, admission and rerank choices in execution order.
     #[cfg(any(feature = "cli", feature = "benchmark"))]
     pub fn label(self) -> String {
         format!(
@@ -97,6 +103,7 @@ impl Cascade {
 }
 
 impl Cascade {
+    /// Selects direct native-byte admission for the requested metric without a separate filter or reranker.
     pub(crate) fn native_u8(metric: SearchMetric) -> Self {
         Self {
             prefilter: PrefilterChoice::None,
@@ -109,6 +116,7 @@ impl Cascade {
         }
     }
 
+    /// Replaces only explicitly provided stage choices while retaining the remaining defaults.
     pub fn with_overrides(
         mut self,
         prefilter: Option<PrefilterChoice>,
@@ -144,6 +152,7 @@ impl Cascade {
 }
 
 impl CascadeConfig {
+    /// Parses named user overrides and applies them to the supplied default cascade.
     pub(crate) fn apply(&self, defaults: Cascade) -> Result<Cascade> {
         defaults.with_named_overrides(
             self.prefilter.as_deref(),

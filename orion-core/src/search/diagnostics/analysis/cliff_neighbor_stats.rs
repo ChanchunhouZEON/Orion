@@ -35,6 +35,7 @@ pub struct SortedNeighbor {
 /// Per-node cliff analysis result.
 #[derive(Debug, Clone)]
 pub struct NodeCliffStats {
+    /// Internal node ID associated with this observation.
     pub node: u32,
     /// Degree (number of neighbors).
     pub degree: usize,
@@ -185,7 +186,10 @@ pub fn annotate_bf_ranks(
 /// Summary statistics across all nodes.
 #[derive(Debug)]
 pub struct CliffSummary {
+    /// Number of graph nodes covered by this object.
     pub num_nodes: usize,
+
+    /// Mean navigation degree across the sampled nodes.
     pub avg_degree: f64,
     /// Cliff position histogram: index = cliff_pos, value = count of nodes.
     pub cliff_pos_histogram: Vec<usize>,
@@ -293,6 +297,7 @@ pub fn summarize_cliff_stats(stats: &[NodeCliffStats]) -> CliffSummary {
 }
 
 impl std::fmt::Display for CliffSummary {
+    /// Formats sampled neighbor-distance cliffs and their summary percentiles.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Cliff Neighbor Summary ({} nodes)", self.num_nodes)?;
         writeln!(f, "  Avg degree:              {:.1}", self.avg_degree)?;
@@ -340,6 +345,7 @@ impl std::fmt::Display for CliffSummary {
 /// Summary of brute-force rank distribution around cliff positions.
 #[derive(Debug)]
 pub struct CliffRankSummary {
+    /// Number of sampled nodes contributing to these statistics.
     pub num_sampled: usize,
     /// Average BF rank of neighbors *before* the cliff (positions 0..cliff_pos inclusive).
     pub avg_rank_before_cliff: f64,
@@ -481,6 +487,7 @@ pub fn summarize_cliff_ranks(
 }
 
 impl std::fmt::Display for CliffRankSummary {
+    /// Formats brute-force rank statistics around sampled neighbor cliffs.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
@@ -570,7 +577,10 @@ pub fn print_node_cliff_detail(s: &NodeCliffStats) {
 /// The cliff point is where precision drops most sharply.
 #[derive(Debug, Clone)]
 pub struct NodeRankPrecisionProfile {
+    /// Internal node ID associated with this observation.
     pub node: u32,
+
+    /// Navigation neighbor count of the sampled node.
     pub degree: usize,
     /// `precision[k]` for k in `0..degree`.
     pub precision: Vec<f64>,
@@ -631,6 +641,7 @@ pub fn compute_rank_precision_profiles(
 /// Aggregate rank-precision summary.
 #[derive(Debug)]
 pub struct RankPrecisionSummary {
+    /// Number of sampled nodes contributing to these statistics.
     pub num_sampled: usize,
     /// Average precision@k across all sampled nodes, for each position k.
     pub avg_precision_by_pos: Vec<f64>,
@@ -642,6 +653,9 @@ pub struct RankPrecisionSummary {
     pub cliff_pos_histogram: Vec<usize>,
 }
 
+/// Aggregates neighbor-rank precision and cliff positions across sampled node profiles.
+///
+/// An empty sample produces an empty summary rather than undefined percentiles.
 pub fn summarize_rank_precision(profiles: &[NodeRankPrecisionProfile]) -> RankPrecisionSummary {
     let n = profiles.len();
     if n == 0 {
@@ -694,6 +708,7 @@ pub fn summarize_rank_precision(profiles: &[NodeRankPrecisionProfile]) -> RankPr
 }
 
 impl std::fmt::Display for RankPrecisionSummary {
+    /// Formats precision by neighbor position and its measured drop.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,

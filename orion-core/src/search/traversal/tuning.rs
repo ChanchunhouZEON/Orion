@@ -33,6 +33,7 @@ pub(super) fn dstream_la_q() -> usize {
     })
 }
 
+/// Returns the production near-prefetch window for candidate scoring, measured in cache lines.
 #[cfg(not(feature = "benchmark"))]
 pub(super) fn dstream_la_q() -> usize {
     DEFAULT_NEAR_LINES
@@ -52,6 +53,7 @@ pub(crate) fn dstream_la_truth() -> usize {
     })
 }
 
+/// Returns the production near-prefetch window for reranking, measured in cache lines.
 #[cfg(not(feature = "benchmark"))]
 pub(crate) fn dstream_la_truth() -> usize {
     DEFAULT_NEAR_LINES
@@ -85,11 +87,13 @@ pub(super) const FLUSH_INTERVAL: [usize; 2] = [1, 4];
 ///   K * 1.5 = K + (K >> 1)
 const INSERT_ROUTE_SHIFT: u32 = 3; // << 3 = × 8
 
+/// Scales candidate count for selecting individual insertion versus bulk beam merge.
 #[inline(always)]
 pub(super) const fn insert_route_mul(k: usize) -> usize {
     k << INSERT_ROUTE_SHIFT
 }
 
+/// Scales candidate count for selecting linear versus galloping beam merge.
 #[inline(always)]
 pub(super) const fn linear_merge_mul(k: usize) -> usize {
     k + (k >> 1)
@@ -98,7 +102,10 @@ pub(super) const fn linear_merge_mul(k: usize) -> usize {
 /// 16-byte aligned query buffer for efficient NEON loads.
 /// Query is copied once at search entry, then reused for all distance computations.
 #[repr(C, align(16))]
-pub struct AlignedQuery<const N: usize>(pub [f32; N]);
+pub struct AlignedQuery<const N: usize>(
+    /// Query coordinates retained in the wrapper's aligned storage.
+    pub [f32; N],
+);
 
 // ── PQ helpers (formerly in utils.rs) ──────────────────────
 
@@ -122,6 +129,7 @@ where
         Ok(pq.adc_distance(code, pq_dists))
     }
 
+    /// Borrows the static benchmark PQ table and codes, reporting invalid state if preparation is incomplete.
     pub(super) fn get_unwrapped_pq_component(
         &self,
     ) -> Result<(&Arc<FixedChunkPQTable>, &Vec<u8>, usize)> {
@@ -142,6 +150,7 @@ where
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl<const N: usize> std::fmt::Debug for AlignedQuery<N> {
+    /// Formats `dimension` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AlignedQuery")
             .field("dimension", &(N))

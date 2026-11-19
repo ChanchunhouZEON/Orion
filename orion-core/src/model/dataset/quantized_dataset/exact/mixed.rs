@@ -11,12 +11,14 @@ use crate::{ScoreMetric, model::Neighbor, search::cascade::stage::AdmissionSessi
 use bytemuck::Pod;
 use orion_ann_diskann::model::PaddedDataset;
 
+/// Wide-query exact scorer over typed base rows without a full-base conversion.
 pub(crate) struct MixedSession<'a, T: Pod> {
     base: &'a PaddedDataset<T>,
     query: &'a [f64],
     metric: ScoreMetric,
 }
-impl<'a, T: Pod + Into<f32>> MixedSession<'a, T> {
+impl<'a, T: Pod + Into<f64>> MixedSession<'a, T> {
+    /// Borrows a wide query and typed base for exact mixed-coordinate scoring.
     pub(crate) fn new(base: &'a PaddedDataset<T>, query: &'a [f64], metric: ScoreMetric) -> Self {
         Self {
             base,
@@ -24,6 +26,8 @@ impl<'a, T: Pod + Into<f32>> MixedSession<'a, T> {
             metric,
         }
     }
+
+    /// Computes the original metric and converts it to the ascending distance convention used by the beam.
     fn distance(&self, id: u32) -> f32 {
         let score = crate::search::query::numeric::score(
             self.query,
@@ -39,10 +43,19 @@ impl<'a, T: Pod + Into<f32>> MixedSession<'a, T> {
 }
 // SAFETY: only input IDs are emitted, with at most one initialized output per
 // ID. Base/query borrows remain valid for the complete session lifetime.
-unsafe impl<T: Pod + Into<f32> + Send + Sync> AdmissionSession for MixedSession<'_, T> {
+unsafe impl<T: Pod + Into<f64> + Send + Sync> AdmissionSession for MixedSession<'_, T> {
+    /// Scores the entry node in the admission distance domain.
+    ///
+    /// See [`AdmissionSession::entry_distance`] for the shared contract.
     fn entry_distance(&self, id: u32) -> f32 {
         self.distance(id)
     }
+
+    /// Scores candidates and compacts qualifying neighbors into caller-owned output.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`AdmissionSession::admit_stream`]'s pointer, shape and lifetime contract.
     unsafe fn admit_stream(
         &self,
         ids: &[u32],

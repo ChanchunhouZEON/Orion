@@ -19,6 +19,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem;
 
+/// Legacy PQ file paths and the sequential training-data reader.
 #[derive(Debug)]
 pub struct PQStorage {
     /// Pivot table path
@@ -35,6 +36,7 @@ pub struct PQStorage {
 }
 
 impl PQStorage {
+    /// Records legacy PQ output paths and opens the sequential training-data reader.
     pub fn new(
         pivot_file: &str,
         compressed_pivot_file: &str,
@@ -49,6 +51,7 @@ impl PQStorage {
         })
     }
 
+    /// Writes the compressed-code row count and chunk count at the output header.
     pub fn write_compressed_pivot_metadata(&self, npts: i32, pq_chunk: i32) -> ANNResult<()> {
         let mut writer = open_file_to_write(&self.compressed_pivot_file)?;
         writer.write_all(&npts.to_le_bytes())?;
@@ -56,6 +59,7 @@ impl PQStorage {
         Ok(())
     }
 
+    /// Writes one compressed-code block after the header, narrowing centroid IDs when the codebook fits in u8.
     pub fn write_compressed_pivot_data(
         &self,
         compressed_base: &[usize],
@@ -80,6 +84,7 @@ impl PQStorage {
         Ok(())
     }
 
+    /// Writes centroids, the global mean and chunk offsets, then records their section offsets.
     pub fn write_pivot_data(
         &self,
         full_pivot_data: &[f32],
@@ -118,15 +123,18 @@ impl PQStorage {
         Ok(())
     }
 
+    /// Reports whether a pivot cache path exists; this does not validate its contents.
     pub fn pivot_data_exist(&self) -> bool {
         file_exists(&self.pivot_file)
     }
 
+    /// Reads centroid count and dimension from the legacy pivot section.
     pub fn read_pivot_metadata(&self) -> ANNResult<(usize, usize)> {
         let (_, file_num_centers, file_dim) = load_bin::<f32>(&self.pivot_file, METADATA_SIZE)?;
         Ok((file_num_centers, file_dim))
     }
 
+    /// Loads pivot sections and rejects shape metadata that differs from the requested codebook.
     pub fn load_pivot_data(
         &self,
         num_pq_chunks: &usize,
@@ -180,6 +188,7 @@ impl PQStorage {
         Ok((full_pivot_data, centroid, chunk_offsets))
     }
 
+    /// Consumes the training file's row-count and dimension header from the current reader position.
     pub fn read_pq_data_metadata(&mut self) -> ANNResult<(usize, usize)> {
         let npts_i32 = self.pq_data_file_reader.read_i32::<LittleEndian>()?;
         let dim_i32 = self.pq_data_file_reader.read_i32::<LittleEndian>()?;
@@ -188,6 +197,9 @@ impl PQStorage {
         Ok((num_points, dim))
     }
 
+    /// Reads the next packed training block using the caller-selected scalar representation.
+    ///
+    /// The legacy format has no dtype tag; callers must select the type matching the file.
     pub fn read_pq_block_data<T: Copy>(
         &mut self,
         cur_block_size: usize,

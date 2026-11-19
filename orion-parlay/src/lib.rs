@@ -17,16 +17,22 @@ use std::{
 /// Stable bridge failure category, mapped by the runtime into Orion's errors.
 #[derive(Debug)]
 pub struct Error {
+    /// Bridge failure category used by runtime error conversion.
     pub code: u32,
+
+    /// Owned backend diagnostic copied before crossing the ABI boundary.
     pub message: String,
 }
 impl std::fmt::Display for Error {
+    /// Writes the backend explanation without losing the separately accessible error category.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
     }
 }
 impl std::error::Error for Error {}
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Creates the bridge validation failure used before calling C++.
 fn invalid(message: &str) -> Error {
     Error {
         code: 1,
@@ -37,15 +43,32 @@ fn invalid(message: &str) -> Error {
 /// Construction recipe. Versioned in the runtime cache provenance.
 #[derive(Clone, Copy, Debug)]
 pub struct BuildOptions {
+    /// Maximum navigation degree passed to the underlying graph builder.
     pub degree: u32,
+
+    /// Construction beam capacity used to gather pruning candidates.
     pub build_l: u32,
+
+    /// Maximum retained residual candidates per node.
     pub max_extra: u32,
+
+    /// Worker count for this independent synchronous construction.
     pub threads: u32,
+
+    /// Percentage used to split navigation neighbors into local and remote partitions.
     pub local_pct: u32,
+
+    /// Number of construction passes performed by the backend.
     pub passes: u32,
+
+    /// Robust-pruning expansion parameter recorded in graph provenance.
     pub alpha: f64,
+
+    /// Distance ordering used during construction and partitioning.
     pub metric: Metric,
 }
+
+/// Distance family encoded into the C++ construction options.
 #[derive(Clone, Copy, Debug)]
 pub enum Metric {
     L2,
@@ -54,6 +77,7 @@ pub enum Metric {
     Cosine,
 }
 impl Default for BuildOptions {
+    /// Selects the standard bridge construction recipe; runtime may override these controls.
     fn default() -> Self {
         Self {
             degree: 64,
@@ -67,6 +91,8 @@ impl Default for BuildOptions {
         }
     }
 }
+
+/// C-layout construction request; dimensions and strides accompany the borrowed base pointer.
 #[repr(C)]
 struct Options {
     count: usize,
@@ -82,6 +108,7 @@ struct Options {
     alpha: f64,
 }
 impl Options {
+    /// Translates typed Rust options into the stable C-layout request.
     fn new(count: usize, dimension: usize, stride: usize, o: BuildOptions) -> Self {
         Self {
             count,
@@ -102,18 +129,23 @@ impl Options {
         }
     }
 }
+
+/// Fixed-size error buffer initialized by Rust and populated by the C++ boundary.
 #[repr(C)]
 struct Failure {
     code: u32,
     message: [std::ffi::c_char; 1024],
 }
 impl Failure {
+    /// Initializes an empty error buffer before a backend operation.
     fn new() -> Self {
         Self {
             code: 0,
             message: [0; 1024],
         }
     }
+
+    /// Converts a nonzero ABI status into an owned Rust error after backend workers join.
     fn check(self, status: i32) -> Result<()> {
         if status == 0 {
             return Ok(());
@@ -127,6 +159,8 @@ impl Failure {
         })
     }
 }
+
+/// Borrowed C++ partition pointers and lengths for one node.
 #[repr(C)]
 struct RawPartition {
     local: *const u32,
@@ -171,8 +205,13 @@ unsafe extern "C" {
 }
 /// Distance-sorted navigation and residual candidate partitions for one node.
 pub struct Partition<'a> {
+    /// Distance-ordered local navigation neighbors borrowed from the builder.
     pub local: &'a [u32],
+
+    /// Remaining navigation neighbors used before convergence.
     pub remote: &'a [u32],
+
+    /// Retained discarded candidates used by Orion's supplementary search path.
     pub extra: &'a [u32],
 }
 /// Owns the C++ graph/extras, borrowing the immutable base allocation.
@@ -183,6 +222,7 @@ pub struct Builder<'a> {
     _base: PhantomData<&'a [u8]>,
 }
 impl Drop for Builder<'_> {
+    /// Releases the C++ graph handle before the borrowed base lifetime can end.
     fn drop(&mut self) {
         unsafe { orion_pa_free(self.handle.as_ptr()) };
     }
@@ -294,6 +334,8 @@ impl<'a> Builder<'a> {
             slab_stride,
         )
     }
+
+    /// Calls the direct builder against exclusive output storage and translates its final status.
     fn into_slab(
         data: *const c_void,
         bytes: bool,
@@ -317,6 +359,8 @@ impl<'a> Builder<'a> {
         };
         error.check(status)
     }
+
+    /// Checks row count, logical width and padded stride before any base pointer enters C++.
     fn shape(len: usize, count: usize, dimension: usize, stride: usize) -> Result<()> {
         if count == 0
             || dimension == 0
@@ -327,6 +371,8 @@ impl<'a> Builder<'a> {
         }
         Ok(())
     }
+
+    /// Creates the owning reference builder and rejects a successful status with a null handle.
     fn build(
         data: *const c_void,
         bytes: bool,
@@ -368,6 +414,12 @@ impl<'a> Builder<'a> {
             return Ok(None);
         }
         // Empty C++ vectors may have null data(); Rust empty slices may not.
+        /// Forms a Rust partition view while accepting null pointers only for empty partitions.
+        ///
+        /// # Safety
+        ///
+        /// Nonempty pointers must cover `n` initialized u32 values and remain valid for
+        /// the returned borrow, which must end before the next mutable builder operation.
         unsafe fn slice<'b>(p: *const u32, n: usize) -> &'b [u32] {
             if n == 0 {
                 &[]
@@ -393,6 +445,8 @@ impl<'a> Builder<'a> {
     pub fn save_reference(&mut self, path: &Path) -> Result<()> {
         self.save(path, true)
     }
+
+    /// Exports the selected staged format through the ABI after rejecting embedded-NUL paths.
     fn save(&mut self, path: &Path, reference: bool) -> Result<()> {
         let path = CString::new(path.as_os_str().as_encoded_bytes())
             .map_err(|_| invalid("path contains NUL"))?;

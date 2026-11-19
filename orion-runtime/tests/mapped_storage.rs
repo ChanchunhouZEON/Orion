@@ -52,6 +52,7 @@ fn mapped_calibration_snapshot_and_concurrent_search_match_resident() {
     let mapped_options = StorageOptions {
         mode: StorageMode::Mapped,
         directory: Some(root.clone()),
+        ..Default::default()
     };
     let mut mapped = Index::new(
         input(),
@@ -104,7 +105,7 @@ fn mapped_calibration_snapshot_and_concurrent_search_match_resident() {
 }
 
 #[test]
-fn insufficient_mapping_reserve_fails_before_base_allocation() {
+fn mapped_index_with_small_budget_has_no_synthetic_resident_charge() {
     let root = std::env::temp_dir().join(format!("orion-mmap-budget-{}", std::process::id()));
     let values: Vec<_> = (0..64 * 8).map(|i| (i % 17) as f32).collect();
     let result = Index::new(
@@ -127,11 +128,20 @@ fn insufficient_mapping_reserve_fails_before_base_allocation() {
             ..Default::default()
         },
     );
-    let error = result.unwrap_err();
+    let index = result.unwrap();
+    let info = index.info();
+    assert_eq!(info["storage_accounting"]["resident_payload_bytes"], 0);
     assert!(
-        error.to_string().contains("ORION_RESOURCE_EXHAUSTED"),
-        "{error}"
+        info["storage_accounting"]["mapped_payload_bytes"]
+            .as_u64()
+            .unwrap()
+            > 0
     );
+    assert_eq!(
+        info["storage_accounting"]["available_bytes"],
+        info["storage_accounting"]["limit_bytes"]
+    );
+    drop(index);
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(root.with_extension("objects"));
 }
@@ -155,6 +165,7 @@ fn backing_errors_leave_index_unpublished() {
             storage_options: StorageOptions {
                 mode: StorageMode::Mapped,
                 directory: Some(root.join("does-not-exist")),
+                ..Default::default()
             },
             ..Default::default()
         },
@@ -201,6 +212,7 @@ fn mapped_native_base_staged_import_cache_and_snapshot_survive_source_removal() 
         storage_options: StorageOptions {
             mode: StorageMode::Mapped,
             directory: Some(root.path().into()),
+            ..Default::default()
         },
         ..Default::default()
     };

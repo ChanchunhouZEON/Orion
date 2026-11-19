@@ -72,6 +72,7 @@ pub const fn rabitq_code_stride(dim: usize) -> usize {
     bytes.div_ceil(block) * block
 }
 
+/// Rounds packed sign bits to the persistent 16-byte code alignment.
 pub const fn rabitq_code_stride_disk(dim: usize) -> usize {
     let bits = dim.div_ceil(8);
     (bits + 15) & !15
@@ -90,6 +91,7 @@ pub const fn rabitq_code_stride_disk(dim: usize) -> usize {
 /// Plus the row-major `N × N` rotation matrix used for both encoding
 /// and per-query rotation at search time.
 pub struct RabitQDataset {
+    /// Logical coordinates per original vector, excluding padding.
     pub(crate) dimension: usize,
     /// Packed sign codes, `num_vertices * STRIDE` bytes, 16-byte aligned.
     pub(crate) codes: AlignedBoxWithSlice<u8>,
@@ -352,6 +354,7 @@ impl RabitQDataset {
         Ok(())
     }
 
+    /// Restores a binary RaBitQ representation using default resident storage.
     pub fn decode(r: &mut dyn std::io::Read, byte_len: u64) -> Result<Self> {
         Self::decode_with_storage(r, byte_len, &Default::default())
     }
@@ -470,6 +473,7 @@ impl RabitQDataset {
 // kernel processes 4 lanes per nibble and 8 dims per code byte, using
 // `vbslq_f32` to select between `+q` and `-q` based on the bit mask.
 
+/// Selects a compiled sign-projection kernel and handles coordinates outside its SIMD blocks.
 #[inline]
 fn signed_sum_dispatch(code: &[u8], rotated_q: &[f32]) -> f32 {
     #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
@@ -692,11 +696,14 @@ pub struct XorShiftPub {
     inner: XorShift64,
 }
 impl XorShiftPub {
+    /// Seeds the shared deterministic generator used by quantized rotation construction.
     pub fn new(seed: u64) -> Self {
         Self {
             inner: XorShift64(seed),
         }
     }
+
+    /// Advances the shared rotation generator by one reproducible sample.
     pub fn next_u64(&mut self) -> u64 {
         self.inner.next_u64()
     }
@@ -720,6 +727,7 @@ fn build_orthogonal_rotation(seed: u64, dim: usize) -> AlignedBoxWithSlice<f32> 
     try_build_orthogonal_rotation(seed, dim).expect("invalid rotation dimensions or allocation")
 }
 
+/// Builds a seeded orthogonal rotation in default resident storage.
 pub(super) fn try_build_orthogonal_rotation(
     seed: u64,
     dim: usize,
@@ -727,6 +735,9 @@ pub(super) fn try_build_orthogonal_rotation(
     try_build_orthogonal_rotation_with_storage(seed, dim, &Default::default())
 }
 
+/// Allocates and orthogonalizes a seeded Gaussian matrix under the requested storage policy.
+///
+/// Rejects unrepresentable dimensions before allocating the quadratic matrix.
 pub(super) fn try_build_orthogonal_rotation_with_storage(
     seed: u64,
     dim: usize,
@@ -806,6 +817,7 @@ fn apply_rotation(m: &[f32], x: &[f32], y: &mut [f32]) {
     apply_rotation_scalar(m, x, y, n);
 }
 
+/// Applies the row-major rotation matrix to a query using the scalar reference order.
 #[inline]
 fn apply_rotation_scalar(m: &[f32], x: &[f32], y: &mut [f32], n: usize) {
     for r in 0..n {
@@ -921,9 +933,11 @@ unsafe fn apply_rotation_avx512_16(m: &[f32], x: &[f32], y: &mut [f32], n: usize
 
 // ── Deterministic PRNG + Gaussian sampler ─────────────────────────────
 
+/// Small deterministic generator for reproducible projection or quantizer construction.
 struct XorShift64(u64);
 
 impl XorShift64 {
+    /// Advances the local deterministic generator used for rotation construction.
     #[inline]
     fn next_u64(&mut self) -> u64 {
         let mut s = self.0;
@@ -958,6 +972,7 @@ fn gaussian(rng: &mut XorShift64) -> f32 {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl std::fmt::Debug for RabitQDataset {
+    /// Formats `dimension`, `num_vertices`, `stride` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RabitQDataset")
             .field("dimension", &self.dimension)
@@ -968,6 +983,7 @@ impl std::fmt::Debug for RabitQDataset {
 }
 
 impl std::fmt::Debug for XorShiftPub {
+    /// Formats the type identity without expanding opaque owned state.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("XorShiftPub").finish_non_exhaustive()
     }
@@ -1019,9 +1035,17 @@ impl RabitQDataset {
 impl crate::model::dataset::quantized_dataset::sealed::Sealed for RabitQDataset {}
 impl QuantizedDataset for RabitQDataset {
     type BuildOptions = u64;
+
+    /// Selects the canonical construction recipe for this representation.
+    ///
+    /// See [`QuantizedDataset::default_build_options`] for the shared contract.
     fn default_build_options() -> Self::BuildOptions {
         RABITQ_MAGIC as u64
     }
+
+    /// Builds this sidecar from validated logical rows.
+    ///
+    /// See [`QuantizedDataset::build`] for the shared contract.
     fn build(base: &impl Rows, options: &Self::BuildOptions) -> Result<Self> {
         Self::estimate_resident_memory(
             QuantizedDatasetShape {
@@ -1032,6 +1056,10 @@ impl QuantizedDataset for RabitQDataset {
         )?;
         Self::try_build_from(base, *options)
     }
+
+    /// Predicts this representation's payload allocation before reading base rows.
+    ///
+    /// See [`QuantizedDataset::estimate_resident_memory`] for the shared contract.
     fn estimate_resident_memory(
         input_shape: QuantizedDatasetShape,
         _options: &Self::BuildOptions,
@@ -1046,6 +1074,10 @@ impl QuantizedDataset for RabitQDataset {
             )?,
         )
     }
+
+    /// Accounts for the payload buffers currently owned by this representation.
+    ///
+    /// See [`QuantizedDataset::resident_memory`] for the shared contract.
     fn resident_memory(&self) -> ResidentMemory {
         ResidentMemory::new(
             self.codes.len(),

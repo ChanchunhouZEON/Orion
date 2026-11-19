@@ -16,6 +16,7 @@ use std::path::Path;
 use crate::common::ANNResult;
 use crate::model::data_store::DatasetDto;
 
+/// Reads the legacy binary row count and dimension header without loading vector payloads.
 pub fn load_metadata_from_file(file_name: &str) -> ANNResult<(usize, usize)> {
     let file = File::open(file_name)?;
     let mut reader = BufReader::new(file);
@@ -26,6 +27,7 @@ pub fn load_metadata_from_file(file_name: &str) -> ANNResult<(usize, usize)> {
     Ok((npoints, ndims))
 }
 
+/// Decodes a count-prefixed little-endian list of deleted internal IDs.
 pub fn load_ids_to_delete_from_file(file_name: &str) -> ANNResult<(usize, Vec<u32>)> {
     let mut file = File::open(file_name)?;
     let num_ids = file.read_u32::<LittleEndian>()? as usize;
@@ -87,6 +89,7 @@ pub fn copy_aligned_data_from_file<T: Default + bytemuck::Pod>(
     Ok((npts, dim))
 }
 
+/// Reads bounded blocks into final rows, using one reusable staging buffer only for padding.
 fn read_aligned_payload<R: Read, T: Default + bytemuck::Pod>(
     reader: &mut R,
     destination: &mut [T],
@@ -122,6 +125,7 @@ fn read_aligned_payload<R: Read, T: Default + bytemuck::Pod>(
     Ok(())
 }
 
+/// Opens or creates writable output without truncating existing contents.
 #[inline]
 pub fn open_file_to_write(file_name: &str) -> ANNResult<File> {
     Ok(OpenOptions::new()
@@ -131,6 +135,7 @@ pub fn open_file_to_write(file_name: &str) -> ANNResult<File> {
         .open(Path::new(file_name))?)
 }
 
+/// Removes an existing file and treats an already absent path as a no-op.
 pub fn delete_file(file_name: &str) -> ANNResult<()> {
     if file_exists(file_name) {
         fs::remove_file(file_name)?;
@@ -138,10 +143,15 @@ pub fn delete_file(file_name: &str) -> ANNResult<()> {
     Ok(())
 }
 
+/// Checks path existence; filesystem-access errors are reported as false by this helper.
 pub fn file_exists(filename: &str) -> bool {
     std::path::Path::new(filename).exists()
 }
 
+/// Writes legacy count/dimension headers and logical coordinates, omitting row padding.
+///
+/// The caller supplies a compatible scalar representation and a valid padded
+/// source span. The output starts at `offset` and does not truncate an old file tail.
 pub fn save_data_in_base_dimensions<T: Default + Copy>(
     filename: &str,
     data: &mut [T],
@@ -182,6 +192,10 @@ pub fn save_data_in_base_dimensions<T: Default + Copy>(
     Ok(bytes_written)
 }
 
+/// Loads a legacy packed numeric payload at an offset using the caller-selected scalar type.
+///
+/// The file carries shape but no scalar type tag; this helper does not infer or
+/// convert coordinate types.
 pub fn load_bin<T: Copy>(bin_file: &str, file_offset: usize) -> ANNResult<(Vec<T>, usize, usize)> {
     let mut reader = File::open(bin_file)?;
     reader.seek(std::io::SeekFrom::Start(file_offset as u64))?;
@@ -198,6 +212,7 @@ pub fn load_bin<T: Copy>(bin_file: &str, file_offset: usize) -> ANNResult<(Vec<T
     Ok((data.to_vec(), npts, dim))
 }
 
+/// Returns the filesystem-reported logical length, not allocated disk blocks.
 pub fn get_file_size(filename: &str) -> ANNResult<u64> {
     let reader = File::open(filename)?;
     let metadata = reader.metadata()?;

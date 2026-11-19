@@ -25,7 +25,7 @@
 //!
 //! let base = PaddedDataset::from_packed(
 //!     &[1.0f32,2.,3., 4.,5.,6., 7.,8.,9.],
-//!     PaddedLayout::for_kernel::<L2F32Distance>(3)?,
+//!     PaddedLayout::for_base_scalar::<f32>(3)?,
 //! )?;
 //! let parts = [
 //!     (vec![1,2],vec![],vec![]), (vec![0,2],vec![],vec![]), (vec![0,1],vec![],vec![]),
@@ -44,8 +44,8 @@
 //! ```
 
 use crate::model::FixedChunkPQTable;
-use crate::model::PhasedGraph;
-use crate::model::scratch::InMemScratchPool;
+use crate::model::graph::PhasedGraph;
+use crate::model::search::scratch::InMemScratchPool;
 use orion_ann_diskann::model::InmemDataset;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -54,10 +54,14 @@ mod access;
 
 pub mod graph;
 
-pub use crate::model::dataset::base::{DynamicElement, IndexData};
+pub use crate::model::dataset::base::{BaseScalar, IndexData};
+// Runtime's typed adapter needs this bound without making calibration a
+// responsibility of the storage scalar contract.
 pub use crate::model::dataset::store::DynamicSidecars;
 #[doc(hidden)]
 pub use crate::model::dataset::store::{DecodeSidecar, EncodeSidecar, SidecarCache};
+#[doc(hidden)]
+pub use crate::search::adaptive::calibration::CalibrationScalar;
 pub use crate::search::cascade::DynamicCascade;
 pub use crate::search::query::controls::DynamicSearchConfig;
 
@@ -80,17 +84,27 @@ pub struct CompressedIndex<D, S = DynamicSidecars> {
     pub(crate) dataset: D,
     /// Validated slab with local/remote/extra partitions.
     pub(crate) graph: PhasedGraph,
+
+    /// Internal vertex ID from which graph traversal starts.
     pub(crate) entry: u32,
+
+    /// Number of graph nodes covered by this object.
     pub(crate) num_nodes: usize,
     // PQ relevant
+    /// Optional shared legacy PQ codebook retained for benchmark compatibility.
     pub(crate) pq: Option<Arc<FixedChunkPQTable>>,
+
+    /// Optional packed legacy PQ codes retained for benchmark compatibility.
     pub(crate) pq_codes: Option<Vec<u8>>,
+
+    /// Number of independently encoded PQ subspaces.
     pub(crate) num_pq_chunks: Option<usize>,
 
     /// Pool of pre-allocated scratch spaces for in-memory search.
     /// Lazily initialized on first call to `search()`.
     pub(crate) inmem_scratch_pool: OnceLock<InMemScratchPool>,
 
+    /// Lazy representation store shared by the cascade stages.
     pub(crate) sidecars: S,
 }
 
@@ -114,6 +128,7 @@ impl<D, S: Default> CompressedIndex<D, S> {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl<D, S> std::fmt::Debug for CompressedIndex<D, S> {
+    /// Formats `storage_type`, `num_nodes`, `entry`, `graph`, `scratch_initialized` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CompressedIndex")
             .field("storage_type", &(std::any::type_name::<D>()))

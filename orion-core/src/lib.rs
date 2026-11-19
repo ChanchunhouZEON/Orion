@@ -48,7 +48,7 @@ fn legacy(index: &Orion, q: &[f32], recipe: DynamicCascade<'_>) {
 pub use orion_ann_error as error;
 pub use orion_ann_error::{Error, ErrorCode, ErrorReport, Result};
 
-pub use model::search_result::{ScoreMetric, SearchResult, SearchScores};
+pub use model::search::search_result::{ScoreMetric, SearchResult, SearchScores};
 
 pub mod build;
 pub mod search;
@@ -65,7 +65,7 @@ pub use index::graph::GraphView;
 pub use index::{CompressedIndex, DynamicCascade, DynamicSearchConfig, Orion, StaticOrion};
 #[cfg(feature = "benchmark")]
 pub use index::{DIM_32, DIM_100, DIM_128, DIM_768, DIM_784, DIM_960, DIM_1536};
-pub(crate) use model::PhasedGraph;
+pub(crate) use model::graph::PhasedGraph;
 pub use model::{FixedChunkPQTable, NUM_PQ_CENTROIDS};
 #[cfg(feature = "benchmark")]
 pub use search::SearchProfile;

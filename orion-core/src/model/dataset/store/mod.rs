@@ -34,6 +34,7 @@ use std::{
 mod storage;
 pub use storage::{DecodeSidecar, EncodeSidecar, SidecarCache};
 
+/// Lazily initialized quantized representations shared by the selected search stages.
 #[derive(Default)]
 pub struct DynamicSidecars {
     /// Frozen before the first fit/restore so raw and normalized sidecars cannot
@@ -43,9 +44,11 @@ pub struct DynamicSidecars {
     /// Exact auxiliary metadata for native cosine; never a quantized base copy.
     native_norms: SidecarCell<crate::model::dataset::native_u8::NativeU8Norms>,
 
+    /// Per-representation allocation options applied when lazy sidecars are materialized.
     pub(super) placement:
         OnceLock<std::collections::BTreeMap<String, orion_ann_platform::region::RegionOptions>>,
 
+    /// Optional immutable sidecar codec store used during lazy materialization.
     pub(super) cache: Option<Box<dyn SidecarCache>>,
 
     /// U8-quantized base for the L2 prefilter (ParlayANN-style). Built
@@ -123,6 +126,7 @@ pub struct DynamicSidecars {
 
 // All numeric base representations feed the same bounded row-conversion path.
 impl<D: Rows> CompressedIndex<D, DynamicSidecars> {
+    /// Borrows base rows with the configured transformation used to fit sidecars consistently.
     fn sidecar_rows(&self) -> crate::model::dataset::rows::TransformedRows<'_, D> {
         crate::model::dataset::rows::TransformedRows {
             base: &self.dataset,
@@ -402,6 +406,7 @@ struct SidecarCell<T> {
     initialization: Mutex<()>,
 }
 impl<T> Default for SidecarCell<T> {
+    /// Creates an empty, retryable sidecar slot with serialized first initialization.
     fn default() -> Self {
         Self {
             value: OnceLock::new(),
@@ -410,9 +415,14 @@ impl<T> Default for SidecarCell<T> {
     }
 }
 impl<T> SidecarCell<T> {
+    /// Borrows an already published sidecar without triggering preparation.
     fn get(&self) -> Option<&T> {
         self.value.get()
     }
+
+    /// Serializes first initialization and publishes only a fully constructed sidecar.
+    ///
+    /// A failed build leaves the slot empty so a later call may retry.
     fn get_or_try_init(&self, build: impl FnOnce() -> Result<T>) -> Result<&T> {
         if let Some(value) = self.value.get() {
             return Ok(value);
@@ -433,11 +443,14 @@ impl<T> SidecarCell<T> {
     }
 }
 
+/// Internal codec contract for encoding and restoring one sidecar representation.
 trait SidecarCodec:
     crate::model::dataset::QuantizedDataset
     + crate::model::dataset::quantized_dataset::residency::ResidentRegions
 {
     const EXTENSION: &'static str;
+
+    /// Decodes this representation into the selected storage without publishing it to an index slot.
     fn decode_placed(
         reader: &mut dyn Read,
         bytes: u64,
@@ -450,6 +463,8 @@ trait SidecarCodec:
         }
         Self::decode(reader, bytes)
     }
+
+    /// Fits this representation from logical rows under the requested allocation policy.
     fn build_placed(
         base: &impl Rows,
         options: &orion_ann_platform::region::RegionOptions,
@@ -461,12 +476,21 @@ trait SidecarCodec:
         }
         Self::build(base, &Self::default_build_options())
     }
+
+    /// Decodes a representation using its default storage policy.
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self>;
+
+    /// Writes this representation's complete persistent payload to the supplied writer.
     fn encode(&self, writer: &mut dyn Write) -> Result<()>;
+
+    /// Returns logical dimension and row count for cache-to-base compatibility checks.
     fn shape(&self) -> (usize, usize);
 }
 
 impl<Q: QuantSpec> SidecarCodec for ScalarQuantizedDataset<Q> {
+    /// Decodes the payload into storage governed by the requested placement.
+    ///
+    /// See [`SidecarCodec::decode_placed`] for the shared contract.
     fn decode_placed(
         reader: &mut dyn Read,
         bytes: u64,
@@ -474,6 +498,10 @@ impl<Q: QuantSpec> SidecarCodec for ScalarQuantizedDataset<Q> {
     ) -> Result<Self> {
         Self::decode_with_storage(reader, bytes, options)
     }
+
+    /// Constructs the sidecar using the requested allocation placement.
+    ///
+    /// See [`SidecarCodec::build_placed`] for the shared contract.
     fn build_placed(
         base: &impl Rows,
         options: &orion_ann_platform::region::RegionOptions,
@@ -482,12 +510,24 @@ impl<Q: QuantSpec> SidecarCodec for ScalarQuantizedDataset<Q> {
     }
 
     const EXTENSION: &'static str = Q::FILE_EXT;
+
+    /// Decodes the representation after checking its serialized shape and payload bounds.
+    ///
+    /// See [`SidecarCodec::decode`] for the shared contract.
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)
     }
+
+    /// Writes the representation-specific payload to the supplied object writer.
+    ///
+    /// See [`SidecarCodec::encode`] for the shared contract.
     fn encode(&self, writer: &mut dyn Write) -> Result<()> {
         self.encode(writer)
     }
+
+    /// Reports logical rows and original dimension for cache compatibility checks.
+    ///
+    /// See [`SidecarCodec::shape`] for the shared contract.
     fn shape(&self) -> (usize, usize) {
         (self.dimension, self.n)
     }
@@ -495,6 +535,7 @@ impl<Q: QuantSpec> SidecarCodec for ScalarQuantizedDataset<Q> {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl std::fmt::Debug for DynamicSidecars {
+    /// Formats `q_dataset`, `q_dataset_l2_u16`, `q_dataset_mips`, `q_dataset_mips_i16`, `q_dataset_rabitq`, `q_dataset_rabitq_b4`, `q_dataset_jl`, `q_dataset_jl_mips`, `q_dataset_jl_hadamard`, `q_dataset_l2_kt`, `q_dataset_pq` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DynamicSidecars")
             .field("q_dataset", &self.q_dataset.get().is_some())
@@ -522,6 +563,9 @@ impl std::fmt::Debug for DynamicSidecars {
 }
 
 impl SidecarCodec for RabitQDataset {
+    /// Decodes the payload into storage governed by the requested placement.
+    ///
+    /// See [`SidecarCodec::decode_placed`] for the shared contract.
     fn decode_placed(
         reader: &mut dyn Read,
         bytes: u64,
@@ -529,6 +573,10 @@ impl SidecarCodec for RabitQDataset {
     ) -> Result<Self> {
         Self::decode_with_storage(reader, bytes, options)
     }
+
+    /// Constructs the sidecar using the requested allocation placement.
+    ///
+    /// See [`SidecarCodec::build_placed`] for the shared contract.
     fn build_placed(
         base: &impl Rows,
         options: &orion_ann_platform::region::RegionOptions,
@@ -537,18 +585,33 @@ impl SidecarCodec for RabitQDataset {
     }
 
     const EXTENSION: &'static str = "qrbq";
+
+    /// Decodes the representation after checking its serialized shape and payload bounds.
+    ///
+    /// See [`SidecarCodec::decode`] for the shared contract.
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)
     }
+
+    /// Writes the representation-specific payload to the supplied object writer.
+    ///
+    /// See [`SidecarCodec::encode`] for the shared contract.
     fn encode(&self, writer: &mut dyn Write) -> Result<()> {
         self.encode(writer)
     }
+
+    /// Reports logical rows and original dimension for cache compatibility checks.
+    ///
+    /// See [`SidecarCodec::shape`] for the shared contract.
     fn shape(&self) -> (usize, usize) {
         (self.dimension, self.num_vertices)
     }
 }
 
 impl SidecarCodec for RabitQ4Dataset {
+    /// Decodes the payload into storage governed by the requested placement.
+    ///
+    /// See [`SidecarCodec::decode_placed`] for the shared contract.
     fn decode_placed(
         reader: &mut dyn Read,
         bytes: u64,
@@ -556,6 +619,10 @@ impl SidecarCodec for RabitQ4Dataset {
     ) -> Result<Self> {
         Self::decode_with_storage(reader, bytes, options)
     }
+
+    /// Constructs the sidecar using the requested allocation placement.
+    ///
+    /// See [`SidecarCodec::build_placed`] for the shared contract.
     fn build_placed(
         base: &impl Rows,
         options: &orion_ann_platform::region::RegionOptions,
@@ -564,18 +631,33 @@ impl SidecarCodec for RabitQ4Dataset {
     }
 
     const EXTENSION: &'static str = "qrb4";
+
+    /// Decodes the representation after checking its serialized shape and payload bounds.
+    ///
+    /// See [`SidecarCodec::decode`] for the shared contract.
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)
     }
+
+    /// Writes the representation-specific payload to the supplied object writer.
+    ///
+    /// See [`SidecarCodec::encode`] for the shared contract.
     fn encode(&self, writer: &mut dyn Write) -> Result<()> {
         self.encode(writer)
     }
+
+    /// Reports logical rows and original dimension for cache compatibility checks.
+    ///
+    /// See [`SidecarCodec::shape`] for the shared contract.
     fn shape(&self) -> (usize, usize) {
         (self.dimension, self.num_vertices)
     }
 }
 
 impl SidecarCodec for JLSparseDataset<1024> {
+    /// Decodes the payload into storage governed by the requested placement.
+    ///
+    /// See [`SidecarCodec::decode_placed`] for the shared contract.
     fn decode_placed(
         reader: &mut dyn Read,
         bytes: u64,
@@ -583,6 +665,10 @@ impl SidecarCodec for JLSparseDataset<1024> {
     ) -> Result<Self> {
         Self::decode_with_storage(reader, bytes, options)
     }
+
+    /// Constructs the sidecar using the requested allocation placement.
+    ///
+    /// See [`SidecarCodec::build_placed`] for the shared contract.
     fn build_placed(
         base: &impl Rows,
         options: &orion_ann_platform::region::RegionOptions,
@@ -591,18 +677,33 @@ impl SidecarCodec for JLSparseDataset<1024> {
     }
 
     const EXTENSION: &'static str = "jls";
+
+    /// Decodes the representation after checking its serialized shape and payload bounds.
+    ///
+    /// See [`SidecarCodec::decode`] for the shared contract.
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)
     }
+
+    /// Writes the representation-specific payload to the supplied object writer.
+    ///
+    /// See [`SidecarCodec::encode`] for the shared contract.
     fn encode(&self, writer: &mut dyn Write) -> Result<()> {
         self.encode(writer)
     }
+
+    /// Reports logical rows and original dimension for cache compatibility checks.
+    ///
+    /// See [`SidecarCodec::shape`] for the shared contract.
     fn shape(&self) -> (usize, usize) {
         (self.dimension, self.num_vertices)
     }
 }
 
 impl SidecarCodec for JLSparseDatasetMips<1024, 9> {
+    /// Decodes the payload into storage governed by the requested placement.
+    ///
+    /// See [`SidecarCodec::decode_placed`] for the shared contract.
     fn decode_placed(
         reader: &mut dyn Read,
         bytes: u64,
@@ -610,6 +711,10 @@ impl SidecarCodec for JLSparseDatasetMips<1024, 9> {
     ) -> Result<Self> {
         Self::decode_with_storage(reader, bytes, options)
     }
+
+    /// Constructs the sidecar using the requested allocation placement.
+    ///
+    /// See [`SidecarCodec::build_placed`] for the shared contract.
     fn build_placed(
         base: &impl Rows,
         options: &orion_ann_platform::region::RegionOptions,
@@ -618,18 +723,33 @@ impl SidecarCodec for JLSparseDatasetMips<1024, 9> {
     }
 
     const EXTENSION: &'static str = "jls_mips";
+
+    /// Decodes the representation after checking its serialized shape and payload bounds.
+    ///
+    /// See [`SidecarCodec::decode`] for the shared contract.
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)
     }
+
+    /// Writes the representation-specific payload to the supplied object writer.
+    ///
+    /// See [`SidecarCodec::encode`] for the shared contract.
     fn encode(&self, writer: &mut dyn Write) -> Result<()> {
         self.encode(writer)
     }
+
+    /// Reports logical rows and original dimension for cache compatibility checks.
+    ///
+    /// See [`SidecarCodec::shape`] for the shared contract.
     fn shape(&self) -> (usize, usize) {
         (self.dimension, self.num_vertices)
     }
 }
 
 impl SidecarCodec for JlHadamardDataset {
+    /// Decodes the payload into storage governed by the requested placement.
+    ///
+    /// See [`SidecarCodec::decode_placed`] for the shared contract.
     fn decode_placed(
         reader: &mut dyn Read,
         bytes: u64,
@@ -637,6 +757,10 @@ impl SidecarCodec for JlHadamardDataset {
     ) -> Result<Self> {
         Self::decode_with_storage(reader, bytes, options)
     }
+
+    /// Constructs the sidecar using the requested allocation placement.
+    ///
+    /// See [`SidecarCodec::build_placed`] for the shared contract.
     fn build_placed(
         base: &impl Rows,
         options: &orion_ann_platform::region::RegionOptions,
@@ -645,18 +769,33 @@ impl SidecarCodec for JlHadamardDataset {
     }
 
     const EXTENSION: &'static str = "jlh";
+
+    /// Decodes the representation after checking its serialized shape and payload bounds.
+    ///
+    /// See [`SidecarCodec::decode`] for the shared contract.
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)
     }
+
+    /// Writes the representation-specific payload to the supplied object writer.
+    ///
+    /// See [`SidecarCodec::encode`] for the shared contract.
     fn encode(&self, writer: &mut dyn Write) -> Result<()> {
         self.encode(writer)
     }
+
+    /// Reports logical rows and original dimension for cache compatibility checks.
+    ///
+    /// See [`SidecarCodec::shape`] for the shared contract.
     fn shape(&self) -> (usize, usize) {
         (self.dimension, self.num_vertices)
     }
 }
 
 impl SidecarCodec for L2KTDataset {
+    /// Decodes the payload into storage governed by the requested placement.
+    ///
+    /// See [`SidecarCodec::decode_placed`] for the shared contract.
     fn decode_placed(
         reader: &mut dyn Read,
         bytes: u64,
@@ -664,6 +803,10 @@ impl SidecarCodec for L2KTDataset {
     ) -> Result<Self> {
         Self::decode_with_storage(reader, bytes, options)
     }
+
+    /// Constructs the sidecar using the requested allocation placement.
+    ///
+    /// See [`SidecarCodec::build_placed`] for the shared contract.
     fn build_placed(
         base: &impl Rows,
         options: &orion_ann_platform::region::RegionOptions,
@@ -672,12 +815,24 @@ impl SidecarCodec for L2KTDataset {
     }
 
     const EXTENSION: &'static str = "qdsl2kt";
+
+    /// Decodes the representation after checking its serialized shape and payload bounds.
+    ///
+    /// See [`SidecarCodec::decode`] for the shared contract.
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)
     }
+
+    /// Writes the representation-specific payload to the supplied object writer.
+    ///
+    /// See [`SidecarCodec::encode`] for the shared contract.
     fn encode(&self, writer: &mut dyn Write) -> Result<()> {
         self.encode(writer)
     }
+
+    /// Reports logical rows and original dimension for cache compatibility checks.
+    ///
+    /// See [`SidecarCodec::shape`] for the shared contract.
     fn shape(&self) -> (usize, usize) {
         (self.dimension, self.num_vertices)
     }
@@ -859,6 +1014,9 @@ impl<D> CompressedIndex<D, DynamicSidecars> {
 }
 
 impl SidecarCodec for crate::model::dataset::quantized_dataset::pq::PqDataset {
+    /// Decodes the payload into storage governed by the requested placement.
+    ///
+    /// See [`SidecarCodec::decode_placed`] for the shared contract.
     fn decode_placed(
         reader: &mut dyn Read,
         bytes: u64,
@@ -866,6 +1024,10 @@ impl SidecarCodec for crate::model::dataset::quantized_dataset::pq::PqDataset {
     ) -> Result<Self> {
         Self::decode_with_options(reader, bytes, options)
     }
+
+    /// Constructs the sidecar using the requested allocation placement.
+    ///
+    /// See [`SidecarCodec::build_placed`] for the shared contract.
     fn build_placed(
         base: &impl Rows,
         options: &orion_ann_platform::region::RegionOptions,
@@ -874,12 +1036,24 @@ impl SidecarCodec for crate::model::dataset::quantized_dataset::pq::PqDataset {
     }
 
     const EXTENSION: &'static str = "pq-adc";
+
+    /// Decodes the representation after checking its serialized shape and payload bounds.
+    ///
+    /// See [`SidecarCodec::decode`] for the shared contract.
     fn decode(reader: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode(reader, bytes)
     }
+
+    /// Writes the representation-specific payload to the supplied object writer.
+    ///
+    /// See [`SidecarCodec::encode`] for the shared contract.
     fn encode(&self, writer: &mut dyn Write) -> Result<()> {
         self.encode(writer)
     }
+
+    /// Reports logical rows and original dimension for cache compatibility checks.
+    ///
+    /// See [`SidecarCodec::shape`] for the shared contract.
     fn shape(&self) -> (usize, usize) {
         (self.dimension(), self.len())
     }

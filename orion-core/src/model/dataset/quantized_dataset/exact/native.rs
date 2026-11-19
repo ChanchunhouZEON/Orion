@@ -9,13 +9,23 @@ use crate::model::{Neighbor, dataset::native_u8::NativeU8Norms};
 use crate::search::cascade::stage::AdmissionSession;
 use orion_ann_diskann::model::PaddedDataset;
 use orion_ann_vector::IpU8Distance;
+
+/// Exact byte-metric session borrowing the original base and prepared query.
 pub(crate) struct NativeSession<'a, const COSINE: bool> {
+    /// Borrowed original byte coordinates used for exact native scoring.
     pub(crate) base: &'a PaddedDataset<u8>,
+
+    /// Borrowed padded byte query matching the base row layout.
     pub(crate) query: &'a PaddedDataset<u8>,
+
+    /// Optional exact byte norms required by cosine scoring.
     pub(crate) norms: Option<&'a NativeU8Norms>,
+
+    /// Prepared query norm used to normalize native cosine distances.
     pub(crate) query_norm: f64,
 }
 impl<const COSINE: bool> NativeSession<'_, COSINE> {
+    /// Converts a negative byte dot product into the session's ascending IP or cosine distance.
     #[inline(always)]
     fn distance(&self, id: u32, negative_dot: f32) -> f32 {
         if COSINE {
@@ -31,6 +41,9 @@ impl<const COSINE: bool> NativeSession<'_, COSINE> {
 // SAFETY: the stream preserves IDs and emits at most one initialized neighbor
 // per supplied ID. The caller guarantees all IDs belong to the resident base.
 unsafe impl<const COSINE: bool> AdmissionSession for NativeSession<'_, COSINE> {
+    /// Scores the entry node in the admission distance domain.
+    ///
+    /// See [`AdmissionSession::entry_distance`] for the shared contract.
     fn entry_distance(&self, id: u32) -> f32 {
         self.distance(
             id,
@@ -39,6 +52,12 @@ unsafe impl<const COSINE: bool> AdmissionSession for NativeSession<'_, COSINE> {
                 .expect("validated byte layout"),
         )
     }
+
+    /// Scores candidates and compacts qualifying neighbors into caller-owned output.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`AdmissionSession::admit_stream`]'s pointer, shape and lifetime contract.
     unsafe fn admit_stream(
         &self,
         ids: &[u32],

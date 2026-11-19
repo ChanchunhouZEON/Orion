@@ -24,6 +24,7 @@ pub enum ErrorCode {
     Internal,
 }
 impl ErrorCode {
+    /// Returns the stable `ORION_*` identifier shared by Rust, JSON and FFI reports.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::InvalidArgument => "ORION_INVALID_ARGUMENT",
@@ -42,12 +43,14 @@ impl ErrorCode {
 
 /// Display uses the same stable code as JSON/FFI reports.
 impl std::fmt::Display for ErrorCode {
+    /// Writes the stable wire identifier rather than the Rust variant name.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
 impl Serialize for ErrorCode {
+    /// Serializes the stable wire identifier so adapters share one error vocabulary.
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
@@ -60,9 +63,18 @@ impl Serialize for ErrorCode {
 /// their own messages. OS-specific causes are retained separately in `causes`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ErrorReport {
+    /// Stable machine-readable category; applications should branch on this field.
     pub code: &'static str,
+
+    /// Closest failing operation, when an adapter or subsystem supplied one.
     pub operation: Option<String>,
+
+    /// Human-facing explanation; its wording is not a stable matching contract.
     pub message: String,
+
+    /// Structured failure context, with keys specific to the failing operation.
     pub details: BTreeMap<String, Value>,
+
+    /// Underlying error messages ordered from the immediate cause outward.
     pub causes: Vec<String>,
 }

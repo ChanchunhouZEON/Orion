@@ -6,6 +6,8 @@
 //! File payload decoding only. Shape/EOF checks live in the reader; coordinate
 //! validation and normalization belong to shared query preparation.
 use crate::{Error, QueryBuffer, Result, VectorFormat};
+
+/// Chooses a typed query buffer matching the encoded coordinate format.
 pub(super) fn empty(format: VectorFormat) -> QueryBuffer {
     match format {
         VectorFormat::Fvecs | VectorFormat::Fbin => QueryBuffer::F32(Vec::new()),
@@ -15,6 +17,8 @@ pub(super) fn empty(format: VectorFormat) -> QueryBuffer {
         VectorFormat::U32bin => QueryBuffer::U32(Vec::new()),
     }
 }
+
+/// Clears reusable query storage, replacing its variant only when the input format changes.
 pub(super) fn reset(output: &mut QueryBuffer, format: VectorFormat) {
     let expected = empty(format);
     if std::mem::discriminant(output) != std::mem::discriminant(&expected) {
@@ -22,6 +26,10 @@ pub(super) fn reset(output: &mut QueryBuffer, format: VectorFormat) {
     }
     output.clear();
 }
+
+/// Decodes one complete little-endian payload into the selected typed query buffer.
+///
+/// The reader supplies a payload whose length is a multiple of the coordinate width.
 pub(super) fn append(output: &mut QueryBuffer, bytes: &[u8]) {
     match output {
         QueryBuffer::F32(v) => v.extend(

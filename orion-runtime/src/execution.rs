@@ -5,6 +5,15 @@
 
 //! Adapter support for prepared runs. No argument parsing, environment or presets.
 //! Ordinary Rust applications use IndexOptions and Index directly.
+//!
+//! Preparation belongs to the Index lifecycle, not the adapter's public API.
+//! Enabling CLI support must not expose a way to bypass its ownership/accounting.
+//! ```compile_fail,E0432
+//! use orion_ann::execution::prepare_search;
+//! ```
+//! ```compile_fail,E0432
+//! use orion_ann::execution::prepare_datasets;
+//! ```
 pub use crate::config::{PreflightFormat, ResolvedRunConfig};
 pub use crate::data::{
     inspect_vector_file,
@@ -14,7 +23,7 @@ pub use crate::data::{
 pub mod resources {
     pub use crate::preflight::{enforce_budget, preflight_report, print_report};
 }
-pub use crate::search::{prepare_search, search_batch};
+pub use crate::search::search_batch;
 
 /// Resolve validated service options against caller-provided input metadata.
 /// This is also the recipe used by file/array Index construction; no I/O occurs.

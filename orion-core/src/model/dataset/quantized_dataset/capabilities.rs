@@ -23,12 +23,15 @@ pub enum QuantizedKind {
     Rabitq4,
 }
 impl QuantizedKind {
+    /// Identifies binary sketch representations that cannot serve as the final rerank stage.
     pub(crate) fn is_sketch(self) -> bool {
         matches!(
             self,
             Self::JlSparse | Self::JlSparseMips | Self::JlHadamard | Self::Rabitq
         )
     }
+
+    /// Identifies quantizers whose refinement ordering uses inner-product semantics.
     fn is_mips(self) -> bool {
         matches!(self, Self::JlSparseMips | Self::MipsI8 | Self::MipsI16)
     }
@@ -45,6 +48,9 @@ pub enum Precision {
 }
 
 impl Precision {
+    /// Checks whether this precision is a permitted refinement of the preceding stage.
+    ///
+    /// This is a compatibility ordering, not a numerical error guarantee for every vector.
     fn follows(self, previous: Self) -> bool {
         use QuantizedKind::*;
         match (previous, self) {
@@ -70,6 +76,7 @@ impl Precision {
     }
 }
 
+/// Rejects incompatible cascade ordering and binary-sketch reranking before search preparation.
 #[doc(hidden)]
 pub fn validate_precision(
     prefilter: Option<Precision>,

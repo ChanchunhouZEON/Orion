@@ -38,13 +38,23 @@ mod reference {
 
     pub type Partition = (Vec<u32>, Vec<u32>, Vec<u32>);
 
+    /// Materialized staged partitions used by the reference importer and compatibility checks.
     #[allow(dead_code)]
     #[derive(Debug)]
     pub struct StagedInput {
+        /// Local, remote and extra neighbor lists in internal node order.
         pub partitions: Vec<Partition>,
+
+        /// Entry node recomputed from the supplied base rows.
         pub entry_point: u32,
+
+        /// Number of staged node records.
         pub num_nodes: usize,
+
+        /// Shared capacity for local and remote graph neighbors.
         pub max_deg: u32,
+
+        /// Separate capacity reserved for extra candidates.
         pub max_extra: u32,
     }
 
@@ -66,6 +76,9 @@ mod reference {
             .collect()
     }
 
+    /// Materializes a staged export and recomputes its entry point for the reference import path.
+    ///
+    /// This helper retains all partitions; production import streams directly into the slab.
     pub fn load_from_staged_file<P: AsRef<Path>>(
         path: P,
         base_flat: &[f32],

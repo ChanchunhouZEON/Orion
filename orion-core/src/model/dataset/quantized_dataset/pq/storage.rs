@@ -18,11 +18,17 @@ pub enum PqCodeStorage {
     OnDemand,
 }
 
-pub(super) struct Codes(pub(super) orion_ann_platform::region::ArrayView<u8>);
+/// Owned or mapped PQ code storage, independent of the resident codebook.
+pub(super) struct Codes(
+    /// Encoded row bytes sharing their backing allocation or mapping.
+    pub(super) orion_ann_platform::region::ArrayView<u8>,
+);
 impl Codes {
+    /// Borrows contiguous row codes; mapped storage may fault pages in during access.
     pub(super) fn as_slice(&self) -> &[u8] {
         self.0.as_slice()
     }
+    #[cfg(test)]
     pub(super) fn from_reader(
         reader: &mut dyn Read,
         len: usize,
@@ -30,6 +36,8 @@ impl Codes {
     ) -> Result<Self> {
         Self::read_with_options(reader, len, &policy.options())
     }
+
+    /// Reads exactly the encoded code payload into resident or mapped allocation-owned storage.
     pub(super) fn read_with_options(
         reader: &mut dyn Read,
         len: usize,
@@ -42,6 +50,8 @@ impl Codes {
             Ok(())
         })?))
     }
+
+    /// Reports the actual code allocation placement rather than its original requested policy.
     pub(super) fn policy(&self) -> PqCodeStorage {
         match self.0.placement() {
             orion_ann_platform::region::Placement::Resident => PqCodeStorage::Resident,
@@ -50,6 +60,7 @@ impl Codes {
     }
 }
 impl PqCodeStorage {
+    /// Translates the PQ code policy into common region placement options.
     pub(super) fn options(self) -> orion_ann_platform::region::RegionOptions {
         orion_ann_platform::region::RegionOptions {
             placement: match self {
@@ -57,6 +68,8 @@ impl PqCodeStorage {
                 Self::OnDemand => orion_ann_platform::region::Placement::Mapped,
             },
             directory: None,
+            accounting: None,
+            reclaim_after_write: false,
         }
     }
 }

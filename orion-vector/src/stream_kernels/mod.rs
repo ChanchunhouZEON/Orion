@@ -22,6 +22,7 @@ pub(crate) mod neon;
 pub(crate) mod popcnt;
 pub(crate) mod scalar;
 
+/// Checked CPU backend selected before entering a streaming kernel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DistanceIsa {
     Scalar,
@@ -50,6 +51,7 @@ impl DistanceIsa {
         }
     }
 
+    /// Checks every CPU feature required by this backend before entering target-specific code.
     fn supported(self) -> bool {
         match self {
             Self::Scalar => true,
@@ -80,6 +82,7 @@ impl DistanceIsa {
     }
 }
 
+/// Caches the strongest supported stream backend once per process.
 #[inline]
 pub(crate) fn detected_backend() -> DistanceIsa {
     static BACKEND: OnceLock<DistanceIsa> = OnceLock::new();
@@ -106,6 +109,7 @@ pub(crate) fn detected_backend() -> DistanceIsa {
 
 // Keep fallback loop bodies out of the small selection wrapper. Otherwise
 // their size can make LLVM outline the dispatcher as an extra call layer.
+/// Runs the complete stream through its scalar kernel without another dispatch inside the loop.
 #[inline(never)]
 fn enter_scalar<K: DistanceKernelBackend, S: FnMut(u32, f32)>(
     stream: DistanceStream<'_, K>,
@@ -113,6 +117,12 @@ fn enter_scalar<K: DistanceKernelBackend, S: FnMut(u32, f32)>(
 ) {
     stream.run_static(sink);
 }
+
+/// Enters the NEON-enabled complete stream after backend feature validation.
+///
+/// # Safety
+///
+/// The executing CPU must support NEON.
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
 fn enter_neon<K: DistanceKernelBackend, S: FnMut(u32, f32)>(
@@ -124,6 +134,11 @@ fn enter_neon<K: DistanceKernelBackend, S: FnMut(u32, f32)>(
 
 // These are the ISA boundaries. run_static, the compute body and the sink are
 // inlined together here, so no ISA checks or indirect calls occur per chunk.
+/// Enters the AVX2-enabled complete stream after backend feature validation.
+///
+/// # Safety
+///
+/// The executing CPU must support the target features declared on this function.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn enter_avx2<K: DistanceKernelBackend, S: FnMut(u32, f32)>(
@@ -132,6 +147,12 @@ unsafe fn enter_avx2<K: DistanceKernelBackend, S: FnMut(u32, f32)>(
 ) {
     stream.run_static(sink);
 }
+
+/// Enters the AVX-512-enabled complete stream after backend feature validation.
+///
+/// # Safety
+///
+/// The executing CPU must support the target features declared on this function.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma,avx512f,avx512bw,avx512dq,avx512vl")]
 unsafe fn enter_avx512<K: DistanceKernelBackend, S: FnMut(u32, f32)>(
@@ -140,6 +161,12 @@ unsafe fn enter_avx512<K: DistanceKernelBackend, S: FnMut(u32, f32)>(
 ) {
     stream.run_static(sink);
 }
+
+/// Enters the AVX-512 population-count stream after backend feature validation.
+///
+/// # Safety
+///
+/// The executing CPU must support the target features declared on this function.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma,avx512f,avx512bw,avx512dq,avx512vl,avx512vpopcntdq")]
 unsafe fn enter_popcnt<K: DistanceKernelBackend, S: FnMut(u32, f32)>(
@@ -148,6 +175,12 @@ unsafe fn enter_popcnt<K: DistanceKernelBackend, S: FnMut(u32, f32)>(
 ) {
     stream.run_static(sink);
 }
+
+/// Enters the NEON dot-product stream after backend feature validation.
+///
+/// # Safety
+///
+/// The executing CPU must support the target features declared on this function.
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon,dotprod")]
 unsafe fn enter_dotprod<K: DistanceKernelBackend, S: FnMut(u32, f32)>(

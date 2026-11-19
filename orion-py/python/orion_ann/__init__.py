@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 """Owned Orion indexes with explicit calibration and NumPy batch search."""
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 import os
 from typing import TYPE_CHECKING, Optional, Union
@@ -153,9 +153,13 @@ class StorageOptions:
 
     mode is auto, resident, or mapped. Placement does not
     change scores or calibration and is not a hard RSS limit.
+    objects overrides individual representations, e.g. {"base": "mapped",
+    "graph": "resident", "l2-u8": "resident"}. PQ selects the whole sidecar.
+    Unused overrides do not construct sidecars. labels=mapped is unsupported.
     """
     mode: str = "auto"
     directory: Optional[PathLike] = None
+    objects: dict[str, str] = field(default_factory=dict)
 
 
 def _storage_options(value):
@@ -166,11 +170,11 @@ def _storage_options(value):
 
 
 def _options(metric, storage, graph, cascade, cache_dir, threads, window_size,
-             memory_budget_gib, max_points, base_format, auto_pin, storage_options):
+             memory_budget_gib, max_points, base_format, auto_pin, storage_options, dataset_name):
     graph = asdict(graph or GraphConfig())
     if graph["staged_file"] is not None:
         graph["staged_file"] = os.fspath(graph["staged_file"])
-    return json.dumps(dict(metric=metric, storage=storage, graph=graph,
+    return json.dumps(dict(dataset_name=dataset_name, metric=metric, storage=storage, graph=graph,
         cascade=asdict(cascade or CascadeConfig()), cache_dir=os.fspath(cache_dir),
         threads=threads, window_size=window_size, memory_budget_gib=memory_budget_gib,
         max_points=max_points, base_format=base_format, auto_pin=auto_pin, storage_options=_storage_options(storage_options)), allow_nan=False)
@@ -182,6 +186,8 @@ class Index:
     Construct with from_file/from_array/open. Searches may share one Index;
     concurrent batches share the configured worker pool with the GIL released.
     Calibration holds an exclusive lock. Array inputs are copied before release.
+    dataset_name is optional display metadata, preserved in snapshots; it does
+    not select presets or change cache identity.
     Base arrays must be C-contiguous float32 or uint8. Queries also accept
     int8, uint16 and uint32, independently of base dtype; no implicit NumPy casting.
     """
@@ -195,7 +201,7 @@ class Index:
     def from_file(cls, base: PathLike, *, metric="squared-l2", storage=None,
                   graph: Optional[GraphConfig] = None, cascade: Optional[CascadeConfig] = None,
                   cache_dir: PathLike = "cache/orion-ann", threads=8, window_size=5,
-                  memory_budget_gib=None, max_points=None, base_format=None, auto_pin=True, storage_options: Optional[StorageOptions] = None, external_ids=None):
+                  memory_budget_gib=None, max_points=None, base_format=None, auto_pin=True, storage_options: Optional[StorageOptions] = None, external_ids=None, dataset_name=None):
         """Load base into Rust; reuse, import or construct its graph.
 
         Dimension/count come from the file. memory_budget_gib is an estimate,
@@ -204,14 +210,14 @@ class Index:
         details and causes on input, configuration, cache, I/O or backend errors.
         """
         options = _options(metric, storage, graph, cascade, cache_dir, threads,
-                           window_size, memory_budget_gib, max_points, base_format, auto_pin, storage_options)
+                           window_size, memory_budget_gib, max_points, base_format, auto_pin, storage_options, dataset_name)
         return cls(_Index.from_file(os.fspath(base), options, external_ids))
 
     @classmethod
     def from_array(cls, base: np.ndarray, *, metric="squared-l2", storage=None,
                    graph: Optional[GraphConfig] = None, cascade: Optional[CascadeConfig] = None,
                    cache_dir: PathLike = "cache/orion-ann", threads=8, window_size=5,
-                   memory_budget_gib=None, max_points=None, auto_pin=True, storage_options: Optional[StorageOptions] = None, external_ids=None):
+                   memory_budget_gib=None, max_points=None, auto_pin=True, storage_options: Optional[StorageOptions] = None, external_ids=None, dataset_name=None):
         """Copy a nonempty 2-D C-contiguous float32/uint8 array into owned storage.
 
         The original array may be reused after return. Logical dimension is the
@@ -220,7 +226,7 @@ class Index:
         copy occurs before the estimated memory-budget check.
         """
         options = _options(metric, storage, graph, cascade, cache_dir, threads,
-                           window_size, memory_budget_gib, max_points, None, auto_pin, storage_options)
+                           window_size, memory_budget_gib, max_points, None, auto_pin, storage_options, dataset_name)
         return cls(_Index.from_array(base, options, external_ids))
 
     if hasattr(_Index, "from_staged"):
@@ -228,7 +234,7 @@ class Index:
         def from_staged(cls, base: Input, staged: PathLike, *, metric="squared-l2", storage=None,
                         cascade: Optional[CascadeConfig] = None, cache_dir: PathLike = "cache/orion-ann",
                         threads=8, window_size=5, memory_budget_gib=None, base_format=None,
-                        auto_pin=True, storage_options: Optional[StorageOptions] = None):
+                        auto_pin=True, storage_options: Optional[StorageOptions] = None, dataset_name=None):
             """Experimental STAG v4 import, without repartitioning or builder fallback.
 
             Requires a source build with Cargo feature experimental-graph. The file
@@ -236,11 +242,11 @@ class Index:
             Calibrate explicitly before searching; save/open use ordinary snapshots.
             """
             options = _options(metric, storage, None, cascade, cache_dir, threads, window_size,
-                               memory_budget_gib, None, base_format, auto_pin, storage_options)
+                               memory_budget_gib, None, base_format, auto_pin, storage_options, dataset_name)
             return cls(_Index.from_staged(_input(base), os.fspath(staged), options))
 
     @classmethod
-    def open(cls, snapshot: Union[PathLike, SnapshotRef], *, base: Optional[Input] = None, threads=None, memory_budget_gib=None, auto_pin=None, storage_options: Optional[StorageOptions] = None, object_store: Optional[PathLike] = None):
+    def open(cls, snapshot: Union[PathLike, SnapshotRef], *, base: Optional[Input] = None, threads=None, memory_budget_gib=None, auto_pin=None, storage_options: Optional[StorageOptions] = None, object_store: Optional[PathLike] = None, dataset_name=None):
         """Verify and reopen a snapshot directory or a saved SnapshotRef.
 
         With a reference, the manifest must also match the one issued by save().
@@ -249,7 +255,7 @@ class Index:
         """
         source = (snapshot.to_json() if isinstance(snapshot, SnapshotRef)
                   else json.dumps(os.fspath(snapshot)))
-        options = dict(threads=threads, memory_budget_gib=memory_budget_gib,
+        options = dict(dataset_name=dataset_name, threads=threads, memory_budget_gib=memory_budget_gib,
                        auto_pin=auto_pin,
                        storage_options=None if storage_options is None else _storage_options(storage_options),
                        object_store=None if object_store is None else os.fspath(object_store))

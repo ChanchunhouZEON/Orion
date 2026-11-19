@@ -38,6 +38,7 @@ pub enum PinMode {
 /// Deployment policy; never part of a cache key or saved calibration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinOptions {
+    /// Whether locking is disabled, optional, or required for the request to succeed.
     pub mode: PinMode,
     /// Aggregate page-rounded limit, not a resident-memory estimate.
     pub budget_bytes: usize,
@@ -46,6 +47,7 @@ pub struct PinOptions {
     pub datasets: Option<Vec<DatasetPin>>,
 }
 impl Default for PinOptions {
+    /// Selects best-effort pinning with a bounded manual budget and the current requirement set.
     fn default() -> Self {
         Self {
             mode: PinMode::BestEffort,
@@ -62,15 +64,23 @@ pub(crate) use automatic::AutomaticPlan;
 /// by the default policy; no quality or CPU-cache-residency claim is implied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PinHint {
+    /// Identity of the prepared allocation group that can be selected for pinning.
     pub dataset: DatasetPin,
+
+    /// Payload bytes in this group before page rounding by the OS lock operation.
     pub bytes: usize,
 }
 
 /// Outcome of a best-effort or required residency request.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct PinReport {
+    /// Number of allocation groups considered by this request.
     pub requested_datasets: usize,
+
+    /// Number of allocation groups whose lock request succeeded.
     pub pinned_datasets: usize,
+
+    /// Page-rounded bytes retained by the resulting pin guard.
     pub pinned_bytes: usize,
     /// Effective automatic budget and resource observations, absent for manual pin.
     pub automatic: Option<serde_json::Value>,
@@ -94,18 +104,26 @@ impl PinnedDatasets<'_> {
         (unsafe { self.guard.into_owned() }, self.report)
     }
 
+    /// Borrows the outcome and any skipped-lock explanations without changing residency.
     pub fn report(&self) -> &PinReport {
         &self.report
     }
+
+    /// Returns the page-rounded bytes kept locked by this guard.
     pub fn pinned_bytes(&self) -> usize {
         self.guard.pinned_bytes()
     }
 }
 
+/// Borrowed regions and their selection identity; no new vector storage is allocated.
 struct PreparedDataset<'a> {
     hint: PinHint,
     regions: Vec<&'a [u8]>,
 }
+
+/// Resolves and deduplicates exact dataset recipes into borrowed regions ordered by payload size.
+///
+/// A noncanonical recipe is rejected rather than pinning another representation under the same kind.
 fn prepared<'a, D>(
     index: &'a CompressedIndex<D>,
     base: &'a [u8],
@@ -160,6 +178,7 @@ fn prepared<'a, D>(
     Ok(result)
 }
 
+/// Reports pinnable prepared payloads without acquiring any OS memory locks.
 pub(crate) fn hints<D>(
     index: &CompressedIndex<D>,
     base: &[u8],
@@ -172,6 +191,7 @@ pub(crate) fn hints<D>(
         .collect())
 }
 
+/// Applies the requested lock policy and returns the lifetime guard that retains successful locks.
 pub(crate) fn pin<'a, D>(
     index: &'a CompressedIndex<D>,
     base: &'a [u8],
@@ -189,6 +209,10 @@ pub(crate) fn pin<'a, D>(
     )
 }
 
+/// Applies selection and budget rules through an injectable lock operation.
+///
+/// Best-effort failures are recorded; required failures return an error and release
+/// locks acquired by this attempt when its temporary guard is dropped.
 fn pin_with<'a, D>(
     index: &'a CompressedIndex<D>,
     base: &'a [u8],

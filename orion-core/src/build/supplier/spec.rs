@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PartitionOrigin {
+    /// Supplier-defined algorithm name recorded as provenance.
     pub name: String,
+
+    /// Optional supplier algorithm revision recorded with the graph.
     pub revision: Option<String>,
 }
 
@@ -25,6 +28,7 @@ pub enum PartitionMetric {
     Cosine,
 }
 
+/// Scalar encoding declared by a supplier partition file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PartitionElement {
@@ -38,14 +42,31 @@ pub enum PartitionElement {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PartitionSpec {
+    /// Supplier identity recorded alongside the imported partitions.
     pub origin: PartitionOrigin,
+
+    /// Number of base vectors identified by this record.
     pub points: u32,
+
+    /// Logical coordinates per original vector, excluding padding.
     pub dimension: u32,
+
+    /// Scalar encoding of the base expected by the supplied graph.
     pub element: PartitionElement,
+
+    /// Original metric used to interpret coordinates and scores.
     pub metric: PartitionMetric,
+
+    /// Internal vertex ID from which graph traversal starts.
     pub entry: u32,
+
+    /// Maximum number of navigation neighbors retained per node.
     pub max_degree: u32,
+
+    /// Maximum extra-candidate count stored per node.
     pub max_extra: u32,
+
+    /// Content identity binding the graph or snapshot to its original base.
     pub base_sha256: Option<String>,
 }
 

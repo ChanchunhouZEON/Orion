@@ -17,15 +17,24 @@ use std::path::{Path, PathBuf};
 /// A miss names the destination for a newly built/imported index.
 #[derive(Debug)]
 pub struct CachePlan {
+    /// Working-cache lookup key; immutable graph payloads live in the object store.
     pub metadata_path: PathBuf,
+
+    /// Manifest generation selected for this load, absent on a cache miss.
     pub(super) selected: Option<Generation>,
+
+    /// Whether benchmark-only trusted loading selected the legacy cache layout.
     #[cfg(feature = "benchmark")]
     pub(super) legacy: bool,
 }
 
+/// Content-addressed payload references for one published working-cache generation.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct CacheManifest {
+    /// Digest identifying the immutable graph slab object.
     pub(crate) graph_sha256: String,
+
+    /// Digest identifying the graph metadata object paired with that slab.
     pub(crate) metadata_sha256: String,
     namespace: String,
     num_points: usize,
@@ -38,11 +47,15 @@ pub(crate) struct CacheManifest {
 /// Keep the exact working record used to select and verify a resident graph.
 #[derive(Debug)]
 pub(crate) struct Generation {
+    /// Decoded references used to locate this generation's payloads.
     pub(crate) manifest: CacheManifest,
+
+    /// Original manifest bytes retained for provenance without reserialization.
     pub(crate) encoded: Vec<u8>,
 }
 
 impl CachePlan {
+    /// Reports whether a usable generation was selected, including explicitly trusted benchmark caches.
     pub(crate) fn is_hit(&self) -> bool {
         #[cfg(feature = "benchmark")]
         if self.legacy {
@@ -51,15 +64,19 @@ impl CachePlan {
         self.selected.is_some()
     }
 
+    /// Borrows the selected immutable generation, or reports invalid state on a cache miss.
     fn generation(&self) -> Result<&Generation> {
         self.selected
             .as_ref()
             .ok_or_else(|| Error::invalid_state("no selected graph generation"))
     }
+
+    /// Resolves the shared immutable object directory associated with this working cache.
     pub(crate) fn objects(&self) -> Result<PathBuf> {
         crate::storage::object_dir(self.metadata_path.parent().unwrap_or(Path::new(".")))
     }
 
+    /// Locates the selected graph object, preserving the benchmark-only legacy path when requested.
     pub(crate) fn graph_path(&self) -> Result<PathBuf> {
         #[cfg(feature = "benchmark")]
         if self.legacy {
@@ -72,6 +89,7 @@ impl CachePlan {
         )
     }
 
+    /// Derives a working-cache filename from the configuration namespace and point count.
     pub(crate) fn lookup_key(config: &ResolvedRunConfig, num_points: usize) -> PathBuf {
         use sha2::{Digest, Sha256};
         let mut hash = Sha256::new();
@@ -80,14 +98,20 @@ impl CachePlan {
         config.cache_dir.join(format!("{:x}.bin", hash.finalize()))
     }
 
+    /// Plans a cache lookup and verifies explicit staged-source provenance when a generation exists.
     pub fn resolve(config: &ResolvedRunConfig, num_points: usize) -> Result<Self> {
         Self::plan(config, num_points, true)
     }
 
+    /// Inspects cache metadata and layout without rehashing the explicit staged source.
     pub(crate) fn inspect(config: &ResolvedRunConfig, num_points: usize) -> Result<Self> {
         Self::plan(config, num_points, false)
     }
 
+    /// Selects and validates one cache generation before any graph allocation or fallback build.
+    ///
+    /// Missing records allow construction; malformed records and explicit source
+    /// mismatches remain errors rather than silently selecting another graph.
     fn plan(config: &ResolvedRunConfig, num_points: usize, verify_source: bool) -> Result<Self> {
         let path = Self::lookup_key(config, num_points);
         #[cfg(feature = "benchmark")]
@@ -226,6 +250,7 @@ impl CachePlan {
     }
 }
 
+/// Reports whether the benchmark-only hash-bypass policy is enabled in this build.
 fn benchmark_trusted(config: &ResolvedRunConfig) -> bool {
     #[cfg(feature = "benchmark")]
     {
@@ -238,10 +263,14 @@ fn benchmark_trusted(config: &ResolvedRunConfig) -> bool {
     }
 }
 
+/// Derives the mutable generation-record path from its working-cache key.
 fn manifest_path(path: &Path) -> PathBuf {
     path.with_extension("cache.json")
 }
 
+/// Checks graph shape, capacities and encoded length before accepting a cache candidate.
+///
+/// This structural check does not authenticate payload contents.
 fn validate_headers(
     path: &Path,
     graph: &Path,
@@ -291,6 +320,7 @@ fn validate_headers(
     Ok(())
 }
 
+/// Checks cache provenance against the requested dataset, builder recipe and explicit staged source.
 fn validate_manifest(
     metadata: &CacheManifest,
     path: &Path,

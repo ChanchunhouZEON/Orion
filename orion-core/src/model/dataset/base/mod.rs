@@ -10,8 +10,8 @@
 //!       InmemDataset<T, N> -> legacy fixed-width rows
 //! ```
 //!
-//! This module provides index-facing shape, coordinate validation and query
-//! preparation over storage owned by the dataset. It introduces no second
+//! This module provides index-facing shape, coordinate validation and physical row
+//! layout over storage owned by the dataset. It introduces no second
 //! vector allocation or file format; base-file decoding belongs to runtime I/O.
 
 //! Minimal dataset metadata needed by the graph owner and cache format.
@@ -20,12 +20,20 @@
 use orion_ann_diskann::model::{InmemDataset, PaddedDataset};
 use orion_ann_vector::FullPrecisionDistance;
 
+/// Minimal base metadata needed to validate graph ownership and persistent identities.
 pub trait IndexData {
+    /// Reports the backing placement of the owned base allocation.
     fn placement(&self) -> orion_ann_platform::region::Placement {
         orion_ann_platform::region::Placement::Resident
     }
+
+    /// Returns the number of logical vectors available to graph and ID validation.
     fn point_count(&self) -> usize;
+
+    /// Returns logical coordinates per vector, excluding physical padding.
     fn dimension(&self) -> usize;
+
+    /// Returns the stable coordinate-type identifier recorded in graph metadata.
     fn element_type(&self) -> &'static str;
 }
 
@@ -33,31 +41,56 @@ impl<T, const N: usize> IndexData for InmemDataset<T, N>
 where
     [T; N]: FullPrecisionDistance<T, N>,
 {
+    /// Reports the number of logical base rows available to the index.
+    ///
+    /// See [`IndexData::point_count`] for the shared contract.
     fn point_count(&self) -> usize {
         self.num_active_pts
     }
+
+    /// Reports logical coordinates per row, excluding padding.
+    ///
+    /// See [`IndexData::dimension`] for the shared contract.
     fn dimension(&self) -> usize {
         N
     }
+
+    /// Identifies the base scalar representation independently of cascade quantization.
+    ///
+    /// See [`IndexData::element_type`] for the shared contract.
     fn element_type(&self) -> &'static str {
         std::any::type_name::<T>()
     }
 }
 
 impl<T: bytemuck::Pod> IndexData for PaddedDataset<T> {
+    /// Reports the backing allocation mode rather than current operating-system residency.
+    ///
+    /// See [`IndexData::placement`] for the shared contract.
     fn placement(&self) -> orion_ann_platform::region::Placement {
         self.placement()
     }
+
+    /// Reports the number of logical base rows available to the index.
+    ///
+    /// See [`IndexData::point_count`] for the shared contract.
     fn point_count(&self) -> usize {
         self.len()
     }
+
+    /// Reports logical coordinates per row, excluding padding.
+    ///
+    /// See [`IndexData::dimension`] for the shared contract.
     fn dimension(&self) -> usize {
         self.layout().logical_dim()
     }
+
+    /// Identifies the base scalar representation independently of cascade quantization.
+    ///
+    /// See [`IndexData::element_type`] for the shared contract.
     fn element_type(&self) -> &'static str {
         std::any::type_name::<T>()
     }
 }
 
-mod element;
-pub use element::DynamicElement;
+pub use orion_ann_vector::BaseScalar;

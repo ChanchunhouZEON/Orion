@@ -31,6 +31,7 @@ orion-ann-vector = { version = "0.1.0", path = "../orion-vector" }
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde-saphyr = { version = "2.1.1", default-features = false, features = ["deserialize"] }
 byteorder.workspace = true
 libc.workspace = true
 log.workspace = true

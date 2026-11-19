@@ -131,6 +131,8 @@ pub enum RerankChoice {
 
 impl FromStr for PrefilterChoice {
     type Err = Error;
+
+    /// Parses a case-insensitive stage choice, accepting documented aliases and rejecting unknown names.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
             "none" | "no" | "off" => Ok(Self::None),
@@ -146,6 +148,8 @@ impl FromStr for PrefilterChoice {
 
 impl FromStr for AdmissionChoice {
     type Err = Error;
+
+    /// Parses a case-insensitive stage choice, accepting documented aliases and rejecting unknown names.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
             "pq-l2" | "pq" => Ok(Self::PqL2),
@@ -177,6 +181,8 @@ impl FromStr for AdmissionChoice {
 
 impl FromStr for RerankChoice {
     type Err = Error;
+
+    /// Parses a case-insensitive stage choice, accepting documented aliases and rejecting unknown names.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
             "l2-f32" | "f32" => Ok(Self::F32),
@@ -192,6 +198,7 @@ impl FromStr for RerankChoice {
 }
 
 impl std::fmt::Display for AdmissionChoice {
+    /// Writes the canonical stage name used by configuration and reports.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::PqL2 => "pq-l2",
@@ -214,6 +221,7 @@ impl std::fmt::Display for AdmissionChoice {
 }
 
 impl std::fmt::Display for RerankChoice {
+    /// Writes the canonical stage name used by configuration and reports.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::F32 => "l2-f32",
@@ -226,6 +234,7 @@ impl std::fmt::Display for RerankChoice {
 }
 
 impl std::fmt::Display for PrefilterChoice {
+    /// Writes the canonical stage name used by configuration and reports.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::None => "none",

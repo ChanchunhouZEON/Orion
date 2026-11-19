@@ -9,6 +9,7 @@
 use super::super::view::ReadView;
 use crate::{config::ResolvedRunConfig, Result};
 
+/// Prepares engine auxiliaries and restores search readiness only when saved calibration exists.
 pub(super) fn prepare(
     view: &mut ReadView,
     config: &ResolvedRunConfig,

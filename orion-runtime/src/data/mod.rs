@@ -92,6 +92,7 @@ impl VectorFormat {
         }
     }
 
+    /// Rejects query-only encodings before attempting to load f32 or u8 base storage.
     pub(crate) fn validate_base(self) -> Result<()> {
         if matches!(self, Self::I8bin | Self::U16bin | Self::U32bin) {
             return Err(Error::unsupported(
@@ -113,7 +114,10 @@ impl VectorFormat {
 /// Shape metadata discovered without decoding the coordinate payload.
 #[derive(Debug, serde::Serialize)]
 pub struct VectorHeader {
+    /// Number of logical vectors declared by the binary header.
     pub count: usize,
+
+    /// Logical coordinates per original vector, excluding padding.
     pub dimension: usize,
 }
 
@@ -209,7 +213,13 @@ pub fn inspect_vector_file(path: &Path, format: VectorFormat) -> Result<VectorHe
 /// - whether encoded `f32` coordinates are accepted,
 /// - what post-load normalization is required by the search metric.
 pub trait BaseElement:
-    Default + Copy + Send + Sync + Into<f32> + orion_ann_core::index::DynamicElement
+    Default
+    + Copy
+    + Send
+    + Sync
+    + Into<f32>
+    + orion_ann_core::index::BaseScalar
+    + orion_ann_core::index::CalibrationScalar
 {
     /// Resident storage representation selected by this element type.
     #[cfg(any(feature = "cli", feature = "benchmark"))]
@@ -238,14 +248,17 @@ impl BaseElement for f32 {
     #[cfg(any(feature = "cli", feature = "benchmark"))]
     const STORAGE: VectorStorageKind = VectorStorageKind::F32;
 
+    /// Converts one encoded byte into the selected base coordinate representation.
     fn from_byte(value: u8) -> Self {
         f32::from(value)
     }
 
+    /// Preserves one decoded f32 coordinate; row validation runs after decoding.
     fn from_float(value: f32) -> Result<Self> {
         Ok(value)
     }
 
+    /// Validates base coordinates and applies the representation-specific cosine preparation rule.
     fn normalize(data: &mut [Self], dimension: usize, metric: SearchMetric) -> Result<()> {
         validate_and_normalize_vectors(data, dimension, metric)
     }
@@ -255,18 +268,22 @@ impl BaseElement for u8 {
     #[cfg(any(feature = "cli", feature = "benchmark"))]
     const STORAGE: VectorStorageKind = VectorStorageKind::U8;
 
+    /// Exposes direct byte decoding only for a native-byte destination.
     fn native_bytes_mut(data: &mut [Self]) -> Option<&mut [u8]> {
         Some(data)
     }
 
+    /// Converts one encoded byte into the selected base coordinate representation.
     fn from_byte(value: u8) -> Self {
         value
     }
 
+    /// Rejects implicit float-to-byte quantization in the native-byte loader.
     fn from_float(_value: f32) -> Result<Self> {
         Err("native u8 loader does not quantize f32 input".into())
     }
 
+    /// Validates base coordinates and applies the representation-specific cosine preparation rule.
     fn normalize(data: &mut [Self], dimension: usize, metric: SearchMetric) -> Result<()> {
         // Preserve native coordinates. Cosine normalizes scores using squared norms.
         if metric == SearchMetric::Cosine
@@ -332,6 +349,7 @@ fn read_vectors_into<T: BaseElement>(
 
 // Shared decoder for packed and padded destinations. The caller reuses the
 // encoded buffer and chooses which logical row receives the coordinates.
+/// Decodes one logical base row and validates any per-record dimension header.
 fn read_vector_row<T: BaseElement, R: Read>(
     reader: &mut R,
     format: VectorFormat,
@@ -378,6 +396,7 @@ fn read_vector_row<T: BaseElement, R: Read>(
     Ok(())
 }
 
+/// Fills an already allocated byte payload in large reads without per-vector temporary storage.
 fn read_native_bytes<R: Read>(reader: &mut R, output: &mut [u8]) -> std::io::Result<()> {
     for block in output.chunks_mut(VECTOR_READ_BUFFER_BYTES) {
         reader.read_exact(block)?;
@@ -415,27 +434,39 @@ fn read_native_bytes<R: Read>(reader: &mut R, output: &mut [u8]) -> std::io::Res
 pub struct LoadedBase<T = f32> {
     /// Padded allocation, transferred to the index without copying.
     pub base: Option<AlignedBoxWithSlice<T>>,
+
+    /// Number of vectors described by this dataset or input.
     pub num_points: usize,
+
+    /// Physical base row layout selected independently of its search metric.
     pub layout: orion_ann_vector::PaddedLayout,
 }
 
 /// Replayable experiment inputs. Ordinary search uses LoadedBase + QuerySource.
 #[cfg(any(all(test, feature = "cli"), feature = "benchmark"))]
 pub struct LoadedDataset<T = f32> {
+    /// Loaded base allocation and its logical shape.
     pub base_data: LoadedBase<T>,
+
+    /// Decoded query rows retained by the legacy replay loader.
     pub queries: Vec<Vec<f32>>,
+
+    /// Optional exact neighbor IDs used for evaluation, never for traversal.
     pub ground_truth: Option<Vec<Vec<u32>>>,
 }
 
 #[cfg(any(all(test, feature = "cli"), feature = "benchmark"))]
 impl<T> std::ops::Deref for LoadedDataset<T> {
     type Target = LoadedBase<T>;
+
+    /// Borrows the loaded padded base without copying it.
     fn deref(&self) -> &Self::Target {
         &self.base_data
     }
 }
 #[cfg(any(all(test, feature = "cli"), feature = "benchmark"))]
 impl<T> std::ops::DerefMut for LoadedDataset<T> {
+    /// Exclusively borrows the loaded padded base for in-place mutation.
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.base_data
     }
@@ -502,7 +533,7 @@ impl<T: BaseElement> LoadedBase<T> {
 
         crate::preflight::check_memory_budget(config, num_points)?;
 
-        let layout = orion_ann_vector::PaddedLayout::for_kernel::<T::LayoutKernel>(dimension)?;
+        let layout = orion_ann_vector::PaddedLayout::for_base_scalar::<T>(dimension)?;
         let dataset = padded::load_with_storage::<T>(
             &config.base,
             config.base_format,
@@ -522,6 +553,10 @@ impl<T: BaseElement> LoadedBase<T> {
 
 #[cfg(any(all(test, feature = "cli"), feature = "benchmark"))]
 impl<T: BaseElement> LoadedDataset<T> {
+    /// Loads base and replayable queries for benchmark or diagnostic execution, with optional ground truth.
+    ///
+    /// Preparation-only execution omits query loading; stdin and other nonreplayable
+    /// sources are rejected on this replay path.
     #[cfg(any(feature = "cli", feature = "benchmark"))]
     pub fn load(config: &ResolvedRunConfig) -> Result<Self> {
         if config.prepare_only {
@@ -629,6 +664,9 @@ fn read_dimensioned_records<R: Read + Seek, T>(
 }
 
 // Normalize only cosine inputs. Raw inner-product searches depend on vector norms.
+/// Rejects nonfinite logical f32 rows and normalizes nonzero cosine rows in place.
+///
+/// An error can occur after earlier rows were normalized; callers keep the buffer unpublished.
 pub(crate) fn validate_and_normalize_vectors(
     data: &mut [f32],
     dimension: usize,
@@ -657,6 +695,7 @@ pub(crate) fn validate_and_normalize_vectors(
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl<T> std::fmt::Debug for LoadedBase<T> {
+    /// Formats `num_points`, `layout`, `owns_allocation` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoadedBase")
             .field("num_points", &self.num_points)
@@ -668,6 +707,7 @@ impl<T> std::fmt::Debug for LoadedBase<T> {
 
 #[cfg(any(all(test, feature = "cli"), feature = "benchmark"))]
 impl<T> std::fmt::Debug for LoadedDataset<T> {
+    /// Formats `base`, `query_count`, `ground_truth_rows` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoadedDataset")
             .field("base", &self.base_data)

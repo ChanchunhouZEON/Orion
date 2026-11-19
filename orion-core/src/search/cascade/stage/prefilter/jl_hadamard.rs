@@ -18,6 +18,7 @@ pub struct JlHadamardPrefilter<'a> {
 }
 
 impl<'a> JlHadamardPrefilter<'a> {
+    /// Binds the dataset to this stage; query encoding is deferred until the stage is opened.
     #[inline]
     pub fn new(dataset: &'a JlHadamardDataset) -> Self {
         Self { dataset }
@@ -27,6 +28,9 @@ impl<'a> JlHadamardPrefilter<'a> {
 // SAFETY: shape describes the borrowed base; sessions own checked query storage
 // and cannot outlive that base.
 unsafe impl<'a> PrefilterStage for JlHadamardPrefilter<'a> {
+    /// Identifies this prefilter's precision for cascade compatibility checks.
+    ///
+    /// See [`PrefilterStage::precision`] for the shared contract.
     fn precision(
         &self,
     ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
@@ -35,9 +39,16 @@ unsafe impl<'a> PrefilterStage for JlHadamardPrefilter<'a> {
         Some(P::Quantized(K::JlHadamard))
     }
 
+    /// Describes the base shape required by this filtering representation.
+    ///
+    /// See [`PrefilterStage::shape`] for the shared contract.
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.dataset.dimension, self.dataset.num_vertices))
     }
+
+    /// Prepares query state for repeated candidate filtering.
+    ///
+    /// See [`PrefilterStage::open`] for the shared contract.
     #[inline]
     fn open<'b>(&'b self, q: &[f32]) -> Box<dyn PrefilterSession + 'b> {
         Box::new(JlHadamardSession {
@@ -105,6 +116,7 @@ unsafe impl<'a> PrefilterSession for JlHadamardSession<'a> {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl std::fmt::Debug for JlHadamardPrefilter<'_> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JlHadamardPrefilter")
             .field("dimension", &self.dataset.dimension)
@@ -114,6 +126,7 @@ impl std::fmt::Debug for JlHadamardPrefilter<'_> {
 }
 
 impl std::fmt::Debug for JlHadamardSession<'_> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JlHadamardSession")
             .field("dimension", &self.dataset.dimension)

@@ -68,10 +68,31 @@ impl<T> AlignedBoxWithSlice<T> {
         })
     }
 
+    /// Attach accounting to an already-owned input copy; ownership is unchanged.
+    pub fn account_storage(
+        &mut self,
+        account: &orion_ann_platform::allocation_budget::AllocationAccount,
+    ) -> ANNResult<()> {
+        self.region.account_storage(account)?;
+        Ok(())
+    }
+
+    /// Reports the allocation's backing mode without inspecting OS page residency.
     pub fn placement(&self) -> orion_ann_platform::region::Placement {
         self.region.placement()
     }
 
+    /// Flushes a completed byte range and requests file-page reclamation.
+    /// The range is in bytes, including padding; resident allocations are unchanged.
+    /// Ownership and budget accounting survive successful and failed requests.
+    ///
+    /// # Errors
+    /// Propagates range, writeback and OS advice failures from the region owner.
+    pub fn flush_and_reclaim(&mut self, bytes: Range<usize>) -> std::io::Result<()> {
+        self.region.flush_and_reclaim(bytes)
+    }
+
+    /// Copies a slice into aligned storage governed by the supplied placement policy.
     pub fn from_slice_with_storage(
         values: &[T],
         storage: &orion_ann_platform::region::RegionOptions,
@@ -84,12 +105,14 @@ impl<T> AlignedBoxWithSlice<T> {
         Ok(result)
     }
 
+    /// Borrows all initialized elements without transferring allocation ownership.
     #[inline(always)]
     pub fn as_slice(&self) -> &[T] {
         // SAFETY: all len elements are initialized and live for this borrow.
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 
+    /// Exclusively borrows initialized elements while retaining alignment and backing ownership.
     #[inline(always)]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         // SAFETY: &mut self excludes all other access to the owned allocation.
@@ -113,6 +136,7 @@ impl<T> AlignedBoxWithSlice<T> {
         Ok(())
     }
 
+    /// Partitions exclusive storage into disjoint mutable slices for parallel initialization.
     pub fn split_into_nonoverlapping_mut_slices(
         &mut self,
         range: Range<usize>,
@@ -135,6 +159,7 @@ impl<T> AlignedBoxWithSlice<T> {
 }
 
 impl<T> Drop for AlignedBoxWithSlice<T> {
+    /// Drops initialized elements before the backing region releases its allocation and budget lease.
     fn drop(&mut self) {
         // SAFETY: the elements are initialized and uniquely owned; nonempty
         // allocations are freed exactly once using their original Layout.
@@ -150,12 +175,14 @@ impl<T> Drop for AlignedBoxWithSlice<T> {
 impl<T> Deref for AlignedBoxWithSlice<T> {
     type Target = [T];
 
+    /// Borrows initialized aligned storage without copying it.
     fn deref(&self) -> &Self::Target {
         self.as_slice()
     }
 }
 
 impl<T> DerefMut for AlignedBoxWithSlice<T> {
+    /// Exclusively borrows initialized aligned storage for in-place mutation.
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut_slice()
     }
@@ -163,6 +190,7 @@ impl<T> DerefMut for AlignedBoxWithSlice<T> {
 
 // Log allocation metadata, never the potentially multi-terabyte payload.
 impl<T> std::fmt::Debug for AlignedBoxWithSlice<T> {
+    /// Formats `element_type`, `len`, `storage` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AlignedBoxWithSlice")
             .field("element_type", &std::any::type_name::<T>())

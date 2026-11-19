@@ -12,18 +12,29 @@ use crate::common::{ANNResult, AlignedBoxWithSlice};
 
 const MAX_PQ_CHUNKS: usize = 512;
 
+/// Reusable query-local buffers for legacy PQ distance lookup and comparison.
 #[derive(Debug)]
 pub struct PQScratch {
+    /// Aligned per-query PQ lookup distances.
     pub aligned_pqtable_dist_scratch: AlignedBoxWithSlice<f32>,
+
+    /// Reusable distances for the current candidate batch.
     pub aligned_dist_scratch: AlignedBoxWithSlice<f32>,
+
+    /// Reusable gathered PQ codes for candidate evaluation.
     pub aligned_pq_coord_scratch: AlignedBoxWithSlice<u8>,
+
+    /// Query coordinates after the optional PQ rotation.
     pub rotated_query: AlignedBoxWithSlice<f32>,
+
+    /// Aligned floating query used to build distance lookup tables.
     pub aligned_query_float: AlignedBoxWithSlice<f32>,
 }
 
 impl PQScratch {
     const ALIGNED_ALLOC_256: usize = 256;
 
+    /// Allocates aligned query, lookup-table and candidate-code scratch for PQ scoring.
     pub fn new(graph_degree: usize, aligned_dim: usize) -> ANNResult<Self> {
         let aligned_pq_coord_scratch =
             AlignedBoxWithSlice::new(graph_degree * MAX_PQ_CHUNKS, PQScratch::ALIGNED_ALLOC_256)?;
@@ -43,6 +54,9 @@ impl PQScratch {
         })
     }
 
+    /// Copies query coordinates into PQ scratch, dividing by the supplied norm when normalization is needed.
+    ///
+    /// The caller provides a valid nonzero norm and a dimension fitting the allocated buffers.
     pub fn set<T>(&mut self, dim: usize, query: &[T], norm: f32)
     where
         T: Into<f32> + Copy,

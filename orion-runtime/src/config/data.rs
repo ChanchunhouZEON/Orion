@@ -52,6 +52,7 @@ impl SearchMetric {
         }
     }
 
+    /// Maps the public metric to exact calibration semantics without using quantized stage scores.
     pub fn calibration_metric(self) -> orion_ann_core::CalibrationMetric {
         match self {
             Self::SquaredL2 => orion_ann_core::CalibrationMetric::SquaredL2,

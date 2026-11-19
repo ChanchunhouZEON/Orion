@@ -5,9 +5,21 @@
 
 //! Explicit imports for research executables. Implementation modules stay private.
 pub use crate::data::{inspect_vector_file, query::VectorReader, BaseElement, LoadedDataset};
-pub use crate::execution::{
-    prepare_search, search_batch, GroundTruthReader, QuerySource, ResolvedRunConfig,
-};
+pub use crate::execution::{search_batch, GroundTruthReader, QuerySource, ResolvedRunConfig};
+
+/// Prepare a raw core index for controlled benchmarks outside Index's lifecycle.
+/// This opt-in research adapter is unavailable without the `benchmark` feature;
+/// ordinary applications configure residency through Index and its options.
+pub fn prepare_search<'a, T: BaseElement>(
+    index: &'a orion_ann_core::Orion<T>,
+    config: &ResolvedRunConfig,
+) -> crate::Result<crate::PinnedDatasets<'a>>
+where
+    orion_ann_diskann::model::PaddedDataset<T>: orion_ann_core::model::dataset::rows::CascadeData,
+{
+    crate::placement::configure_storage_policy(index, config, std::iter::empty())?;
+    crate::search::prepare_search(index, config)
+}
 /// Run the same batch pipeline with convergence switching and early exit disabled.
 /// This baseline requires no calibration and still uses approximate graph search.
 pub fn search_non_adaptive(
@@ -68,9 +80,12 @@ pub mod residency {
         model::dataset::rows::{CascadeData, Rows},
         CompressedIndex, QuantizedDatasetShape,
     };
+
+    /// Benchmark-only description of inputs required to execute the selected run.
     #[derive(Debug, Clone)]
     pub struct DatasetRequirements(Vec<DatasetRequirement>);
     impl DatasetRequirements {
+        /// Validates benchmark stage choices and resolves their dataset requirements.
         pub fn from_cascade(
             prefilter: PrefilterChoice,
             admission: AdmissionChoice,
@@ -86,6 +101,8 @@ pub mod residency {
             Ok(Self(cascade.dataset_requirements()))
         }
     }
+
+    /// Builds the sidecars in the benchmark requirement list without performing page locking.
     pub fn prepare<D: Rows>(
         index: &CompressedIndex<D>,
         requirements: &DatasetRequirements,
@@ -120,6 +137,7 @@ pub mod residency {
         )
     }
 
+    /// Applies an explicit benchmark pin policy to the already prepared dataset requirements.
     pub fn pin<'a, D: CascadeData>(
         index: &'a CompressedIndex<D>,
         requirements: &DatasetRequirements,

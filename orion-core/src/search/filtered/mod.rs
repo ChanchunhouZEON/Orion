@@ -14,12 +14,13 @@
 //! Future filtered ANN plans can live alongside this exact baseline. They must
 //! distinguish traversal eligibility from return eligibility and cannot reuse
 //! unfiltered calibration without validation.
-use crate::index::{CompressedIndex, DynamicElement};
+use crate::index::{BaseScalar, CompressedIndex};
 use crate::{Error, Result, ScoreMetric, SearchResult};
 use orion_ann_diskann::model::PaddedDataset;
 use rayon::prelude::*;
 use std::{cmp::Ordering, collections::BinaryHeap};
 
+/// Filtered-search heap entry retaining its output score separately from ascending rank.
 #[derive(Clone, Copy)]
 struct Candidate {
     rank: f32,
@@ -27,24 +28,27 @@ struct Candidate {
     id: u32,
 }
 impl PartialEq for Candidate {
+    /// Orders filtered-search candidates by total rank and then internal ID.
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
 impl Eq for Candidate {}
 impl PartialOrd for Candidate {
+    /// Orders filtered-search candidates by total rank and then internal ID.
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 impl Ord for Candidate {
+    /// Orders filtered-search candidates by total rank and then internal ID.
     fn cmp(&self, other: &Self) -> Ordering {
         self.rank
             .total_cmp(&other.rank)
             .then(self.id.cmp(&other.id))
     }
 }
-impl<T: DynamicElement + Into<f32>> CompressedIndex<PaddedDataset<T>> {
+impl<T: BaseScalar> CompressedIndex<PaddedDataset<T>> {
     /// Exhaustively rank sorted, unique internal IDs using the original metric.
     /// No graph or quantized admission is involved. Ties use ascending row ID.
     /// Memory is O(k) per query worker; result rows may contain fewer than k IDs.

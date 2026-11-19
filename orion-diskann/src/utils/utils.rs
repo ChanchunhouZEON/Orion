@@ -11,6 +11,7 @@ use std::sync::Mutex;
 
 pub type NonRecursiveMutex = Mutex<()>;
 
+/// Rounds a nonnegative size up to an alignment multiple; the alignment must be nonzero.
 #[inline]
 pub fn round_up<T>(x: T, y: T) -> T
 where
@@ -19,6 +20,7 @@ where
     div_round_up(x, y) * y
 }
 
+/// Computes ceiling division for allocation sizing with a nonzero divisor.
 #[inline]
 pub fn div_round_up<T>(x: T, y: T) -> T
 where
@@ -32,6 +34,7 @@ where
         }
 }
 
+/// Rounds a size down to an alignment multiple with a nonzero alignment.
 #[inline]
 pub fn round_down<T>(x: T, y: T) -> T
 where
@@ -40,6 +43,7 @@ where
     (x / y) * y
 }
 
+/// Checks whether an address or size is a multiple of the supplied nonzero alignment.
 #[inline]
 pub fn is_aligned<T>(x: T, y: T) -> bool
 where
@@ -48,11 +52,13 @@ where
     x % y == T::zero()
 }
 
+/// Checks the sector alignment required by legacy aligned reads.
 #[inline]
 pub fn is_512_aligned(x: u64) -> bool {
     is_aligned(x, 512)
 }
 
+/// Checks the page alignment used by legacy disk layouts.
 #[inline]
 pub fn is_4096_aligned(x: u64) -> bool {
     is_aligned(x, 4096)

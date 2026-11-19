@@ -9,6 +9,7 @@
 use orion_ann::{BaseInput, Index, IndexOptions, QueryBatch, SearchOptions};
 use std::{fs::File, io::BufReader, path::Path};
 
+/// Demonstrates file-backed construction with business IDs, explicit calibration, scored search and snapshot persistence.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() != 5 {

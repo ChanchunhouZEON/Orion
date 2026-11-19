@@ -27,11 +27,22 @@ use std::time::Instant;
 
 /// Graph storage and the persisted generation from which a session is assembled.
 pub(crate) struct LoadedGraph<T: BaseElement> {
+    /// Core index whose graph and base are ready for sidecar preparation.
     pub index: Orion<T>,
+
+    /// Selected or newly published cache generation describing this graph.
     pub generation: cache::Generation,
+
+    /// Encoded graph length used in snapshot integrity records.
     pub graph_bytes: u64,
+
+    /// Encoded core metadata length paired with the graph object.
     pub metadata_bytes: u64,
+
+    /// Directory containing immutable objects referenced by this generation.
     pub store: std::path::PathBuf,
+
+    /// Mutable cache lookup key used to attach reusable sidecar records.
     pub working_key: std::path::PathBuf,
 }
 
@@ -58,6 +69,7 @@ pub fn load_u8_index(config: &ResolvedRunConfig, data: &mut LoadedBase<u8>) -> R
     attach_working(prepare_u8(config, data, cache)?, config)
 }
 
+/// Loads, imports or builds an f32 graph using the shared cache and placement workflow.
 pub(crate) fn prepare_f32(
     config: &ResolvedRunConfig,
     data: &mut LoadedBase,
@@ -70,6 +82,7 @@ pub(crate) fn prepare_f32(
     })
 }
 
+/// Loads, imports or builds a native-byte graph using the shared cache and placement workflow.
 pub(crate) fn prepare_u8(
     config: &ResolvedRunConfig,
     data: &mut LoadedBase<u8>,
@@ -103,6 +116,10 @@ fn attach_working<T: BaseElement>(
     Ok(graph.index)
 }
 
+/// Consumes prepared base storage and obtains a graph from a verified generation, staged import or builder.
+///
+/// New payloads are written as immutable objects before the generation record is
+/// published; a failed build cannot replace the previously selected generation.
 fn load_index_impl<T: BaseElement>(
     config: &ResolvedRunConfig,
     data: &mut LoadedBase<T>,

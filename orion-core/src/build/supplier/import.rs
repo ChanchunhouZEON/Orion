@@ -11,6 +11,9 @@ use orion_ann_platform::region::RegionOptions;
 
 // Reuse O(degree + extras) validation scratch across the whole import. Sorting
 // this scratch does not alter supplier order in the final slab.
+/// Rejects capacity overflow, self-edges, out-of-range IDs and duplicates across supplied partitions.
+///
+/// Scratch is reused for duplicate detection without changing the supplier's ordering.
 pub(super) fn validate_row(
     spec: &PartitionSpec,
     node: u32,

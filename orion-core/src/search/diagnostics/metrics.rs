@@ -8,6 +8,7 @@
 #[cfg(feature = "search-stats")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Thread-local diagnostic counters accumulated outside the public result payload.
 #[cfg(feature = "search-stats")]
 #[repr(align(128))]
 struct WorkerCounters([AtomicU64; COUNTERS]);
@@ -26,6 +27,7 @@ static WORKERS: [WorkerCounters; crate::search::MAX_WORKERS] =
 pub struct Counter<const SLOT: usize>(());
 
 impl<const SLOT: usize> Counter<SLOT> {
+    /// Adds work to the current worker's diagnostic counter when search statistics are enabled.
     #[inline]
     pub(crate) fn add(&self, _count: u64) {
         #[cfg(feature = "search-stats")]
@@ -35,6 +37,7 @@ impl<const SLOT: usize> Counter<SLOT> {
         }
     }
 
+    /// Samples the aggregate worker counter without resetting it; concurrent updates may continue.
     #[cfg(feature = "benchmark")]
     pub fn sum(&self) -> u64 {
         WORKERS
@@ -43,6 +46,7 @@ impl<const SLOT: usize> Counter<SLOT> {
             .sum()
     }
 
+    /// Collects and clears worker counters, without promising one atomic snapshot across all workers.
     #[cfg(feature = "search-stats")]
     pub fn drain(&self) -> u64 {
         WORKERS
@@ -51,6 +55,7 @@ impl<const SLOT: usize> Counter<SLOT> {
             .sum()
     }
 
+    /// Discards the current aggregate diagnostic count.
     #[cfg(feature = "benchmark")]
     pub fn reset(&self) {
         self.drain();
@@ -75,6 +80,7 @@ pub(crate) struct SetupTimer {
     started: std::time::Instant,
 }
 impl SetupTimer {
+    /// Starts a setup timer in benchmark builds and remains inert in production builds.
     #[inline]
     pub(crate) fn now() -> Self {
         Self {
@@ -82,6 +88,8 @@ impl SetupTimer {
             started: std::time::Instant::now(),
         }
     }
+
+    /// Adds elapsed setup time to the benchmark counter when timing is enabled.
     #[inline]
     pub(crate) fn record(self) {
         #[cfg(feature = "benchmark")]

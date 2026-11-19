@@ -9,6 +9,7 @@
 use super::super::{ids::IdMap, snapshot::Snapshot, view::ReadView};
 use crate::{labels::LabelStore, Result};
 
+/// Restores a snapshot's optional external-ID object under the caller's memory budget.
 pub(super) fn restore_ids(
     snapshot: Option<&Snapshot>,
     memory_budget_gib: Option<f64>,
@@ -19,6 +20,7 @@ pub(super) fn restore_ids(
         .transpose()
 }
 
+/// Publishes missing ID identity and restores labels bound to this exact base and mapping.
 pub(super) fn attach(
     view: &mut ReadView,
     external_ids: Option<&IdMap>,

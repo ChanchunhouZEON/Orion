@@ -23,6 +23,7 @@ use bytemuck::Pod;
 use orion_ann_diskann::model::PaddedDataset;
 use orion_ann_vector::DistanceKernelBackend;
 
+/// Borrowed full-precision query/base session for exact candidate scoring.
 pub(crate) struct ExactSession<'a, T: Pod + Send + Sync, K: DistanceKernelBackend<Storage = T>> {
     base: &'a PaddedDataset<T>,
     queries: &'a PaddedDataset<T>,
@@ -32,6 +33,7 @@ pub(crate) struct ExactSession<'a, T: Pod + Send + Sync, K: DistanceKernelBacken
 }
 
 impl<'a, T: Pod + Send + Sync, K: DistanceKernelBackend<Storage = T>> ExactSession<'a, T, K> {
+    /// Borrows padded base and query rows to form an exact kernel session without copying vectors.
     pub(crate) fn new(
         base: &'a PaddedDataset<T>,
         queries: &'a PaddedDataset<T>,
@@ -51,12 +53,20 @@ impl<'a, T: Pod + Send + Sync, K: DistanceKernelBackend<Storage = T>> ExactSessi
 unsafe impl<T: Pod + Send + Sync, K: DistanceKernelBackend<Storage = T>> AdmissionSession
     for ExactSession<'_, T, K>
 {
+    /// Scores the entry node in the admission distance domain.
+    ///
+    /// See [`AdmissionSession::entry_distance`] for the shared contract.
     fn entry_distance(&self, id: u32) -> f32 {
         self.base
             .distance::<K>(id, self.queries, self.query_id)
             .expect("validated dynamic entry and layout")
     }
 
+    /// Scores candidates and compacts qualifying neighbors into caller-owned output.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`AdmissionSession::admit_stream`]'s pointer, shape and lifetime contract.
     unsafe fn admit_stream(
         &self,
         ids: &[u32],

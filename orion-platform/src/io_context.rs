@@ -20,12 +20,18 @@ pub enum Status {
 /// Unix I/O context replacing Windows IOContext (FileHandle + IOCompletionPort).
 /// Uses RawFd + optional Mmap for memory-mapped file access.
 pub struct UnixIOContext {
+    /// File descriptor supplied to the read adapter.
     pub fd: RawFd,
+
+    /// Optional mapped view of the opened file.
     pub mmap: Option<Mmap>,
+
+    /// Current read/completion state of this I/O context.
     pub status: Status,
 }
 
 impl UnixIOContext {
+    /// Creates an unread file-descriptor context without mapping the file.
     pub fn new(fd: RawFd) -> Self {
         UnixIOContext {
             fd,
@@ -34,6 +40,7 @@ impl UnixIOContext {
         }
     }
 
+    /// Creates a successful read context that retains the supplied mapping.
     pub fn with_mmap(fd: RawFd, mmap: Mmap) -> Self {
         UnixIOContext {
             fd,
@@ -44,6 +51,7 @@ impl UnixIOContext {
 }
 
 impl Default for UnixIOContext {
+    /// Creates an unregistered context with no usable descriptor or mapping.
     fn default() -> Self {
         UnixIOContext {
             fd: -1,

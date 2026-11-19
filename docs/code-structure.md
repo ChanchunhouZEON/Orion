@@ -121,7 +121,7 @@ orion-core/src/
       analysis/                     # Retained benchmark-only neighbor/contribution analysis
   model/
     dataset/
-      base/                         # Base shape/placement and coordinate/metric contracts
+      base/                         # Base shape/placement; reexports scalar storage contracts
       native_u8.rs                  # Exact squared norms, placement and serialization
       store/                        # Lazy sidecar ownership, accessors and storage configuration
       quantized_dataset/
@@ -131,13 +131,22 @@ orion-core/src/
         rabitq/                     # Binary/multibit rotated codes
         pq/                         # Independent slice-based PQ and ADC stream
         exact/                      # Identity sessions borrowing the base, including native IP/cosine
-    phased_graph/mod.rs             # Aligned local/remote/extra slab; no public mutable graph
+    graph/
+      mod.rs                        # Graph models and their shared access boundary
+      phased_graph/                 # Aligned local/remote/extra slab; no public mutable graph
+      storage_graph/                # Validated leased records from immutable object reads
+      graph_access.rs               # Node acquisition and borrowed partition views
     neighbor/                       # Candidate priority queues and merge primitives
-    scratch.rs                      # Reused query-local visited/candidate buffers
-    search_result.rs                # IDs/counts and optional original-metric scores
+    search/
+      mod.rs                        # Query state and returned data, not traversal policy
+      scratch.rs                    # Reused query-local visited/candidate buffers
+      visited_set.rs                # Per-query node discovery membership
+      search_result.rs              # IDs/counts and optional original-metric scores
 
 orion-vector/
   src/
+    base_scalar.rs                  # Sealed scalar validity and private layout capabilities
+    padded_layout.rs                # Base-scalar and kernel-specific layout constructors
     distance_stream.rs              # DistanceStream<K>: address resolution, bounded near cursor,
                                     #   group/burst scheduling and intentional near/far overlap
     stream_kernels/                 # Runtime ISA dispatch and inlined arithmetic backends

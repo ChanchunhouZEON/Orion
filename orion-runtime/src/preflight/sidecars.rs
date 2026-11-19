@@ -108,9 +108,9 @@ fn stacked_requirements_and_phase_selection() {
         crate::config::GraphSource::Rust,
     )
     .unwrap();
-    let requirements = plan.sidecar_requirements(false);
-    assert_eq!(requirements.len(), 3);
-    let report = estimate_sidecars(input_shape, &requirements).unwrap();
+    let sidecar_requirements = plan.search_sidecar_requirements();
+    assert_eq!(sidecar_requirements.len(), 3);
+    let report = estimate_sidecars(input_shape, &sidecar_requirements).unwrap();
     assert_eq!(report.allocations().len(), 2);
     assert_eq!(
         report.total_bytes(),
@@ -124,7 +124,9 @@ fn stacked_requirements_and_phase_selection() {
                 .unwrap()
                 .total_bytes()
     );
-    assert!(plan.sidecar_requirements(true).is_empty());
+    assert!(crate::config::RunPhase::GraphOnly
+        .sidecar_requirements(plan)
+        .is_empty());
     let native = IndexPlan::resolve(
         crate::VectorStorageKind::U8,
         33,
@@ -139,7 +141,7 @@ fn stacked_requirements_and_phase_selection() {
         crate::config::GraphSource::Parlayann,
     )
     .unwrap();
-    assert!(native.sidecar_requirements(false).is_empty());
+    assert!(native.search_sidecar_requirements().is_empty());
     let mips = IndexPlan::resolve(
         crate::VectorStorageKind::F32,
         33,
@@ -155,7 +157,7 @@ fn stacked_requirements_and_phase_selection() {
     )
     .unwrap();
     assert!(mips
-        .sidecar_requirements(false)
+        .search_sidecar_requirements()
         .contains(&SidecarKind::JlSparseMips.requirement()));
 }
 
@@ -208,4 +210,124 @@ fn native_norms_are_budgeted_including_prepare_only_and_mapped() {
     .resolve("unused.u8bin".into(), VectorFormat::U8bin, 128, 1000, None)
     .unwrap();
     assert_eq!(estimate(&config, 1000)["native_norm_bytes"], 0);
+}
+
+#[test]
+fn phase_selected_sidecars_match_preflight_and_placement() {
+    use crate::config::RunPhase;
+    use crate::{CascadeConfig, GraphConfig, GraphSourcePolicy, IndexOptions, StorageMode};
+    use orion_ann_platform::resources::MemoryResources;
+
+    let rows = 101;
+    let shape = QuantizedDatasetShape {
+        rows,
+        dimension: 33,
+    };
+    let options = IndexOptions {
+        graph: GraphConfig {
+            source: GraphSourcePolicy::Rust,
+            ..Default::default()
+        },
+        cascade: CascadeConfig {
+            prefilter: Some("jl".into()),
+            admission: Some("l2-u16".into()),
+            rerank: Some("u16".into()),
+        },
+        ..Default::default()
+    };
+    let mut config = options
+        .resolve(
+            "unused.fbin".into(),
+            crate::VectorFormat::Fbin,
+            33,
+            rows,
+            None,
+        )
+        .unwrap();
+    let search_sidecar_requirements = config.index_plan().search_sidecar_requirements();
+    assert_eq!(search_sidecar_requirements.len(), 3);
+    let expected =
+        crate::sidecars::requirements::estimate_sidecars(shape, &search_sidecar_requirements)
+            .unwrap();
+    assert_eq!(expected.allocations().len(), 2);
+
+    for (prepare_only, phase) in [(true, RunPhase::GraphOnly), (false, RunPhase::SearchReady)] {
+        config.prepare_only = prepare_only;
+        assert_eq!(config.run_phase(), phase);
+        let sidecar_requirements = config.run_phase().sidecar_requirements(config.index_plan());
+        let expected_bytes = match phase {
+            RunPhase::GraphOnly => {
+                assert!(sidecar_requirements.is_empty());
+                0
+            }
+            RunPhase::SearchReady => {
+                assert_eq!(sidecar_requirements, search_sidecar_requirements);
+                expected.total_bytes() as u64
+            }
+        };
+        // A later search preparation requests its recipe even after a graph-only
+        // run. Selecting that target must not mutate config or cache identity.
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            RunPhase::SearchReady.sidecar_requirements(config.index_plan()),
+            search_sidecar_requirements
+        );
+        assert_eq!(serde_json::to_value(&config).unwrap(), serialized);
+
+        for mode in [StorageMode::Resident, StorageMode::Mapped] {
+            config.storage_options.mode = mode;
+            let input = super::resolve_memory_inputs(&config, rows, true, "configuration").unwrap();
+            let report = super::calculate_memory(&config, input).unwrap();
+            let base = report["base_storage_bytes"].as_u64().unwrap();
+            let graph = report["graph_slab_bytes"].as_u64().unwrap();
+            let placement = crate::placement::complete_plan(
+                &config,
+                shape,
+                &sidecar_requirements,
+                base,
+                graph,
+                0,
+                MemoryResources::default(),
+            )
+            .unwrap();
+            assert_eq!(report["sidecar_bytes"], expected_bytes);
+            assert_eq!(
+                placement.resident_bytes + placement.mapped_bytes,
+                base + graph + expected_bytes
+            );
+            assert_eq!(
+                report["resident_lower_bound_bytes"],
+                placement.resident_bytes
+            );
+            assert!(report.get("mapping_reserve_bytes").is_none());
+            let known_working_bytes: u64 = report["components"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|component| {
+                    matches!(
+                        component["name"].as_str(),
+                        Some("query buffers" | "result IDs" | "ground truth IDs")
+                    )
+                })
+                .map(|component| component["bytes"].as_u64().unwrap())
+                .sum();
+            assert_eq!(
+                report["accounted_lower_bound_bytes"],
+                placement.resident_bytes + known_working_bytes
+            );
+            let text = super::report::format_report(&report);
+            assert!(!text.contains("Mapping working-set reserve"));
+            if mode == StorageMode::Mapped {
+                assert!(text.contains("Mapped payload:"));
+            }
+            if mode == StorageMode::Mapped {
+                assert_eq!(report["sidecar_mapped_bytes"], expected_bytes);
+                assert_eq!(report["sidecar_owned_bytes"], 0);
+            } else {
+                assert_eq!(report["sidecar_owned_bytes"], expected_bytes);
+                assert_eq!(report["sidecar_mapped_bytes"], 0);
+            }
+        }
+    }
 }

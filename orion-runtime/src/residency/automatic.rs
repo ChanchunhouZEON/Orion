@@ -7,13 +7,18 @@
 use super::*;
 use orion_ann_platform::{residency::registered_bytes, resources::MemoryResources};
 
+/// A bounded lock-page policy together with the resource observations that explain its budget.
 #[derive(Debug)]
 pub(crate) struct AutomaticPlan {
+    /// Effective pin policy to apply to already prepared storage.
     pub options: PinOptions,
+
+    /// Resource inputs retained for diagnostics; these are observations, not reserved capacity.
     pub observations: serde_json::Value,
 }
 
 impl AutomaticPlan {
+    /// Samples host limits and registered locks to choose a best-effort pin budget.
     pub fn detect(enabled: bool, budget: Option<f64>) -> Result<Self> {
         Self::from_resources(
             enabled,
@@ -23,6 +28,9 @@ impl AutomaticPlan {
         )
     }
 
+    /// Bounds pinning by available RAM, lock allowance and the user limit while retaining OS headroom.
+    ///
+    /// Unknown headroom disables automatic locking rather than requesting an unbounded lock.
     fn from_resources(
         enabled: bool,
         budget: Option<f64>,

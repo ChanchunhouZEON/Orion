@@ -21,6 +21,10 @@ where
     T: Default + Copy + Sync + Send + Into<f32>,
     [T; N]: FullPrecisionDistance<T, N>,
 {
+    /// Selects diverse outgoing edges from a sorted pool using progressive alpha occlusion.
+    ///
+    /// When candidate capture is enabled, pruned IDs are recorded for Orion extras.
+    /// The output list must be empty before this operation.
     #[allow(clippy::too_many_arguments)]
     fn occlude_list(
         &self,
@@ -119,6 +123,7 @@ where
         Ok(())
     }
 
+    /// Prunes a construction candidate pool using the configured degree, occlusion horizon and alpha.
     pub fn prune_neighbors(
         &self,
         location: u32,
@@ -137,6 +142,7 @@ where
         )
     }
 
+    /// Sorts and prunes candidates, then optionally fills unused degree with remaining unique neighbors.
     #[allow(clippy::too_many_arguments)]
     fn robust_prune(
         &self,
@@ -189,6 +195,9 @@ where
         Ok(())
     }
 
+    /// Inserts reverse edges and reprunes overflowing destination lists without retaining a source-node guard.
+    ///
+    /// Destination locks are released before expensive pruning and reacquired only to publish neighbors.
     pub fn inter_insert(
         &self,
         n: u32,
@@ -260,6 +269,7 @@ where
         Ok(())
     }
 
+    /// Replaces one node's adjacency list while holding its exclusive graph guard.
     #[cfg(not(feature = "orion"))]
     fn set_neighbors(&self, vertex_id: u32, new_out_neighbors: AdjacencyList) -> ANNResult<()> {
         let mut vertex_guard = self.final_graph.write_vertex_and_neighbors(vertex_id)?;

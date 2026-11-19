@@ -18,6 +18,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
+/// Builds or loads a working graph and binds immutable provenance and sidecar receipts.
 pub(super) fn prepare<T: BaseElement + 'static>(
     config: &ResolvedRunConfig,
     mut data: LoadedBase<T>,
@@ -34,6 +35,7 @@ where
 {
     let points = data.num_points;
     let mut graph = load(config, &mut data, plan)?;
+    super::storage::configure_object_storage(&graph.index, config, std::iter::empty())?;
     crate::search::bind_rows(&graph.index, config)?;
     let record = graph.generation;
     let (bytes, digest) = crate::storage::put(&graph.store, "cache.json", |w| {
@@ -59,12 +61,7 @@ where
         crate::sidecars::derived_key(config, points)?,
     );
     Ok(ReadView {
-        engine: Box::new(DynamicEngine::<T> {
-            auto_pin: Default::default(),
-            pin_report: Default::default(),
-            index: graph.index,
-            receipts,
-        }),
+        engine: Box::new(DynamicEngine::<T>::new(graph.index, receipts, config)?),
         object_store: graph.store.canonicalize()?,
         payloads: files,
         graph_bytes: graph.graph_bytes,

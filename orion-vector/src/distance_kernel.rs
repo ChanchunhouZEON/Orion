@@ -359,10 +359,20 @@ impl DistanceKernelBackend for PqAdcDistance {
     type Acc = f32;
     const CHUNK_BYTES: usize = 1;
     const QUERY_CHUNK_BYTES: usize = 256 * size_of::<f32>();
+
+    /// Starts a fresh per-vector accumulator for this distance kernel.
+    ///
+    /// See [`DistanceKernelBackend::init`] for the shared contract.
     #[inline(always)]
     fn init() -> f32 {
         0.0
     }
+
+    /// Accumulates one kernel chunk without reducing the partial distance.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`DistanceKernelBackend::step`]'s pointer, shape and lifetime contract.
     #[inline(always)]
     unsafe fn step(acc: &mut f32, base: *const u8, query: *const u8) {
         // SAFETY: caller supplies one code and its complete f32-aligned table.
@@ -370,10 +380,18 @@ impl DistanceKernelBackend for PqAdcDistance {
             *acc += query.cast::<f32>().add(base.read() as usize).read();
         }
     }
+
+    /// Converts the completed accumulator to a smaller-is-closer distance.
+    ///
+    /// See [`DistanceKernelBackend::reduce`] for the shared contract.
     #[inline(always)]
     fn reduce(acc: f32) -> f32 {
         acc
     }
+
+    /// Combines independent chunk accumulators before the final reduction.
+    ///
+    /// See [`DistanceKernelBackend::merge`] for the shared contract.
     #[inline(always)]
     fn merge(into: &mut f32, src: f32) {
         *into += src;

@@ -9,6 +9,7 @@
 use orion_ann_vector::{FullPrecisionDistance, Metric};
 use std::array::TryFromSliceError;
 
+/// Borrowed fixed-width coordinates with their internal graph ID.
 #[derive(Debug)]
 pub struct Vertex<'a, T, const N: usize>
 where
@@ -22,10 +23,12 @@ impl<'a, T, const N: usize> Vertex<'a, T, N>
 where
     [T; N]: FullPrecisionDistance<T, N>,
 {
+    /// Borrows a fixed-width vector and associates its compact internal ID without copying coordinates.
     pub fn new(val: &'a [T; N], id: u32) -> Self {
         Self { val, id }
     }
 
+    /// Computes the configured legacy distance between two borrowed fixed-width vectors.
     #[inline(always)]
     pub fn compare(&self, other: &Vertex<'a, T, N>, metric: Metric) -> f32 {
         <[T; N]>::distance_compare(self.val, other.val, metric)
@@ -52,11 +55,13 @@ where
         <[T; N]>::distance_compare_adsampling(self.val, other.val, upper_bound, epsilon)
     }
 
+    /// Borrows the vector coordinates retained by this vertex view.
     #[inline]
     pub fn vector(&self) -> &[T; N] {
         self.val
     }
 
+    /// Returns the internal graph ID carried by this view.
     #[inline]
     pub fn vertex_id(&self) -> u32 {
         self.id
@@ -69,6 +74,7 @@ where
 {
     type Error = TryFromSliceError;
 
+    /// Borrows an exactly N-element vector with its ID; rejects a mismatched slice length.
     fn try_from((mem_slice, id): (&'a [T], u32)) -> Result<Self, Self::Error> {
         let array: &[T; N] = mem_slice.try_into()?;
         Ok(Vertex::new(array, id))

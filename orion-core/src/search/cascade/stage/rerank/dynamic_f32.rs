@@ -6,18 +6,20 @@
 //! Full-precision reranking of padded rows with the existing distance stream.
 use super::RerankStage;
 use crate::{
-    model::{Neighbor, scratch::InMemSearchScratch},
+    model::{Neighbor, search::scratch::InMemSearchScratch},
     search::{NDC_F32, traversal::tuning::dstream_la_truth},
 };
 use orion_ann_diskann::model::PaddedDataset;
 use orion_ann_vector::{DistanceKernelBackend, L2F32Distance};
 use std::marker::PhantomData;
 
+/// Original f32 base view used to rerank candidates with its selected kernel.
 pub struct DynamicF32Rerank<'a, K: DistanceKernelBackend<Storage = f32> = L2F32Distance> {
     dataset: &'a PaddedDataset<f32>,
     kernel: PhantomData<K>,
 }
 impl<'a, K: DistanceKernelBackend<Storage = f32>> DynamicF32Rerank<'a, K> {
+    /// Binds the dataset to this stage; query encoding is deferred until the stage is opened.
     pub fn new(dataset: &'a PaddedDataset<f32>) -> Self {
         assert_eq!(
             dataset.layout().stride_bytes()
@@ -34,6 +36,9 @@ impl<'a, K: DistanceKernelBackend<Storage = f32>> DynamicF32Rerank<'a, K> {
 impl<K: DistanceKernelBackend<Storage = f32> + Send + Sync + 'static> RerankStage
     for DynamicF32Rerank<'_, K>
 {
+    /// Exposes original-metric scoring when this reranker has an exact-stage adapter.
+    ///
+    /// See [`RerankStage::exact`] for the shared contract.
     fn exact(
         &self,
     ) -> Option<crate::model::dataset::quantized_dataset::exact::stage::ExactStage<'_>> {
@@ -49,6 +54,9 @@ impl<K: DistanceKernelBackend<Storage = f32> + Send + Sync + 'static> RerankStag
         Some(ExactStage::f32(self.dataset, metric).expect("validated rerank layout"))
     }
 
+    /// Identifies final-stage precision for cascade compatibility checks.
+    ///
+    /// See [`RerankStage::precision`] for the shared contract.
     fn precision(
         &self,
     ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
@@ -56,9 +64,16 @@ impl<K: DistanceKernelBackend<Storage = f32> + Send + Sync + 'static> RerankStag
         Some(P::Exact)
     }
 
+    /// Describes the base shape required by this reranking representation.
+    ///
+    /// See [`RerankStage::shape`] for the shared contract.
     fn shape(&self) -> Option<(usize, usize)> {
         Some((self.dataset.layout().logical_dim(), self.dataset.len()))
     }
+
+    /// Selects final IDs from the search scratch using this stage's ranking policy.
+    ///
+    /// See [`RerankStage::rerank`] for the shared contract.
     fn rerank(
         &self,
         query: &[f32],
@@ -73,6 +88,9 @@ impl<K: DistanceKernelBackend<Storage = f32> + Send + Sync + 'static> RerankStag
             .collect()
     }
 
+    /// Returns selected IDs and any exact scores reusable by result assembly.
+    ///
+    /// See [`RerankStage::rerank_scored`] for the shared contract.
     fn rerank_scored(
         &self,
         query: &[f32],
@@ -107,6 +125,10 @@ impl<K: DistanceKernelBackend<Storage = f32> + Send + Sync + 'static> RerankStag
 }
 
 impl<K: DistanceKernelBackend<Storage = f32>> DynamicF32Rerank<'_, K> {
+    /// Rescores a bounded beam prefix with the f32 stream kernel and returns sorted exact distances.
+    ///
+    /// Logical queries are zero-padded in scratch; candidate IDs and query dimensions
+    /// are checked before entering the unchecked stream.
     fn ranked(
         &self,
         query: &[f32],
@@ -161,6 +183,7 @@ impl<K: DistanceKernelBackend<Storage = f32>> DynamicF32Rerank<'_, K> {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl<'a, K: DistanceKernelBackend<Storage = f32>> std::fmt::Debug for DynamicF32Rerank<'a, K> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DynamicF32Rerank")
             .field("dimension", &self.dataset.layout().logical_dim())

@@ -23,11 +23,15 @@ use orion_ann_platform::region::{ArrayView, Placement, RegionOptions};
 use std::io::{Read, Write};
 pub const NORM_CODEC: &str = "u8-norms";
 pub(crate) const U32_NORM_DIMENSION: usize = (u32::MAX as u64 / 65025) as usize;
+
+/// Width-selected backing for exact squared norms of original byte rows.
 #[derive(Debug)]
 enum Values {
     U32(ArrayView<u32>),
     U64(ArrayView<u64>),
 }
+
+/// Exact squared norms for byte cosine, using u32 or u64 according to dimension.
 #[derive(Debug)]
 pub struct NativeU8Norms {
     values: Values,
@@ -53,6 +57,10 @@ impl NativeU8Norms {
         })
         .ok_or_else(|| Error::invalid_argument("native u8 norms size overflow"))
     }
+
+    /// Computes exact squared byte norms in planned storage, choosing u32 or u64 from the dimension bound.
+    ///
+    /// Zero-norm rows are rejected because cosine is undefined for them.
     pub(crate) fn build(base: &PaddedDataset<u8>, storage: &RegionOptions) -> Result<Self> {
         let dimension = base.layout().logical_dim();
         let rows = base.len();
@@ -104,30 +112,44 @@ impl NativeU8Norms {
             rows,
         })
     }
+
+    /// Returns the stored integer width per norm, excluding any allocation alignment.
     pub(crate) fn element_bytes(&self) -> usize {
         match &self.values {
             Values::U32(_) => 4,
             Values::U64(_) => 8,
         }
     }
+
+    /// Reads a row's squared norm as u64 regardless of the stored width.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the internal row ID is outside this norm table.
     pub(crate) fn get(&self, id: usize) -> u64 {
         match &self.values {
             Values::U32(v) => v.as_slice()[id] as u64,
             Values::U64(v) => v.as_slice()[id],
         }
     }
+
+    /// Borrows the norm allocation as bytes for residency and ownership accounting.
     pub(crate) fn bytes(&self) -> &[u8] {
         match &self.values {
             Values::U32(v) => bytemuck::cast_slice(v.as_slice()),
             Values::U64(v) => bytemuck::cast_slice(v.as_slice()),
         }
     }
+
+    /// Reports whether the norm table is resident or backed by a mapping.
     pub(crate) fn placement(&self) -> Placement {
         match &self.values {
             Values::U32(v) => v.placement(),
             Values::U64(v) => v.placement(),
         }
     }
+
+    /// Writes the versioned shape header and little-endian integer squared norms.
     pub(crate) fn encode(&self, w: &mut dyn Write) -> Result<()> {
         w.write_all(b"U8NS")?;
         w.write_u32::<LittleEndian>(1)?;
@@ -147,6 +169,8 @@ impl NativeU8Norms {
         }
         Ok(())
     }
+
+    /// Validates encoded shape, length and norm bounds before publishing the restored norm table.
     pub(crate) fn decode(
         r: &mut dyn Read,
         bytes: u64,
@@ -212,6 +236,8 @@ mod tests {
                 let options = RegionOptions {
                     placement,
                     directory: None,
+                    accounting: None,
+                    reclaim_after_write: false,
                 };
                 let norms = NativeU8Norms::build(&base, &options).unwrap();
                 assert_eq!(

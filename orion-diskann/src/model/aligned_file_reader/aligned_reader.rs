@@ -24,6 +24,9 @@ where
 }
 
 impl<'a, T: Copy> AlignedRead<'a, T> {
+    /// Borrows a destination buffer after validating sector-aligned file offset and byte length.
+    ///
+    /// The request does not take ownership of the allocation.
     pub fn new(offset: u64, aligned_buf: &'a mut [T]) -> ANNResult<Self> {
         Self::assert_is_aligned(offset as usize)?;
         Self::assert_is_aligned(std::mem::size_of_val(aligned_buf))?;
@@ -34,6 +37,7 @@ impl<'a, T: Copy> AlignedRead<'a, T> {
         })
     }
 
+    /// Rejects offsets or byte counts that violate the legacy disk-I/O sector alignment.
     fn assert_is_aligned(val: usize) -> ANNResult<()> {
         match val % DISK_IO_ALIGNMENT {
             0 => Ok(()),
@@ -44,6 +48,7 @@ impl<'a, T: Copy> AlignedRead<'a, T> {
         }
     }
 
+    /// Borrows the request destination immutably while the request retains its exclusive buffer borrow.
     pub fn aligned_buf(&self) -> &[T] {
         self.aligned_buf
     }

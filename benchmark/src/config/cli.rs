@@ -431,6 +431,7 @@ impl Args {
         }
 
         let mut run = ResolvedRunConfig {
+            allocation_budget: Default::default(),
             storage_options: Default::default(),
             benchmark_trust_cache: true,
             benchmark_cache_file: self.cache_file.clone(),

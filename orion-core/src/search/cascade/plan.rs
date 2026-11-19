@@ -14,19 +14,21 @@ use crate::model::{
         quantized_dataset::exact::stage::ExactHandle,
         rows::{CascadeData, RowTransform},
     },
-    scratch::InMemSearchScratch,
+    search::scratch::InMemSearchScratch,
 };
 use crate::search::query::QueryInput;
 use crate::search::query::prepared::{PreparedQuery, QueryRequirements};
 use crate::{Result, ScoreMetric};
 
-pub(super) struct CascadePlan<'a, D> {
+/// Query preparation and stage selection bound to one base and cascade recipe.
+pub(crate) struct CascadePlan<'a, D> {
     base: &'a D,
     recipe: DynamicCascade<'a>,
     requirements: QueryRequirements<'a>,
 }
 impl<'a, D> CascadePlan<'a, D> {
-    pub(super) fn new(base: &'a D, recipe: DynamicCascade<'a>, transform: RowTransform) -> Self {
+    /// Collects query representation requirements once before executing the cascade.
+    pub(crate) fn new(base: &'a D, recipe: DynamicCascade<'a>, transform: RowTransform) -> Self {
         Self {
             base,
             recipe,
@@ -41,11 +43,14 @@ impl<'a, D> CascadePlan<'a, D> {
         }
     }
 }
-pub(super) enum OpenedAdmission<'a> {
+
+/// Prepared admission session, retaining either exact state or an owned quantized session.
+pub(crate) enum OpenedAdmission<'a> {
     Quantized(Box<dyn stage::AdmissionSession + 'a>),
     Exact(ExactHandle<'a>),
 }
 impl SessionHandle for OpenedAdmission<'_> {
+    /// Borrows the selected admission session through the shared executor contract.
     fn session(&self) -> &dyn stage::AdmissionSession {
         match self {
             Self::Quantized(s) => s.as_ref(),
@@ -62,16 +67,21 @@ impl<D: CascadeData> QueryPlan for CascadePlan<'_, D> {
         = OpenedAdmission<'a>
     where
         Self: 'a;
+
+    /// Checks the stage recipe against the shared base shape.
     fn validate(&self) -> Result<()> {
         self.recipe.validate(
             crate::model::dataset::rows::Rows::dimension(self.base),
             self.base.len(),
         )
     }
+
+    /// Prepares only the query representations required by this cascade.
     fn prepare<'a>(&'a self, raw: QueryInput<'a>) -> Result<Self::Prepared<'a>> {
         PreparedQuery::new(raw, self.requirements)
     }
 
+    /// Borrows the exact or quantized admission session selected by the prepared recipe.
     fn admission<'a, 'q: 'a>(&'a self, q: &'a Self::Prepared<'q>) -> Self::Admission<'a>
     where
         Self: 'q,
@@ -85,6 +95,8 @@ impl<D: CascadeData> QueryPlan for CascadePlan<'_, D> {
             ),
         }
     }
+
+    /// Opens the configured filter session, including the explicit no-op implementation.
     fn prefilter<'a, 'q: 'a>(
         &'a self,
         q: &'a Self::Prepared<'q>,
@@ -98,6 +110,8 @@ impl<D: CascadeData> QueryPlan for CascadePlan<'_, D> {
             .prefilter
             .open(q.floating.as_deref().unwrap_or(&[]))
     }
+
+    /// Selects final IDs and optional scores, reusing prepared exact query state when available.
     fn finish<'a>(
         &'a self,
         q: &Self::Prepared<'a>,

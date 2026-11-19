@@ -11,7 +11,7 @@ import textwrap
 import unittest
 
 import numpy as np
-from orion_ann import Index, OrionError
+from orion_ann import Index, OrionError, StorageOptions
 import test_index as fixtures
 from test_index import write_vectors
 
@@ -77,7 +77,7 @@ class ErrorTests(unittest.TestCase):
     def test_errors_have_actionable_categories(self):
         base, queries = self.arrays()
         with self.assertRaises(OrionError) as raised:
-            self.make(base, memory_budget_gib=1e-12)
+            self.make(base, memory_budget_gib=1e-12, storage_options=StorageOptions(mode="resident"))
         self.assertEqual(raised.exception.code, 'ORION_RESOURCE_EXHAUSTED')
         self.assertGreater(raised.exception.details['required_bytes'], 0)
         self.assertTrue(raised.exception.details['components'])

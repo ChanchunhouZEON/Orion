@@ -60,12 +60,18 @@ pub(crate) struct NoPrefilterSession;
 // SAFETY: shape describes the borrowed base; sessions own checked query storage
 // and cannot outlive that base.
 unsafe impl PrefilterStage for NoPrefilter {
+    /// Reports no filtering precision because this stage is disabled.
+    ///
+    /// See [`PrefilterStage::precision`] for the shared contract.
     fn precision(
         &self,
     ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
         None
     }
 
+    /// Creates a zero-sized session that preserves all candidates.
+    ///
+    /// See [`PrefilterStage::open`] for the shared contract.
     #[inline(always)]
     fn open<'a>(&'a self, _q: &[f32]) -> Box<dyn PrefilterSession + 'a> {
         Box::new(NoPrefilterSession)
@@ -75,16 +81,26 @@ unsafe impl PrefilterStage for NoPrefilter {
 // SAFETY: streams retain input IDs, write only within the input-sized output
 // region, and return the initialized compacted prefix length.
 unsafe impl PrefilterSession for NoPrefilterSession {
+    /// Returns the no-filter outcome without reading or modifying scratch.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`PrefilterSession::apply`]'s pointer, shape and lifetime contract.
     #[inline(always)]
     unsafe fn apply(
         &self,
-        _scratch: &mut crate::model::scratch::InMemSearchScratch,
+        _scratch: &mut crate::model::search::scratch::InMemSearchScratch,
         _search_list_size: usize,
         _lookahead_lines: usize,
     ) -> PrefilterOutcome {
         PrefilterOutcome::default()
     }
 
+    /// Leaves the candidate IDs unchanged without evaluating distances.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`PrefilterSession::filter_compact`]'s pointer, shape and lifetime contract.
     #[inline(always)]
     unsafe fn filter_compact(
         &self,
@@ -95,6 +111,9 @@ unsafe impl PrefilterSession for NoPrefilterSession {
         // A directly opened no-op kernel also preserves every candidate.
     }
 
+    /// Returns the no-op score without reading a dataset row.
+    ///
+    /// See [`PrefilterSession::distance`] for the shared contract.
     #[inline(always)]
     fn distance(&self, _vid: u32) -> f32 {
         0.0

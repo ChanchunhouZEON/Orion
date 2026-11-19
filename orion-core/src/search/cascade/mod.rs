@@ -18,10 +18,15 @@ use crate::{Error, Result};
 pub struct DynamicCascade<'a> {
     /// Use `NoPrefilter` to send neighbors directly to admission.
     pub prefilter: &'a dyn PrefilterStage,
+
+    /// Stage that computes candidate distances used to update the search beam.
     pub admission: &'a dyn AdmissionStage,
+
+    /// Final scoring stage applied to selected candidates.
     pub rerank: &'a dyn RerankStage,
 }
 impl DynamicCascade<'_> {
+    /// Checks stage precision ordering and requires every materialized stage to match the base shape.
     fn validate(&self, dimension: usize, points: usize) -> Result<()> {
         use crate::model::dataset::quantized_dataset::capabilities::validate_precision;
         let admission = self.admission.precision().ok_or_else(|| {
@@ -49,7 +54,7 @@ impl DynamicCascade<'_> {
         Ok(())
     }
 }
-mod plan;
+pub(crate) mod plan;
 use plan::CascadePlan;
 impl<D: crate::model::dataset::rows::CascadeData> CompressedIndex<D> {
     /// Search borrowed packed queries with a prepared, validated cascade.
@@ -144,6 +149,7 @@ impl CompressedIndex<orion_ann_diskann::model::PaddedDataset<f32>> {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl std::fmt::Debug for DynamicCascade<'_> {
+    /// Formats `has_prefilter`, `admission_shape`, `rerank_shape` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DynamicCascade")
             .field("has_prefilter", &self.prefilter.precision().is_some())
@@ -154,5 +160,5 @@ impl std::fmt::Debug for DynamicCascade<'_> {
 }
 
 // A recipe is bound once, then executed independently of base element width.
-mod execute;
+pub(crate) mod execute;
 pub mod stage;

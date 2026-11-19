@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LabelKey {
+    /// Case-sensitive label category; no implicit whitespace or Unicode normalization.
     pub namespace: String,
+
+    /// Case-sensitive value within the namespace, included verbatim in label identity.
     pub value: String,
 }
 impl LabelKey {
@@ -24,6 +27,8 @@ impl LabelKey {
         key.validate()?;
         Ok(key)
     }
+
+    /// Checks nonempty key components and the combined UTF-8 byte limit.
     pub(crate) fn validate(&self) -> Result<()> {
         if self.namespace.is_empty()
             || self.value.is_empty()
@@ -43,9 +48,14 @@ impl LabelKey {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LabelUpdate {
+    /// Label whose membership is changed by this batch entry.
     pub label: LabelKey,
+
+    /// Internal row IDs to include; duplicates within the list are idempotent.
     #[serde(default)]
     pub add: Vec<u32>,
+
+    /// Internal row IDs to exclude; overlap with add rejects the whole batch.
     #[serde(default)]
     pub remove: Vec<u32>,
 }
@@ -59,9 +69,14 @@ pub struct LabelUpdate {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExternalLabelUpdate {
+    /// Label whose membership is changed after business-ID resolution.
     pub label: LabelKey,
+
+    /// Business IDs to include; every ID must resolve before publication.
     #[serde(default)]
     pub add: Vec<u64>,
+
+    /// Business IDs to exclude; unknown IDs also reject the complete update batch.
     #[serde(default)]
     pub remove: Vec<u64>,
 }
@@ -83,6 +98,7 @@ pub(crate) fn check_batch_limits(
     Ok(())
 }
 
+/// Validates row bounds and returns sorted unique IDs for set operations.
 pub(super) fn checked_ids(ids: &[u32], points: usize) -> Result<Vec<u32>> {
     if ids.iter().any(|&id| id as usize >= points) {
         return Err(Error::invalid_argument(
@@ -114,6 +130,8 @@ pub(crate) fn union(a: &[u32], b: &[u32]) -> Vec<u32> {
     }
     out
 }
+
+/// Subtracts a sorted membership set while preserving the input order of retained IDs.
 pub(crate) fn difference(a: &[u32], b: &[u32]) -> Vec<u32> {
     a.iter()
         .copied()

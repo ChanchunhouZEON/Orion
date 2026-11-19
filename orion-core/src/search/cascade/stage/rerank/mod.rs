@@ -34,7 +34,7 @@ pub use ip_f32_truth::IpF32Rerank;
 pub use u16_truth::U16Rerank;
 
 use crate::model::Neighbor;
-use crate::model::scratch::InMemSearchScratch;
+use crate::model::search::scratch::InMemSearchScratch;
 
 mod contract;
 pub(crate) use contract::RerankStage;
@@ -60,12 +60,18 @@ pub type Rerank<'a> = dyn RerankStage + 'a;
 pub struct NoRerank;
 
 impl RerankStage for NoRerank {
+    /// Reports no additional precision because final reranking is disabled.
+    ///
+    /// See [`RerankStage::precision`] for the shared contract.
     fn precision(
         &self,
     ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
         None
     }
 
+    /// Copies the valid top-k beam IDs without evaluating another distance.
+    ///
+    /// See [`RerankStage::rerank`] for the shared contract.
     fn rerank(
         &self,
         _query: &[f32],

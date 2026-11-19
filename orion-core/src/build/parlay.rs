@@ -7,6 +7,8 @@
 use super::*;
 use crate::ErrorCode;
 use orion_ann_parlay::{BuildOptions, Builder, Metric};
+
+/// Maps bridge error categories into the shared error model while retaining the ParlayANN cause.
 pub fn convert_error(error: orion_ann_parlay::Error) -> Error {
     let code = match error.code {
         1 => ErrorCode::InvalidArgument,
@@ -19,6 +21,7 @@ pub fn convert_error(error: orion_ann_parlay::Error) -> Error {
         .with_source(error)
 }
 
+/// Translates validated core build settings into the ParlayANN FFI option layout.
 fn options(config: &BuildConfig) -> BuildOptions {
     BuildOptions {
         degree: config.degree,

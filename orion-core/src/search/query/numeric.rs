@@ -6,14 +6,19 @@
 //! Wide reference arithmetic for mixed coordinates. No base copy or per-ID
 //! allocation; existing homogeneous SIMD kernels remain the preferred path.
 use crate::ScoreMetric;
-pub(crate) fn score<Q: Copy + Into<f64>, T: Copy + Into<f32>>(
+
+/// Computes an original-metric score with wide accumulation for mixed scalar inputs.
+///
+/// Callers provide equal logical lengths and validated nonzero cosine vectors;
+/// this fallback does not convert or allocate a full base row.
+pub(crate) fn score<Q: Copy + Into<f64>, T: Copy + Into<f64>>(
     query: &[Q],
     row: &[T],
     metric: ScoreMetric,
 ) -> f32 {
     let (mut squared, mut dot, mut nq, mut nb) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
     for (&q, &b) in query.iter().zip(row) {
-        let (q, b) = (q.into(), f64::from(b.into()));
+        let (q, b) = (q.into(), b.into());
         let delta = q - b;
         squared += delta * delta;
         dot += q * b;

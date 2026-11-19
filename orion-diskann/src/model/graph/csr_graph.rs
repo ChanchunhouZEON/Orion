@@ -10,6 +10,7 @@ use crate::common::ANNResult;
 
 const CACHE_LINE_BYTES: usize = 64;
 
+/// Computes the cache-line-padded u32 stride for graph header and adjacency capacity.
 #[inline]
 const fn compute_stride(max_degree: usize) -> usize {
     let raw_bytes = (HEADER_U32 + max_degree) * 4;
@@ -25,6 +26,8 @@ const fn compute_stride(max_degree: usize) -> usize {
 /// degree, compressed_degree, neighbors, bidir bits, save/load.
 pub struct CsrGraph {
     slab: NodeSlabBuffer,
+
+    /// Maximum number of navigation neighbors retained per node.
     pub max_degree: u32,
 }
 
@@ -32,6 +35,7 @@ unsafe impl Send for CsrGraph {}
 unsafe impl Sync for CsrGraph {}
 
 impl std::fmt::Debug for CsrGraph {
+    /// Formats `num_nodes`, `max_degree`, `stride_u32` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CsrGraph")
             .field("num_nodes", &self.slab.num_nodes())
@@ -42,6 +46,7 @@ impl std::fmt::Debug for CsrGraph {
 }
 
 impl Clone for CsrGraph {
+    /// Clones the graph slab and preserves the same adjacency capacity.
     fn clone(&self) -> Self {
         Self {
             slab: self.slab.clone(),
@@ -132,25 +137,31 @@ impl CsrGraph {
 
     // ── Direct read accessors (zero-overhead, no atomics) ────────────────────
 
+    /// Returns the number of allocated graph nodes.
     #[inline]
     pub fn num_nodes(&self) -> usize {
         self.slab.num_nodes()
     }
+
+    /// Returns the fixed node-slot width in u32 words.
     #[inline]
     pub fn stride(&self) -> usize {
         self.slab.stride()
     }
 
+    /// Reads the navigation-neighbor count stored in a node header.
     #[inline]
     pub fn degree(&self, i: usize) -> usize {
         self.slab.slot(i)[0] as usize
     }
 
+    /// Reads the compressed neighbor-prefix length stored in a node header.
     #[inline]
     pub fn compressed_degree(&self, i: usize) -> usize {
         self.slab.slot(i)[1] as usize
     }
 
+    /// Borrows the occupied navigation portion of a node slot.
     #[inline]
     pub fn neighbors(&self, i: usize) -> &[u32] {
         let s = self.slab.slot(i);
@@ -164,6 +175,7 @@ impl CsrGraph {
         orion_ann_vector::prefetch_vector(self.slab.slot(i));
     }
 
+    /// Borrows the compressed prefix of a node's navigation list.
     #[inline]
     pub fn compressed_neighbors(&self, i: usize) -> &[u32] {
         let s = self.slab.slot(i);
@@ -171,11 +183,13 @@ impl CsrGraph {
         &s[HEADER_U32..HEADER_U32 + cd]
     }
 
+    /// Checks whether a directed edge appears in the source node's navigation list.
     #[inline]
     pub fn contains_edge(&self, from: u32, to: u32) -> bool {
         self.neighbors(from as usize).contains(&to)
     }
 
+    /// Reconstructs the bit mask marking bidirectional neighbor positions in this node.
     #[inline]
     pub fn bidir_bits(&self, i: usize) -> u128 {
         let s = self.slab.slot(i);
@@ -187,6 +201,7 @@ impl CsrGraph {
         ])
     }
 
+    /// Iterates only neighbor positions marked bidirectional by the node metadata.
     #[inline]
     pub fn bidir_neighbors(&self, i: usize) -> BidirIter<'_> {
         let s = self.slab.slot(i);
@@ -275,6 +290,7 @@ impl CsrGraph {
 
 // ── BidirIter ────────────────────────────────────────────────────────────────
 
+/// Iterates only adjacency entries selected by the bidirectional-edge bit mask.
 pub struct BidirIter<'a> {
     nbrs: &'a [u32],
     remaining_bits: u128,
@@ -282,6 +298,8 @@ pub struct BidirIter<'a> {
 
 impl<'a> Iterator for BidirIter<'a> {
     type Item = u32;
+
+    /// Returns the next marked bidirectional neighbor in adjacency order.
     #[inline]
     fn next(&mut self) -> Option<u32> {
         if self.remaining_bits == 0 {
@@ -293,6 +311,7 @@ impl<'a> Iterator for BidirIter<'a> {
     }
 }
 
+/// Splits a bidirectional-neighbor bit mask into its four stored u32 words.
 #[inline]
 fn bits_to_words(v: u128) -> [u32; 4] {
     [
@@ -303,6 +322,7 @@ fn bits_to_words(v: u128) -> [u32; 4] {
     ]
 }
 
+/// Reassembles the stored u32 words into a bidirectional-neighbor bit mask.
 #[inline]
 fn words_to_bits(w: [u32; 4]) -> u128 {
     w[0] as u128 | (w[1] as u128) << 32 | (w[2] as u128) << 64 | (w[3] as u128) << 96

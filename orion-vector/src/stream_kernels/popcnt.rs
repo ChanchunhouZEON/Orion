@@ -12,6 +12,10 @@ pub use super::avx512::L2U16Distance;
 pub use super::avx512::L2U8Distance;
 use crate::DistanceKernelBackend;
 use std::arch::x86_64::*;
+
+/// Private popcnt implementation of the binary Hamming stream kernel.
+///
+/// Use the public distance facade so CPU capability checks precede execution.
 pub struct JLHammingDistance;
 impl DistanceKernelBackend for JLHammingDistance {
     type Storage = u8;
@@ -21,10 +25,19 @@ impl DistanceKernelBackend for JLHammingDistance {
     type Acc = __m512i;
     const CHUNK_BYTES: usize = 64;
 
+    /// Starts a fresh per-vector accumulator for this distance kernel.
+    ///
+    /// See [`DistanceKernelBackend::init`] for the shared contract.
     #[inline(always)]
     fn init() -> Self::Acc {
         unsafe { _mm512_setzero_si512() }
     }
+
+    /// Accumulates one kernel chunk without reducing the partial distance.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`DistanceKernelBackend::step`]'s pointer, shape and lifetime contract.
     #[inline(always)]
     unsafe fn step(acc: &mut Self::Acc, base_chunk: *const u8, query_chunk: *const u8) {
         let a = _mm512_loadu_si512(base_chunk as *const __m512i);
@@ -34,10 +47,18 @@ impl DistanceKernelBackend for JLHammingDistance {
         let pc = _mm512_popcnt_epi64(x);
         *acc = _mm512_add_epi64(*acc, pc);
     }
+
+    /// Converts the completed accumulator to a smaller-is-closer distance.
+    ///
+    /// See [`DistanceKernelBackend::reduce`] for the shared contract.
     #[inline(always)]
     fn reduce(acc: Self::Acc) -> f32 {
         unsafe { _mm512_reduce_add_epi64(acc) as f32 }
     }
+
+    /// Combines independent chunk accumulators before the final reduction.
+    ///
+    /// See [`DistanceKernelBackend::merge`] for the shared contract.
     #[inline(always)]
     fn merge(into: &mut Self::Acc, src: Self::Acc) {
         unsafe { *into = _mm512_add_epi64(*into, src) }

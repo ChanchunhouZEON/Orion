@@ -16,11 +16,13 @@ pub struct EarlyExitChecker {
 }
 
 impl EarlyExitChecker {
+    /// Snapshots the configured limit and current no-admission streak for diagnostic comparison.
     #[cfg(feature = "benchmark")]
     pub fn diagnostic_state(&self) -> (usize, usize) {
         (self.limit, self.consecutive_no_admit)
     }
 
+    /// Starts an early-exit checker with no accumulated unsuccessful expansions.
     pub fn new(limit: usize) -> Self {
         Self {
             limit,
@@ -28,10 +30,12 @@ impl EarlyExitChecker {
         }
     }
 
+    /// Clears the no-admission streak while preserving the configured termination limit.
     pub fn reset(&mut self) {
         self.consecutive_no_admit = 0;
     }
 
+    /// Installs a new termination limit and clears state from the preceding query.
     pub fn reconfigure(&mut self, limit: usize) {
         self.limit = limit;
         self.consecutive_no_admit = 0;

@@ -10,6 +10,7 @@ use crate::{Error, Result};
 use byteorder::{LittleEndian as LE, ReadBytesExt, WriteBytesExt};
 use std::io::{Read, Write};
 impl PqDataset {
+    /// Writes the PQ header, chunk layout, codebook and row codes in their portable encoded order.
     #[doc(hidden)]
     pub fn encode(&self, w: &mut dyn Write) -> Result<()> {
         w.write_all(b"ORIONPQ\0")?;
@@ -24,6 +25,8 @@ impl PqDataset {
         w.write_all(self.codes())?;
         Ok(())
     }
+
+    /// Validates and restores an encoded PQ dataset with resident codes.
     #[doc(hidden)]
     pub fn decode(r: &mut dyn Read, bytes: u64) -> Result<Self> {
         Self::decode_with_storage(r, bytes, PqCodeStorage::Resident)
@@ -94,6 +97,7 @@ impl PqDataset {
 
 // Large reads keep both the runtime SHA-256 stream and the filesystem writer
 // efficient; never funnel the codebook through one read/write call per scalar.
+/// Reads finite codebook coordinates into the selected storage and converts little-endian values when needed.
 fn read_floats(
     reader: &mut dyn Read,
     count: usize,
@@ -117,6 +121,8 @@ fn read_floats(
         },
     )
 }
+
+/// Writes codebook coordinates as little-endian f32 values without changing their ordering.
 fn write_floats(writer: &mut dyn Write, values: &[f32]) -> Result<()> {
     #[cfg(target_endian = "little")]
     writer.write_all(bytemuck::cast_slice(values))?;

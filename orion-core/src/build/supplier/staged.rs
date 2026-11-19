@@ -63,6 +63,7 @@ impl<R: Read> StagedReader<R> {
         Self::open_rows(reader, spec, byte_len - 24)
     }
 
+    /// Starts row decoding after validating the supplier specification and minimum remaining header bytes.
     fn open_rows(reader: R, spec: PartitionSpec, remaining: u64) -> Result<Self> {
         spec.validate()?;
         if remaining < spec.points as u64 * 12 {
@@ -76,12 +77,15 @@ impl<R: Read> StagedReader<R> {
             row: Vec::new(),
         })
     }
+
+    /// Borrows the validated graph specification carried by this staged stream.
     pub fn spec(&self) -> &PartitionSpec {
         &self.spec
     }
 }
 
 impl<R: Read> PartitionSource for StagedReader<R> {
+    /// Lends the next partition in node order until the following mutable source call.
     fn next_partition(&mut self) -> Result<Option<NodePartitions<'_>>> {
         if self.node == self.spec.points {
             let mut tail = [0];

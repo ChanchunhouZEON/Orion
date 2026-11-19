@@ -61,6 +61,7 @@ pub struct GraphConfig {
 }
 
 impl Default for GraphConfig {
+    /// Uses core build defaults and automatic source selection without an explicit staged file.
     fn default() -> Self {
         let build = orion_ann_core::BuildConfig::default();
         Self {
@@ -76,6 +77,7 @@ impl Default for GraphConfig {
 
 impl GraphSourcePolicy {
     // Auto probes the PA candidate first; filesystem selection belongs to graph/.
+    /// Returns the initial graph-source candidate before availability and cache resolution decide execution.
     pub fn candidate(self) -> GraphSource {
         match self {
             Self::Supplied => GraphSource::Supplied,

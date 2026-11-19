@@ -15,6 +15,11 @@
 
 use std::arch::x86_64::*;
 
+/// Reduces SIMD accumulator lanes after all chunks of a row have been accumulated.
+///
+/// # Safety
+///
+/// The caller must have selected a CPU supporting this module's SIMD instructions.
 #[inline(always)]
 unsafe fn reduce_add_ps(v: __m512) -> f32 {
     _mm512_reduce_add_ps(v)
@@ -27,6 +32,11 @@ pub fn distance_ip_vector_f32<const N: usize>(a: &[f32; N], b: &[f32; N]) -> f32
     distance_ip_slice_f32(a, b)
 }
 
+/// Computes negative inner product for equal-length rows so smaller distances rank first.
+///
+/// # Panics
+///
+/// Panics if row lengths differ.
 #[inline(always)]
 pub fn distance_ip_slice_f32(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len());

@@ -1,0 +1,24 @@
+# Copyright (c) Chanchunhou. All rights reserved.
+# Licensed under the MIT License.
+
+[package]
+name = "orion-ann-ssd"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded asynchronous object reads for Orion ANN"
+readme = "README.md"
+publish = false
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+orion-ann-core = { path = "../orion-core", version = "0.1.0", default-features = false, features = ["experimental-storage"] }
+orion-ann-platform = { path = "../orion-platform", version = "0.1.0" }
+tokio = { version = "1", default-features = false, features = ["rt", "sync"] }
+
+[dev-dependencies]
+orion-ann-diskann = { path = "../orion-diskann", version = "0.1.0" }
+orion-ann-vector = { path = "../orion-vector", version = "0.1.0" }
+tempfile = "3"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "time", "sync"] }

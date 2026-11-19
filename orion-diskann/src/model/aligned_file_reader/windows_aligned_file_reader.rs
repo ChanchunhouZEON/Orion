@@ -35,6 +35,7 @@ pub const FILE_ATTRIBUTE_READONLY: DWORD = 0x00000001;
 pub const IO_COMPLETION_TIMEOUT: DWORD = u32::MAX; // Infinite timeout.
 pub const ASYNC_IO_COMPLETION_CHECK_INTERVAL: Duration = Duration::from_micros(5);
 
+/// Windows aligned-read adapter holding the file and completion-port resources.
 pub struct WindowsAlignedFileReader {
     file_name: String,
 
@@ -49,6 +50,7 @@ pub struct WindowsAlignedFileReader {
 }
 
 impl WindowsAlignedFileReader {
+    /// Creates a Windows reader and registers a file handle and completion port for the current thread.
     pub fn new(fname: &str) -> ANNResult<Self> {
         let reader: WindowsAlignedFileReader = WindowsAlignedFileReader {
             file_name: fname.to_string(),
@@ -60,6 +62,7 @@ impl WindowsAlignedFileReader {
     }
 
     // Register the io context for a thread if it hasn't been registered.
+    /// Installs a per-thread file/completion context unless the thread is already registered.
     pub fn register_thread(&self) -> ANNResult<()> {
         let mut ctx_map = self.ctx_map.write().map_err(|_| {
             ANNError::log_lock_poison_error("unable to acquire read lock on ctx_map".to_string())
@@ -98,6 +101,7 @@ impl WindowsAlignedFileReader {
     }
 
     // Get the reference counted io context for the current thread.
+    /// Clones the current thread's registered context, returning an error when registration is absent.
     pub fn get_ctx(&self) -> ANNResult<Arc<IOContext>> {
         let ctx_map = self.ctx_map.read().map_err(|_| {
             ANNError::log_lock_poison_error("unable to acquire read lock on ctx_map".to_string())
@@ -114,6 +118,9 @@ impl WindowsAlignedFileReader {
     }
 
     // Read the data from the file by sending concurrent io requests in batches.
+    /// Submits bounded batches of overlapped reads and waits for their completion before reusing request state.
+    ///
+    /// The caller retains the destination buffers throughout this blocking operation.
     pub fn read<T>(&self, read_requests: &mut [AlignedRead<T>], ctx: &IOContext) -> ANNResult<()> {
         let n_requests = read_requests.len();
         let n_batches = (n_requests + MAX_IO_CONCURRENCY - 1) / MAX_IO_CONCURRENCY;

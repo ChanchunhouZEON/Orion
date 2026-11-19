@@ -18,6 +18,7 @@ pub enum Metric {
     Cosine,
 }
 
+/// Reports that a metric name is not recognized by the legacy parser.
 #[derive(thiserror::Error, Debug)]
 pub enum ParseMetricError {
     #[error("Invalid format for Metric: {0}")]
@@ -27,6 +28,7 @@ pub enum ParseMetricError {
 impl FromStr for Metric {
     type Err = ParseMetricError;
 
+    /// Parses legacy distance-family names case-insensitively and rejects unsupported names.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "l2" => Ok(Metric::L2),

@@ -24,6 +24,8 @@ fn scalar<Q: QuantSpec>(dim: usize) {
     let options = RegionOptions {
         placement: Placement::Mapped,
         directory: Some(dir.path().into()),
+        accounting: None,
+        reclaim_after_write: false,
     };
     let mapped = ScalarQuantizedDataset::<Q>::build_with_storage(&base, &options).unwrap();
     assert_eq!(
@@ -136,6 +138,8 @@ fn projected_sidecars_preserve_encoding_scores_and_private_lifetime() {
     let options = RegionOptions {
         placement: Placement::Mapped,
         directory: Some(dir.path().into()),
+        accounting: None,
+        reclaim_after_write: false,
     };
     macro_rules! verify {
         ($ty:ty, $owned:expr, $mapped:expr) => {{

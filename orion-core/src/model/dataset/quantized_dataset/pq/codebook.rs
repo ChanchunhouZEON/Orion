@@ -37,6 +37,7 @@ pub struct PqBuildOptions {
     pub seed: u64,
 }
 impl Default for PqBuildOptions {
+    /// Selects deterministic sampled PQ training with dimension-dependent chunk count.
     fn default() -> Self {
         Self {
             chunks: None,
@@ -57,6 +58,7 @@ impl PqBuildOptions {
         })
     }
 
+    /// Resolves the chunk count and rejects empty training or codebook sizes that cannot be represented.
     pub(crate) fn chunks(self, dim: usize) -> Result<usize> {
         let m = self.chunks.unwrap_or(dim.div_ceil(8).min(64));
         if dim == 0 || m == 0 || m > dim || self.training_rows == 0 || self.iterations == 0 {
@@ -75,11 +77,17 @@ impl PqBuildOptions {
 /// Centers are chunk-major, then centroid-major; each subvector is contiguous.
 #[derive(Clone)]
 pub struct FixedChunkPQTable {
+    /// Packed PQ centroid coordinates shared by encoding and distance-table construction.
     pub(super) centers: ArrayView<f32>,
+
+    /// Coordinate boundaries delimiting the PQ subspaces.
     pub(super) offsets: ArrayView<usize>,
+
+    /// Per-coordinate centering offsets used by this codebook.
     pub(super) mean: ArrayView<f32>,
 }
 impl std::fmt::Debug for FixedChunkPQTable {
+    /// Formats `dimension`, `chunks` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FixedChunkPQTable")
             .field("dimension", &self.dim())
@@ -88,21 +96,32 @@ impl std::fmt::Debug for FixedChunkPQTable {
     }
 }
 
+/// Logical packed training rows presented to PQ codebook construction.
 pub(super) struct PackedRows<'a> {
+    /// Borrowed packed f32 coordinates used to train the codebook.
     pub data: &'a [f32],
+
+    /// Logical coordinates in each input vector.
     pub dim: usize,
 }
 impl crate::model::dataset::rows::Rows for PackedRows<'_> {
+    /// Reports logical coordinates per row, excluding storage padding.
     fn dimension(&self) -> usize {
         self.dim
     }
+
+    /// Reports logical rows available to sidecar fitting.
     fn len(&self) -> usize {
         self.data.len() / self.dim
     }
+
+    /// Borrows a logical f32 row or converts it into reusable caller scratch.
     fn row_f32<'a>(&'a self, id: usize, _: &'a mut Vec<f32>) -> &'a [f32] {
         &self.data[id * self.dim..(id + 1) * self.dim]
     }
 }
+
+/// Rejects empty, nonrectangular or nonfinite training matrices before clustering.
 pub(super) fn check_rows(data: &[f32], rows: usize, dim: usize) -> Result<()> {
     if rows == 0
         || dim == 0
@@ -117,15 +136,6 @@ pub(super) fn check_rows(data: &[f32], rows: usize, dim: usize) -> Result<()> {
 }
 
 impl FixedChunkPQTable {
-    pub(super) fn with_storage(mut self, storage: &RegionOptions) -> Result<Self> {
-        if self.centers.placement() != storage.placement {
-            self.centers = ArrayView::copy_from(&self.centers, storage)?;
-            self.mean = ArrayView::copy_from(&self.mean, storage)?;
-            self.offsets = ArrayView::copy_from(&self.offsets, storage)?;
-        }
-        Ok(self)
-    }
-
     /// Import centroid-major centers and a per-coordinate mean translation.
     /// Supply an all-zero mean to disable translation.
     /// # Errors
@@ -179,7 +189,19 @@ impl FixedChunkPQTable {
         )
     }
 
+    /// Trains a codebook from logical rows using default resident storage.
     pub(super) fn train_rows(base: &impl Rows, options: PqBuildOptions) -> Result<Self> {
+        Self::train_rows_with_storage(base, options, &RegionOptions::default())
+    }
+
+    /// Samples rows deterministically, trains chunk centroids and stores the codebook under the requested placement.
+    ///
+    /// Training samples and clustering scratch are temporary and are not part of the final codebook payload.
+    pub(super) fn train_rows_with_storage(
+        base: &impl Rows,
+        options: PqBuildOptions,
+        storage: &RegionOptions,
+    ) -> Result<Self> {
         let dim = base.dimension();
         let m = options.chunks(dim)?;
         if base.is_empty() {
@@ -248,10 +270,10 @@ impl FixedChunkPQTable {
         Ok(Self {
             centers: ArrayView::copy_from(
                 &chunks.into_iter().flatten().collect::<Vec<_>>(),
-                &Default::default(),
+                storage,
             )?,
-            offsets: ArrayView::copy_from(&offsets, &Default::default())?,
-            mean: ArrayView::copy_from(&vec![0.0; dim], &Default::default())?,
+            offsets: ArrayView::copy_from(&offsets, storage)?,
+            mean: ArrayView::copy_from(&vec![0.0; dim], storage)?,
         })
     }
 
@@ -263,9 +285,13 @@ impl FixedChunkPQTable {
     pub fn get_num_chunks(&self) -> usize {
         self.offsets.len() - 1
     }
+
+    /// Reports persistent centroid, mean and chunk-offset bytes, excluding codes and training scratch.
     pub(super) fn bytes(&self) -> usize {
         self.centers.len() * 4 + self.mean.len() * 4 + self.offsets.len() * size_of::<usize>()
     }
+
+    /// Borrows codebook buffers for residency management without copying them.
     pub(super) fn regions(&self) -> Vec<&[u8]> {
         vec![
             bytemuck::cast_slice(&self.centers),
@@ -285,6 +311,8 @@ impl FixedChunkPQTable {
             dim: self.dim(),
         })
     }
+
+    /// Allocates and fills one centroid ID per chunk for every input row.
     pub(super) fn encode_rows(&self, base: &impl Rows) -> Result<Vec<u8>> {
         let m = self.get_num_chunks();
         let mut codes = vec![
@@ -296,6 +324,10 @@ impl FixedChunkPQTable {
         self.encode_into(base, 0, &mut codes)?;
         Ok(codes)
     }
+
+    /// Encodes a contiguous row range into caller-provided code storage using per-worker scratch.
+    ///
+    /// The destination is laid out in complete chunk-code rows; invalid source rows return an error.
     pub(super) fn encode_into(
         &self,
         base: &impl Rows,
@@ -342,6 +374,8 @@ impl FixedChunkPQTable {
         assert_eq!(query.len(), self.dim());
         self.lookup(query, false, true)
     }
+
+    /// Builds the query-specific centroid lookup table for squared-L2 or negative-inner-product ADC.
     pub(super) fn lookup(&self, query: &[f32], ip: bool, centered: bool) -> Vec<f32> {
         let mut table = vec![0.0; self.get_num_chunks() * 256];
         for (chunk, r) in self.offsets.windows(2).enumerate() {
@@ -385,6 +419,8 @@ impl FixedChunkPQTable {
         self.adc_distance(codes, &self.populate_chunk_distances(centered_query))
     }
 }
+
+/// Selects the first minimum-distance centroid for one subvector, preserving deterministic ties.
 #[inline]
 fn nearest(row: &[f32], centers: &[f32], width: usize) -> usize {
     let mut best = (0, f32::INFINITY);

@@ -20,6 +20,7 @@ pub(crate) use orion_ann_core::model::dataset::quantized_dataset::QuantizedKind 
 
 /// Canonical recipes belong to runtime preparation, not the representation ID.
 pub(crate) trait SidecarRecipe {
+    /// Returns the canonical preparation recipe for this representation kind.
     fn requirement(self) -> SidecarRequirement;
 }
 
@@ -49,7 +50,10 @@ pub(crate) enum SidecarRequirement {
 /// Per-allocation detail. Repeated consumers do not create repeated entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SidecarMemory {
+    /// Resolved recipe whose persistent payload is included in this estimate.
     pub(crate) requirement: SidecarRequirement,
+
+    /// Allocation estimate supplied by that quantized dataset implementation.
     pub(crate) memory: ResidentMemory,
 }
 
@@ -65,6 +69,8 @@ impl SidecarMemoryReport {
     pub(crate) fn allocations(&self) -> &[SidecarMemory] {
         &self.allocations
     }
+
+    /// Returns the sum of distinct sidecar payloads, excluding base, graph and build scratch.
     pub(crate) fn total_bytes(&self) -> usize {
         self.total_bytes
     }
@@ -187,6 +193,7 @@ impl SidecarRecipe for SidecarKind {
 }
 
 impl SidecarRequirement {
+    /// Identifies the representation family without discarding the recipe stored in this value.
     pub(crate) fn kind(self) -> SidecarKind {
         match self {
             Self::Pq(_) => SidecarKind::Pq,
@@ -204,6 +211,10 @@ impl SidecarRequirement {
     }
     // Normalize defaults before comparing identities. Explicitly requesting the
     // canonical Hadamard width and leaving it implicit must share one buffer.
+    /// Validates a recipe against the input shape and fills dimension-dependent defaults.
+    ///
+    /// Use resolved recipes for deduplication so different explicit parameters do not
+    /// accidentally share a slot or a memory estimate.
     pub(crate) fn resolved(self, input_shape: QuantizedDatasetShape) -> Result<Self> {
         self.estimate(input_shape)?;
         Ok(match self {

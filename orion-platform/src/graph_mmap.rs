@@ -13,6 +13,7 @@ use std::path::Path;
 
 // Callers pass an already bounds-checked four-byte field. Decode the fixed
 // width directly, without a fallible slice-to-array conversion.
+/// Decodes a four-byte graph field independently of host byte order.
 fn read_u32_le(bytes: &[u8]) -> u32 {
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
@@ -38,6 +39,8 @@ pub enum AlgorithmId {
 
 impl TryFrom<u8> for AlgorithmId {
     type Error = io::Error;
+
+    /// Validates the persisted algorithm tag before interpreting an algorithm-specific header.
     fn try_from(v: u8) -> Result<Self, Self::Error> {
         match v {
             0 => Ok(Self::Generic),
@@ -68,10 +71,19 @@ impl TryFrom<u8> for AlgorithmId {
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct GraphHeader {
+    /// Number of graph nodes covered by this object.
     pub num_nodes: u32,
+
+    /// Maximum number of navigation neighbors retained per node.
     pub max_degree: u32,
+
+    /// Logical coordinates per original vector, excluding padding.
     pub dimension: u32,
+
+    /// Legacy byte discriminator for the serialized distance metric.
     pub metric: u8,
+
+    /// Graph layout/algorithm discriminator stored in the legacy mmap header.
     pub algorithm: AlgorithmId,
 }
 
@@ -99,6 +111,8 @@ impl GraphHeader {
 /// ```
 pub struct MmapGraph {
     mmap: Mmap,
+
+    /// Validated metadata describing the mapped graph layout.
     pub header: GraphHeader,
     algo_header_size: usize,
 }
@@ -222,6 +236,7 @@ pub struct GraphWriter {
 }
 
 impl GraphWriter {
+    /// Creates a graph writer configuration without creating or truncating an output file.
     pub fn new(header: GraphHeader) -> Self {
         Self {
             header,
@@ -229,6 +244,7 @@ impl GraphWriter {
         }
     }
 
+    /// Replaces the opaque algorithm-specific header to be emitted with the graph.
     pub fn set_algo_header(&mut self, data: Vec<u8>) {
         self.algo_header = data;
     }

@@ -28,9 +28,13 @@ impl SnapshotRef {
             manifest_sha256: self.manifest_sha256.clone(),
         }
     }
+
+    /// Borrows the snapshot directory recorded by this saved reference.
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Returns the expected manifest digest used to detect replacement of this snapshot record.
     pub fn manifest_sha256(&self) -> &str {
         &self.manifest_sha256
     }
@@ -45,33 +49,44 @@ pub enum SnapshotSource {
 }
 
 impl<P: Into<PathBuf>> From<P> for SnapshotSource {
+    /// Records a snapshot directory for later verification and loading.
     fn from(path: P) -> Self {
         Self::Directory(path.into())
     }
 }
 
 impl From<SnapshotRef> for SnapshotSource {
+    /// Takes the snapshot reference without opening or verifying its payloads.
     fn from(reference: SnapshotRef) -> Self {
         Self::Reference(reference)
     }
 }
 
 impl From<&SnapshotRef> for SnapshotSource {
+    /// Copies the snapshot reference identity without opening files.
     fn from(reference: &SnapshotRef) -> Self {
         Self::Reference(reference.clone())
     }
 }
 
-/// Resource overrides for reopening a snapshot. Defaults use the saved settings.
+/// Display and resource overrides for reopening a snapshot. Defaults use the saved settings.
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OpenOptions {
+    /// Override the saved display name without changing payload or calibration identity.
+    pub dataset_name: Option<String>,
     /// Explicit relocation of the immutable object store. Hash verification is unchanged.
     pub object_store: Option<PathBuf>,
+
+    /// Optional worker-count override for the restored index.
     pub threads: Option<usize>,
+
+    /// Optional managed resident-payload budget for restoration, expressed in GiB.
     pub memory_budget_gib: Option<f64>,
     /// Override the saved deployment policy; resources are always probed afresh.
     pub auto_pin: Option<bool>,
+
+    /// Optional per-object placement policy for the restored payloads.
     pub storage_options: Option<crate::StorageOptions>,
 }
 
@@ -82,6 +97,10 @@ impl OpenOptions {
         self.load_snapshot(&path, snapshot, input)
     }
 
+    /// Resolves object-store relocation and deployment overrides before loading a verified snapshot.
+    ///
+    /// Saved graph and calibration semantics remain intact; resource choices may differ
+    /// from those used by the machine that created the snapshot.
     fn load_snapshot(self, path: &Path, mut snapshot: Snapshot, input: BaseInput) -> Result<Index> {
         snapshot.object_store = match self.object_store {
             Some(store) => store,
@@ -92,6 +111,9 @@ impl OpenOptions {
         .map_err(Error::from)?;
         let mut options = snapshot.options.clone();
         options.cache_dir = path.canonicalize().map_err(Error::from)?;
+        if self.dataset_name.is_some() {
+            options.dataset_name = self.dataset_name;
+        }
         if let Some(n) = self.threads {
             options.threads = n;
         }

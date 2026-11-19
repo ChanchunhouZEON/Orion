@@ -18,17 +18,22 @@ struct EncodedQuery<'a, D: Compute> {
     query: D::Query,
 }
 impl<'a, D: Compute> EncodedQuery<'a, D> {
+    /// Binds encoded query storage to the dataset that produced it.
     pub(super) fn new(dataset: &'a D, query: D::Query) -> Self {
         Self { dataset, query }
     }
 }
 impl<D: Compute> sealed::Sealed for EncodedQuery<'_, D> {}
 impl<D: Compute> PreparedQuery for EncodedQuery<'_, D> {
+    /// Scores a checked row using query state bound to its original dataset.
+    ///
+    /// See [`PreparedQuery::distance`] for the shared contract.
     fn distance(&self, id: u32) -> Result<f32> {
         self.dataset.score_query(&self.query, id)
     }
 }
 impl<D: Compute> std::fmt::Debug for EncodedQuery<'_, D> {
+    /// Formats the type identity without expanding opaque owned state.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PreparedQuery").finish_non_exhaustive()
     }
@@ -36,28 +41,42 @@ impl<D: Compute> std::fmt::Debug for EncodedQuery<'_, D> {
 
 // This trait is deliberately not a public supertrait. Otherwise its encoding
 // methods would remain callable through generic public bounds.
+/// Private encoding and scoring contract; public callers receive only bound query handles.
 trait Compute: sealed::Sealed {
     type Query;
+
+    /// Validates logical coordinates before producing representation-specific query state.
     fn encode_query_checked(&self, query: &[f32]) -> Result<Self::Query>;
+
+    /// Scores a checked row using encoded state from the same dataset.
     fn score_query(&self, query: &Self::Query, id: u32) -> Result<f32>;
 }
 impl<D: Compute> QuantizedDatasetCompute for D {
+    /// Binds validated encoded query state to the dataset that produced it.
+    ///
+    /// See [`QuantizedDatasetCompute::prepare_query`] for the shared contract.
     fn prepare_query(&self, query: &[f32]) -> Result<impl PreparedQuery + '_> {
         Ok(EncodedQuery::new(self, self.encode_query_checked(query)?))
     }
 }
+
+/// Checks logical dimension and finite coordinates before any encoder reads the query.
 fn check_query(query: &[f32], dimension: usize) -> Result<()> {
     if query.len() != dimension {
         return Err(Error::dimension("sidecar query", dimension, query.len()));
     }
     super::super::validation::finite(query, false)
 }
+
+/// Rejects an out-of-range sidecar row before unchecked kernel access.
 fn check_row(id: u32, rows: usize) -> Result<()> {
     if id as usize >= rows {
         return Err(Error::invalid_argument("sidecar row ID out of bounds").with_detail("id", id));
     }
     Ok(())
 }
+
+/// Rejects an encoded-query width incompatible with this representation.
 fn check_len(actual: usize, expected: usize) -> Result<()> {
     if actual != expected {
         return Err(Error::dimension("encoded query", expected, actual));
@@ -66,19 +85,35 @@ fn check_len(actual: usize, expected: usize) -> Result<()> {
 }
 impl<Q: QuantSpec> Compute for ScalarQuantizedDataset<Q> {
     type Query = Vec<Q::Storage>;
+
+    /// Validates and encodes a query using this dataset's own parameters.
+    ///
+    /// See [`Compute::encode_query_checked`] for the shared contract.
     fn encode_query_checked(&self, query: &[f32]) -> Result<Self::Query> {
         self.try_quantize_query(query, true)
     }
+
+    /// Scores an encoded query against a checked row of the same dataset.
+    ///
+    /// See [`Compute::score_query`] for the shared contract.
     fn score_query(&self, query: &Self::Query, id: u32) -> Result<f32> {
         self.distance(id, query)
     }
 }
 impl Compute for L2KTDataset {
     type Query = Vec<i8>;
+
+    /// Validates and encodes a query using this dataset's own parameters.
+    ///
+    /// See [`Compute::encode_query_checked`] for the shared contract.
     fn encode_query_checked(&self, query: &[f32]) -> Result<Self::Query> {
         check_query(query, self.dimension())?;
         Ok(self.quantize_query_padded(query))
     }
+
+    /// Scores an encoded query against a checked row of the same dataset.
+    ///
+    /// See [`Compute::score_query`] for the shared contract.
     fn score_query(&self, query: &Self::Query, id: u32) -> Result<f32> {
         check_row(id, self.len())?;
         check_len(query.len(), self.stride())?;

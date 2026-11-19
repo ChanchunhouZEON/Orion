@@ -10,10 +10,12 @@ use crate::DistanceKernelBackend;
 /// Internal static callback. A concrete implementation can force inlining of
 /// the entire address resolver; FnMut's compiler-generated adapter cannot.
 pub(crate) trait LinePrefetch {
+    /// Consumes one cache-line prefetch opportunity after the matching amount of computation.
     fn advance(&mut self);
 }
 #[cfg(test)]
 impl<F: FnMut()> LinePrefetch for F {
+    /// Forwards a test prefetch opportunity to the supplied callback.
     #[inline(always)]
     fn advance(&mut self) {
         self();
@@ -52,6 +54,13 @@ unsafe fn step<K: DistanceKernelBackend, P: LinePrefetch, const LINE: usize, con
     }
 }
 
+/// Evaluates a padded row with unrolled chunks and cache-line-paced near prefetch.
+///
+/// # Safety
+///
+/// `LINE` must be nonzero. The byte span must contain whole kernel chunks. Each
+/// base/query chunk must satisfy `DistanceKernelBackend::step`, including query
+/// lookup-table size, alignment, CPU features and accumulator limits.
 #[inline(always)]
 pub(crate) unsafe fn compute_vertex<
     K: DistanceKernelBackend,

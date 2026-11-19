@@ -14,19 +14,24 @@ use crate::graph_mmap::MmapGraph;
 /// A neighbor with distance, used for search results.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MmapNeighbor {
+    /// Internal graph ID associated with this candidate.
     pub id: u32,
+
+    /// Smaller-is-closer distance used for candidate ordering.
     pub distance: f32,
 }
 
 impl Eq for MmapNeighbor {}
 
 impl PartialOrd for MmapNeighbor {
+    /// Uses the queue's distance ordering for partial comparisons.
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for MmapNeighbor {
+    /// Orders by distance, treating incomparable floating-point values as equal.
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.distance
             .partial_cmp(&other.distance)

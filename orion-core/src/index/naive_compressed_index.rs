@@ -10,7 +10,7 @@
 //! `Orion`, isolating the quality benefit of clustering.
 
 use crate::Result;
-use crate::model::scratch::InMemScratchPool;
+use crate::model::search::scratch::InMemScratchPool;
 use orion_ann_diskann::model::{CsrGraph, InmemDataset};
 use orion_ann_vector::FullPrecisionDistance;
 use rayon::prelude::*;
@@ -26,11 +26,22 @@ pub struct NaiveOrion<const N: usize>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
+    /// Original base vectors owned by the index.
     pub dataset: InmemDataset<f32, N>,
+
+    /// Navigation graph associated with the original base vectors.
     pub graph: CsrGraph,
+
+    /// Internal vertex ID from which graph traversal starts.
     pub entry: u32,
+
+    /// Number of graph nodes covered by this object.
     pub num_nodes: usize,
+
+    /// Maximum degree retained by the baseline graph representation.
     pub max_pruned_degree: usize,
+
+    /// Lazily initialized pool of reusable search workspaces.
     pub(crate) inmem_scratch_pool: OnceLock<InMemScratchPool>,
 }
 
@@ -84,6 +95,7 @@ where
 
     // Search methods are identical to Orion — reuse via in_mem_search.
     // We implement them here by delegating to the same greedy beam search logic.
+    /// Runs the full-precision reference beam search with adaptive partition selection.
     pub fn search(
         &self,
         query: &[f32; N],
@@ -174,6 +186,7 @@ where
             .collect())
     }
 
+    /// Runs reference queries in parallel, preserving query order and mapping individual failures to empty rows.
     pub fn search_batch(
         &self,
         queries: &[[f32; N]],
@@ -202,6 +215,7 @@ impl<const N: usize> std::fmt::Debug for NaiveOrion<N>
 where
     [f32; N]: FullPrecisionDistance<f32, N>,
 {
+    /// Formats `dimension`, `num_nodes`, `entry`, `max_pruned_degree` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NaiveOrion")
             .field("dimension", &(N))

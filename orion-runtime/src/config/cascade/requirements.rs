@@ -8,6 +8,7 @@ use super::{AdmissionChoice, Cascade, PrefilterChoice, RerankChoice};
 use crate::sidecars::requirements::SidecarRecipe;
 
 impl Cascade {
+    /// Collects required sidecars and includes the full base only when a selected stage consumes it.
     pub(crate) fn dataset_requirements(
         self,
     ) -> Vec<crate::sidecars::requirements::DatasetRequirement> {

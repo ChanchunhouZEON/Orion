@@ -46,6 +46,7 @@ impl SearchConvergenceChecker {
         state
     }
 
+    /// Starts a convergence window with no observations and the supplied admission-rate threshold.
     pub fn new(window_size: usize, threshold: f32) -> Self {
         debug_assert!(window_size <= MAX_WINDOW_SIZE);
         Self {
@@ -60,6 +61,7 @@ impl SearchConvergenceChecker {
         }
     }
 
+    /// Clears query observations while retaining the configured window and threshold.
     pub fn reset(&mut self) {
         self.head = 0;
         self.count = 0;
@@ -67,6 +69,7 @@ impl SearchConvergenceChecker {
         self.total_steps = 0;
     }
 
+    /// Reuses the checker for a new query with updated bounds and no carried-over observations.
     pub fn reconfigure(&mut self, window_size: usize, threshold: f32) {
         debug_assert!(window_size <= MAX_WINDOW_SIZE);
         self.window_size = window_size;

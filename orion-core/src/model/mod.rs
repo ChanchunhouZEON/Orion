@@ -4,12 +4,9 @@
  */
 
 pub mod dataset;
+pub mod graph;
 pub mod neighbor;
-pub(crate) mod phased_graph;
-pub mod scratch;
-// Shared output models; the crate root exposes the supported public types.
-pub(crate) mod search_result;
-pub mod visited_set;
+pub mod search;
 
 pub use dataset::quantized_dataset::pq::{FixedChunkPQTable, NUM_PQ_CENTROIDS};
 pub use dataset::{
@@ -18,5 +15,3 @@ pub use dataset::{
     QuantizedDatasetShape, ResidentMemory, ScalarQuantizedDataset,
 };
 pub use neighbor::{Neighbor, NeighborPriorityQueue};
-pub(crate) use phased_graph::PhasedGraph;
-pub use scratch::{InMemScratchGuard, InMemScratchPool, InMemSearchScratch};

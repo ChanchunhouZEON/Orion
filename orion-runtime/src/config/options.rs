@@ -24,6 +24,11 @@ use std::path::PathBuf;
 /// Owned service configuration, validated by `Index::new/open`.
 /// See [configuration examples and error bounds](crate::guide::configuration).
 pub struct IndexOptions {
+    /// Optional display name, saved in snapshots; None displays as `anonymous`.
+    /// Must contain non-whitespace text and no control characters. It does not
+    /// select a preset or participate in graph/cache/calibration identities.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dataset_name: Option<String>,
     /// Distance/normalization semantics, shared with file and query decoding.
     pub metric: SearchMetric,
     /// Resident element type; None follows the input representation.
@@ -54,8 +59,10 @@ pub struct IndexOptions {
 }
 
 impl Default for IndexOptions {
+    /// Selects automatic representation and graph choices, bounded auto pinning and the default working cache.
     fn default() -> Self {
         Self {
+            dataset_name: None,
             metric: SearchMetric::SquaredL2,
             storage: None,
             base_format: None,
@@ -73,6 +80,9 @@ impl Default for IndexOptions {
 }
 
 impl IndexOptions {
+    /// Validates application options and combines them with inspected base metadata into an execution plan.
+    ///
+    /// This resolves configuration identity; it does not load vector payloads or construct the graph.
     pub(crate) fn resolve(
         &self,
         base: PathBuf,
@@ -84,6 +94,16 @@ impl IndexOptions {
         if count == 0 || count >= u32::MAX as usize || self.max_points == Some(0) {
             return Err("base must contain 1..u32::MAX points (excluding the sentinel)".into());
         }
+        if self
+            .dataset_name
+            .as_ref()
+            .is_some_and(|name| name.trim().is_empty() || name.chars().any(char::is_control))
+        {
+            return Err(crate::Error::invalid_argument(
+                "dataset_name must contain non-whitespace text and no control characters",
+            ));
+        }
+        self.storage_options.validate()?;
         super::execution::validate_threads(self.threads)?;
         super::execution::validate_window(self.window_size)?;
         super::resources::validate_memory_budget(self.memory_budget_gib)?;
@@ -118,11 +138,15 @@ impl IndexOptions {
             source,
         )?;
         let mut config = ResolvedRunConfig {
+            allocation_budget: Default::default(),
             #[cfg(feature = "benchmark")]
             benchmark_trust_cache: false,
             #[cfg(feature = "benchmark")]
             benchmark_cache_file: None,
-            dataset: "anonymous".into(),
+            dataset: self
+                .dataset_name
+                .clone()
+                .unwrap_or_else(|| "anonymous".into()),
             base,
             base_content_id: content_id,
             query: None,
@@ -171,5 +195,36 @@ impl IndexOptions {
         }
         config.cache_namespace = config.compute_cache_namespace();
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn dataset_name_is_display_metadata_and_validated_centrally() {
+        let mut options = IndexOptions::default();
+        let resolve = |options: &IndexOptions| {
+            options.resolve("base.fbin".into(), VectorFormat::Fbin, 32, 64, None)
+        };
+        let anonymous = resolve(&options).unwrap();
+        assert_eq!(anonymous.dataset, "anonymous");
+        assert!(serde_json::to_value(&options)
+            .unwrap()
+            .get("dataset_name")
+            .is_none());
+        for name in ["SIFT 1M", "Orion–café", "my/vectors"] {
+            options.dataset_name = Some(name.into());
+            let named = resolve(&options).unwrap();
+            assert_eq!(named.dataset, name);
+            assert_eq!(named.cache_namespace, anonymous.cache_namespace);
+        }
+        for name in ["", "   ", "bad\nname", "bad\0name", "bad\tname"] {
+            options.dataset_name = Some(name.into());
+            let error = resolve(&options).unwrap_err();
+            assert_eq!(error.code(), crate::ErrorCode::InvalidArgument);
+            assert!(error.message().contains("dataset_name"));
+        }
     }
 }

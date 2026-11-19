@@ -8,8 +8,10 @@
 
 use super::AdjacencyList;
 
+/// A vertex ID paired with its adjacency list for graph updates.
 #[derive(Debug)]
 pub struct VertexAndNeighbors {
+    /// Internal ID of the vertex owning these neighbors.
     pub vertex_id: u32,
     neighbors: AdjacencyList,
     /// Parallel distance array (sorted ascending), maintained under `orion`.
@@ -18,6 +20,7 @@ pub struct VertexAndNeighbors {
 }
 
 impl VertexAndNeighbors {
+    /// Creates an empty node record with reserved adjacency capacity.
     pub fn for_range(id: u32, range: usize) -> Self {
         Self {
             vertex_id: id,
@@ -27,6 +30,7 @@ impl VertexAndNeighbors {
         }
     }
 
+    /// Takes ownership of an existing adjacency list for the specified internal node ID.
     pub fn new(vertex_id: u32, neighbors: AdjacencyList) -> Self {
         #[cfg(feature = "orion")]
         let neighbor_dists = Vec::new();
@@ -38,11 +42,13 @@ impl VertexAndNeighbors {
         }
     }
 
+    /// Returns the number of currently stored outgoing neighbors.
     #[inline(always)]
     pub fn size(&self) -> usize {
         self.neighbors.len()
     }
 
+    /// Replaces the adjacency list and invalidates any parallel cached distance ordering.
     #[inline(always)]
     pub fn set_neighbors(&mut self, new_neighbors: AdjacencyList) {
         self.neighbors = new_neighbors;
@@ -61,6 +67,7 @@ impl VertexAndNeighbors {
         self.neighbor_dists = dists;
     }
 
+    /// Borrows the outgoing adjacency list for use while the surrounding node guard remains live.
     #[inline(always)]
     pub fn get_neighbors(&self) -> &AdjacencyList {
         &self.neighbors

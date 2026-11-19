@@ -83,6 +83,7 @@ pub const fn jl_hadamard_stride(d_pad: usize) -> usize {
     bytes.div_ceil(block) * block
 }
 
+/// Computes the persistent sign-code stride with its minimum width and 16-byte alignment.
 pub const fn jl_hadamard_stride_disk(d_pad: usize) -> usize {
     let raw = d_pad.div_ceil(8);
     let floored = if raw < 32 { 32 } else { raw };
@@ -95,7 +96,10 @@ pub const fn jl_hadamard_stride_disk(d_pad: usize) -> usize {
 /// Default recipes keep 1024 output bits through dimension 1024, then use the
 /// next power of two. `build_with_padding` selects an explicit output width.
 pub struct JlHadamardDataset {
+    /// Logical coordinates per original vector, excluding padding.
     pub(crate) dimension: usize,
+
+    /// Power-of-two transform dimension, including zero padding.
     pub(crate) d_pad: usize,
     /// Packed sign bits, `num_vertices × STRIDE` bytes, 16-byte
     /// aligned. Bit `i` of byte `b` encodes signature bit `b × 8 + i`.
@@ -103,8 +107,14 @@ pub struct JlHadamardDataset {
     /// First `±1` sign-flip diagonal, length `d_pad`. Stored as `i8`
     /// for cache compactness (3 × d_pad bytes for all three signs).
     pub(crate) signs1: AlignedBoxWithSlice<i8>,
+
+    /// Random sign diagonal used by the second Hadamard mixing stage.
     pub(crate) signs2: AlignedBoxWithSlice<i8>,
+
+    /// Random sign diagonal used by the third Hadamard mixing stage.
     pub(crate) signs3: AlignedBoxWithSlice<i8>,
+
+    /// Number of encoded base vectors.
     pub(crate) num_vertices: usize,
     /// Cached per-vertex stride in bytes.
     pub(crate) stride: usize,
@@ -288,6 +298,7 @@ impl JlHadamardDataset {
         Ok(())
     }
 
+    /// Restores a Hadamard sign sketch using default resident storage.
     pub fn decode(r: &mut dyn std::io::Read, byte_len: u64) -> Result<Self> {
         Self::decode_with_storage(r, byte_len, &Default::default())
     }
@@ -477,9 +488,11 @@ fn fwht(x: &mut [f32]) {
 
 // ── Deterministic PRNG ────────────────────────────────────────────────
 
+/// Small deterministic generator for reproducible projection or quantizer construction.
 struct XorShift64(u64);
 
 impl XorShift64 {
+    /// Advances the deterministic generator used to reproduce the projection signs.
     #[inline]
     fn next_u64(&mut self) -> u64 {
         let mut s = self.0;
@@ -493,6 +506,7 @@ impl XorShift64 {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl std::fmt::Debug for JlHadamardDataset {
+    /// Formats `dimension`, `num_vertices`, `stride` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JlHadamardDataset")
             .field("dimension", &self.dimension)
@@ -553,12 +567,20 @@ impl JlHadamardDataset {
 impl crate::model::dataset::quantized_dataset::sealed::Sealed for JlHadamardDataset {}
 impl QuantizedDataset for JlHadamardDataset {
     type BuildOptions = crate::model::dataset::quantized_dataset::HadamardOptions;
+
+    /// Selects the canonical construction recipe for this representation.
+    ///
+    /// See [`QuantizedDataset::default_build_options`] for the shared contract.
     fn default_build_options() -> Self::BuildOptions {
         crate::model::dataset::quantized_dataset::HadamardOptions {
             seed: JL_HADAMARD_MAGIC as u64,
             padded_dimension: None,
         }
     }
+
+    /// Builds this sidecar from validated logical rows.
+    ///
+    /// See [`QuantizedDataset::build`] for the shared contract.
     fn build(base: &impl Rows, options: &Self::BuildOptions) -> Result<Self> {
         Self::estimate_resident_memory(
             QuantizedDatasetShape {
@@ -573,6 +595,10 @@ impl QuantizedDataset for JlHadamardDataset {
             options.padded_dimension(base.dimension())?,
         )
     }
+
+    /// Predicts this representation's payload allocation before reading base rows.
+    ///
+    /// See [`QuantizedDataset::estimate_resident_memory`] for the shared contract.
     fn estimate_resident_memory(
         input_shape: QuantizedDatasetShape,
         options: &Self::BuildOptions,
@@ -585,6 +611,10 @@ impl QuantizedDataset for JlHadamardDataset {
             validation::product(padded, 3)?,
         )
     }
+
+    /// Accounts for the payload buffers currently owned by this representation.
+    ///
+    /// See [`QuantizedDataset::resident_memory`] for the shared contract.
     fn resident_memory(&self) -> ResidentMemory {
         ResidentMemory::new(
             self.codes.len(),

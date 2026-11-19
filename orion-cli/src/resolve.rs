@@ -6,57 +6,104 @@
 //! Translate CLI input into the same options used by Rust and Python.
 use crate::args::Args;
 use orion_ann::execution::ResolvedRunConfig;
-use orion_ann::{
-    execution, CascadeConfig, Error, GraphSourcePolicy, IndexOptions, Result, VectorFormat,
-};
+use orion_ann::{execution, Error, GraphSourcePolicy, IndexOptions, Result, VectorFormat};
 
 impl Args {
-    pub(crate) fn index_options(&self) -> IndexOptions {
-        let defaults = IndexOptions::default();
-        let mut options = IndexOptions {
-            metric: self.metric.unwrap_or(defaults.metric),
-            storage: self.vector_storage,
-            base_format: self.base_format,
-            cascade: CascadeConfig {
-                prefilter: self.prefilter.clone(),
-                admission: self.admission.clone(),
-                rerank: self.rerank.clone(),
-            },
-            threads: self.threads.unwrap_or(defaults.threads),
-            window_size: self.window_size.unwrap_or(defaults.window_size),
-            cache_dir: self.cache_dir.clone().unwrap_or(defaults.cache_dir),
-            memory_budget_gib: self.memory_budget_gib,
-            auto_pin: !self.no_auto_pin,
-            storage_options: orion_ann::StorageOptions {
-                mode: self.storage_options.unwrap_or_default(),
-                directory: self.mmap_dir.clone(),
-            },
-            max_points: self.max_points,
-            ..defaults
+    /// Loads optional YAML and overlays explicitly supplied flags without discarding sibling settings.
+    ///
+    /// This resolves user intent only; it does not allocate an index or load vector payloads.
+    pub(crate) fn index_options(&self) -> Result<IndexOptions> {
+        let mut options = if let Some(path) = &self.config {
+            let yaml = std::fs::read_to_string(path)
+                .map_err(|error| Error::io("read config", path, error))?;
+            IndexOptions::from_yaml(&yaml)
+                .map_err(|error| error.with_detail("path", path.display().to_string()))?
+        } else {
+            IndexOptions::default()
         };
-        options.graph.source = self.graph_source.unwrap_or(options.graph.source);
-        options.graph.staged_file = self.staged_file.clone();
-        options.graph.degree = self.graph_degree.unwrap_or(options.graph.degree);
-        options.graph.build_l = self.build_l.unwrap_or(options.graph.build_l);
-        options.graph.alpha = self.alpha.unwrap_or(options.graph.alpha);
-        options.graph.max_extra = self.max_extra.unwrap_or(options.graph.max_extra);
 
+        // Overlay only explicit flags. Replacing whole nested structs would
+        // silently discard YAML siblings, especially per-object placements.
+        macro_rules! override_field {
+            ($source:ident, $($target:ident).+) => {
+                if let Some(value) = &self.$source {
+                    options.$($target).+ = Clone::clone(value);
+                }
+            };
+            (optional $source:ident, $($target:ident).+) => {
+                if self.$source.is_some() {
+                    options.$($target).+ = Clone::clone(&self.$source);
+                }
+            };
+        }
+        override_field!(optional dataset_name, dataset_name);
+        override_field!(metric, metric);
+        override_field!(optional vector_storage, storage);
+        override_field!(optional base_format, base_format);
+        override_field!(optional prefilter, cascade.prefilter);
+        override_field!(optional admission, cascade.admission);
+        override_field!(optional rerank, cascade.rerank);
+        override_field!(threads, threads);
+        override_field!(window_size, window_size);
+        override_field!(cache_dir, cache_dir);
+        override_field!(optional memory_budget_gib, memory_budget_gib);
+        override_field!(optional max_points, max_points);
+        override_field!(storage_options, storage_options.mode);
+        override_field!(optional mmap_dir, storage_options.directory);
+        override_field!(graph_source, graph.source);
+        override_field!(optional staged_file, graph.staged_file);
+        override_field!(graph_degree, graph.degree);
+        override_field!(build_l, graph.build_l);
+        override_field!(alpha, graph.alpha);
+        override_field!(max_extra, graph.max_extra);
+        if self.no_auto_pin {
+            options.auto_pin = false;
+        }
         options
+            .storage_options
+            .objects
+            .extend(self.object_overrides()?);
+
+        Ok(options)
     }
 
+    /// Collects per-object placement overrides, rejecting repeated objects instead of silently choosing the last flag.
+    pub(crate) fn object_overrides(
+        &self,
+    ) -> Result<std::collections::BTreeMap<orion_ann::StorageObject, orion_ann::StorageMode>> {
+        let mut overrides = std::collections::BTreeMap::new();
+        for &(object, mode) in &self.object_storage {
+            if overrides.insert(object, mode).is_some() {
+                return Err(Error::invalid_argument(format!(
+                    "duplicate object-storage override: {object}"
+                )));
+            }
+        }
+        Ok(overrides)
+    }
+
+    #[cfg(test)]
     pub(crate) fn resolve_search(&self, beam: Option<usize>) -> Result<ResolvedRunConfig> {
-        self.resolve(beam, true)
+        self.resolve_with_options(beam, true, self.index_options()?)
     }
 
     /// Actual execution hashes the base while Index loads it. Resolve only its
     /// shape here; configuration-only/preflight commands still need an identity.
+    #[cfg(test)]
     pub(crate) fn resolve_execution(&self, beam: Option<usize>) -> Result<ResolvedRunConfig> {
-        self.resolve(beam, false)
+        self.resolve_with_options(beam, false, self.index_options()?)
     }
 
-    fn resolve(&self, beam: Option<usize>, fingerprint: bool) -> Result<ResolvedRunConfig> {
-        #[allow(unused_mut)]
-        let mut options = self.index_options();
+    /// Combines inspected input shape with shared options and CLI-only query settings.
+    ///
+    /// Offline preflight may use an explicit shape when the base is absent. `fingerprint`
+    /// requests content hashing for cache lookup; execution defers that hash to decoding.
+    pub(crate) fn resolve_with_options(
+        &self,
+        beam: Option<usize>,
+        fingerprint: bool,
+        #[allow(unused_mut)] mut options: IndexOptions,
+    ) -> Result<ResolvedRunConfig> {
         #[cfg(feature = "experimental-graph")]
         if let Some(path) = &self.supplier_staged {
             let file =
@@ -69,7 +116,7 @@ impl Args {
             execution::configure_supplier(spec, &mut options)?;
         }
         let base = self.base.as_ref().ok_or("--base is required")?;
-        let format = self
+        let format = options
             .base_format
             .map(Ok)
             .unwrap_or_else(|| VectorFormat::infer(base))?;
@@ -95,7 +142,7 @@ impl Args {
         let count = header
             .as_ref()
             .map(|h| h.count)
-            .or(self.max_points)
+            .or(options.max_points)
             .ok_or("offline preflight requires --dimension and --max-points")?;
         // Configuration-only commands need the service identity for cache lookup.
         // Actual execution leaves fingerprinting to Index's single decoding pass;
@@ -163,7 +210,7 @@ impl Args {
 mod tests {
     use super::*;
     use clap::Parser;
-    use orion_ann::{GraphConfig, SearchMetric, VectorStorageKind};
+    use orion_ann::{CascadeConfig, GraphConfig, SearchMetric, VectorStorageKind};
     use std::{
         path::PathBuf,
         sync::atomic::{AtomicUsize, Ordering},
@@ -362,5 +409,68 @@ mod tests {
             let expected = file.service(&options).unwrap_err();
             assert_eq!(actual.report(), expected.report(), "{flags:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod yaml_tests {
+    use super::*;
+    use clap::Parser;
+    use orion_ann::{StorageMode, StorageObject};
+
+    #[test]
+    fn flags_override_individual_yaml_fields_and_keep_siblings() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("options.yaml");
+        std::fs::write(
+            &path,
+            r#"
+threads: 2
+auto_pin: false
+base_format: u8bin
+max_points: 1000000
+graph: {degree: 32, build_l: 96}
+cascade: {prefilter: none, admission: native-l2-u8, rerank: none}
+storage_options:
+  mode: auto
+  objects: {graph: resident, base: resident}
+"#,
+        )
+        .unwrap();
+        let args = Args::parse_from([
+            "orion",
+            "--config",
+            path.to_str().unwrap(),
+            "--base",
+            "missing.payload",
+            "--preflight",
+            "--dimension",
+            "128",
+            "--threads",
+            "8",
+            "--graph-degree",
+            "64",
+            "--object-storage",
+            "base=mapped",
+        ]);
+        let options = args.index_options().unwrap();
+        assert_eq!(options.threads, 8);
+        assert!(!options.auto_pin);
+        assert_eq!(options.graph.degree, 64);
+        assert_eq!(options.graph.build_l, 96);
+        assert_eq!(options.cascade.rerank.as_deref(), Some("none"));
+        assert_eq!(
+            options.storage_options.objects[&StorageObject::Base],
+            StorageMode::Mapped
+        );
+        assert_eq!(
+            options.storage_options.objects[&StorageObject::Graph],
+            StorageMode::Resident
+        );
+        // Prove resolution uses the captured configuration, not a second file read.
+        std::fs::remove_file(path).unwrap();
+        let resolved = args.resolve_with_options(None, true, options).unwrap();
+        assert_eq!(resolved.max_points, 1000000);
+        assert_eq!(resolved.base_format, VectorFormat::U8bin);
     }
 }

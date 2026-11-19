@@ -13,11 +13,13 @@ use crate::model::Neighbor;
 use orion_ann_diskann::model::InmemDataset;
 use orion_ann_vector::FullPrecisionDistance;
 
+/// Squared-L2 admission over original byte rows without a quantized sidecar.
 pub struct NativeU8Admission<'a, const N: usize> {
     dataset: &'a InmemDataset<u8, N>,
 }
 
 impl<'a, const N: usize> NativeU8Admission<'a, N> {
+    /// Binds the dataset to this stage; query encoding is deferred until the stage is opened.
     pub fn new(dataset: &'a InmemDataset<u8, N>) -> Self {
         assert!(N > 0, "stage dimension must be positive");
         let logical_len = dataset
@@ -38,6 +40,9 @@ impl<'a, const N: usize> NativeU8Admission<'a, N> {
 // SAFETY: shape describes the borrowed base; sessions own checked query storage
 // and cannot outlive that base.
 unsafe impl<const N: usize> AdmissionStage for NativeU8Admission<'_, N> {
+    /// Identifies the precision used to validate cascade ordering.
+    ///
+    /// See [`AdmissionStage::precision`] for the shared contract.
     fn precision(
         &self,
     ) -> Option<crate::model::dataset::quantized_dataset::capabilities::Precision> {
@@ -45,9 +50,16 @@ unsafe impl<const N: usize> AdmissionStage for NativeU8Admission<'_, N> {
         Some(P::Exact)
     }
 
+    /// Describes the base shape required by this admission representation.
+    ///
+    /// See [`AdmissionStage::shape`] for the shared contract.
     fn shape(&self) -> Option<(usize, usize)> {
         Some((N, self.dataset.num_active_pts))
     }
+
+    /// Prepares the query state consumed by this admission stage.
+    ///
+    /// See [`AdmissionStage::open`] for the shared contract.
     fn open<'a>(&'a self, query: &[f32]) -> Box<dyn AdmissionSession + 'a> {
         let query: &[f32; N] = query.try_into().expect("query dimension mismatch");
         // The stage interface uses f32 queries. Reject fractional/out-of-range
@@ -65,6 +77,7 @@ unsafe impl<const N: usize> AdmissionStage for NativeU8Admission<'_, N> {
     }
 }
 
+/// One byte-compatible query and the original byte base used by admission.
 struct NativeU8Session<'a, const N: usize> {
     dataset: &'a InmemDataset<u8, N>,
     query: [u8; N],
@@ -73,12 +86,20 @@ struct NativeU8Session<'a, const N: usize> {
 // SAFETY: streams retain input IDs, write only within the input-sized output
 // region, and return the initialized compacted prefix length.
 unsafe impl<const N: usize> AdmissionSession for NativeU8Session<'_, N> {
+    /// Scores the entry node in the admission distance domain.
+    ///
+    /// See [`AdmissionSession::entry_distance`] for the shared contract.
     fn entry_distance(&self, id: u32) -> f32 {
         let start = id as usize * N;
         let vertex: &[u8; N] = self.dataset.data[start..start + N].try_into().unwrap();
         <[u8; N]>::distance_compare(&self.query, vertex, orion_ann_vector::Metric::L2)
     }
 
+    /// Scores candidates and compacts qualifying neighbors into caller-owned output.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold [`AdmissionSession::admit_stream`]'s pointer, shape and lifetime contract.
     unsafe fn admit_stream(
         &self,
         id_scratch: &[u32],
@@ -107,6 +128,7 @@ unsafe impl<const N: usize> AdmissionSession for NativeU8Session<'_, N> {
 
 // Keep diagnostics bounded: do not format vector payloads or working buffers.
 impl<'a, const N: usize> std::fmt::Debug for NativeU8Admission<'a, N> {
+    /// Formats `dimension`, `points` for diagnostic inspection.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeU8Admission")
             .field("dimension", &(N))

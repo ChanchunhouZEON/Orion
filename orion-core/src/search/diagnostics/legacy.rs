@@ -6,7 +6,7 @@
 use crate::Result;
 use crate::StaticOrion;
 use crate::model::Neighbor as DNeighbor;
-use crate::model::scratch::InMemScratchPool;
+use crate::model::search::scratch::InMemScratchPool;
 use crate::search::traversal::tuning::AlignedQuery;
 
 use orion_ann_diskann::model::Vertex;
@@ -15,15 +15,22 @@ use orion_ann_vector::{FullPrecisionDistance, Metric};
 /// Per-operation timing breakdown accumulated across queries.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SearchProfileStats {
+    /// Number of queries included in the aggregated diagnostic counters.
     pub queries: u64,
+
+    /// Total traversal iterations represented by these counters.
     pub iterations: u64,
     /// Time in distance computations (get_vertex + compare).
     pub distance_ns: u64,
+
+    /// Total counted distance evaluations across the profiled queries.
     pub distance_count: u64,
     /// Time in PQ operations (closest_notvisited + insert).
     pub pq_ops_ns: u64,
     /// Time reading graph neighbors.
     pub graph_read_ns: u64,
+
+    /// Total counted graph adjacency reads.
     pub graph_read_count: u64,
     /// Time in seen-set insert + test.
     pub seen_ns: u64,
@@ -32,10 +39,12 @@ pub struct SearchProfileStats {
 }
 
 impl SearchProfileStats {
+    /// Sums the instrumented operation timers; uninstrumented request overhead is excluded.
     pub fn total_ns(&self) -> u64 {
         self.distance_ns + self.pq_ops_ns + self.graph_read_ns + self.seen_ns + self.convergence_ns
     }
 
+    /// Prints aggregate operation costs and per-query averages for a completed profiling sample.
     pub fn print_report(&self) {
         let total = self.total_ns() as f64;
         let q = self.queries as f64;
@@ -334,18 +343,45 @@ where
 /// Detailed profiling breakdown for a single search query.
 #[derive(Debug, Clone)]
 pub struct SearchProfile {
+    /// Total profiled request duration in microseconds.
     pub total_us: f64,
+
+    /// ADC lookup-table preparation duration in microseconds.
     pub adc_table_us: f64,
+
+    /// Initial traversal phase duration in microseconds.
     pub phase1_us: f64,
+
+    /// Converged traversal phase duration in microseconds.
     pub phase2_us: f64,
+
+    /// Converged-phase graph access duration in microseconds.
     pub phase2_graph_read_us: f64,
+
+    /// Converged-phase prefetch work duration in microseconds.
     pub phase2_prefetch_us: f64,
+
+    /// Converged-phase ADC work duration in microseconds.
     pub phase2_adc_us: f64,
+
+    /// Legacy asynchronous ADC work duration in microseconds.
     pub phase2_async_adc_us: f64,
+
+    /// Final reranking duration in microseconds.
     pub rerank_us: f64,
+
+    /// Traversal iterations in the initial search phase.
     pub phase1_iters: u32,
+
+    /// Traversal iterations in the converged search phase.
     pub phase2_iters: u32,
+
+    /// Number of nodes recorded as visited by the profiled search.
     pub visited_count: u32,
+
+    /// Cache-hit count reported by the legacy profiling path.
     pub cache_hits: u32,
+
+    /// Batch count reported by the legacy asynchronous profiling path.
     pub async_batches: u32,
 }
