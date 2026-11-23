@@ -1,0 +1,17 @@
+{
+  "source": "nlpkevinl/wikipedia_openai_embeddings",
+  "revision": "99ceeb82bed4b59fe9412245cf450da992f5b198",
+  "shards": {
+    "wikipedia_passages_shard_1-00.jsonl.gz": "522a2e4866fa7920e8cd663efb6402138a6545217db274287a573137752185aa"
+  },
+  "model": "text-embedding-ada-002",
+  "dimension": 1536,
+  "n_base": 1000000,
+  "n_query": 10000,
+  "seed": 42,
+  "split": "Seeded permutation of the first n_base+n_query valid records; disjoint row IDs",
+  "metric": "normalized-inner-product",
+  "gt_backend": "faiss",
+  "top_k": 100,
+  "numpy_version": "1.26.4"
+}

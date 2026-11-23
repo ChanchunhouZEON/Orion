@@ -40,16 +40,19 @@ compile as evidence that an unsupported instruction path executed.
 
 ## README validation snapshot
 
-The test-count, doctest and line-coverage badges describe the **2026-11-12**
-local macOS/AArch64 run on Rust 1.92, based on `0a4fddd` plus the accompanying CI
-fixes. They are dated measurements; the separate GitHub Actions badges show
-live `main`-branch status.
+The numeric badges were refreshed on **2026-11-20** for `2be06e0`.
+Rust test counts and line coverage come from the successful
+[2026-11-19 coverage run](https://github.com/ChanchunhouZEON/Orion/actions/runs/44492008728)
+on macOS/AArch64 with Rust 1.92. Doctests come from the local all-feature
+workspace run on the identical source tree (`9ce8413`, before the merge).
+These are measured snapshots; the separate GitHub Actions badges show live
+`main`-branch status, including checks outside coverage.
 
 | Check | Result | Scope |
 |---|---:|---|
-| Rust tests | 580 passed, 5 ignored | Workspace, all features, excluding the Python extension |
-| Doctests | 52 passed, 1 ignored | Same workspace; counted separately from Rust tests |
-| Rust line coverage | 90.09% (30,471 / 33,822 lines) | 266 compiled Rust files; test/example/vendor paths excluded |
+| Rust tests | 667 passed, 6 ignored | Workspace, all features, excluding the Python extension |
+| Doctests | 64 passed, 1 ignored | Same workspace; counted separately from Rust tests |
+| Rust line coverage | 90.48% (33,307 / 36,810 lines) | 301 compiled Rust files; test/example/vendor paths excluded |
 
 The same 90% coverage gate and reporting exclusions remain in effect. Counts do
 not add together repeated debug/release, feature-variant or coverage runs.
@@ -78,7 +81,7 @@ RUSTFLAGS='' CARGO_ENCODED_RUSTFLAGS='' cargo +1.92 llvm-cov \
   --fail-under-lines 90 --output-path coverage.json
 ```
 
-[Machine-readable results, per-module coverage and evidence hashes](results/2026-11-12/validation.json).
+[Machine-readable results, per-module coverage and evidence hashes](results/2026-11-20/validation.json).
 Refresh the numeric badges and this snapshot together when rerunning the same
 scope. Compiler/platform changes or a different feature set can change counts.
 Benchmark timing regressions require controlled repeated experiments separately.
