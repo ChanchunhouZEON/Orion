@@ -59,7 +59,14 @@ impl<R> LoadGuard<R> {
                 }
             }
         }
-        self.sender.send_replace(Some(result.map(|_| ())));
+        // Deliver ownership, not just readiness: another page must not evict
+        // this result before subscribed readers resume and acquire it.
+        self.sender.send_replace(Some(result.map(|frame| {
+            Arc::new(PageUse {
+                frame: Some(frame),
+                changed: self.inner.changed.clone(),
+            })
+        })));
         self.published = true;
         self.inner.changed.notify_waiters();
     }

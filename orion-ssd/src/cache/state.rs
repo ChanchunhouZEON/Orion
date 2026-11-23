@@ -75,7 +75,7 @@ pub(super) enum Entry {
     },
 }
 
-pub(super) type LoadResult = Result<(), Failure>;
+pub(super) type LoadResult = Result<Arc<PageUse>, Failure>;
 
 /// Cloneable I/O outcome delivered to every waiter on a shared page load.
 #[derive(Debug, Clone)]

@@ -267,3 +267,37 @@ fn invalid_configuration_rejected() {
         .is_err());
     }
 }
+
+/// A completed load belongs to its subscribers even before they are polled again.
+/// Clearing or competing eviction must not turn that completion into another I/O.
+#[tokio::test]
+async fn completed_load_survives_clear_before_subscriber_resumes() {
+    for cancel in [false, true] {
+        let source = Controlled::new();
+        let cache = CachedReader::new(source.clone(), options(1)).unwrap();
+        let mut pending = cache.read(req(0, 8));
+        std::future::poll_fn(|cx| {
+            assert!(pending.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        source.entered().await;
+        source.gate.add_permits(1);
+        // This second subscriber proves publication has completed, while the
+        // original future remains unpolled with its completion queued.
+        drop(deadline(cache.read(req(0, 8))).await.unwrap());
+        cache.clear().unwrap();
+        assert_eq!(cache.stats().reserved_bytes, 64);
+        if cancel {
+            drop(pending);
+        } else {
+            let lease = deadline(pending).await.unwrap();
+            assert_eq!(lease.as_bytes(), &source.data.as_bytes()[..8]);
+            drop(lease);
+        }
+        assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(cache.stats().reserved_bytes, 0);
+        source.gate.add_permits(1);
+        drop(deadline(cache.read(req(64, 8))).await.unwrap());
+    }
+}

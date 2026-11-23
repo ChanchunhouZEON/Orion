@@ -205,9 +205,8 @@ impl<R: ObjectReader + 'static> CachedReader<R> {
     }
 
     /// Acquires one cached page, coalescing misses and waiting for evictable capacity when necessary.
-    async fn page(&self, id: u64) -> io::Result<Arc<Frame>> {
-        let mut waited_for_page = false;
-        'retry: loop {
+    async fn page(&self, id: u64) -> io::Result<Arc<PageUse>> {
+        loop {
             // Register before checking capacity, so a final lease drop cannot
             // race between the check and sleeping (including notify_waiters).
             let notified = self.inner.changed.notified();
@@ -232,10 +231,11 @@ impl<R: ObjectReader + 'static> CachedReader<R> {
                             stamp,
                         },
                     );
-                    if !waited_for_page {
-                        self.inner.hits.fetch_add(1, Ordering::Relaxed);
-                    }
-                    return Ok(frame);
+                    self.inner.hits.fetch_add(1, Ordering::Relaxed);
+                    return Ok(Arc::new(PageUse {
+                        frame: Some(frame),
+                        changed: self.inner.changed.clone(),
+                    }));
                 }
                 if let Some(Entry::Loading { receiver, .. }) = state.entries.get(&id) {
                     self.inner.coalesced.fetch_add(1, Ordering::Relaxed);
@@ -285,11 +285,10 @@ impl<R: ObjectReader + 'static> CachedReader<R> {
                 }
             };
             if let Some(mut receiver) = pending {
-                waited_for_page = true;
                 loop {
                     if let Some(result) = receiver.borrow_and_update().as_ref() {
                         match result {
-                            Ok(()) => continue 'retry,
+                            Ok(page) => return Ok(page.clone()),
                             Err(failure) => {
                                 return Err(io::Error::new(failure.kind, failure.message.clone()))
                             }
@@ -326,16 +325,14 @@ impl<R: ObjectReader + 'static> CachedReader<R> {
         let first = request.offset() / page_bytes as u64;
         let within = (request.offset() % page_bytes as u64) as usize;
         if request.byte_len() <= page_bytes - within {
-            let frame = self.page(first).await?;
+            let page = self.page(first).await?;
+            let frame = page.frame.as_ref().expect("live page use");
             let lease = frame
                 .data
                 .as_ref()
                 .expect("live frame")
                 .section(ReadRequest::new(within as u64, request.byte_len())?)?;
-            return Ok(lease.retain(Arc::new(PageUse {
-                frame: Some(frame),
-                changed: self.inner.changed.clone(),
-            })));
+            return Ok(lease.retain(page));
         }
         // Assemble crossing records one page at a time. Holding all their page
         // leases at once would deadlock a one-page cache on a two-page record.
@@ -343,14 +340,14 @@ impl<R: ObjectReader + 'static> CachedReader<R> {
         let mut copied = 0;
         while copied < request.byte_len() {
             let offset = request.offset() + copied as u64;
-            let frame = self.page(offset / page_bytes as u64).await?;
+            let page = self.page(offset / page_bytes as u64).await?;
+            let frame = page.frame.as_ref().expect("live page use");
             let start = (offset % page_bytes as u64) as usize;
             let take = (request.byte_len() - copied).min(frame.as_ref().as_ref().len() - start);
             out.as_bytes_mut()[copied..copied + take]
                 .copy_from_slice(&frame.as_ref().as_ref()[start..start + take]);
             copied += take;
-            drop(frame);
-            self.inner.changed.notify_waiters();
+            drop(page);
         }
         Ok(ReadLease::from_region(out.freeze()?))
     }
