@@ -1,0 +1,40 @@
+{
+  "source": "https://dl.fbaipublicfiles.com/billion-scale-ann-benchmarks/",
+  "base_range": "bytes=0-1280000007",
+  "points": 10000000,
+  "dimension": 128,
+  "queries": 10000,
+  "groundtruth_k": 100,
+  "groundtruth_source": "GT_10M/bigann-10M",
+  "validation": "All GT IDs in range; sorted distances; all GT distances checked for queries 0,100,9999",
+  "files": {
+    "base.10M.bvecs": {
+      "bytes": 1320000000,
+      "sha256": "8b2ab2f6a65e5c21c067b7267059cb7a9dfa3212bdc6d0462872d1403497d3ef"
+    },
+    "base.10M.u8bin": {
+      "bytes": 1280000008,
+      "sha256": "3f92342f582ebe3aa50751be105791e11894c4caac5b9d3321999457c56b054d"
+    },
+    "base.10M.u8bin.download": {
+      "bytes": 1280000008,
+      "sha256": "24f9c72cb7cf4cb388a2e6e2eeb939f671739be16e84edc9b3b52813063c918f"
+    },
+    "groundtruth.10M.bin": {
+      "bytes": 8000008,
+      "sha256": "80a4e35d5dc918e00e55f81e133e333e3b65f4de1426728c8a3ca93ac5ce74df"
+    },
+    "groundtruth.10M.ivecs": {
+      "bytes": 4040000,
+      "sha256": "4257ec4eed04aa7e78d9ca3b97572593bfdedcb050480eecfa48d20e140c3c04"
+    },
+    "query.public.10K.bvecs": {
+      "bytes": 1320000,
+      "sha256": "d3a86cad074451910b072155330c16fe142425daed2d398d79da4335059f663e"
+    },
+    "query.public.10K.u8bin": {
+      "bytes": 1280008,
+      "sha256": "eca755831fc9a8004e14886df48b81109a8ed3bfc6b632509c93c0460a30d552"
+    }
+  }
+}

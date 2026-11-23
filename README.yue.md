@@ -17,9 +17,9 @@
 </p>
 
 <p align="center">
-  <a href="docs/testing.md#readme-validation-snapshot"><img alt="Rust tests: 580 passed" src="https://img.shields.io/badge/Rust_tests-580_passed-377EAD?style=flat&amp;labelColor=17263D" /></a>
-  <a href="docs/testing.md#readme-validation-snapshot"><img alt="Doctests: 52 passed" src="https://img.shields.io/badge/doctests-52_passed-377EAD?style=flat&amp;labelColor=17263D" /></a>
-  <a href="docs/testing.md#readme-validation-snapshot"><img alt="Rust line coverage: 90.09%" src="https://img.shields.io/badge/Rust_line_coverage-90.09%25-A77A2E?style=flat&amp;labelColor=17263D" /></a>
+  <a href="docs/testing.md#readme-validation-snapshot"><img alt="Rust tests: 667 passed" src="https://img.shields.io/badge/Rust_tests-667_passed-377EAD?style=flat&amp;labelColor=17263D" /></a>
+  <a href="docs/testing.md#readme-validation-snapshot"><img alt="Doctests: 64 passed" src="https://img.shields.io/badge/doctests-64_passed-377EAD?style=flat&amp;labelColor=17263D" /></a>
+  <a href="docs/testing.md#readme-validation-snapshot"><img alt="Rust line coverage: 90.48%" src="https://img.shields.io/badge/Rust_line_coverage-90.48%25-A77A2E?style=flat&amp;labelColor=17263D" /></a>
 </p>
 
 <p align="center">

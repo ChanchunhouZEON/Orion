@@ -1,0 +1,105 @@
+{
+  "date": "2026-11-20",
+  "measurement_date": "2026-11-19",
+  "source_commit": "2be06e0586dce9b26df2f6378680249d32770257",
+  "source_tree": "86b1c8669d382b722d9700f79c5d035f24abe49d",
+  "platform": "macOS AArch64",
+  "rust": "1.92.0",
+  "cargo_llvm_cov": "0.6.21",
+  "rust_tests": {
+    "passed": 667,
+    "failed": 0,
+    "ignored": 6,
+    "source": "coverage CI log"
+  },
+  "doctests": {
+    "passed": 64,
+    "failed": 0,
+    "ignored": 1,
+    "source": "Local all-feature workspace test log on identical source tree at 9ce841310781567dbbd7c2825bfed6f853c7d49a"
+  },
+  "line_coverage": {
+    "percent": 90.48356424884543,
+    "covered_lines": 33307,
+    "lines": 36810,
+    "files": 301,
+    "scope": "Rust workspace, all features, excluding orion-ann-python; test/example/vendor paths excluded. Native AArch64; no doctest, Python, C++ or uncompiled x86 coverage. Inline unit tests are included.",
+    "by_module": {
+      "adsampling": {
+        "lines": 97,
+        "covered_lines": 95,
+        "percent": 97.9381443298969
+      },
+      "orion-cli": {
+        "lines": 672,
+        "covered_lines": 594,
+        "percent": 88.39285714285714
+      },
+      "orion-core": {
+        "lines": 14307,
+        "covered_lines": 12892,
+        "percent": 90.10973649262598
+      },
+      "orion-diagnostics": {
+        "lines": 281,
+        "covered_lines": 273,
+        "percent": 97.15302491103203
+      },
+      "orion-diskann": {
+        "lines": 6368,
+        "covered_lines": 5523,
+        "percent": 86.73052763819095
+      },
+      "orion-error": {
+        "lines": 191,
+        "covered_lines": 170,
+        "percent": 89.00523560209425
+      },
+      "orion-logger": {
+        "lines": 30,
+        "covered_lines": 16,
+        "percent": 53.333333333333336
+      },
+      "orion-parlay": {
+        "lines": 315,
+        "covered_lines": 309,
+        "percent": 98.0952380952381
+      },
+      "orion-platform": {
+        "lines": 1722,
+        "covered_lines": 1504,
+        "percent": 87.34030197444831
+      },
+      "orion-runtime": {
+        "lines": 9840,
+        "covered_lines": 9146,
+        "percent": 92.94715447154472
+      },
+      "orion-ssd": {
+        "lines": 511,
+        "covered_lines": 481,
+        "percent": 94.12915851272015
+      },
+      "orion-vector": {
+        "lines": 2439,
+        "covered_lines": 2304,
+        "percent": 94.4649446494465
+      },
+      "orion-wasm": {
+        "lines": 37,
+        "covered_lines": 0,
+        "percent": 0.0
+      }
+    }
+  },
+  "evidence": {
+    "run_url": "https://github.com/ChanchunhouZEON/Orion/actions/runs/44492008728",
+    "artifact_id": 14513476976,
+    "artifact_name": "rust-coverage-2be06e0586dce9b26df2f6378680249d32770257"
+  },
+  "evidence_sha256": {
+    "coverage.json": "664fb1c6deb7488e7686968c665e9b17eb74ce04d1912e9518657e067ddbe027",
+    "coverage-ci.log": "e69ae99c4ce497a8af527b455ae7a0415d619ea4ba85522681df7ab0d26b7986",
+    "native-workspace.log": "21407849d4f7fb7495bb1bbeb5352f3c5d79ed10130e80a7de2ff9a1e8e7c700"
+  }
+}
